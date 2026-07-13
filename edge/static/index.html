@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumina Local Chat</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="chat-shell">
+    <header class="chat-header">
+      <h1>Lumina Local Chat</h1>
+      <div class="chat-status" id="backend-status" aria-live="polite">Checking backend...</div>
+    </header>
+
+    <section class="chat-log" id="chat-log" aria-live="polite"></section>
+
+    <section class="chat-notice" id="chat-notice" role="status" aria-live="polite"></section>
+
+    <form class="chat-form" id="chat-form" autocomplete="off">
+      <label for="chat-input" class="visually-hidden">Message</label>
+      <textarea
+        id="chat-input"
+        name="message"
+        rows="2"
+        placeholder="Type a message and press Send"
+        required
+      ></textarea>
+      <button type="submit" id="send-button">Send</button>
+    </form>
+  </main>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

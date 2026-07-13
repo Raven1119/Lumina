@@ -1,0 +1,138 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f6f7f8;
+  color: #1a1a1a;
+}
+
+.chat-shell {
+  display: flex;
+  flex-direction: column;
+  max-width: 720px;
+  height: 100vh;
+  margin: 0 auto;
+  padding: 16px;
+  gap: 12px;
+}
+
+.chat-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 1px solid #e1e3e6;
+  padding-bottom: 8px;
+}
+
+.chat-header h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.chat-status {
+  font-size: 0.8rem;
+  color: #5a6068;
+}
+
+.chat-status.is-ok { color: #2f7a3a; }
+.chat-status.is-down { color: #a13a2a; }
+
+.chat-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-message {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.4;
+  font-size: 0.95rem;
+}
+
+.chat-message.is-user {
+  align-self: flex-end;
+  background: #d8e7ff;
+}
+
+.chat-message.is-assistant {
+  align-self: flex-start;
+  background: #ffffff;
+  border: 1px solid #e1e3e6;
+}
+
+.chat-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+  border-radius: 4px;
+  background: #eef0f3;
+  color: #5a6068;
+  letter-spacing: 0.02em;
+}
+
+.chat-badge.is-fallback { background: #fbe9c8; color: #7a4a10; }
+.chat-badge.is-model { background: #d6efd8; color: #2f7a3a; }
+.chat-badge.is-mock { background: #e8e8ef; color: #4a4a6a; }
+
+.chat-notice {
+  min-height: 1.2em;
+  font-size: 0.85rem;
+  color: #a13a2a;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e1e3e6;
+}
+
+.chat-form textarea {
+  flex: 1;
+  resize: vertical;
+  font: inherit;
+  padding: 8px;
+  border: 1px solid #c8cbd0;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.chat-form button {
+  padding: 8px 16px;
+  font: inherit;
+  border: 0;
+  border-radius: 6px;
+  background: #2f5acb;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.chat-form button:disabled {
+  background: #99a2b3;
+  cursor: progress;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  border: 0;
+  padding: 0;
+  clip: rect(0 0 0 0);
+  overflow: hidden;
+}
