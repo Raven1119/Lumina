@@ -1,0 +1,286 @@
+{
+  "schema_version": "1",
+  "memory_fixture": "cold_draft_segment_v1.json",
+  "queries": [
+    {
+      "id": "positive_exact_01",
+      "query": "What caused the first experiment to fail?",
+      "label": "relevant",
+      "category": "exact_overlap",
+      "expected_turn_ids": ["turn-002"]
+    },
+    {
+      "id": "positive_paraphrase_01",
+      "query": "Why did the initial membrane test go wrong?",
+      "label": "relevant",
+      "category": "semantic_paraphrase",
+      "expected_turn_ids": ["turn-002"]
+    },
+    {
+      "id": "positive_causal_01",
+      "query": "Why was the first membrane experiment unsuccessful?",
+      "label": "relevant",
+      "category": "causal",
+      "expected_turn_ids": ["turn-002"]
+    },
+    {
+      "id": "positive_short_01",
+      "query": "experiment failure cause",
+      "label": "relevant",
+      "category": "short",
+      "expected_turn_ids": ["turn-002"]
+    },
+    {
+      "id": "positive_long_01",
+      "query": "Looking back at the first attempt to make the membrane, what process involving the solvent explains why that attempt failed?",
+      "label": "relevant",
+      "category": "long",
+      "expected_turn_ids": ["turn-002"]
+    },
+    {
+      "id": "positive_exact_02",
+      "query": "Who completed the membrane experiment yesterday?",
+      "label": "relevant",
+      "category": "exact_overlap",
+      "expected_turn_ids": ["turn-001"]
+    },
+    {
+      "id": "positive_temporal_01",
+      "query": "When was the membrane experiment completed?",
+      "label": "relevant",
+      "category": "temporal",
+      "expected_turn_ids": ["turn-001"]
+    },
+    {
+      "id": "positive_entity_01",
+      "query": "What membrane work did Raven complete?",
+      "label": "relevant",
+      "category": "entity",
+      "expected_turn_ids": ["turn-001"]
+    },
+    {
+      "id": "positive_synonym_01",
+      "query": "Which person finished the membrane trial?",
+      "label": "relevant",
+      "category": "synonym",
+      "expected_turn_ids": ["turn-001"]
+    },
+    {
+      "id": "positive_short_02",
+      "query": "Raven membrane completion",
+      "label": "relevant",
+      "category": "short",
+      "expected_turn_ids": ["turn-001"]
+    },
+    {
+      "id": "positive_change_01",
+      "query": "What did Raven change before repeating the experiment?",
+      "label": "relevant",
+      "category": "behavior_change",
+      "expected_turn_ids": ["turn-003"]
+    },
+    {
+      "id": "positive_paraphrase_02",
+      "query": "What was different about the repeated membrane run?",
+      "label": "relevant",
+      "category": "semantic_paraphrase",
+      "expected_turn_ids": ["turn-003", "turn-004"]
+    },
+    {
+      "id": "positive_temporal_02",
+      "query": "What did Raven do today before another membrane attempt?",
+      "label": "relevant",
+      "category": "temporal",
+      "expected_turn_ids": ["turn-003"]
+    },
+    {
+      "id": "positive_synonym_02",
+      "query": "Which liquid-related variable was altered for the repeat trial?",
+      "label": "relevant",
+      "category": "synonym",
+      "expected_turn_ids": ["turn-003"]
+    },
+    {
+      "id": "positive_short_03",
+      "query": "changed solvent",
+      "label": "relevant",
+      "category": "short",
+      "expected_turn_ids": ["turn-003"]
+    },
+    {
+      "id": "positive_causal_02",
+      "query": "What prevented rapid evaporation in the repeated experiment?",
+      "label": "relevant",
+      "category": "causal",
+      "expected_turn_ids": ["turn-004"]
+    },
+    {
+      "id": "positive_outcome_01",
+      "query": "What was the outcome of Raven's repeated experiment?",
+      "label": "relevant",
+      "category": "outcome",
+      "expected_turn_ids": ["turn-004"]
+    },
+    {
+      "id": "positive_causal_03",
+      "query": "Why did the second membrane attempt succeed?",
+      "label": "relevant",
+      "category": "causal",
+      "expected_turn_ids": ["turn-004"]
+    },
+    {
+      "id": "positive_temporal_03",
+      "query": "Which experiment was described as succeeding tomorrow?",
+      "label": "relevant",
+      "category": "temporal",
+      "expected_turn_ids": ["turn-004"]
+    },
+    {
+      "id": "positive_long_02",
+      "query": "After the initial solvent loss, explain what Raven altered and how that alteration affected evaporation and the final repeated membrane experiment.",
+      "label": "relevant",
+      "category": "long",
+      "expected_turn_ids": ["turn-003", "turn-004"]
+    },
+    {
+      "id": "negative_unrelated_01",
+      "query": "Who won the international football championship?",
+      "label": "irrelevant",
+      "category": "different_topic",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_unrelated_02",
+      "query": "What is the current exchange rate for the Japanese yen?",
+      "label": "irrelevant",
+      "category": "different_topic",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_unrelated_03",
+      "query": "Which galaxy contains the nearest known pulsar?",
+      "label": "irrelevant",
+      "category": "different_topic",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_unrelated_04",
+      "query": "How many chapters are in the purchased history book?",
+      "label": "irrelevant",
+      "category": "different_topic",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_domain_01",
+      "query": "Which catalyst was purchased from Sigma-Aldrich?",
+      "label": "irrelevant",
+      "category": "same_domain_absent_fact",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_domain_02",
+      "query": "What thickness in nanometers did the membrane have?",
+      "label": "irrelevant",
+      "category": "same_domain_absent_fact",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_domain_03",
+      "query": "At what temperature was the membrane annealed?",
+      "label": "irrelevant",
+      "category": "same_domain_absent_fact",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_domain_04",
+      "query": "Which polymer concentration was measured in the experiment?",
+      "label": "irrelevant",
+      "category": "same_domain_absent_fact",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_entity_01",
+      "query": "Which microscope did Raven purchase?",
+      "label": "irrelevant",
+      "category": "same_entity_wrong_attribute",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_entity_02",
+      "query": "At which university does Raven work?",
+      "label": "irrelevant",
+      "category": "same_entity_wrong_attribute",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_entity_03",
+      "query": "What award did Raven receive for the membrane study?",
+      "label": "irrelevant",
+      "category": "same_entity_wrong_attribute",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_cause_01",
+      "query": "Did bacterial contamination cause the first experiment to fail?",
+      "label": "irrelevant",
+      "category": "wrong_cause",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_cause_02",
+      "query": "Did excessive heating cause the membrane experiment to fail?",
+      "label": "irrelevant",
+      "category": "wrong_cause",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_cause_03",
+      "query": "Was equipment vibration the reason the first trial failed?",
+      "label": "irrelevant",
+      "category": "wrong_cause",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_keyword_01",
+      "query": "When was the solvent shipment delivered for the membrane laboratory?",
+      "label": "irrelevant",
+      "category": "same_keywords_different_event",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_keyword_02",
+      "query": "Which animal cells were placed on the experimental membrane?",
+      "label": "irrelevant",
+      "category": "same_keywords_different_event",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_person_01",
+      "query": "What experiment did Alice complete?",
+      "label": "irrelevant",
+      "category": "absent_person",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_person_02",
+      "query": "Why did Morgan repeat the membrane experiment?",
+      "label": "irrelevant",
+      "category": "absent_person",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_time_01",
+      "query": "What happened in the membrane experiment on Christmas 2025?",
+      "label": "irrelevant",
+      "category": "absent_time",
+      "expected_turn_ids": []
+    },
+    {
+      "id": "negative_neighbor_01",
+      "query": "Which gravimetric instrument measured the solvent evaporation rate?",
+      "label": "irrelevant",
+      "category": "near_neighbor",
+      "expected_turn_ids": []
+    }
+  ]
+}

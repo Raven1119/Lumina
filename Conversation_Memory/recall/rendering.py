@@ -18,7 +18,15 @@ def bound_evidence(items: list[MemoryEvidence], *, count: int, max_chars: int) -
         if len(text) > available:
             text = text[:available]
             truncated = True
-        selected.append(MemoryEvidence(item.evidence_id, text, item.timestamp, item.score, item.provenance))
+        selected.append(
+            MemoryEvidence(
+                item.evidence_id,
+                text,
+                item.timestamp,
+                item.provenance,
+                item.relevance_score,
+            )
+        )
         parts.append(text)
         used += len(prefix) + len(text)
         if len(text) < len(item.text):

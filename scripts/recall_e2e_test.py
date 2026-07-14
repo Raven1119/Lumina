@@ -10,7 +10,7 @@ import json
 import re
 import shutil
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -36,6 +36,12 @@ from Dream.cold_draft_digest import (  # noqa: E402
 from Dream.models import DreamRunPolicy  # noqa: E402
 from Dream.runner import DreamRunner  # noqa: E402
 from ingestion.state_store import IngestionStateStore  # noqa: E402
+from scripts.relevance_calibration import (  # noqa: E402
+    collect_observations,
+    load_calibration_dataset,
+    select_recommendation,
+    sweep_thresholds,
+)
 
 
 SANDBOX_MARKER = ".recall_e2e_sandbox"
@@ -246,6 +252,13 @@ def _base_report(keep_data: bool) -> dict[str, Any]:
             "max_evidence_items": False,
             "max_chars": False,
         },
+        "relevance_gate": {
+            "disabled_compatibility": False,
+            "calibration_queries": 0,
+            "recommended_threshold": None,
+            "enabled_validation": "not_run",
+            "restart_consistent": None,
+        },
         "restart_recall": {"passed": False},
         "idempotency": {
             "passed": False,
@@ -429,6 +442,36 @@ def _run_query_suite(
     contexts["negative"] = negative
     checks["negative_source_bounded"] = True
     return contexts, checks
+
+
+def _run_enabled_gate_suite(
+    retriever: MemoryRetriever,
+    policy: RecallPolicy,
+    segment_ids: set[str],
+    work_dir: Path,
+) -> dict[str, MemoryContext]:
+    contexts: dict[str, MemoryContext] = {}
+    for name, query, expected in _QUERY_SPECS:
+        context = retriever.recall(query, policy)
+        repeated = retriever.recall(query, policy)
+        _validate_public_context(context, policy, segment_ids, work_dir)
+        _validate_public_context(repeated, policy, segment_ids, work_dir)
+        _require(bool(context.evidence), "relevance_gate", f"{name}_empty")
+        _require(_contains(context, expected), "relevance_gate", f"{name}_evidence_missing")
+        _require(
+            _evidence_ids(context) == _evidence_ids(repeated),
+            "relevance_gate",
+            f"{name}_ordering_unstable",
+        )
+        contexts[name] = context
+    negative = retriever.recall(_NEGATIVE_QUERY, policy)
+    repeated_negative = retriever.recall(_NEGATIVE_QUERY, policy)
+    _validate_public_context(negative, policy, segment_ids, work_dir)
+    _validate_public_context(repeated_negative, policy, segment_ids, work_dir)
+    _require(negative.evidence == (), "relevance_gate", "negative_not_empty")
+    _require(repeated_negative.evidence == (), "relevance_gate", "negative_repeat_not_empty")
+    contexts["negative"] = negative
+    return contexts
 
 
 def _validate_temporal_metadata(
@@ -617,6 +660,7 @@ def _execute_pipeline(
         max_evidence_items=5,
         max_graph_depth=6,
         max_nodes=200,
+        min_relevance=None,
     )
     contexts, checks = _silenced(
         _run_query_suite,
@@ -636,7 +680,62 @@ def _execute_pipeline(
     report["provenance"].update(
         {"passed": True, "temporal_normalization_passed": True}
     )
+    report["relevance_gate"]["disabled_compatibility"] = True
     _verbose(verbose, "six-query recall suite passed")
+
+    calibration_dataset = load_calibration_dataset()
+    calibration_turn_map = {
+        "turn-001": converted.turns[0].turn_id,
+        "turn-002": converted.turns[2].turn_id,
+        "turn-003": converted.turns[4].turn_id,
+        "turn-004": converted.turns[5].turn_id,
+    }
+    mapped_calibration_queries = tuple(
+        replace(
+            item,
+            expected_turn_ids=tuple(
+                calibration_turn_map[turn_id]
+                for turn_id in item.expected_turn_ids
+            ),
+        )
+        for item in calibration_dataset.queries
+    )
+    calibration_observations = _silenced(
+        collect_observations,
+        adapter,
+        mapped_calibration_queries,
+    )
+    recommendation = select_recommendation(
+        sweep_thresholds(calibration_observations)
+    )
+    recommended_threshold = recommendation["threshold"]
+    report["relevance_gate"].update({
+        "calibration_queries": len(mapped_calibration_queries),
+        "recommended_threshold": recommended_threshold,
+    })
+    enabled_contexts: dict[str, MemoryContext] | None = None
+    if recommended_threshold is None:
+        report["relevance_gate"]["enabled_validation"] = (
+            "threshold_not_recommended"
+        )
+    else:
+        enabled_policy = RecallPolicy(
+            top_k=5,
+            max_chars=1200,
+            max_evidence_items=5,
+            max_graph_depth=6,
+            max_nodes=200,
+            min_relevance=recommended_threshold,
+            max_relevance_candidates=20,
+        )
+        enabled_contexts = _silenced(
+            _run_enabled_gate_suite,
+            adapter,
+            enabled_policy,
+            segment_ids,
+            paths.root,
+        )
+        report["relevance_gate"]["enabled_validation"] = "passed"
 
     top_one = _silenced(
         adapter.recall,
@@ -750,6 +849,29 @@ def _execute_pipeline(
         "restart",
         "restart_state_not_completed",
     )
+    if recommended_threshold is None:
+        report["relevance_gate"]["restart_consistent"] = None
+    else:
+        restarted_enabled = _silenced(
+            _run_enabled_gate_suite,
+            restarted_adapter,
+            enabled_policy,
+            segment_ids,
+            paths.root,
+        )
+        _require(
+            {
+                name: _evidence_ids(context)
+                for name, context in restarted_enabled.items()
+            }
+            == {
+                name: _evidence_ids(context)
+                for name, context in enabled_contexts.items()
+            },
+            "relevance_gate",
+            "restart_results_changed",
+        )
+        report["relevance_gate"]["restart_consistent"] = True
     report["restart_recall"]["passed"] = True
     report["leak_checks"]["passed"] = True
     _verbose(verbose, "persisted recall restart passed")

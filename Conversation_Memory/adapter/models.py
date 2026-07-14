@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import math
 from typing import Any
 
 
@@ -71,11 +72,32 @@ class RecallPolicy:
     max_evidence_items: int = 5
     max_graph_depth: int = 5
     max_nodes: int = 100
+    min_relevance: float | None = None
+    max_relevance_candidates: int = 20
 
     def __post_init__(self) -> None:
-        for name in ("top_k", "max_chars", "max_evidence_items", "max_graph_depth", "max_nodes"):
+        for name in (
+            "top_k",
+            "max_chars",
+            "max_evidence_items",
+            "max_graph_depth",
+            "max_nodes",
+            "max_relevance_candidates",
+        ):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be positive")
+        if self.max_relevance_candidates > 20:
+            raise ValueError("max_relevance_candidates must be at most 20")
+        if self.min_relevance is not None:
+            if isinstance(self.min_relevance, bool) or not isinstance(
+                self.min_relevance, (int, float)
+            ):
+                raise ValueError("min_relevance must be a finite number or None")
+            value = float(self.min_relevance)
+            if not math.isfinite(value):
+                raise ValueError("min_relevance must be finite")
+            if not -1.0 <= value <= 1.0:
+                raise ValueError("min_relevance must be between -1.0 and 1.0")
 
 
 @dataclass(frozen=True)
@@ -83,8 +105,8 @@ class MemoryEvidence:
     evidence_id: str
     text: str
     timestamp: str | None
-    score: float | None
     provenance: SourceProvenance
+    relevance_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -102,3 +124,26 @@ class BackendCandidate:
     timestamp: str | None
     score: float | None
     metadata: dict[str, Any] = field(default_factory=dict)
+    query_embedding: tuple[float, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    evidence_embedding: tuple[float, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+
+@dataclass(frozen=True)
+class ScoredRecallCandidate:
+    candidate: BackendCandidate
+    relevance_score: float
+
+
+@dataclass(frozen=True)
+class RelevanceScoreResult:
+    scored_candidates: tuple[ScoredRecallCandidate, ...] = ()
+    candidates_scored: int = 0
+    safe_error_code: str | None = None

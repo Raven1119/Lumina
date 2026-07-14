@@ -69,9 +69,12 @@ provenance are excluded.
 
 ## Stable ordering
 
-Recall ordering does not depend on MAGMA UUIDs. It uses descending backend
-score, then source timestamp, then the stable SHA-256 evidence ID. The same
-backend result set therefore produces the same Lumina ordering.
+Recall ordering does not depend on MAGMA UUIDs. It uses the private descending
+backend score, then source timestamp, then the stable SHA-256 evidence ID. The
+same backend result set therefore produces the same Lumina ordering. When the
+optional local relevance gate is enabled, cosine is used only to filter; it
+does not reorder survivors. Backend scores and vectors are not exposed by
+`MemoryEvidence`.
 
 ## Manual production Cold Draft transition
 

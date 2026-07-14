@@ -145,6 +145,7 @@ RecallPolicy(
     max_evidence_items=5,
     max_graph_depth=6,
     max_nodes=200,
+    min_relevance=None,
 )
 ```
 
@@ -159,12 +160,26 @@ The six acceptance categories are:
 
 Every positive query must contain its expected source evidence. Exact and
 paraphrased cause queries must share the same stable evidence ID. The negative
-query may be empty or contain unrelated source evidence because the current
-vector facade has no relevance-threshold filter; it passes only if every item
-comes from the sandbox segment and none fabricates catalyst, purchase, or
-Sigma-Aldrich evidence. No answer generation occurs.
+query may be empty or contain unrelated source evidence because the
+compatibility run deliberately disables the optional relevance gate; it passes
+only if every item comes from the sandbox segment and none fabricates catalyst,
+purchase, or Sigma-Aldrich evidence. No answer generation occurs.
 
 Every query is repeated to verify deterministic ordering.
+
+## Optional relevance gate
+
+The E2E first proves backward compatibility with `min_relevance=None`. It then
+loads the same 20-positive/20-negative calibration definitions and applies the
+documented selection rule to the current sandbox memory.
+
+The current real-MAGMA calibration recommends no threshold because the positive
+and negative cosine distributions overlap too heavily. E2E therefore records
+`enabled_validation=threshold_not_recommended`; it does not invent a threshold
+or claim that the absent negative query is rejected by an enabled gate. If a
+future calibration produces a recommendation, E2E is already structured to
+require all positive queries, an empty negative result, stable order, complete
+provenance, bounds, and identical restart behavior.
 
 ## Provenance and leak checks
 

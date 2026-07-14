@@ -1,4 +1,4 @@
-from .interfaces import MemoryIngestor, MemoryRetriever
+from .interfaces import MemoryIngestor, MemoryRetriever, RelevanceScorer
 from .magma_adapter import MagmaMemoryAdapter
 from .models import (
     ColdDraftSegment,
@@ -14,5 +14,6 @@ from .models import (
 __all__ = [
     "ColdDraftSegment", "ColdDraftTurn", "IngestionResult", "MagmaMemoryAdapter",
     "MemoryContext", "MemoryEvidence", "MemoryIngestor", "MemoryRetriever",
-    "NormalizedTemporalReference", "RecallPolicy", "SourceProvenance",
+    "NormalizedTemporalReference", "RecallPolicy", "RelevanceScorer",
+    "SourceProvenance",
 ]

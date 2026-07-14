@@ -90,14 +90,23 @@ construction; the integration test verifies an ENTITY link for Raven.
 ## Recall boundary
 
 `RecallPolicy` requires positive `top_k`, `max_chars`,
-`max_evidence_items`, `max_graph_depth`, and `max_nodes`. The backend receives
-the graph budgets. The facade then:
+`max_evidence_items`, `max_graph_depth`, and `max_nodes`. Optional
+`min_relevance` is a finite cosine threshold in `[-1.0, 1.0]`; it defaults to
+`None`. `max_relevance_candidates` is bounded to 1–20. The backend receives the
+graph budgets. The facade then:
 
 1. discards candidates without valid provenance/stable evidence IDs;
 2. sorts deterministically by descending score, timestamp, and evidence ID;
-3. applies `min(top_k, max_evidence_items)`;
-4. truncates rendered evidence to `max_chars`;
-5. returns only frozen Lumina DTOs and truncation metadata.
+3. when enabled, scores at most `max_relevance_candidates` with captured query
+   and persisted evidence vectors, then filters without reordering;
+4. applies `min(top_k, max_evidence_items)`;
+5. truncates rendered evidence to `max_chars`;
+6. returns only frozen Lumina DTOs and truncation metadata.
+
+Backend scores and vectors are private. Public evidence may contain only the
+local cosine `relevance_score`. If the enabled scorer is unavailable, recall
+returns `relevance_unavailable` rather than silently bypassing the gate. If all
+candidates are filtered, recall returns a valid empty context without an error.
 
 There is no Cold Draft scan during recall. MAGMA UUIDs are never exposed as
 evidence identifiers.

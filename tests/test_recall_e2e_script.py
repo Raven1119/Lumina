@@ -196,6 +196,17 @@ def test_real_recall_summary_is_six_of_six(kept_acceptance):
     assert report["recall"]["failed"] == 0
 
 
+def test_real_e2e_keeps_gate_disabled_compatible_and_does_not_invent_threshold(kept_acceptance):
+    report, _ = kept_acceptance
+    assert report["relevance_gate"] == {
+        "disabled_compatibility": True,
+        "calibration_queries": 40,
+        "recommended_threshold": None,
+        "enabled_validation": "threshold_not_recommended",
+        "restart_consistent": None,
+    }
+
+
 def test_real_provenance_and_temporal_mapping_pass(kept_acceptance):
     report, _ = kept_acceptance
     assert report["provenance"] == {

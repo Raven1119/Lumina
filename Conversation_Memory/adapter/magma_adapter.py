@@ -7,8 +7,10 @@ from ingestion.entities import extract_entities
 from ingestion.state_store import IngestionStateStore
 from ingestion.temporal import normalize_temporal_references
 from recall.rendering import bound_evidence
+from recall.relevance import CosineEmbeddingRelevanceScorer
 
 from .backend import MemoryBackend
+from .interfaces import RelevanceScorer
 from .models import (
     ColdDraftSegment,
     IngestionResult,
@@ -19,6 +21,9 @@ from .models import (
 )
 
 
+_DEFAULT_RELEVANCE_SCORER = object()
+
+
 class MagmaMemoryAdapter:
     def __init__(
         self,
@@ -27,11 +32,21 @@ class MagmaMemoryAdapter:
         *,
         ingestion_version: str = "cold-draft-v1",
         configured_entities: tuple[str, ...] = (),
+        relevance_scorer: RelevanceScorer | None | object = _DEFAULT_RELEVANCE_SCORER,
     ):
         self.backend = backend
         self.state_store = state_store
         self.ingestion_version = ingestion_version
         self.configured_entities = configured_entities
+        self.relevance_scorer = (
+            CosineEmbeddingRelevanceScorer()
+            if relevance_scorer is _DEFAULT_RELEVANCE_SCORER
+            else relevance_scorer
+        )
+        self.last_recall_diagnostics: dict[str, int | bool] = {
+            "gate_enabled": False,
+            "candidates_scored": 0,
+        }
 
     @classmethod
     def create_real(
@@ -126,11 +141,19 @@ class MagmaMemoryAdapter:
             return IngestionResult(segment.segment_id, self.ingestion_version, "failed", tuple(memory_ids), retryable=True, safe_error_code="memory_write_failed")
 
     def recall(self, query: str, policy: RecallPolicy) -> MemoryContext:
+        self.last_recall_diagnostics = {
+            "gate_enabled": policy.min_relevance is not None,
+            "candidates_scored": 0,
+        }
         if not isinstance(query, str) or not query.strip():
             return MemoryContext(query if isinstance(query, str) else "", safe_error_code="invalid_query")
         try:
             candidates = self.backend.recall(query, policy)
-            items = []
+        except Exception:
+            return MemoryContext(query.strip(), safe_error_code="recall_unavailable")
+
+        try:
+            projected = []
             for candidate in candidates:
                 raw = candidate.metadata.get("provenance")
                 evidence_id = candidate.metadata.get("evidence_id")
@@ -140,14 +163,71 @@ class MagmaMemoryAdapter:
                     provenance = SourceProvenance(**raw)
                 except TypeError:
                     continue
-                items.append(MemoryEvidence(evidence_id, candidate.text, candidate.timestamp, candidate.score, provenance))
-            items.sort(key=lambda item: (
-                -(item.score if item.score is not None else -1.0),
-                item.timestamp or "",
-                item.evidence_id,
+                projected.append((candidate, MemoryEvidence(
+                    evidence_id,
+                    candidate.text,
+                    candidate.timestamp,
+                    provenance,
+                )))
+            projected.sort(key=lambda pair: (
+                -(pair[0].score if pair[0].score is not None else -1.0),
+                pair[1].timestamp or "",
+                pair[1].evidence_id,
             ))
+
+            items: list[MemoryEvidence]
+            if policy.min_relevance is None:
+                items = [item for _, item in projected]
+            elif not projected:
+                items = []
+            else:
+                projected = projected[:policy.max_relevance_candidates]
+                if self.relevance_scorer is None:
+                    return MemoryContext(
+                        query.strip(),
+                        safe_error_code="relevance_unavailable",
+                    )
+                scoring = self.relevance_scorer.score(
+                    query.strip(),
+                    [candidate for candidate, _ in projected],
+                )
+                if scoring.safe_error_code is not None:
+                    return MemoryContext(
+                        query.strip(),
+                        safe_error_code="relevance_unavailable",
+                    )
+                self.last_recall_diagnostics["candidates_scored"] = (
+                    scoring.candidates_scored
+                )
+                if len(scoring.scored_candidates) != len(projected):
+                    return MemoryContext(
+                        query.strip(),
+                        safe_error_code="relevance_unavailable",
+                    )
+                items = []
+                for (candidate, item), scored in zip(
+                    projected,
+                    scoring.scored_candidates,
+                ):
+                    if scored.candidate is not candidate:
+                        return MemoryContext(
+                            query.strip(),
+                            safe_error_code="relevance_unavailable",
+                        )
+                    if scored.relevance_score >= float(policy.min_relevance):
+                        items.append(MemoryEvidence(
+                            item.evidence_id,
+                            item.text,
+                            item.timestamp,
+                            item.provenance,
+                            scored.relevance_score,
+                        ))
             limit = min(policy.top_k, policy.max_evidence_items)
             evidence, rendered, truncated = bound_evidence(items, count=limit, max_chars=policy.max_chars)
             return MemoryContext(query.strip(), evidence, rendered, truncated)
         except Exception:
-            return MemoryContext(query.strip(), safe_error_code="recall_unavailable")
+            return MemoryContext(query.strip(), safe_error_code=(
+                "relevance_unavailable"
+                if policy.min_relevance is not None
+                else "recall_unavailable"
+            ))

@@ -25,7 +25,13 @@
 - a developer-only, marker-owned Recall end-to-end acceptance harness that
   exercises production-format Hot/Cold Draft compaction, manual Dream ingestion,
   real MAGMA persistence, bounded recall, restart recovery, idempotency, leak
-  checks, and safe cleanup in an isolated sandbox.
+  checks, and safe cleanup in an isolated sandbox;
+- an optional, default-off Lumina-owned cosine relevance gate with bounded
+  candidate scoring, reuse of MAGMA's query embedding and persisted event
+  vectors, structured failure behavior, and no LLM or network calls;
+- a marker-owned real-MAGMA relevance calibration harness with a balanced
+  20-positive/20-negative synthetic query set, full threshold metrics, and
+  measured performance diagnostics.
 
 The active Cold Draft preservation contract is reconciled with the MVP
 implementation in `docs/COLD_DRAFT.md`.
@@ -43,6 +49,10 @@ implementation in `docs/COLD_DRAFT.md`.
   consumer;
 - Conversation Memory recall exists only behind its isolated Lumina-owned
   facade and is not injected into the production chat/model request;
+- current relevance calibration has no recommended threshold: positive scores
+  overlap negative scores, and no scanned point simultaneously reaches 0.90
+  positive recall and at most 0.10 false injection rate, so the gate remains
+  disabled by default and E2E reports `threshold_not_recommended`;
 - production Cold Draft records do not yet store a conversation ID, per-turn
   IDs, per-turn timestamps, or named timezone, so the manual converter uses
   documented stable IDs and the segment's aware `created_at` source timestamp;
