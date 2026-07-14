@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "segment_id": "fixture-segment-membrane-001",
+  "conversation_id": "fixture-conversation-raven",
+  "state": "pending_digest",
+  "created_at": "2026-07-15T09:05:00+08:00",
+  "source_timezone": "+08:00",
+  "turns": [
+    {"turn_id": "turn-001", "role": "user", "timestamp": "2026-07-14T10:00:00+08:00", "content": "Raven completed the membrane experiment yesterday."},
+    {"turn_id": "turn-002", "role": "assistant", "timestamp": "2026-07-14T11:00:00+08:00", "content": "The first experiment failed because the solvent evaporated too quickly."},
+    {"turn_id": "turn-003", "role": "user", "timestamp": "2026-07-15T09:00:00+08:00", "content": "Raven changed the solvent today and repeated the membrane experiment."},
+    {"turn_id": "turn-004", "role": "assistant", "timestamp": "2026-07-15T09:01:00+08:00", "content": "Changing the solvent prevented rapid evaporation, so Raven's repeated experiment succeeded tomorrow."}
+  ]
+}
