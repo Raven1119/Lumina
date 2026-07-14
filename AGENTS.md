@@ -15,7 +15,17 @@ This repository now explicitly authorizes an isolated Conversation Memory integr
 Lumina/Conversation_Memory/
 ```
 
-The immediate goal is to integrate the upstream MAGMA implementation with Lumina through a minimal, opt-in boundary, using pending Cold Draft segments as the ingestion source. This authorization supersedes the previous blanket prohibition on MAGMA, recall, embeddings, graph traversal, and memory work only within the scope defined below.
+The immediate Conversation Memory goal is to integrate the upstream MAGMA implementation with Lumina through a minimal, opt-in boundary, using pending Cold Draft segments as the ingestion source.
+
+This repository also explicitly authorizes an isolated Dream orchestration workspace at:
+
+```text
+Lumina/Dream/
+```
+
+The initial Dream milestone is limited to manually triggered Cold Draft digestion. Dream may read real `pending_digest` Cold Draft segments through the existing Cold Draft owner, invoke the Lumina-owned Conversation Memory ingestion interface, and request the owner to mark a segment `consumed` only after durable memory completion.
+
+This authorization changes only the scheduling time of MAGMA writes. Conversation turns remain the memory-event granularity, while writes occur during an explicit Dream run rather than during `/api/chat`.
 
 ## Authoritative documents
 
@@ -24,9 +34,16 @@ Treat the following files as active authority:
 - `docs/final_goal.md`: product direction;
 - `docs/COLD_DRAFT.md`: Cold-first preservation contract;
 - `docs/CURRENT_STATUS.md`: current implementation facts;
-- this `AGENTS.md`: development permissions and boundaries.
+- `Conversation_Memory/AGENTS.md`: Conversation Memory workspace rules;
+- `Dream/AGENTS.md`: Dream workspace rules;
+- this `AGENTS.md`: repository-wide development permissions and boundaries.
 
-When documents conflict, preserve the Cold Draft durability invariant and follow the more specific instruction in this file for `Conversation_Memory/` work.
+When documents conflict:
+
+1. preserve the Cold Draft durability invariant;
+2. preserve the synchronous chat path;
+3. follow the most specific applicable `AGENTS.md`;
+4. do not weaken Conversation Memory provenance or idempotency guarantees.
 
 ## Authorized objective
 
@@ -43,6 +60,28 @@ pending Cold Draft segment
 ```
 
 The first milestone is integration compatibility, not architectural redesign. Run the upstream MAGMA behavior first; modify or replace MAGMA internals only in later explicitly authorized tasks.
+
+
+## Authorized Dream objective
+
+Build and validate this manual offline chain:
+
+```text
+explicit developer command
+-> DreamRunner.run_once()
+-> bounded read of real pending Cold Draft segments
+-> conversion to existing Conversation Memory DTOs
+-> existing MemoryIngestor.ingest(...)
+-> durable ingestion completion
+-> Cold Draft owner marks the segment consumed
+-> structured Dream run report
+```
+
+The purpose is scheduling separation only. Conversation turns remain MAGMA memory events, while MAGMA writes occur during an explicit Dream run rather than during `/api/chat`.
+
+`Dream/` is an orchestration layer. It must not directly depend on upstream MAGMA, NetworkX, FAISS, embedding implementations, or MAGMA-specific DTOs.
+
+The initial Dream milestone is manual only. It must not run from `/api/chat`, application startup, compaction hooks, background workers, schedulers, or autonomous model decisions.
 
 ## Workspace layout
 
@@ -68,6 +107,21 @@ Conversation_Memory/
 ```
 
 Do not copy MAGMA source files into Lumina production modules. Prefer a pinned upstream checkout, package boundary, subprocess boundary, or explicit adapter.
+
+Dream-specific implementation should live under:
+
+```text
+Dream/
+├── AGENTS.md
+├── runner.py
+├── cold_draft_digest.py
+├── interfaces.py
+├── models.py
+├── tests/
+└── docs/
+```
+
+Keep orchestration in `Dream/`. Reuse the existing Cold Draft owner and Conversation Memory interfaces instead of copying their implementation.
 
 ## Required boundaries
 
@@ -104,6 +158,8 @@ MemoryRetriever.recall(query, policy) -> MemoryContext
 - Bound recall by configurable limits such as maximum nodes, graph depth, returned memories, characters, or tokens.
 - Preserve deterministic ordering and stable identifiers wherever possible.
 - Keep ingestion and recall independently switchable.
+- Keep Dream execution independently switchable and manually triggered.
+- Do not create a second Cold Draft writer or a competing memory-completion source of truth.
 
 ## Initially allowed work
 
@@ -120,12 +176,34 @@ Within `Conversation_Memory/`, Codex may:
 - add minimal configuration needed to enable or disable the integration;
 - modify a small number of existing Lumina modules only when necessary to expose an opt-in ingestion or recall seam.
 
+
+## Initially allowed Dream work
+
+Within `Dream/`, Codex may:
+
+- define `DreamRunPolicy`, `SegmentDigestResult`, and `DreamRunReport`;
+- implement `DreamRunner.run_once(...)`;
+- implement a `ColdDraftDigestionTask`;
+- inspect the production Cold Draft schema and existing owner APIs;
+- read real `pending_digest` segments through a bounded Lumina-owned interface;
+- convert production-format segments into existing Conversation Memory DTOs;
+- call the existing `MemoryIngestor`;
+- verify durable memory completion;
+- request the existing Cold Draft owner to mark a successfully ingested segment consumed;
+- isolate failures per segment;
+- add a bounded manual CLI or direct Python entry point;
+- add focused tests using temporary production-format Draft stores;
+- document state transitions, retry windows, and explicit non-features;
+- minimally modify existing production modules only when required to expose narrow Cold Draft owner methods.
+
+A normal Dream task may modify at most three existing production modules unless its task card explicitly authorizes more.
+
 ## Not authorized in the first integration milestone
 
 Do not:
 
 - redesign MAGMA into the M-flow multi-granularity model yet;
-- add Dream, autonomous consolidation, lifecycle management, background schedulers, agents, or workers;
+- add automatic Dream scheduling, autonomous consolidation, lifecycle management, background schedulers, agents, or workers;
 - add automatic deletion, forgetting, contradiction resolution, salience mutation, or memory rewriting;
 - make ingestion run implicitly on every chat request;
 - scan all Cold Draft files on every recall;
@@ -137,6 +215,26 @@ Do not:
 - modify upstream MAGMA code before the unmodified integration path has been documented and tested;
 - commit credentials, `.env.local`, generated memory databases, model caches, embeddings, or user conversation data.
 
+
+## Dream boundaries
+
+Work under `Dream/` is authorized only for the manual Cold Draft digestion milestone defined above and in `Dream/AGENTS.md`.
+
+Do not:
+
+- invoke Dream or MAGMA ingestion from `/api/chat`;
+- make ingestion implicit after each chat turn;
+- invoke Dream automatically after compaction;
+- add startup hooks, background threads, schedulers, workers, cron integration, or autonomous triggers;
+- add LLM-based reflection, summarization, abstraction, or consolidation;
+- add duplicate merging, contradiction handling, salience mutation, forgetting, deletion, or memory rewriting;
+- redesign MAGMA into the M-flow multi-granularity model;
+- change the current per-turn MAGMA event granularity;
+- place Dream orchestration inside `MessageRuntime`;
+- directly import upstream MAGMA, NetworkX, FAISS, or embedding implementations from `Dream/`.
+
+The normal chat path must remain independent of Dream availability, failures, and execution time.
+
 ## Change discipline
 
 - Prefer additive changes.
@@ -147,7 +245,7 @@ Do not:
 - Do not automatically commit, push, rebase, hard reset, delete branches, or rewrite history.
 - Do not silently patch the upstream MAGMA checkout. Record any required patch as a separate diff or adapter decision.
 
-## Required implementation order
+## Required Conversation Memory implementation order
 
 1. Record the MAGMA upstream URL, commit SHA, license, setup steps, and baseline tests.
 2. Run MAGMA independently with synthetic data.
@@ -161,6 +259,23 @@ Do not:
 10. Verify fallback behavior with MAGMA unavailable.
 
 Do not proceed to multi-granularity redesign until these steps pass.
+
+
+## Required Dream implementation order
+
+1. Inspect the real Cold Draft schema and owner implementation.
+2. Document the current `pending_digest` to `consumed` transition mechanism.
+3. Define Dream-owned policy and report DTOs.
+4. Reuse or expose a bounded pending-segment read interface.
+5. Reuse or expose the authoritative consumed-transition interface.
+6. Implement one-segment digestion.
+7. Implement bounded deterministic `run_once`.
+8. Add recovery for completed-ingestion / failed-consume.
+9. Add a manual developer entry point.
+10. Verify that `/api/chat` never invokes Dream.
+11. Update documentation and current status truthfully.
+
+Do not add further Dream capabilities before this chain passes.
 
 ## Required tests
 
@@ -181,6 +296,28 @@ At minimum, add tests for:
 
 Use synthetic conversation fixtures. Never use real user Draft data in committed tests.
 
+
+For Dream, also test:
+
+- no pending segments returns an empty successful report;
+- one valid pending segment is ingested and consumed;
+- multiple segments are processed in deterministic order;
+- `max_segments` is enforced;
+- one failed segment does not block later segments by default;
+- `stop_on_error=True` stops after the first failure;
+- ingestion failure leaves the segment pending;
+- completed ingestion plus failed consumed transition recovers on rerun;
+- duplicate Dream runs do not duplicate memory;
+- malformed source data is not consumed;
+- provenance and aware timestamps survive conversion;
+- raw Cold Draft content remains unchanged;
+- Dream does not import upstream MAGMA classes;
+- outputs do not leak paths, exceptions, credentials, graph data, or raw Draft contents;
+- restart recovery works;
+- existing Conversation Memory and Lumina tests continue to pass.
+
+Use temporary Draft paths and the real production Cold Draft owner against temporary files. Never commit real user Draft data.
+
 ## Documentation requirements
 
 Maintain under `Conversation_Memory/docs/`:
@@ -191,17 +328,29 @@ Maintain under `Conversation_Memory/docs/`:
 - `PROVENANCE_AND_IDEMPOTENCY.md`: identifiers, checkpoints, retries, and consumed-state rules;
 - `DECISIONS.md`: decisions, rejected alternatives, and any upstream patches required.
 
+
+Maintain under `Dream/docs/`:
+
+- `DREAM_COLD_DRAFT_DIGESTION.md`: manual trigger, exact data flow, owner interfaces, state transitions, idempotency, recovery windows, bounds, failure behavior, tests, and explicit non-features.
+
 Update `docs/CURRENT_STATUS.md` truthfully after each accepted milestone. Do not describe planned work as complete.
 
 ## Validation
 
-Run the existing repository validation plus Conversation Memory tests:
+Run the existing repository validation plus focused workspace tests:
 
 ```bash
 python -m pytest -q
+python -m pytest Conversation_Memory/tests -q
+python -m pytest Dream/tests -q
 git diff --check
+git -C Conversation_Memory/upstream/MAGMA status --short
 ```
+
+The upstream MAGMA status output must be empty.
 
 If the workspace uses an isolated environment, also run its documented MAGMA baseline and integration test commands.
 
-A task is not complete when only imports succeed. Completion requires a synthetic Cold Draft segment to be ingested, recalled through a Lumina-owned interface, and verified without breaking the memory-disabled chat path.
+A Conversation Memory task is not complete when only imports succeed. Completion requires a synthetic Cold Draft segment to be ingested, recalled through a Lumina-owned interface, and verified without breaking the memory-disabled chat path.
+
+A Dream task is not complete when only imports succeed. Completion requires a real production-format pending Cold Draft segment in a temporary store to be ingested through the existing Conversation Memory interface, durably completed, marked consumed through the existing Cold Draft owner, and verified without changing the synchronous chat path.
