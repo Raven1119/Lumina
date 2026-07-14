@@ -47,8 +47,10 @@ It:
 - survives process restart;
 - never enters ordinary model context or the browser UI.
 
-`pending_digest` is currently a storage state only. The MVP has no digestion,
-background consumer, scheduler, or long-term memory process.
+`pending_digest` may now be consumed only by the bounded developer-triggered
+Dream command documented in `Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md`. There is
+still no chat-time ingestion, background consumer, startup hook, scheduler, or
+autonomous long-term memory process.
 
 ## Current Chat Flow
 
@@ -180,7 +182,8 @@ The current tests prove:
 - Preservation markers accumulate; the raw tail is bounded, but the total
   marker count does not yet have a global cap.
 - The marker records preservation only; it carries no semantic summary.
-- No runtime component consumes `pending_digest` segments.
+- Only the manual Dream command consumes `pending_digest` segments; there is no
+  automatic or chat-time consumer.
 - The JSONL files and state file do not provide a multi-process transaction or
   cross-process writer lock.
 - Cold Draft is not searchable, model-visible, or a long-term memory system.
@@ -190,6 +193,8 @@ features.
 
 ## Non-Goals
 
-This contract does not authorize a memory graph, recall, embeddings, vector
-search, query routing, ContextBuilder, ToolRuntime, Dream, background workers,
-LLM summarization, a Cold Draft viewer, or a new dependency.
+This contract does not authorize further memory-graph or recall integration,
+query routing, ContextBuilder, ToolRuntime, autonomous/background Dream,
+background workers, LLM summarization, a Cold Draft viewer, or a new root
+dependency. The separately authorized manual Dream command is limited to the
+durable ingestion and consumed transition described above.

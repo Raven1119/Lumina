@@ -35,6 +35,16 @@ def test_mark_consumed_records_time_and_removes_from_pending(tmp_path: Path) -> 
     assert isinstance(record["consumed_at"], str)
 
 
+def test_mark_consumed_is_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "cold.jsonl"
+    store = ColdDraftStore(path)
+    segment = store.append_segment([_turn("user", "one")])
+    assert store.mark_consumed(segment["segment_id"]) is True
+    first = path.read_text(encoding="utf-8")
+    assert store.mark_consumed(segment["segment_id"]) is True
+    assert path.read_text(encoding="utf-8") == first
+
+
 def test_explicit_segment_id_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "cold.jsonl"
     store = ColdDraftStore(path)

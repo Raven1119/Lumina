@@ -73,16 +73,17 @@ Recall ordering does not depend on MAGMA UUIDs. It uses descending backend
 score, then source timestamp, then the stable SHA-256 evidence ID. The same
 backend result set therefore produces the same Lumina ordering.
 
-## Future production Cold Draft transition
+## Manual production Cold Draft transition
 
-A future read-only production consumer may mark a real segment consumed only
-after all of the following are durable:
+The separately authorized manual Dream consumer may mark a real segment
+consumed only after all of the following are durable:
 
 1. every derived memory event and vector;
 2. required graph relationships;
 3. provenance metadata;
 4. the completed idempotency checkpoint.
 
-That transition must use the existing Cold Draft owner and preserve Cold-first
-semantics. This milestone does not read production Draft files and never calls
-`mark_consumed`.
+That transition uses the existing Cold Draft owner and preserves Cold-first
+semantics. Dream reuses this state as the sole idempotency source: if memory is
+completed but the consumed transition fails, the next manual run receives
+`already_ingested=true` and retries the owner transition without adding events.

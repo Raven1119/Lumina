@@ -69,7 +69,11 @@ class ColdDraftStore:
             return False
         records = self._read_records()
         for record in records:
-            if record.get("segment_id") == segment_id and record.get("state") == _PENDING:
+            if record.get("segment_id") != segment_id:
+                continue
+            if record.get("state") == _CONSUMED:
+                return True
+            if record.get("state") == _PENDING:
                 record["state"] = _CONSUMED
                 record["consumed_at"] = datetime.now(UTC).isoformat()
                 self._rewrite_records(records)

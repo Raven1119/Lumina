@@ -11,7 +11,17 @@
 - segment-oriented pending/consumed Cold Draft JSONL;
 - pair-aware, Cold-first logical compaction;
 - idempotent retry after Cold append succeeds but state advancement fails;
-- restart recovery for Hot context, Cold pending segments, and compaction state.
+- restart recovery for Hot context, Cold pending segments, and compaction state;
+- pinned, unmodified upstream MAGMA baseline in an isolated Conversation Memory
+  environment;
+- Lumina-owned Conversation Memory ingestion/recall DTOs and adapter, with
+  durable `(segment_id, ingestion_version)` checkpoints, per-turn provenance,
+  bounded recall, and synthetic real-MAGMA integration coverage;
+- manually triggered, synchronous, bounded Dream ingestion of production-format
+  `pending_digest` Cold Draft segments;
+- durable-memory-before-consumed orchestration, including idempotent consumed
+  transitions and restart recovery when memory completes before the Draft state
+  transition.
 
 The active Cold Draft preservation contract is reconciled with the MVP
 implementation in `docs/COLD_DRAFT.md`.
@@ -24,8 +34,14 @@ implementation in `docs/COLD_DRAFT.md`.
   write does not prevent the assistant write from being attempted;
 - Draft persistence failures fail soft and remain internal, while the public
   response still reports `message_consumed=true`;
-- Cold Draft supports `pending_digest` and `consumed` storage states, but no
-  runtime component consumes pending segments;
+- Cold Draft pending segments can be consumed only by the explicit developer
+  Dream command; there is no automatic, startup, background, or chat-time
+  consumer;
+- Conversation Memory recall exists only behind its isolated Lumina-owned
+  facade and is not injected into the production chat/model request;
+- production Cold Draft records do not yet store a conversation ID, per-turn
+  IDs, per-turn timestamps, or named timezone, so the manual converter uses
+  documented stable IDs and the segment's aware `created_at` source timestamp;
 - real-model mode supports one MiniMax Anthropic-compatible adapter; incomplete
   or unsupported explicit configuration falls back to mock mode.
 
@@ -34,16 +50,14 @@ implementation in `docs/COLD_DRAFT.md`.
 - Hot Draft remains physically append-only;
 - preservation markers currently have no global count cap;
 - local Draft files have no multi-process transaction or writer lock;
+- Dream and the file-backed Conversation Memory checkpoint assume one active
+  writer;
 - request size and total logical context have no application-level global bound;
 - Hot and Cold JSONL reads scan their files rather than using an indexed store.
 
 ## Not Started
 
-- Conversation Memory;
 - Conversation Graph;
-- Dream;
-- graph or semantic recall;
 - PostgreSQL memory;
-- embeddings or vector search;
 - ContextBuilder or ToolRuntime;
 - other organs, agents, tasks, schedulers, or workers.
