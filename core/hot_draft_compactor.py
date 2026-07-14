@@ -58,10 +58,7 @@ class HotDraftCompactor:
         if boundary == 0:
             return self._skipped()
 
-        segment_turns = [
-            {"role": turn.role, "text": turn.text}
-            for turn in eligible[:boundary]
-        ]
+        segment_turns = [turn.storage_turn() for turn in eligible[:boundary]]
         segment_id = self._stable_segment_id(already_compressed, segment_turns)
         try:
             segment = self._cold_store.append_segment(
@@ -162,7 +159,7 @@ class HotDraftCompactor:
     @staticmethod
     def _stable_segment_id(
         already_compressed: int,
-        turns: list[dict[str, str]],
+        turns: list[dict[str, Any]],
     ) -> str:
         material = json.dumps(
             {"offset": already_compressed, "turns": turns},

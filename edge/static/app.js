@@ -68,10 +68,20 @@
   }
 
   function sendMessage(message) {
+    var clientTimezone;
+    try {
+      clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch (_error) {
+      clientTimezone = undefined;
+    }
+    var payload = { message: message };
+    if (typeof clientTimezone === "string" && clientTimezone) {
+      payload.client_timezone = clientTimezone;
+    }
     return fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: message })
+      body: JSON.stringify(payload)
     }).then(function (response) {
       if (!response.ok) {
         var err = new Error("http_error");

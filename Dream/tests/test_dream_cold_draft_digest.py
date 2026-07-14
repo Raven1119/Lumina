@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -11,7 +11,9 @@ import pytest
 from adapter.magma_adapter import MagmaMemoryAdapter
 from adapter.models import BackendCandidate, IngestionResult
 from core.cold_draft_store import ColdDraftStore
+from core.contracts import MemoryTurn
 from Dream.cold_draft_digest import (
+    ColdDraftConversionError,
     ColdDraftDigestionTask,
     ColdDraftSegmentConverter,
 )
@@ -21,6 +23,9 @@ from ingestion.state_store import IngestionStateStore
 
 
 ROOT = Path(__file__).resolve().parents[2]
+LEGACY_FIXTURE = (
+    ROOT / "Conversation_Memory" / "fixtures" / "cold_draft_segment_legacy.json"
+)
 
 
 def make_record(segment_id: str, *texts: str) -> dict:
@@ -295,18 +300,121 @@ def test_converter_uses_source_aware_timestamp_timezone_and_stable_fallback_ids(
     assert first.turns[0].turn_id == second.turns[0].turn_id
     assert first.turns[0].timestamp == datetime.fromisoformat("2026-07-14T10:00:00+08:00")
     assert first.source_timezone == "+08:00"
+    assert first.turns[0].source_timezone == "+08:00"
+    assert first.turns[0].timezone_source == "legacy_segment_fallback"
 
 
-def test_converter_preserves_explicit_future_provenance_fields():
+def test_committed_legacy_fixture_uses_truthful_segment_fallback():
+    record = json.loads(LEGACY_FIXTURE.read_text(encoding="utf-8"))
+    segment = ColdDraftSegmentConverter().convert(record, "v1")
+    assert segment.schema_version == "1"
+    assert [turn.turn_id for turn in segment.turns] == [
+        "fixture-legacy-segment-001:turn:0000",
+        "fixture-legacy-segment-001:turn:0001",
+    ]
+    assert all(
+        turn.timestamp == datetime.fromisoformat(record["created_at"])
+        for turn in segment.turns
+    )
+    assert all(
+        turn.timezone_source == "legacy_segment_fallback"
+        for turn in segment.turns
+    )
+
+
+def test_converter_prioritizes_complete_native_v2_turn_provenance():
     record = make_record("explicit", "text")
+    record["schema_version"] = 2
     record["conversation_id"] = "conversation-7"
-    record["source_timezone"] = "Asia/Shanghai"
-    record["turns"][0].update({"turn_id": "turn-9", "timestamp": "2026-07-13T09:00:00+08:00"})
+    record["turns"][0].update({
+        "turn_id": "turn-9",
+        "created_at": "2026-07-13T01:00:00Z",
+        "source_timezone": "Asia/Shanghai",
+        "timezone_source": "client",
+    })
     segment = ColdDraftSegmentConverter().convert(record, "v1")
     assert segment.conversation_id == "conversation-7"
     assert segment.source_timezone == "Asia/Shanghai"
+    assert segment.schema_version == "2"
     assert segment.turns[0].turn_id == "turn-9"
-    assert segment.turns[0].timestamp.isoformat() == "2026-07-13T09:00:00+08:00"
+    assert segment.turns[0].timestamp.isoformat() == "2026-07-13T01:00:00+00:00"
+    assert segment.turns[0].source_timezone == "Asia/Shanghai"
+    assert segment.turns[0].timezone_source == "client"
+
+
+def test_converter_rejects_partial_v2_provenance_instead_of_inventing_values():
+    record = make_record("partial", "text")
+    record["schema_version"] = 2
+    record["turns"][0]["turn_id"] = "only-one-field"
+    with pytest.raises(ColdDraftConversionError, match="incomplete_turn_provenance"):
+        ColdDraftSegmentConverter().convert(record, "v1")
+
+
+def test_converter_handles_mixed_transition_segment_per_turn():
+    record = make_record("mixed", "legacy", "native")
+    record["schema_version"] = 2
+    record["turns"][1].update({
+        "turn_id": "native-assistant",
+        "created_at": "2026-07-15T04:05:00Z",
+        "source_timezone": "America/New_York",
+        "timezone_source": "configured_default",
+    })
+    segment = ColdDraftSegmentConverter().convert(record, "v1")
+    assert segment.turns[0].turn_id == "mixed:turn:0000"
+    assert segment.turns[0].timezone_source == "legacy_segment_fallback"
+    assert segment.turns[1].turn_id == "native-assistant"
+    assert segment.turns[1].timestamp.isoformat() == "2026-07-15T04:05:00+00:00"
+    assert segment.turns[1].timezone_source == "configured_default"
+
+
+def test_v2_dream_uses_distinct_turn_times_and_recall_provenance(tmp_path):
+    store = ColdDraftStore(tmp_path / "cold.jsonl")
+    turns = [
+        MemoryTurn(
+            turn_id="v2-user",
+            role="user",
+            text="completed yesterday",
+            created_at=datetime(2026, 7, 15, 3, 55, tzinfo=UTC),
+            source_timezone="America/New_York",
+            timezone_source="client",
+        ),
+        MemoryTurn(
+            turn_id="v2-assistant",
+            role="assistant",
+            text="recorded today",
+            created_at=datetime(2026, 7, 15, 4, 5, tzinfo=UTC),
+            source_timezone="America/New_York",
+            timezone_source="client",
+        ),
+    ]
+    store.append_segment(
+        [turn.storage_turn() for turn in turns],
+        segment_id="native-v2",
+    )
+    backend = AdapterFakeBackend()
+    adapter = MagmaMemoryAdapter(
+        backend,
+        IngestionStateStore(tmp_path / "state.json"),
+        ingestion_version="v2",
+    )
+    report = DreamRunner(
+        store,
+        ColdDraftDigestionTask(store, StaticProvider(adapter)),
+    ).run_once(DreamRunPolicy(max_segments=1, ingestion_version="v2"))
+    assert report.consumed == 1
+    events = list(backend.events.values())
+    assert [event["timestamp"] for event in events] == [
+        turns[0].created_at,
+        turns[1].created_at,
+    ]
+    assert [event["metadata"]["provenance"]["turn_id"] for event in events] == [
+        "v2-user",
+        "v2-assistant",
+    ]
+    assert all(
+        event["metadata"]["provenance"]["timezone_source"] == "client"
+        for event in events
+    )
 
 
 def test_consumed_transition_changes_only_state_metadata_not_raw_turns(tmp_path):

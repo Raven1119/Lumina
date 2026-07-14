@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from adapter.models import ColdDraftSegment, ColdDraftTurn
 
-SUPPORTED_SCHEMA = "1"
+SUPPORTED_SCHEMAS = frozenset({"1", "2"})
 ALLOWED_ROLES = frozenset({"user", "assistant"})
 _OFFSET = re.compile(r"^[+-](?:0\d|1\d|2[0-3]):[0-5]\d$")
 
@@ -43,7 +43,7 @@ def parse_segment(data: Any) -> ColdDraftSegment:
     if not isinstance(data, dict):
         raise SegmentValidationError("invalid_segment")
     schema = _required_text(data, "schema_version")
-    if schema != SUPPORTED_SCHEMA:
+    if schema not in SUPPORTED_SCHEMAS:
         raise SegmentValidationError("unsupported_schema_version")
     state = _required_text(data, "state")
     if state != "pending_digest":
@@ -51,6 +51,12 @@ def parse_segment(data: Any) -> ColdDraftSegment:
     raw_turns = data.get("turns")
     if not isinstance(raw_turns, list) or not raw_turns:
         raise SegmentValidationError("invalid_turns")
+    source_timezone = _required_text(data, "source_timezone")
+    if not _OFFSET.fullmatch(source_timezone):
+        try:
+            ZoneInfo(source_timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise SegmentValidationError("invalid_source_timezone") from exc
     turns = []
     for raw in raw_turns:
         if not isinstance(raw, dict):
@@ -58,18 +64,32 @@ def parse_segment(data: Any) -> ColdDraftSegment:
         role = _required_text(raw, "role")
         if role not in ALLOWED_ROLES:
             raise SegmentValidationError("invalid_role")
+        turn_timezone = raw.get("source_timezone", source_timezone)
+        if not isinstance(turn_timezone, str) or not turn_timezone.strip():
+            raise SegmentValidationError("invalid_source_timezone")
+        if not _OFFSET.fullmatch(turn_timezone):
+            try:
+                ZoneInfo(turn_timezone)
+            except ZoneInfoNotFoundError as exc:
+                raise SegmentValidationError("invalid_source_timezone") from exc
+        timezone_source = raw.get(
+            "timezone_source",
+            "legacy_segment_fallback" if schema == "1" else None,
+        )
+        if timezone_source not in {
+            "client",
+            "configured_default",
+            "legacy_segment_fallback",
+        }:
+            raise SegmentValidationError("invalid_timezone_source")
         turns.append(ColdDraftTurn(
             turn_id=_required_text(raw, "turn_id"),
             role=role,
             content=_required_text(raw, "content"),
             timestamp=_timestamp(raw.get("timestamp"), "invalid_turn_timestamp"),
+            source_timezone=turn_timezone,
+            timezone_source=timezone_source,
         ))
-    source_timezone = _required_text(data, "source_timezone")
-    if not _OFFSET.fullmatch(source_timezone):
-        try:
-            ZoneInfo(source_timezone)
-        except ZoneInfoNotFoundError as exc:
-            raise SegmentValidationError("invalid_source_timezone") from exc
     return ColdDraftSegment(
         segment_id=_required_text(data, "segment_id"),
         conversation_id=_required_text(data, "conversation_id"),

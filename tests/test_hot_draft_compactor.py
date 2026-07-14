@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 from core.cold_draft_store import ColdDraftStore
 from core.contracts import MemoryTurn
@@ -8,8 +9,16 @@ from core.hot_draft_compactor import HotDraftCompactor
 
 def _populate(store: JsonlDraftStore, pairs: int) -> None:
     for index in range(pairs):
-        store.append_turn(MemoryTurn(role="user", text=f"user-{index}"))
-        store.append_turn(MemoryTurn(role="assistant", text=f"assistant-{index}"))
+        for offset, role in enumerate(("user", "assistant")):
+            store.append_turn(MemoryTurn(
+                turn_id=f"turn-{index}-{role}",
+                role=role,
+                text=f"{role}-{index}",
+                created_at=datetime(2026, 7, 14, tzinfo=UTC)
+                + timedelta(minutes=index * 2 + offset),
+                source_timezone="America/New_York",
+                timezone_source="client",
+            ))
 
 
 def _build(tmp_path: Path, *, retain: int = 4, maximum: int = 6):
@@ -44,12 +53,9 @@ def test_threshold_creates_cold_segment_and_bounded_context(tmp_path: Path) -> N
     assert result.compressed_turn_count == 4
     pending = cold.list_pending()
     assert len(pending) == 1
-    assert pending[0]["turns"] == [
-        {"role": "user", "text": "user-0"},
-        {"role": "assistant", "text": "assistant-0"},
-        {"role": "user", "text": "user-1"},
-        {"role": "assistant", "text": "assistant-1"},
-    ]
+    expected = [turn.storage_turn() for turn in hot.list_recent(100)[:4]]
+    assert pending[0]["schema_version"] == 2
+    assert pending[0]["turns"] == expected
     view = compactor.get_context_turns()
     assert view[0]["text"].startswith("[Compressed conversation segment")
     assert view[-4:] == [

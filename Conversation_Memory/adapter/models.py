@@ -12,6 +12,8 @@ class ColdDraftTurn:
     role: str
     content: str
     timestamp: datetime
+    source_timezone: str
+    timezone_source: str
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class SourceProvenance:
     source_timestamp: str
     source_timezone: str
     ingestion_version: str
+    timezone_source: str = "legacy_segment_fallback"
 
 
 @dataclass(frozen=True)

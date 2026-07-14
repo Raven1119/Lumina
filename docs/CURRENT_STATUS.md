@@ -8,8 +8,12 @@
 - optional `.env.local` loading with process-environment precedence;
 - safe provider fallback and truthful mock/model/fallback API semantics;
 - append-only, restart-persistent Hot Draft JSONL;
+- native Draft Turn V2 provenance for new user and assistant/fallback turns,
+  including stable IDs, separate aware UTC timestamps, validated IANA source
+  timezone, and truthful timezone source;
 - segment-oriented pending/consumed Cold Draft JSONL;
-- pair-aware, Cold-first logical compaction;
+- pair-aware, Cold-first logical compaction that copies complete V2 turn
+  provenance without regenerating IDs or replacing timestamps;
 - idempotent retry after Cold append succeeds but state advancement fails;
 - restart recovery for Hot context, Cold pending segments, and compaction state;
 - pinned, unmodified upstream MAGMA baseline in an isolated Conversation Memory
@@ -53,9 +57,11 @@ implementation in `docs/COLD_DRAFT.md`.
   overlap negative scores, and no scanned point simultaneously reaches 0.90
   positive recall and at most 0.10 false injection rate, so the gate remains
   disabled by default and E2E reports `threshold_not_recommended`;
-- production Cold Draft records do not yet store a conversation ID, per-turn
-  IDs, per-turn timestamps, or named timezone, so the manual converter uses
-  documented stable IDs and the segment's aware `created_at` source timestamp;
+- legacy Hot/Cold records remain role/text or segment-time only; they are not
+  migrated, and Dream marks their deterministic segment-time projection as
+  `legacy_segment_fallback`;
+- production Draft records still have no real conversation/thread ID, so Dream
+  continues to use the documented stable segment-derived conversation ID;
 - real-model mode supports one MiniMax Anthropic-compatible adapter; incomplete
   or unsupported explicit configuration falls back to mock mode.
 

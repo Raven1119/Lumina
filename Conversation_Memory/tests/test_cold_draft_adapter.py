@@ -3,18 +3,21 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from adapter.backend import RealMagmaBackend
 from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import BackendCandidate, RecallPolicy
+from adapter.models import BackendCandidate, ColdDraftTurn, RecallPolicy
 from ingestion.fixture_loader import SegmentValidationError, load_fixture, parse_segment
 from ingestion.state_store import IngestionStateStore
 from ingestion.temporal import normalize_temporal_references
 
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v1.json"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v2.json"
+LEGACY_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v1.json"
 
 
 class FakeBackend:
@@ -84,9 +87,10 @@ def test_valid_fixture_ingests_and_preserves_provenance(tmp_path):
         "segment_id": segment.segment_id,
         "conversation_id": segment.conversation_id,
         "turn_id": "turn-001",
-        "source_timestamp": "2026-07-14T10:00:00+08:00",
-        "source_timezone": "+08:00",
+        "source_timestamp": "2026-07-14T02:00:00+00:00",
+        "source_timezone": "Asia/Shanghai",
         "ingestion_version": "v1",
+        "timezone_source": "client",
     }
 
 
@@ -134,17 +138,58 @@ def test_persist_failure_does_not_leak_or_duplicate_on_retry(tmp_path):
 
 def test_relative_time_uses_each_source_timestamp_and_timezone():
     segment = load_fixture(FIXTURE)
-    refs = normalize_temporal_references(segment.turns[0], segment.source_timezone)
+    refs = normalize_temporal_references(segment.turns[0])
     assert refs[0].original_expression == "yesterday"
     assert refs[0].reference_timestamp == "2026-07-14T10:00:00+08:00"
     assert refs[0].normalized_start == "2026-07-13T10:00:00+08:00"
-    assert refs[0].reference_timezone == "+08:00"
+    assert refs[0].reference_timezone == "Asia/Shanghai"
+
+
+def test_legacy_fixture_truthfully_marks_segment_timezone_fallback():
+    segment = load_fixture(LEGACY_FIXTURE)
+    assert segment.schema_version == "1"
+    assert all(
+        turn.timezone_source == "legacy_segment_fallback"
+        for turn in segment.turns
+    )
+
+
+def test_cross_midnight_relative_dates_use_new_york_calendar_not_utc():
+    before_midnight = ColdDraftTurn(
+        "before", "user", "today", datetime(2026, 7, 15, 3, 55, tzinfo=UTC),
+        "America/New_York", "client",
+    )
+    after_midnight = ColdDraftTurn(
+        "after", "user", "yesterday tomorrow", datetime(2026, 7, 15, 4, 5, tzinfo=UTC),
+        "America/New_York", "client",
+    )
+    before_ref = normalize_temporal_references(before_midnight)[0]
+    after_refs = normalize_temporal_references(after_midnight)
+    assert before_ref.reference_timestamp == "2026-07-14T23:55:00-04:00"
+    assert after_refs[0].reference_timestamp == "2026-07-15T00:05:00-04:00"
+    assert after_refs[0].normalized_start.startswith("2026-07-14T00:05:00")
+    assert after_refs[1].normalized_start.startswith("2026-07-16T00:05:00")
+
+
+def test_dst_timezone_uses_zoneinfo_offset_for_each_turn_date():
+    winter = ColdDraftTurn(
+        "winter", "user", "today", datetime(2026, 1, 15, 17, tzinfo=UTC),
+        "America/New_York", "client",
+    )
+    summer = replace(
+        winter,
+        turn_id="summer",
+        timestamp=datetime(2026, 7, 15, 16, tzinfo=UTC),
+    )
+    assert normalize_temporal_references(winter)[0].reference_timestamp.endswith("-05:00")
+    assert normalize_temporal_references(summer)[0].reference_timestamp.endswith("-04:00")
+    assert ZoneInfo("America/New_York") is not None
 
 
 @pytest.mark.parametrize("field,value,code", [
     ("segment_id", "", "invalid_segment_id"),
     ("state", "consumed", "segment_not_pending"),
-    ("schema_version", "2", "unsupported_schema_version"),
+    ("schema_version", "3", "unsupported_schema_version"),
 ])
 def test_schema_rejections(field, value, code):
     raw = json.loads(FIXTURE.read_text(encoding="utf-8"))

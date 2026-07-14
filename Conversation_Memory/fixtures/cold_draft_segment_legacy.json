@@ -1,0 +1,10 @@
+{
+  "segment_id": "fixture-legacy-segment-001",
+  "turns": [
+    {"role": "user", "text": "A legacy synthetic turn said yesterday."},
+    {"role": "assistant", "text": "A legacy synthetic response was recorded."}
+  ],
+  "created_at": "2026-07-14T10:00:00+08:00",
+  "source": "hot_draft_precompression",
+  "state": "pending_digest"
+}

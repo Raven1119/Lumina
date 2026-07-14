@@ -14,6 +14,7 @@ from core.env_loader import load_env_file
 from core.hot_draft_compactor import HotDraftCompactor
 from core.message_runtime import MessageRuntime
 from core.model_client import ModelClient, build_model_client_from_env
+from core.turn_provenance import Clock, TurnIdFactory
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
@@ -39,6 +40,9 @@ def create_app(
     retain_recent_raw_turns: int = 12,
     max_raw_turns_before_compression: int = 24,
     enable_compaction: bool = True,
+    default_timezone: str | None = None,
+    clock: Clock | None = None,
+    turn_id_factory: TurnIdFactory | None = None,
 ) -> FastAPI:
     if env_file_path is not None:
         load_env_file(env_file_path, override=False)
@@ -65,6 +69,13 @@ def create_app(
         draft_context_provider=context_provider,
         model_client=effective_model,
         compactor=compactor,
+        clock=clock,
+        turn_id_factory=turn_id_factory,
+        default_timezone=(
+            default_timezone
+            if default_timezone is not None
+            else os.environ.get("LUMINA_DEFAULT_TIMEZONE", "UTC")
+        ),
     )
 
     app = FastAPI(title="Lumina Cold Draft MVP", version="0.1.0")

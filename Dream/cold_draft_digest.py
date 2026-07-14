@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .interfaces import ColdDraftOwner, MemoryIngestorProvider
 from .models import SegmentDigestResult
@@ -22,6 +23,13 @@ from adapter.models import ColdDraftSegment, ColdDraftTurn  # noqa: E402
 _PENDING = "pending_digest"
 _CONSUMED = "consumed"
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
+_OFFSET = re.compile(r"^[+-](?:0\d|1\d|2[0-3]):[0-5]\d$")
+_TURN_PROVENANCE_FIELDS = (
+    "turn_id",
+    "created_at",
+    "source_timezone",
+    "timezone_source",
+)
 _SAFE_INGESTION_ERRORS = {
     "invalid_segment_id",
     "segment_not_pending",
@@ -30,6 +38,8 @@ _SAFE_INGESTION_ERRORS = {
     "invalid_role",
     "invalid_content",
     "timestamp_timezone_required",
+    "invalid_source_timezone",
+    "invalid_timezone_source",
     "state_corrupt",
     "memory_write_failed",
 }
@@ -61,7 +71,10 @@ class ColdDraftSegmentConverter:
             raise ColdDraftConversionError("segment_not_pending")
 
         created_at = self._aware_datetime(record.get("created_at"), "invalid_created_at")
-        source_timezone = self._source_timezone(record, created_at)
+        schema_version = str(record.get("schema_version", "1"))
+        if schema_version not in {"1", "2"}:
+            raise ColdDraftConversionError("unsupported_schema_version")
+        fallback_timezone = self._source_timezone(record, created_at)
         conversation_id = record.get("conversation_id")
         if conversation_id is None:
             conversation_id = f"cold-draft:{segment_id}"
@@ -87,9 +100,28 @@ class ColdDraftSegmentConverter:
             )
             if not isinstance(content, str) or not content.strip():
                 raise ColdDraftConversionError("invalid_content")
-            turn_id = raw_turn.get("turn_id")
-            if turn_id is None:
+            present = tuple(
+                name for name in _TURN_PROVENANCE_FIELDS if name in raw_turn
+            )
+            if present and len(present) != len(_TURN_PROVENANCE_FIELDS):
+                raise ColdDraftConversionError("incomplete_turn_provenance")
+            if present:
+                turn_id = raw_turn.get("turn_id")
+                timestamp = self._aware_datetime(
+                    raw_turn.get("created_at"),
+                    "invalid_turn_timestamp",
+                )
+                turn_timezone = self._iana_timezone(
+                    raw_turn.get("source_timezone")
+                )
+                timezone_source = raw_turn.get("timezone_source")
+                if timezone_source not in {"client", "configured_default"}:
+                    raise ColdDraftConversionError("invalid_timezone_source")
+            else:
                 turn_id = f"{segment_id}:turn:{index:04d}"
+                timestamp = created_at
+                turn_timezone = fallback_timezone
+                timezone_source = "legacy_segment_fallback"
             if (
                 not isinstance(turn_id, str)
                 or not turn_id.strip()
@@ -97,12 +129,14 @@ class ColdDraftSegmentConverter:
             ):
                 raise ColdDraftConversionError("invalid_turn_id")
             turn_ids.add(turn_id)
-            timestamp_value = raw_turn.get("timestamp", record.get("created_at"))
-            timestamp = self._aware_datetime(
-                timestamp_value,
-                "invalid_turn_timestamp",
-            )
-            turns.append(ColdDraftTurn(turn_id, role, content, timestamp))
+            turns.append(ColdDraftTurn(
+                turn_id=turn_id,
+                role=role,
+                content=content,
+                timestamp=timestamp,
+                source_timezone=turn_timezone,
+                timezone_source=timezone_source,
+            ))
 
         return ColdDraftSegment(
             segment_id=segment_id,
@@ -110,8 +144,8 @@ class ColdDraftSegmentConverter:
             state=_PENDING,
             turns=tuple(turns),
             created_at=created_at,
-            source_timezone=source_timezone,
-            schema_version="1",
+            source_timezone=turns[0].source_timezone,
+            schema_version=schema_version,
         )
 
     @staticmethod
@@ -132,7 +166,14 @@ class ColdDraftSegmentConverter:
         if explicit is not None:
             if not isinstance(explicit, str) or not explicit.strip():
                 raise ColdDraftConversionError("invalid_source_timezone")
-            return explicit
+            value = explicit.strip()
+            if _OFFSET.fullmatch(value):
+                return value
+            try:
+                ZoneInfo(value)
+            except ZoneInfoNotFoundError as exc:
+                raise ColdDraftConversionError("invalid_source_timezone") from exc
+            return value
         offset = created_at.utcoffset()
         if offset == timedelta(0):
             return "UTC"
@@ -143,6 +184,17 @@ class ColdDraftSegmentConverter:
         total_minutes = abs(total_minutes)
         hours, minutes = divmod(total_minutes, 60)
         return f"{sign}{hours:02d}:{minutes:02d}"
+
+    @staticmethod
+    def _iana_timezone(value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ColdDraftConversionError("invalid_source_timezone")
+        candidate = value.strip()
+        try:
+            ZoneInfo(candidate)
+        except ZoneInfoNotFoundError as exc:
+            raise ColdDraftConversionError("invalid_source_timezone") from exc
+        return candidate
 
 
 class ColdDraftDigestionTask:

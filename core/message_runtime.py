@@ -11,6 +11,12 @@ from core.draft_context import DraftContextProvider
 from core.draft_store import JsonlDraftStore
 from core.hot_draft_compactor import HotDraftCompactor
 from core.model_client import MOCK_ASSISTANT_TEXT, ModelClient
+from core.turn_provenance import (
+    Clock,
+    DraftTurnFactory,
+    TurnIdFactory,
+    resolve_source_timezone,
+)
 
 
 class MessageRuntime:
@@ -21,19 +27,43 @@ class MessageRuntime:
         draft_context_provider: DraftContextProvider,
         model_client: ModelClient,
         compactor: HotDraftCompactor | None = None,
+        clock: Clock | None = None,
+        turn_id_factory: TurnIdFactory | None = None,
+        default_timezone: str = "UTC",
     ) -> None:
         self._hot_store = hot_store
         self._draft_context_provider = draft_context_provider
         self._model_client = model_client
         self._compactor = compactor
+        self._turn_factory = DraftTurnFactory(
+            clock=clock,
+            id_factory=turn_id_factory,
+            default_timezone=default_timezone,
+        )
 
     def handle_chat(self, request: ChatRequest) -> MessageRuntimeResult:
         user_message = request.message if request.message is not None else request.text
         user_message = user_message or ""
+        source_timezone, timezone_source = resolve_source_timezone(
+            request.client_timezone,
+            self._turn_factory.default_timezone,
+        )
+        user_turn = self._turn_factory.create(
+            role="user",
+            text=user_message,
+            source_timezone=source_timezone,
+            timezone_source=timezone_source,
+        )
         recent_context, context_event = self._load_context()
         assistant_text, response_type, phase, model_event = self._generate(
             recent_context,
             user_message,
+        )
+        assistant_turn = self._turn_factory.create(
+            role="assistant",
+            text=assistant_text,
+            source_timezone=source_timezone,
+            timezone_source=timezone_source,
         )
 
         response = ChatResponse(
@@ -45,7 +75,7 @@ class MessageRuntime:
         )
 
         events = ["response", context_event, model_event]
-        events.append(self._capture_turns(user_message, assistant_text))
+        events.append(self._capture_turns(user_turn, assistant_turn))
         events.append(self._compact())
         return MessageRuntimeResult(
             response=response,
@@ -77,12 +107,13 @@ class MessageRuntime:
         except Exception:
             return MOCK_ASSISTANT_TEXT, "fallback", phase, "model_call_failed"
 
-    def _capture_turns(self, user_message: str, assistant_text: str) -> str:
+    def _capture_turns(
+        self,
+        user_turn: MemoryTurn,
+        assistant_turn: MemoryTurn,
+    ) -> str:
         succeeded = True
-        for turn in (
-            MemoryTurn(role="user", text=user_message),
-            MemoryTurn(role="assistant", text=assistant_text),
-        ):
+        for turn in (user_turn, assistant_turn):
             try:
                 self._hot_store.append_turn(turn)
             except Exception:

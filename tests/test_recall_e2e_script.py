@@ -17,6 +17,7 @@ from scripts.recall_e2e_test import (
     SANDBOX_MARKER,
     SANDBOX_MARKER_CONTENT,
     SandboxSafetyError,
+    SOURCE_TIMEZONE,
     cleanup_test_sandbox,
     reset_test_sandbox,
     run_acceptance,
@@ -154,6 +155,12 @@ def test_real_compaction_created_pending_then_consumed(kept_acceptance):
     assert [(item["role"], item["text"]) for item in record["turns"]] == [
         (turn.role, turn.text) for turn in FIXED_TURNS
     ]
+    assert record["schema_version"] == 2
+    assert [item["turn_id"] for item in record["turns"]] == [
+        turn.turn_id for turn in FIXED_TURNS
+    ]
+    assert all(item["source_timezone"] == SOURCE_TIMEZONE for item in record["turns"])
+    assert all(item["timezone_source"] == "client" for item in record["turns"])
 
 
 def test_real_dream_completed_without_failure(kept_acceptance):
@@ -212,7 +219,7 @@ def test_real_provenance_and_temporal_mapping_pass(kept_acceptance):
     assert report["provenance"] == {
         "passed": True,
         "temporal_normalization_passed": True,
-        "timestamp_mapping": "segment_created_at_for_all_turns",
+        "timestamp_mapping": "native_per_turn_v2",
     }
 
 

@@ -60,12 +60,25 @@ Every event stores:
 - `turn_id`;
 - exact aware `source_timestamp`;
 - declared `source_timezone`;
+- truthful `timezone_source` (`client`, `configured_default`, or
+  `legacy_segment_fallback`);
 - `ingestion_version`.
 
 Temporal metadata additionally stores the original expression, reference
 timestamp/timezone, normalized start/end, normalization method, and confidence.
 Recall reconstructs `SourceProvenance`; candidates with malformed or missing
 provenance are excluded.
+
+Native V2 events use each source turn's own ID, timestamp, IANA timezone, and
+timezone source. Legacy records keep the stable indexed turn ID and segment
+timestamp fallback and are explicitly marked `legacy_segment_fallback`. Old
+persisted provenance that predates the field is projected with the same legacy
+default; it is not rewritten or automatically re-ingested.
+
+Turn IDs are generated before the first Hot persistence attempt. Retrying the
+same `DraftTurn` reuses the ID, and Cold-first compaction copies it verbatim.
+The segment/version checkpoint remains the ingestion idempotency authority;
+the V2 schema does not introduce a competing checkpoint.
 
 ## Stable ordering
 

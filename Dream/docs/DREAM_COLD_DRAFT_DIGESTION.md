@@ -58,8 +58,16 @@ line:
 
 ```json
 {
+  "schema_version": 2,
   "segment_id": "opaque stable ID",
-  "turns": [{"role": "user", "text": "verbatim source text"}],
+  "turns": [{
+    "turn_id": "opaque stable turn ID",
+    "role": "user",
+    "text": "verbatim source text",
+    "created_at": "aware UTC RFC-3339 timestamp",
+    "source_timezone": "America/New_York",
+    "timezone_source": "client"
+  }],
   "created_at": "aware UTC ISO-8601 timestamp",
   "source": "hot_draft_precompression",
   "state": "pending_digest"
@@ -67,9 +75,9 @@ line:
 ```
 
 After the owner performs the state transition, `state` is `consumed` and an
-aware UTC `consumed_at` is added. The current production record does **not**
-contain `conversation_id`, per-turn `turn_id`, per-turn timestamp, or a named
-timezone. Dream does not claim otherwise.
+aware UTC `consumed_at` is added. New records contain native per-turn identity
+and time provenance. They still do not contain a real `conversation_id`; Dream
+does not invent browser-session semantics.
 
 The owner already provides:
 
@@ -87,24 +95,40 @@ The converter produces the existing Lumina-owned Conversation Memory
 `ColdDraftSegment` and `ColdDraftTurn` DTOs. It preserves the source segment ID,
 turn order, role, and complete `text` value exactly.
 
-Because the present production schema lacks more granular provenance, the
-mapping is deterministic and explicit:
+For a complete native V2 turn, the mapping is direct:
+
+```text
+turn_id          = turn.turn_id
+turn timestamp   = turn.created_at
+source timezone  = turn.source_timezone
+timezone source  = turn.timezone_source
+schema_version   = "2"
+```
+
+Each turn may therefore have a different timestamp or timezone. Conversation
+Memory passes that exact instant to the corresponding MAGMA event and uses its
+named timezone for deterministic relative-time normalization. Partial native
+provenance is rejected rather than completed with invented values.
+
+For an existing role/text-only legacy turn, the fallback remains deterministic
+and explicit:
 
 ```text
 conversation_id = "cold-draft:" + segment_id
 turn_id          = segment_id + ":turn:" + zero-padded source index
 turn timestamp   = segment.created_at
 source timezone  = UTC for the current UTC records, otherwise the source offset
+timezone source  = legacy_segment_fallback
 schema_version   = "1"
 ```
 
 These are adapter/orchestration identities, not generated semantic content.
-The segment's source `created_at` is used for every current-schema turn; Dream
-run time is never substituted. If a later owner record supplies explicit
-`conversation_id`, `turn_id`, aware turn `timestamp`, or source timezone, the
-converter preserves those values. Conversation Memory remains responsible for
-relative-time normalization, entity fallback, provenance projection, MAGMA
-writes, graph/vector persistence, and its completed checkpoint.
+The segment's source `created_at` is used only for legacy turns; Dream run time
+is never substituted. Existing JSONL and consumed records are not rewritten,
+migrated, or automatically re-ingested. Conversation Memory remains
+responsible for relative-time normalization, entity fallback, provenance
+projection, MAGMA writes, graph/vector persistence, and its completed
+checkpoint.
 
 Malformed records return stable error codes and remain pending. Dream does not
 silently discard or reinterpret source content.

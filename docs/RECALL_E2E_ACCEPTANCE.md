@@ -100,24 +100,27 @@ tail. This creates one real `pending_digest` segment containing exactly the six
 target turns while leaving the physical Hot Draft append-only.
 
 The script verifies chronological role/text order before and after compaction
-and verifies the Cold Draft source text remains unchanged after the owner marks
-the segment consumed. It never writes a consumed JSONL record directly.
+and writes the fixed schedule as native V2 turn provenance with IANA timezone
+`Asia/Shanghai`. It verifies unique stable IDs, expected UTC instants, Hot
+restart fidelity, exact Cold turn-object equality, and unchanged source text
+after the owner marks the segment consumed. It never writes a consumed JSONL
+record directly.
 
-## Current timestamp limitation
+## Native per-turn provenance
 
-The fixed time schedule is part of the test definition, but the current
-production `JsonlDraftStore` and Cold Draft schema do not preserve per-turn
-timestamps. Cold Draft contains only one aware UTC segment `created_at`.
+The fixed times are converted to UTC and actually persisted by the production
+`JsonlDraftStore`; they are not test-only annotations. Compaction copies each
+turn's `turn_id`, `created_at`, `source_timezone`, and `timezone_source`
+verbatim. The segment `created_at` is checked only as segment metadata.
 
-The existing Dream converter therefore maps that segment timestamp to every
-turn and derives stable conversation/turn IDs. Acceptance verifies this actual
-mapping rather than claiming the fixed per-turn schedule was persisted. It also
-inspects the persisted temporal metadata to prove `yesterday` was normalized
-from the segment `created_at` and `UTC`, never from Dream execution time.
+Dream must create six MAGMA events with the corresponding six source turn
+instants. Acceptance inspects event/provenance metadata and Recall projection,
+then proves `yesterday` was normalized from the first turn at
+`2026-07-14T10:00:00+08:00` in `Asia/Shanghai`, never from segment creation,
+Dream execution, or server time.
 
-The safe report records only the limitation code
-`segment_created_at_for_all_turns`; it does not contain source conversation
-text or timestamps.
+The safe report records `native_per_turn_v2`; it still does not contain source
+conversation text, IDs, or timestamps.
 
 ## Dream and persistence checks
 
@@ -176,10 +179,9 @@ documented selection rule to the current sandbox memory.
 The current real-MAGMA calibration recommends no threshold because the positive
 and negative cosine distributions overlap too heavily. E2E therefore records
 `enabled_validation=threshold_not_recommended`; it does not invent a threshold
-or claim that the absent negative query is rejected by an enabled gate. If a
-future calibration produces a recommendation, E2E is already structured to
-require all positive queries, an empty negative result, stable order, complete
-provenance, bounds, and identical restart behavior.
+or claim that the absent negative query is rejected by an enabled gate. Even if
+a future dataset recommends a value, this V2 acceptance records it but does not
+enable `min_relevance`; activation remains a separate decision.
 
 ## Provenance and leak checks
 
@@ -188,7 +190,7 @@ Every returned evidence item must have:
 - a stable SHA-256 evidence ID;
 - a sandbox-generated segment ID;
 - non-empty conversation and turn IDs;
-- an aware source timestamp and source timezone;
+- an aware source timestamp, source timezone, and `timezone_source=client`;
 - ingestion version `recall-e2e-v1`.
 
 Public contexts and the report are checked for local paths, tracebacks,

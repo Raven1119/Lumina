@@ -9,6 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from core.contracts import DraftTurn
+
 
 _ALLOWED_ROLES = {"user", "assistant"}
 _PENDING = "pending_digest"
@@ -22,7 +26,7 @@ class ColdDraftStore:
 
     def append_segment(
         self,
-        turns: list[dict[str, str]],
+        turns: list[dict[str, Any]],
         source: str = _DEFAULT_SOURCE,
         *,
         segment_id: str | None = None,
@@ -42,6 +46,9 @@ class ColdDraftStore:
             raise ValueError("cold draft segment conflict")
 
         record = {
+            "schema_version": (
+                2 if any("turn_id" in turn for turn in safe_turns) else 1
+            ),
             "segment_id": safe_segment_id,
             "turns": safe_turns,
             "created_at": datetime.now(UTC).isoformat(),
@@ -114,11 +121,13 @@ class ColdDraftStore:
         for raw in turns:
             if not isinstance(raw, dict):
                 raise ValueError("invalid cold draft turns")
-            role = raw.get("role")
-            text = raw.get("text")
-            if role not in _ALLOWED_ROLES or not isinstance(text, str) or not text.strip():
+            try:
+                turn = DraftTurn.model_validate(raw)
+            except ValidationError as exc:
+                raise ValueError("invalid cold draft turns") from exc
+            if turn.role not in _ALLOWED_ROLES or not turn.text.strip():
                 raise ValueError("invalid cold draft turns")
-            safe.append({"role": role, "text": text})
+            safe.append(turn.storage_turn())
         return safe
 
     @staticmethod

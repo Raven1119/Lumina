@@ -25,6 +25,8 @@ Hot Draft is the live conversation buffer.
 It:
 
 - records user and assistant/fallback turns in append-only JSONL;
+- records native V2 `turn_id`, aware UTC `created_at`, validated IANA
+  `source_timezone`, and `timezone_source` for every new turn;
 - supplies prior conversation context to `ModelClient`;
 - remains automatic runtime infrastructure rather than a model-selected tool;
 - retains recent raw turns after logical compaction;
@@ -42,6 +44,8 @@ It:
 - stores complete user/assistant pairs in original order;
 - uses an opaque internal `segment_id`;
 - records `created_at`, `source`, `turns`, and `state`;
+- copies each native V2 turn's complete provenance without substituting the
+  segment creation time;
 - begins in `pending_digest` state;
 - may be marked `consumed` through the internal store interface;
 - survives process restart;
@@ -69,6 +73,11 @@ read previous logical Draft context
 The current user message is passed directly to the model and is not duplicated
 inside `recent_context`. Prior Draft context is read before model generation.
 
+After basic request validation, the user turn's ID/time are created before the
+model call but persisted at the existing post-response Draft boundary. The
+assistant/fallback turn receives a different ID/time after its final text is
+known. This preserves existing failure and response semantics.
+
 ## Cold-First Compaction
 
 Compaction runs after the response pair has been captured.
@@ -78,7 +87,8 @@ Compaction runs after the response pair has been captured.
 3. Exclude turns already covered by compaction state.
 4. Keep the configured recent raw tail.
 5. Shrink the selected older prefix to complete user/assistant pairs.
-6. Derive a stable segment identity from the prefix offset and selected turns.
+6. Copy each selected turn as a complete immutable object and derive a stable
+   segment identity from the prefix offset and selected turns.
 7. Append that segment to Cold Draft.
 8. Only after the append succeeds, atomically replace the logical compaction
    state.
@@ -136,6 +146,19 @@ conversation text or internal segment ID.
 The policy is preservation before compactness. Safe retention is preferred to
 silent loss.
 
+## V2 and legacy records
+
+New Hot records and Cold segments containing native turns use
+`schema_version=2`. The segment `created_at` remains segment metadata and never
+replaces a native turn time. Hot reload, compaction, and Cold reload preserve
+the exact turn ID, instant, IANA timezone, and timezone-source label.
+
+Existing role/text-only Hot lines and schema-1 or unschematized Cold records
+remain readable and are not rewritten or automatically migrated. When Dream
+must ingest such a record, it derives the existing stable indexed turn ID,
+uses the segment's aware time/timezone fallback, and records
+`timezone_source=legacy_segment_fallback`.
+
 ## Storage Files
 
 The default local files are:
@@ -174,7 +197,10 @@ The current tests prove:
 - Cold-first failure safety;
 - retry after state-write failure without duplicate segments;
 - restart recovery of logical context and compaction state;
-- unchanged, no-leak chat responses and frontend/API coexistence.
+- unchanged, no-leak chat responses and frontend/API coexistence;
+- V2 Hot restart fidelity and complete Cold-first turn-provenance preservation;
+- safe optional client-timezone validation and configured-default fallback;
+- continued read compatibility without rewriting legacy JSONL.
 
 ## Known MVP Limits
 

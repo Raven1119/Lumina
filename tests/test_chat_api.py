@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import httpx
 from fastapi.testclient import TestClient
@@ -62,6 +63,7 @@ def test_static_frontend_is_served_without_shadowing_api(tmp_path: Path) -> None
     script = client.get("/app.js")
     assert script.status_code == 200
     assert "fetch(\"/api/chat\"" in script.text
+    assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script.text
 
     stylesheet = client.get("/styles.css")
     assert stylesheet.status_code == 200
@@ -172,3 +174,34 @@ def test_chat_compacts_to_cold_and_restart_restores_context(tmp_path: Path) -> N
         {"role": "user", "text": "two"},
         {"role": "assistant", "text": "answer:two"},
     ]
+
+
+def test_chat_accepts_client_timezone_and_old_clients_still_default(tmp_path: Path) -> None:
+    client = TestClient(_app(tmp_path, default_timezone="Asia/Shanghai"))
+    assert client.post(
+        "/api/chat",
+        json={"message": "with timezone", "client_timezone": "America/New_York"},
+    ).status_code == 200
+    assert client.post("/api/chat", json={"message": "old client"}).status_code == 200
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "hot.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert all(item["source_timezone"] == "America/New_York" for item in records[:2])
+    assert all(item["timezone_source"] == "client" for item in records[:2])
+    assert all(item["source_timezone"] == "Asia/Shanghai" for item in records[2:])
+    assert all(item["timezone_source"] == "configured_default" for item in records[2:])
+
+
+def test_invalid_client_timezone_is_safe_fallback(tmp_path: Path) -> None:
+    response = TestClient(_app(tmp_path)).post(
+        "/api/chat",
+        json={"message": "hello", "client_timezone": "not/a-zone"},
+    )
+    assert response.status_code == 200
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "hot.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert all(item["source_timezone"] == "UTC" for item in records)
+    assert all(item["timezone_source"] == "configured_default" for item in records)

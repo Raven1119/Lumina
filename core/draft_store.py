@@ -6,7 +6,6 @@ This is a hot-path draft buffer, not MemoryRuntime or long-term memory.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,11 +27,20 @@ class JsonlDraftStore:
     def append_turn(self, turn: MemoryTurn) -> int:
         if not turn.text.strip():
             raise ValueError("text is required")
+        if not turn.has_native_provenance:
+            raise ValueError("native turn provenance is required")
+
+        existing_turns = self._read_turns()
+        for existing in existing_turns:
+            if existing.turn_id != turn.turn_id:
+                continue
+            if existing == turn:
+                return len(existing_turns)
+            raise ValueError("hot draft turn conflict")
 
         record = {
-            "role": turn.role,
-            "text": turn.text,
-            "created_at": datetime.now(UTC).isoformat(),
+            **turn.storage_turn(),
+            "schema_version": 2,
             "source": "chat_draft",
             "safe": True,
         }
@@ -69,12 +77,20 @@ class JsonlDraftStore:
             return None
 
         try:
-            return MemoryTurn.model_validate(
-                {
-                    "role": raw.get("role"),
-                    "text": raw.get("text"),
-                }
+            fields = {"role": raw.get("role"), "text": raw.get("text")}
+            provenance_names = (
+                "turn_id",
+                "created_at",
+                "source_timezone",
+                "timezone_source",
             )
+            native_record = raw.get("schema_version") == 2 or any(
+                name in raw
+                for name in ("turn_id", "source_timezone", "timezone_source")
+            )
+            if native_record:
+                fields.update({name: raw.get(name) for name in provenance_names})
+            return MemoryTurn.model_validate(fields)
         except ValidationError:
             return None
 

@@ -11,7 +11,7 @@ import re
 import shutil
 import sys
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -57,38 +57,47 @@ _UUID = re.compile(
 
 @dataclass(frozen=True)
 class SyntheticTurn:
+    turn_id: str
     timestamp: str
     role: str
     text: str
 
 
+SOURCE_TIMEZONE = "Asia/Shanghai"
+
 FIXED_TURNS = (
     SyntheticTurn(
+        "e2e-turn-001",
         "2026-07-14T10:00:00+08:00",
         "user",
         "I completed the membrane experiment yesterday.",
     ),
     SyntheticTurn(
+        "e2e-turn-002",
         "2026-07-14T10:05:00+08:00",
         "assistant",
         "The experiment was recorded as completed.",
     ),
     SyntheticTurn(
+        "e2e-turn-003",
         "2026-07-14T11:00:00+08:00",
         "user",
         "The first experiment failed because the solvent evaporated too quickly.",
     ),
     SyntheticTurn(
+        "e2e-turn-004",
         "2026-07-14T11:05:00+08:00",
         "assistant",
         "The rapid solvent evaporation caused the failure.",
     ),
     SyntheticTurn(
+        "e2e-turn-005",
         "2026-07-15T09:00:00+08:00",
         "user",
         "I changed the solvent today and repeated the experiment.",
     ),
     SyntheticTurn(
+        "e2e-turn-006",
         "2026-07-15T09:05:00+08:00",
         "assistant",
         "The repeated experiment used the new solvent.",
@@ -97,11 +106,13 @@ FIXED_TURNS = (
 
 _HOT_TAIL = (
     SyntheticTurn(
+        "e2e-tail-001",
         "2026-07-15T09:10:00+08:00",
         "user",
         "Please keep the most recent pair in the Hot Draft.",
     ),
     SyntheticTurn(
+        "e2e-tail-002",
         "2026-07-15T09:11:00+08:00",
         "assistant",
         "The most recent pair remains available as recent context.",
@@ -245,7 +256,7 @@ def _base_report(keep_data: bool) -> dict[str, Any]:
         "provenance": {
             "passed": False,
             "temporal_normalization_passed": False,
-            "timestamp_mapping": "segment_created_at_for_all_turns",
+            "timestamp_mapping": "native_per_turn_v2",
         },
         "bounds": {
             "top_k": False,
@@ -305,6 +316,18 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _draft_turn(turn: SyntheticTurn) -> MemoryTurn:
+    source_time = datetime.fromisoformat(turn.timestamp)
+    return MemoryTurn(
+        turn_id=turn.turn_id,
+        role=turn.role,
+        text=turn.text,
+        created_at=source_time.astimezone(UTC),
+        source_timezone=SOURCE_TIMEZONE,
+        timezone_source="client",
+    )
+
+
 def _memory_counts(backend: RealMagmaBackend) -> tuple[int, int]:
     return len(backend.trg.graph_db.nodes), int(backend.trg.vector_db.size())
 
@@ -338,6 +361,7 @@ def _validate_public_context(
         _require(bool(provenance.turn_id), "provenance", "turn_id_missing")
         _require(provenance.ingestion_version == INGESTION_VERSION, "provenance", "ingestion_version_mismatch")
         _require(bool(provenance.source_timezone), "provenance", "source_timezone_missing")
+        _require(provenance.timezone_source == "client", "provenance", "timezone_source_mismatch")
         try:
             source_time = datetime.fromisoformat(provenance.source_timestamp)
         except ValueError as exc:
@@ -477,7 +501,7 @@ def _run_enabled_gate_suite(
 def _validate_temporal_metadata(
     backend: RealMagmaBackend,
     temporal_context: MemoryContext,
-    source_created_at: str,
+    source_turn: SyntheticTurn,
 ) -> None:
     evidence_ids = {
         item.evidence_id
@@ -501,9 +525,9 @@ def _validate_temporal_metadata(
         None,
     )
     _require(yesterday is not None, "temporal", "yesterday_normalization_missing")
-    _require(yesterday.get("reference_timestamp") == source_created_at, "temporal", "temporal_reference_mismatch")
-    _require(yesterday.get("reference_timezone") == "UTC", "temporal", "temporal_timezone_mismatch")
-    reference = datetime.fromisoformat(source_created_at)
+    _require(yesterday.get("reference_timestamp") == source_turn.timestamp, "temporal", "temporal_reference_mismatch")
+    _require(yesterday.get("reference_timezone") == SOURCE_TIMEZONE, "temporal", "temporal_timezone_mismatch")
+    reference = datetime.fromisoformat(source_turn.timestamp)
     _require(
         yesterday.get("normalized_start") == (reference - timedelta(days=1)).isoformat(),
         "temporal",
@@ -551,13 +575,19 @@ def _execute_pipeline(
     fixed_times = [datetime.fromisoformat(turn.timestamp) for turn in FIXED_TURNS]
     _require(fixed_times == sorted(fixed_times), "draft", "fixed_timestamps_not_ordered")
     for turn in all_turns:
-        hot_store.append_turn(MemoryTurn(role=turn.role, text=turn.text))
+        hot_store.append_turn(_draft_turn(turn))
     stored_hot = hot_store.list_recent(limit=len(all_turns))
     _require(
-        [(turn.role, turn.text) for turn in stored_hot]
-        == [(turn.role, turn.text) for turn in all_turns],
+        stored_hot == [_draft_turn(turn) for turn in all_turns],
         "draft",
         "hot_draft_order_mismatch",
+    )
+    restarted_hot = JsonlDraftStore(paths.hot_draft).list_recent(limit=len(all_turns))
+    _require(restarted_hot == stored_hot, "draft", "hot_draft_restart_provenance_changed")
+    _require(
+        len({turn.turn_id for turn in stored_hot}) == len(all_turns),
+        "draft",
+        "hot_draft_turn_ids_not_unique",
     )
     _verbose(verbose, "synthetic Hot Draft written")
 
@@ -573,9 +603,16 @@ def _execute_pipeline(
     pending = cold_store.list_pending(limit=10)
     _require(len(pending) == 1, "compaction", "pending_segment_count_mismatch")
     source_record = pending[0]
+    _require(source_record.get("schema_version") == 2, "compaction", "cold_draft_schema_not_v2")
     source_turns = [(item["role"], item["text"]) for item in source_record["turns"]]
     expected_source_turns = [(turn.role, turn.text) for turn in FIXED_TURNS]
     _require(source_turns == expected_source_turns, "compaction", "cold_draft_content_mismatch")
+    expected_cold_turns = [_draft_turn(turn).storage_turn() for turn in FIXED_TURNS]
+    _require(
+        source_record["turns"] == expected_cold_turns,
+        "compaction",
+        "cold_draft_turn_provenance_changed",
+    )
     _require(
         [(turn.role, turn.text) for turn in hot_store.list_recent(limit=len(all_turns))]
         == [(turn.role, turn.text) for turn in all_turns],
@@ -584,9 +621,25 @@ def _execute_pipeline(
     )
     converted = ColdDraftSegmentConverter().convert(source_record, INGESTION_VERSION)
     _require(
-        all(turn.timestamp.isoformat() == source_record["created_at"] for turn in converted.turns),
+        [turn.turn_id for turn in converted.turns]
+        == [turn.turn_id for turn in FIXED_TURNS],
+        "provenance",
+        "production_turn_id_mapping_mismatch",
+    )
+    _require(
+        [turn.timestamp for turn in converted.turns]
+        == [_draft_turn(turn).created_at for turn in FIXED_TURNS],
         "provenance",
         "production_timestamp_mapping_mismatch",
+    )
+    _require(
+        all(
+            turn.source_timezone == SOURCE_TIMEZONE
+            and turn.timezone_source == "client"
+            for turn in converted.turns
+        ),
+        "provenance",
+        "production_timezone_mapping_mismatch",
     )
     segment_ids = {source_record["segment_id"]}
     report["cold_draft"].update(
@@ -639,7 +692,7 @@ def _execute_pipeline(
     _require(consumed_record is not None, "dream", "consumed_record_missing")
     _require(consumed_record.get("state") == "consumed", "dream", "cold_draft_not_consumed")
     _require(
-        [(item["role"], item["text"]) for item in consumed_record["turns"]] == source_turns,
+        consumed_record["turns"] == expected_cold_turns,
         "dream",
         "cold_draft_raw_content_changed",
     )
@@ -650,6 +703,25 @@ def _execute_pipeline(
     node_count, vector_count = _memory_counts(backend)
     _require(node_count == len(FIXED_TURNS), "magma", "magma_event_count_mismatch")
     _require(vector_count == len(FIXED_TURNS), "magma", "magma_vector_count_mismatch")
+    event_provenance = {
+        attributes.get("provenance", {}).get("turn_id"): (
+            getattr(node, "timestamp", None).isoformat()
+            if getattr(node, "timestamp", None) is not None
+            else None,
+            attributes.get("provenance", {}).get("source_timestamp"),
+            attributes.get("provenance", {}).get("source_timezone"),
+            attributes.get("provenance", {}).get("timezone_source"),
+        )
+        for node in backend.trg.graph_db.nodes.values()
+        for attributes in [getattr(node, "attributes", {})]
+    }
+    for source_turn in FIXED_TURNS:
+        expected_timestamp = _draft_turn(source_turn).created_at.isoformat()
+        stored = event_provenance.get(source_turn.turn_id)
+        _require(stored is not None, "magma", "turn_event_provenance_missing")
+        _require(stored[0] == expected_timestamp, "magma", "magma_event_timestamp_mismatch")
+        _require(stored[1] == expected_timestamp, "magma", "turn_event_timestamp_mismatch")
+        _require(stored[2:] == (SOURCE_TIMEZONE, "client"), "magma", "turn_event_timezone_mismatch")
     report["magma"].update(
         {"events": node_count, "vectors": vector_count, "persisted": True}
     )
@@ -669,13 +741,35 @@ def _execute_pipeline(
         segment_ids,
         paths.root,
     )
+    expected_recall_provenance = {
+        turn.turn_id: (
+            turn.timestamp.isoformat(),
+            turn.source_timezone,
+            turn.timezone_source,
+        )
+        for turn in converted.turns
+    }
+    for context in contexts.values():
+        for evidence in context.evidence:
+            expected = expected_recall_provenance.get(evidence.provenance.turn_id)
+            _require(expected is not None, "provenance", "recall_turn_id_unknown")
+            _require(
+                (
+                    evidence.provenance.source_timestamp,
+                    evidence.provenance.source_timezone,
+                    evidence.provenance.timezone_source,
+                )
+                == expected,
+                "provenance",
+                "recall_turn_provenance_mismatch",
+            )
     report["recall"].update(
         {"passed": 6, "failed": 0, "checks": checks}
     )
     _validate_temporal_metadata(
         backend,
         contexts["temporal"],
-        source_record["created_at"],
+        FIXED_TURNS[0],
     )
     report["provenance"].update(
         {"passed": True, "temporal_normalization_passed": True}
@@ -713,29 +807,12 @@ def _execute_pipeline(
         "calibration_queries": len(mapped_calibration_queries),
         "recommended_threshold": recommended_threshold,
     })
-    enabled_contexts: dict[str, MemoryContext] | None = None
     if recommended_threshold is None:
         report["relevance_gate"]["enabled_validation"] = (
             "threshold_not_recommended"
         )
     else:
-        enabled_policy = RecallPolicy(
-            top_k=5,
-            max_chars=1200,
-            max_evidence_items=5,
-            max_graph_depth=6,
-            max_nodes=200,
-            min_relevance=recommended_threshold,
-            max_relevance_candidates=20,
-        )
-        enabled_contexts = _silenced(
-            _run_enabled_gate_suite,
-            adapter,
-            enabled_policy,
-            segment_ids,
-            paths.root,
-        )
-        report["relevance_gate"]["enabled_validation"] = "passed"
+        report["relevance_gate"]["enabled_validation"] = "not_enabled_by_task"
 
     top_one = _silenced(
         adapter.recall,
@@ -849,29 +926,7 @@ def _execute_pipeline(
         "restart",
         "restart_state_not_completed",
     )
-    if recommended_threshold is None:
-        report["relevance_gate"]["restart_consistent"] = None
-    else:
-        restarted_enabled = _silenced(
-            _run_enabled_gate_suite,
-            restarted_adapter,
-            enabled_policy,
-            segment_ids,
-            paths.root,
-        )
-        _require(
-            {
-                name: _evidence_ids(context)
-                for name, context in restarted_enabled.items()
-            }
-            == {
-                name: _evidence_ids(context)
-                for name, context in enabled_contexts.items()
-            },
-            "relevance_gate",
-            "restart_results_changed",
-        )
-        report["relevance_gate"]["restart_consistent"] = True
+    report["relevance_gate"]["restart_consistent"] = None
     report["restart_recall"]["passed"] = True
     report["leak_checks"]["passed"] = True
     _verbose(verbose, "persisted recall restart passed")

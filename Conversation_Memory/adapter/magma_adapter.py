@@ -71,7 +71,7 @@ class MagmaMemoryAdapter:
             return "invalid_segment_id"
         if segment.state != "pending_digest":
             return "segment_not_pending"
-        if segment.schema_version != "1":
+        if segment.schema_version not in {"1", "2"}:
             return "unsupported_schema_version"
         if not segment.turns:
             return "invalid_turns"
@@ -82,6 +82,14 @@ class MagmaMemoryAdapter:
                 return "invalid_content"
             if turn.timestamp.tzinfo is None or turn.timestamp.utcoffset() is None:
                 return "timestamp_timezone_required"
+            if not turn.source_timezone:
+                return "invalid_source_timezone"
+            if turn.timezone_source not in {
+                "client",
+                "configured_default",
+                "legacy_segment_fallback",
+            }:
+                return "invalid_timezone_source"
         return None
 
     def ingest(self, segment: ColdDraftSegment) -> IngestionResult:
@@ -108,14 +116,15 @@ class MagmaMemoryAdapter:
                     if existing not in memory_ids:
                         memory_ids.append(existing)
                     continue
-                temporal = normalize_temporal_references(turn, segment.source_timezone)
+                temporal = normalize_temporal_references(turn)
                 provenance = SourceProvenance(
-                    segment.segment_id,
-                    segment.conversation_id,
-                    turn.turn_id,
-                    turn.timestamp.isoformat(),
-                    segment.source_timezone,
-                    self.ingestion_version,
+                    segment_id=segment.segment_id,
+                    conversation_id=segment.conversation_id,
+                    turn_id=turn.turn_id,
+                    source_timestamp=turn.timestamp.isoformat(),
+                    source_timezone=turn.source_timezone,
+                    ingestion_version=self.ingestion_version,
+                    timezone_source=turn.timezone_source,
                 )
                 metadata = {
                     "evidence_id": evidence_id,
