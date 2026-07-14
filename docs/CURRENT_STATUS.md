@@ -21,7 +21,11 @@
   `pending_digest` Cold Draft segments;
 - durable-memory-before-consumed orchestration, including idempotent consumed
   transitions and restart recovery when memory completes before the Draft state
-  transition.
+  transition;
+- a developer-only, marker-owned Recall end-to-end acceptance harness that
+  exercises production-format Hot/Cold Draft compaction, manual Dream ingestion,
+  real MAGMA persistence, bounded recall, restart recovery, idempotency, leak
+  checks, and safe cleanup in an isolated sandbox.
 
 The active Cold Draft preservation contract is reconciled with the MVP
 implementation in `docs/COLD_DRAFT.md`.
