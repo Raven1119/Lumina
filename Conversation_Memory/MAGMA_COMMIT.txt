@@ -1,0 +1,3 @@
+repository=https://github.com/FredJiang0324/MAGMA.git
+commit=467cb70b67ac337b22fdb42194d37c04ad701b62
+recorded_at=2026-07-14T11:46:02.3969089+08:00

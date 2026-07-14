@@ -1,7 +1,7 @@
 # Lumina Cold Draft MVP
 
 Lumina is currently a small local conversational runtime. This checkout proves
-one bounded chat path with mock or explicitly configured MiniMax responses,
+one synchronous chat path with mock or explicitly configured MiniMax responses,
 restart-persistent Hot Draft turns, Cold Draft segments, and Cold-first logical
 compaction.
 
@@ -16,6 +16,11 @@ compaction.
 - append-only Hot Draft JSONL with recent multi-turn context
 - pending/consumed Cold Draft JSONL segments
 - pair-aware, Cold-first compaction with restart-persistent state
+
+Compaction bounds the recent raw-turn tail, but the model-facing preservation
+markers and physical Hot Draft file do not yet have global size bounds. Draft
+write failures are handled without exposing internals or breaking the public
+response; persistence is not transactional across the user/assistant pair.
 
 This MVP is not long-term memory. It does not include Conversation Memory,
 Conversation Graph, Dream, MAGMA, recall, embeddings, vector search, PostgreSQL,

@@ -1,0 +1,31 @@
+[
+  {
+    "qa": [
+      {"question": "When was the membrane experiment completed?", "answer": "July 13, 2026", "evidence": ["1:1"], "category": 2},
+      {"question": "Why did the first experiment fail?", "answer": "The solvent evaporated too quickly.", "evidence": ["1:3"], "category": 1},
+      {"question": "What did Raven change before repeating the experiment?", "answer": "Raven changed the solvent.", "evidence": ["2:1"], "category": 1}
+    ],
+    "conversation": {
+      "speaker_a": "Raven",
+      "speaker_b": "Morgan",
+      "session_1_date_time": "2026-07-14 10:00:00",
+      "session_1": [
+        {"speaker": "Raven", "dia_id": "1:1", "text": "I completed the membrane experiment yesterday."},
+        {"speaker": "Morgan", "dia_id": "1:2", "text": "Did the membrane experiment succeed?"},
+        {"speaker": "Raven", "dia_id": "1:3", "text": "The first experiment failed because the solvent evaporated too quickly."}
+      ],
+      "session_2_date_time": "2026-07-15 09:00:00",
+      "session_2": [
+        {"speaker": "Raven", "dia_id": "2:1", "text": "I changed the solvent and repeated the membrane experiment today."},
+        {"speaker": "Morgan", "dia_id": "2:2", "text": "Raven, did changing the solvent prevent rapid evaporation?"},
+        {"speaker": "Raven", "dia_id": "2:3", "text": "Yes, changing the solvent prevented rapid evaporation and the repeated experiment succeeded."}
+      ]
+    },
+    "event_summary": {},
+    "observation": {},
+    "session_summary": {
+      "session_1": "Raven completed a membrane experiment, then explained its solvent-related failure.",
+      "session_2": "Raven changed the solvent and repeated the experiment successfully."
+    }
+  }
+]
