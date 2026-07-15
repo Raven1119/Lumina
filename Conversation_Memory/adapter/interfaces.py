@@ -1,12 +1,10 @@
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from .models import (
-    BackendCandidate,
     ColdDraftSegment,
     IngestionResult,
     MemoryContext,
     RecallPolicy,
-    RelevanceScoreResult,
 )
 
 
@@ -16,11 +14,3 @@ class MemoryIngestor(Protocol):
 
 class MemoryRetriever(Protocol):
     def recall(self, query: str, policy: RecallPolicy) -> MemoryContext: ...
-
-
-class RelevanceScorer(Protocol):
-    def score(
-        self,
-        query: str,
-        candidates: Sequence[BackendCandidate],
-    ) -> RelevanceScoreResult: ...

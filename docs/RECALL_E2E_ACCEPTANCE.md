@@ -75,7 +75,7 @@ The six target turns are deterministic synthetic text:
 
 ```text
 2026-07-14T10:00:00+08:00 user
-I completed the membrane experiment yesterday.
+I completed the membrane experiment yesterday. 我昨天完成了膜实验。
 
 2026-07-14T10:05:00+08:00 assistant
 The experiment was recorded as completed.
@@ -88,6 +88,7 @@ The rapid solvent evaporation caused the failure.
 
 2026-07-15T09:00:00+08:00 user
 I changed the solvent today and repeated the experiment.
+我上周一更换了溶剂，下周一准备复查。
 
 2026-07-15T09:05:00+08:00 assistant
 The repeated experiment used the new solvent.
@@ -117,7 +118,11 @@ Dream must create six MAGMA events with the corresponding six source turn
 instants. Acceptance inspects event/provenance metadata and Recall projection,
 then proves `yesterday` was normalized from the first turn at
 `2026-07-14T10:00:00+08:00` in `Asia/Shanghai`, never from segment creation,
-Dream execution, or server time.
+Dream execution, or server time. The reference instant is persisted as
+`2026-07-14T02:00:00Z`; the mentioned local day is the half-open UTC interval
+`[2026-07-12T16:00:00Z, 2026-07-13T16:00:00Z)`. Acceptance also checks matching
+Chinese `昨天`, previous/next calendar-week weekdays, canonical
+`temporal_mentions`, MAGMA-style `dates_mentioned`, and language metadata.
 
 The safe report records `native_per_turn_v2`; it still does not contain source
 conversation text, IDs, or timestamps.
@@ -148,40 +153,47 @@ RecallPolicy(
     max_evidence_items=5,
     max_graph_depth=6,
     max_nodes=200,
-    min_relevance=None,
 )
 ```
 
-The six acceptance categories are:
+The nine acceptance categories are:
 
 1. Exact/overlap cause query: first experiment failure.
 2. Semantic paraphrase: initial membrane test going wrong.
 3. Behavior change: solvent changed before repetition.
 4. Temporal query: experiment completion and `yesterday` normalization.
 5. Entity/topic query: membrane experiment.
-6. Negative query: an absent Sigma-Aldrich catalyst purchase.
+6. Chinese temporal query: `我什么时候完成了膜实验？`.
+7. Chinese previous-week query: `上周一发生了什么？`.
+8. Chinese next-week query: `我准备什么时候复查？`.
+9. Negative query: an absent Sigma-Aldrich catalyst purchase.
 
 Every positive query must contain its expected source evidence. Exact and
 paraphrased cause queries must share the same stable evidence ID. The negative
-query may be empty or contain unrelated source evidence because the
-compatibility run deliberately disables the optional relevance gate; it passes
-only if every item comes from the sandbox segment and none fabricates catalyst,
-purchase, or Sigma-Aldrich evidence. No answer generation occurs.
+query may be empty or contain unrelated source evidence; it passes only if
+every item comes from the sandbox segment and none fabricates catalyst,
+purchase, or Sigma-Aldrich evidence. No answer generation or relevance gate is
+involved.
 
 Every query is repeated to verify deterministic ordering.
 
-## Optional relevance gate
+## Chinese temporal checks
 
-The E2E first proves backward compatibility with `min_relevance=None`. It then
-loads the same 20-positive/20-negative calibration definitions and applies the
-documented selection rule to the current sandbox memory.
+Chinese temporal evidence is part of this same authoritative sandbox rather
+than a second E2E. The fixed turns include `昨天`, `上周一`, and `下周一`; the
+three Chinese queries are:
 
-The current real-MAGMA calibration recommends no threshold because the positive
-and negative cosine distributions overlap too heavily. E2E therefore records
-`enabled_validation=threshold_not_recommended`; it does not invent a threshold
-or claim that the absent negative query is rejected by an enabled gate. Even if
-a future dataset recommends a value, this V2 acceptance records it but does not
-enable `min_relevance`; activation remains a separate decision.
+```text
+我什么时候完成了膜实验？
+上周一发生了什么？
+我准备什么时候复查？
+```
+
+The checks verify local Shanghai calendar intervals, `language=zh`, unchanged
+event timestamps and raw Cold turns, durable completion before consumed state,
+no-op duplicate Dream, stable evidence after restart, and the shared Recall
+bounds. Query-side temporal constraints are not implemented; Recall remains
+outside `/api/chat`.
 
 ## Provenance and leak checks
 
@@ -214,7 +226,7 @@ The negative query must always return a valid `MemoryContext`, not an exception.
 
 After the first successful recall, the script discards the active adapter and
 backend, constructs a new real backend from the same persisted graph/vector
-directory, and reruns all six query categories. Event/vector counts, ordered
+directory, and reruns all nine query categories. Event/vector counts, ordered
 evidence IDs, and complete provenance signatures must be unchanged.
 
 Dream is also run a second time after the source segment is consumed. It must

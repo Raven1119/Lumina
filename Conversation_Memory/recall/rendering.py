@@ -24,7 +24,6 @@ def bound_evidence(items: list[MemoryEvidence], *, count: int, max_chars: int) -
                 text,
                 item.timestamp,
                 item.provenance,
-                item.relevance_score,
             )
         )
         parts.append(text)

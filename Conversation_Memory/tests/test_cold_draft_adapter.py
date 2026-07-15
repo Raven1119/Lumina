@@ -5,7 +5,6 @@ import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -92,6 +91,21 @@ def test_valid_fixture_ingests_and_preserves_provenance(tmp_path):
         "ingestion_version": "v1",
         "timezone_source": "client",
     }
+    assert backend.events[result.memory_ids[0]]["timestamp"] == segment.turns[0].timestamp
+    mention = metadata["temporal_mentions"][0]
+    assert mention == {
+        "original_expression": "yesterday",
+        "reference_timestamp": "2026-07-14T02:00:00Z",
+        "reference_timezone": "Asia/Shanghai",
+        "normalized_start": "2026-07-12T16:00:00Z",
+        "normalized_end": "2026-07-13T16:00:00Z",
+        "normalization_method": "deterministic_relative_day",
+        "normalization_confidence": 1.0,
+        "language": "en",
+    }
+    assert metadata["dates_mentioned"] == [
+        {"original": "yesterday", "parsed": "2026-07-12T16:00:00Z"}
+    ]
 
 
 def test_duplicate_key_does_not_duplicate_nodes(tmp_path):
@@ -140,8 +154,9 @@ def test_relative_time_uses_each_source_timestamp_and_timezone():
     segment = load_fixture(FIXTURE)
     refs = normalize_temporal_references(segment.turns[0])
     assert refs[0].original_expression == "yesterday"
-    assert refs[0].reference_timestamp == "2026-07-14T10:00:00+08:00"
-    assert refs[0].normalized_start == "2026-07-13T10:00:00+08:00"
+    assert refs[0].reference_timestamp == "2026-07-14T02:00:00Z"
+    assert refs[0].normalized_start == "2026-07-12T16:00:00Z"
+    assert refs[0].normalized_end == "2026-07-13T16:00:00Z"
     assert refs[0].reference_timezone == "Asia/Shanghai"
 
 
@@ -151,6 +166,12 @@ def test_legacy_fixture_truthfully_marks_segment_timezone_fallback():
     assert all(
         turn.timezone_source == "legacy_segment_fallback"
         for turn in segment.turns
+    )
+    mention = normalize_temporal_references(segment.turns[0])[0]
+    assert mention.reference_timezone == "+08:00"
+    assert mention.reference_timestamp == "2026-07-14T02:00:00Z"
+    assert (mention.normalized_start, mention.normalized_end) == (
+        "2026-07-12T16:00:00Z", "2026-07-13T16:00:00Z",
     )
 
 
@@ -165,10 +186,17 @@ def test_cross_midnight_relative_dates_use_new_york_calendar_not_utc():
     )
     before_ref = normalize_temporal_references(before_midnight)[0]
     after_refs = normalize_temporal_references(after_midnight)
-    assert before_ref.reference_timestamp == "2026-07-14T23:55:00-04:00"
-    assert after_refs[0].reference_timestamp == "2026-07-15T00:05:00-04:00"
-    assert after_refs[0].normalized_start.startswith("2026-07-14T00:05:00")
-    assert after_refs[1].normalized_start.startswith("2026-07-16T00:05:00")
+    assert before_ref.reference_timestamp == "2026-07-15T03:55:00Z"
+    assert (before_ref.normalized_start, before_ref.normalized_end) == (
+        "2026-07-14T04:00:00Z", "2026-07-15T04:00:00Z",
+    )
+    assert after_refs[0].reference_timestamp == "2026-07-15T04:05:00Z"
+    assert (after_refs[0].normalized_start, after_refs[0].normalized_end) == (
+        "2026-07-14T04:00:00Z", "2026-07-15T04:00:00Z",
+    )
+    assert (after_refs[1].normalized_start, after_refs[1].normalized_end) == (
+        "2026-07-16T04:00:00Z", "2026-07-17T04:00:00Z",
+    )
 
 
 def test_dst_timezone_uses_zoneinfo_offset_for_each_turn_date():
@@ -181,9 +209,14 @@ def test_dst_timezone_uses_zoneinfo_offset_for_each_turn_date():
         turn_id="summer",
         timestamp=datetime(2026, 7, 15, 16, tzinfo=UTC),
     )
-    assert normalize_temporal_references(winter)[0].reference_timestamp.endswith("-05:00")
-    assert normalize_temporal_references(summer)[0].reference_timestamp.endswith("-04:00")
-    assert ZoneInfo("America/New_York") is not None
+    winter_ref = normalize_temporal_references(winter)[0]
+    summer_ref = normalize_temporal_references(summer)[0]
+    assert (winter_ref.normalized_start, winter_ref.normalized_end) == (
+        "2026-01-15T05:00:00Z", "2026-01-16T05:00:00Z",
+    )
+    assert (summer_ref.normalized_start, summer_ref.normalized_end) == (
+        "2026-07-15T04:00:00Z", "2026-07-16T04:00:00Z",
+    )
 
 
 @pytest.mark.parametrize("field,value,code", [

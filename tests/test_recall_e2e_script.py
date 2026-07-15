@@ -134,6 +134,8 @@ def test_fixed_conversation_has_required_order_and_aware_timestamps():
     ]
     assert "solvent evaporated too quickly" in FIXED_TURNS[2].text
     assert "changed the solvent today" in FIXED_TURNS[4].text
+    assert "我昨天完成了膜实验" in FIXED_TURNS[0].text
+    assert "我上周一更换了溶剂，下周一准备复查" in FIXED_TURNS[4].text
 
 
 def test_real_e2e_result_is_pass(kept_acceptance):
@@ -188,6 +190,9 @@ def test_real_magma_graph_and_vectors_are_persisted(kept_acceptance):
         "behavior_change",
         "temporal",
         "entity",
+        "zh_temporal",
+        "zh_previous_week",
+        "zh_next_week",
         "negative_source_bounded",
     ],
 )
@@ -196,22 +201,11 @@ def test_real_recall_query_checks_pass(kept_acceptance, check):
     assert report["recall"]["checks"][check] is True
 
 
-def test_real_recall_summary_is_six_of_six(kept_acceptance):
+def test_real_recall_summary_is_nine_of_nine(kept_acceptance):
     report, _ = kept_acceptance
-    assert report["recall"]["queries"] == 6
-    assert report["recall"]["passed"] == 6
+    assert report["recall"]["queries"] == 9
+    assert report["recall"]["passed"] == 9
     assert report["recall"]["failed"] == 0
-
-
-def test_real_e2e_keeps_gate_disabled_compatible_and_does_not_invent_threshold(kept_acceptance):
-    report, _ = kept_acceptance
-    assert report["relevance_gate"] == {
-        "disabled_compatibility": True,
-        "calibration_queries": 40,
-        "recommended_threshold": None,
-        "enabled_validation": "threshold_not_recommended",
-        "restart_consistent": None,
-    }
 
 
 def test_real_provenance_and_temporal_mapping_pass(kept_acceptance):

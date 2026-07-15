@@ -28,14 +28,16 @@
   transition;
 - a developer-only, marker-owned Recall end-to-end acceptance harness that
   exercises production-format Hot/Cold Draft compaction, manual Dream ingestion,
-  real MAGMA persistence, bounded recall, restart recovery, idempotency, leak
-  checks, and safe cleanup in an isolated sandbox;
-- an optional, default-off Lumina-owned cosine relevance gate with bounded
-  candidate scoring, reuse of MAGMA's query embedding and persisted event
-  vectors, structured failure behavior, and no LLM or network calls;
-- a marker-owned real-MAGMA relevance calibration harness with a balanced
-  20-positive/20-negative synthetic query set, full threshold metrics, and
-  measured performance diagnostics.
+  real MAGMA persistence, bounded English/Chinese Recall, restart recovery,
+  idempotency, leak checks, and safe cleanup in one isolated sandbox;
+- a Lumina-owned, MAGMA-style deterministic Chinese temporal parser with
+  per-turn IANA calendar semantics, half-open aware-UTC intervals,
+  longest-span multi-mention extraction, and unified Chinese/English write
+  metadata. It performs no LLM, network, or embedding work and leaves upstream
+  MAGMA unchanged;
+- bounded Recall without the rejected cosine threshold experiment. The
+  experiment found no recommended threshold, so its policy fields, vector
+  interception, scorer, calibration CLI, and E2E branch were removed.
 
 The active Cold Draft preservation contract is reconciled with the MVP
 implementation in `docs/COLD_DRAFT.md`.
@@ -53,10 +55,6 @@ implementation in `docs/COLD_DRAFT.md`.
   consumer;
 - Conversation Memory recall exists only behind its isolated Lumina-owned
   facade and is not injected into the production chat/model request;
-- current relevance calibration has no recommended threshold: positive scores
-  overlap negative scores, and no scanned point simultaneously reaches 0.90
-  positive recall and at most 0.10 false injection rate, so the gate remains
-  disabled by default and E2E reports `threshold_not_recommended`;
 - legacy Hot/Cold records remain role/text or segment-time only; they are not
   migrated, and Dream marks their deterministic segment-time projection as
   `legacy_segment_fallback`;

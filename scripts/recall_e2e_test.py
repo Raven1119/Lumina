@@ -10,8 +10,8 @@ import json
 import re
 import shutil
 import sys
-from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime, timedelta
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -36,14 +36,6 @@ from Dream.cold_draft_digest import (  # noqa: E402
 from Dream.models import DreamRunPolicy  # noqa: E402
 from Dream.runner import DreamRunner  # noqa: E402
 from ingestion.state_store import IngestionStateStore  # noqa: E402
-from scripts.relevance_calibration import (  # noqa: E402
-    collect_observations,
-    load_calibration_dataset,
-    select_recommendation,
-    sweep_thresholds,
-)
-
-
 SANDBOX_MARKER = ".recall_e2e_sandbox"
 SANDBOX_MARKER_CONTENT = "lumina-recall-e2e-v1\n"
 DEFAULT_WORK_DIR = ROOT / "data" / "recall_e2e_test"
@@ -70,7 +62,7 @@ FIXED_TURNS = (
         "e2e-turn-001",
         "2026-07-14T10:00:00+08:00",
         "user",
-        "I completed the membrane experiment yesterday.",
+        "I completed the membrane experiment yesterday. 我昨天完成了膜实验。",
     ),
     SyntheticTurn(
         "e2e-turn-002",
@@ -94,7 +86,8 @@ FIXED_TURNS = (
         "e2e-turn-005",
         "2026-07-15T09:00:00+08:00",
         "user",
-        "I changed the solvent today and repeated the experiment.",
+        "I changed the solvent today and repeated the experiment. "
+        "我上周一更换了溶剂，下周一准备复查。",
     ),
     SyntheticTurn(
         "e2e-turn-006",
@@ -252,7 +245,7 @@ def _base_report(keep_data: bool) -> dict[str, Any]:
         },
         "dream": {"attempted": 0, "failed": 0, "second_attempted": 0},
         "magma": {"events": 0, "vectors": 0, "persisted": False},
-        "recall": {"queries": 6, "passed": 0, "failed": 0, "checks": {}},
+        "recall": {"queries": 9, "passed": 0, "failed": 0, "checks": {}},
         "provenance": {
             "passed": False,
             "temporal_normalization_passed": False,
@@ -262,13 +255,6 @@ def _base_report(keep_data: bool) -> dict[str, Any]:
             "top_k": False,
             "max_evidence_items": False,
             "max_chars": False,
-        },
-        "relevance_gate": {
-            "disabled_compatibility": False,
-            "calibration_queries": 0,
-            "recommended_threshold": None,
-            "enabled_validation": "not_run",
-            "restart_consistent": None,
         },
         "restart_recall": {"passed": False},
         "idempotency": {
@@ -410,6 +396,9 @@ _QUERY_SPECS = (
     ("behavior_change", "What did the user change before repeating the experiment?", "changed the solvent"),
     ("temporal", "When was the membrane experiment completed?", "completed the membrane experiment yesterday"),
     ("entity", "What happened in the membrane experiment?", "membrane experiment"),
+    ("zh_temporal", "我什么时候完成了膜实验？", "我昨天完成了膜实验"),
+    ("zh_previous_week", "上周一发生了什么？", "我上周一更换了溶剂"),
+    ("zh_next_week", "我准备什么时候复查？", "下周一准备复查"),
 )
 _NEGATIVE_QUERY = "Which catalyst was purchased from Sigma-Aldrich?"
 
@@ -468,71 +457,61 @@ def _run_query_suite(
     return contexts, checks
 
 
-def _run_enabled_gate_suite(
-    retriever: MemoryRetriever,
-    policy: RecallPolicy,
-    segment_ids: set[str],
-    work_dir: Path,
-) -> dict[str, MemoryContext]:
-    contexts: dict[str, MemoryContext] = {}
-    for name, query, expected in _QUERY_SPECS:
-        context = retriever.recall(query, policy)
-        repeated = retriever.recall(query, policy)
-        _validate_public_context(context, policy, segment_ids, work_dir)
-        _validate_public_context(repeated, policy, segment_ids, work_dir)
-        _require(bool(context.evidence), "relevance_gate", f"{name}_empty")
-        _require(_contains(context, expected), "relevance_gate", f"{name}_evidence_missing")
-        _require(
-            _evidence_ids(context) == _evidence_ids(repeated),
-            "relevance_gate",
-            f"{name}_ordering_unstable",
-        )
-        contexts[name] = context
-    negative = retriever.recall(_NEGATIVE_QUERY, policy)
-    repeated_negative = retriever.recall(_NEGATIVE_QUERY, policy)
-    _validate_public_context(negative, policy, segment_ids, work_dir)
-    _validate_public_context(repeated_negative, policy, segment_ids, work_dir)
-    _require(negative.evidence == (), "relevance_gate", "negative_not_empty")
-    _require(repeated_negative.evidence == (), "relevance_gate", "negative_repeat_not_empty")
-    contexts["negative"] = negative
-    return contexts
-
-
 def _validate_temporal_metadata(
     backend: RealMagmaBackend,
-    temporal_context: MemoryContext,
-    source_turn: SyntheticTurn,
 ) -> None:
-    evidence_ids = {
-        item.evidence_id
-        for item in temporal_context.evidence
-        if "completed the membrane experiment yesterday" in item.text.casefold()
+    attributes_by_turn = {
+        attributes.get("provenance", {}).get("turn_id"): attributes
+        for node in backend.trg.graph_db.nodes.values()
+        for attributes in [getattr(node, "attributes", {})]
     }
-    _require(bool(evidence_ids), "temporal", "temporal_evidence_missing")
-    matched: list[dict[str, Any]] = []
-    for node in backend.trg.graph_db.nodes.values():
-        attributes = getattr(node, "attributes", {})
-        if attributes.get("evidence_id") not in evidence_ids:
-            continue
-        references = attributes.get("temporal_references", [])
-        matched.extend(item for item in references if isinstance(item, dict))
-    yesterday = next(
-        (
-            item
-            for item in matched
-            if str(item.get("original_expression", "")).casefold() == "yesterday"
-        ),
-        None,
-    )
-    _require(yesterday is not None, "temporal", "yesterday_normalization_missing")
-    _require(yesterday.get("reference_timestamp") == source_turn.timestamp, "temporal", "temporal_reference_mismatch")
-    _require(yesterday.get("reference_timezone") == SOURCE_TIMEZONE, "temporal", "temporal_timezone_mismatch")
-    reference = datetime.fromisoformat(source_turn.timestamp)
+    first = attributes_by_turn.get(FIXED_TURNS[0].turn_id, {})
+    first_mentions = {
+        item.get("original_expression"): item
+        for item in first.get("temporal_mentions", [])
+        if isinstance(item, dict)
+    }
+    for expression, language in (("yesterday", "en"), ("昨天", "zh")):
+        mention = first_mentions.get(expression, {})
+        _require(
+            (
+                mention.get("reference_timestamp") == "2026-07-14T02:00:00Z"
+                and mention.get("reference_timezone") == SOURCE_TIMEZONE
+                and mention.get("normalized_start") == "2026-07-12T16:00:00Z"
+                and mention.get("normalized_end") == "2026-07-13T16:00:00Z"
+                and mention.get("language") == language
+            ),
+            "temporal",
+            f"{language}_yesterday_normalization_incorrect",
+        )
     _require(
-        yesterday.get("normalized_start") == (reference - timedelta(days=1)).isoformat(),
+        {"original": "昨天", "parsed": "2026-07-12T16:00:00Z"}
+        in first.get("dates_mentioned", []),
         "temporal",
-        "yesterday_normalization_incorrect",
+        "chinese_dates_mentioned_missing",
     )
+
+    schedule = attributes_by_turn.get(FIXED_TURNS[4].turn_id, {})
+    schedule_mentions = {
+        item.get("original_expression"): item
+        for item in schedule.get("temporal_mentions", [])
+        if isinstance(item, dict)
+    }
+    expected_intervals = {
+        "上周一": ("2026-07-05T16:00:00Z", "2026-07-06T16:00:00Z"),
+        "下周一": ("2026-07-19T16:00:00Z", "2026-07-20T16:00:00Z"),
+    }
+    for expression, interval in expected_intervals.items():
+        mention = schedule_mentions.get(expression, {})
+        _require(
+            (
+                mention.get("normalized_start"),
+                mention.get("normalized_end"),
+                mention.get("language"),
+            ) == (*interval, "zh"),
+            "temporal",
+            f"{expression}_normalization_incorrect",
+        )
 
 
 def _validate_report_safety(report: dict[str, Any], work_dir: Path) -> None:
@@ -732,7 +711,6 @@ def _execute_pipeline(
         max_evidence_items=5,
         max_graph_depth=6,
         max_nodes=200,
-        min_relevance=None,
     )
     contexts, checks = _silenced(
         _run_query_suite,
@@ -764,55 +742,13 @@ def _execute_pipeline(
                 "recall_turn_provenance_mismatch",
             )
     report["recall"].update(
-        {"passed": 6, "failed": 0, "checks": checks}
+        {"passed": 9, "failed": 0, "checks": checks}
     )
-    _validate_temporal_metadata(
-        backend,
-        contexts["temporal"],
-        FIXED_TURNS[0],
-    )
+    _validate_temporal_metadata(backend)
     report["provenance"].update(
         {"passed": True, "temporal_normalization_passed": True}
     )
-    report["relevance_gate"]["disabled_compatibility"] = True
-    _verbose(verbose, "six-query recall suite passed")
-
-    calibration_dataset = load_calibration_dataset()
-    calibration_turn_map = {
-        "turn-001": converted.turns[0].turn_id,
-        "turn-002": converted.turns[2].turn_id,
-        "turn-003": converted.turns[4].turn_id,
-        "turn-004": converted.turns[5].turn_id,
-    }
-    mapped_calibration_queries = tuple(
-        replace(
-            item,
-            expected_turn_ids=tuple(
-                calibration_turn_map[turn_id]
-                for turn_id in item.expected_turn_ids
-            ),
-        )
-        for item in calibration_dataset.queries
-    )
-    calibration_observations = _silenced(
-        collect_observations,
-        adapter,
-        mapped_calibration_queries,
-    )
-    recommendation = select_recommendation(
-        sweep_thresholds(calibration_observations)
-    )
-    recommended_threshold = recommendation["threshold"]
-    report["relevance_gate"].update({
-        "calibration_queries": len(mapped_calibration_queries),
-        "recommended_threshold": recommended_threshold,
-    })
-    if recommended_threshold is None:
-        report["relevance_gate"]["enabled_validation"] = (
-            "threshold_not_recommended"
-        )
-    else:
-        report["relevance_gate"]["enabled_validation"] = "not_enabled_by_task"
+    _verbose(verbose, "nine-query recall suite passed")
 
     top_one = _silenced(
         adapter.recall,
@@ -926,7 +862,6 @@ def _execute_pipeline(
         "restart",
         "restart_state_not_completed",
     )
-    report["relevance_gate"]["restart_consistent"] = None
     report["restart_recall"]["passed"] = True
     report["leak_checks"]["passed"] = True
     _verbose(verbose, "persisted recall restart passed")

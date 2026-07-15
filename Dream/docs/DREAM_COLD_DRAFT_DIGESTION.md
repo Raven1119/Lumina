@@ -107,8 +107,11 @@ schema_version   = "2"
 
 Each turn may therefore have a different timestamp or timezone. Conversation
 Memory passes that exact instant to the corresponding MAGMA event and uses its
-named timezone for deterministic relative-time normalization. Partial native
-provenance is rejected rather than completed with invented values.
+named timezone for deterministic English/Chinese temporal normalization.
+Calendar calculation is local to the turn timezone and mentioned intervals are
+stored as aware UTC `[start, end)` metadata; Dream/segment/run time never
+replaces the event time or parser reference. Partial native provenance is
+rejected rather than completed with invented values.
 
 For an existing role/text-only legacy turn, the fallback remains deterministic
 and explicit:
@@ -129,6 +132,10 @@ migrated, or automatically re-ingested. Conversation Memory remains
 responsible for relative-time normalization, entity fallback, provenance
 projection, MAGMA writes, graph/vector persistence, and its completed
 checkpoint.
+
+Chinese parsing remains entirely inside the Conversation Memory boundary.
+Dream carries verbatim text and V2 provenance only; it does not import or call
+the parser or interpret `temporal_mentions`.
 
 Malformed records return stable error codes and remain pending. Dream does not
 silently discard or reinterpret source content.
@@ -225,4 +232,7 @@ git -C Conversation_Memory/upstream/MAGMA diff --stat
 
 The isolated-environment Dream run executes the real MAGMA integration test.
 All fixtures use temporary production-format Cold Draft files and synthetic
-conversation text.
+conversation text. Conversation Memory also owns a Chinese temporal E2E that
+passes a production-format V2 Cold segment through this exact manual Dream
+path, verifies durable/consumed ordering, three bounded Chinese recalls,
+duplicate-run idempotency, and restart persistence.

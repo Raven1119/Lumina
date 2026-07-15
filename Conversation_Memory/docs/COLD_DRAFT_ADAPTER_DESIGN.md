@@ -61,7 +61,8 @@ passed directly as the event timestamp—there is no session timestamp or
 - stable `evidence_id`;
 - role and original text;
 - deterministic entities;
-- normalized temporal references;
+- canonical normalized `temporal_mentions` and MAGMA-style
+  `dates_mentioned`;
 - provenance containing segment, conversation, turn, timestamp, timezone,
   timezone source, and ingestion version.
 
@@ -73,17 +74,24 @@ Hugging Face offline mode.
 
 ## Time normalization
 
-The adapter recognizes `today`, `yesterday`, `tomorrow`, `last week`, and
-`next week` case-insensitively. Each expression is resolved from its own source
-turn's aware timestamp after conversion into that turn's source timezone. The
+The private Lumina-owned parser keeps MAGMA's relative, directed-weekday, and
+absolute-date matching order. Its only cross-module entry point accepts a
+`ColdDraftTurn`; unused query/question/compatibility APIs are not retained.
+Supported English and Chinese write-time forms are documented in
+`CHINESE_TEMPORAL_PARSER.md`.
+
+Each expression is resolved from its own source turn's aware timestamp after
+conversion into that turn's source timezone. Local day/week/month/year calendar
+boundaries are serialized as aware UTC half-open `[start, end)` intervals. The
 original expression, reference timestamp, reference timezone, normalized
-start/end, method, and confidence are preserved.
-The original content is never replaced.
+start/end, method, confidence, and language are preserved. The original
+content and MAGMA event timestamp are never replaced by a mentioned date.
 
 Offset strings such as `+08:00` remain supported for legacy schema V1. Native
 V2 uses validated IANA names, allowing midnight and DST boundaries to follow
 the correct local calendar while the aware timestamp remains authoritative for
-the instant.
+the instant. Longest non-overlapping spans win and all retained mentions return
+in source order. Invalid, ambiguous, or unsupported forms do not invent dates.
 
 ## Entity fallback
 
@@ -96,23 +104,17 @@ construction; the integration test verifies an ENTITY link for Raven.
 ## Recall boundary
 
 `RecallPolicy` requires positive `top_k`, `max_chars`,
-`max_evidence_items`, `max_graph_depth`, and `max_nodes`. Optional
-`min_relevance` is a finite cosine threshold in `[-1.0, 1.0]`; it defaults to
-`None`. `max_relevance_candidates` is bounded to 1–20. The backend receives the
-graph budgets. The facade then:
+`max_evidence_items`, `max_graph_depth`, and `max_nodes`. The backend receives
+the graph budgets. The facade then:
 
 1. discards candidates without valid provenance/stable evidence IDs;
 2. sorts deterministically by descending score, timestamp, and evidence ID;
-3. when enabled, scores at most `max_relevance_candidates` with captured query
-   and persisted evidence vectors, then filters without reordering;
-4. applies `min(top_k, max_evidence_items)`;
-5. truncates rendered evidence to `max_chars`;
-6. returns only frozen Lumina DTOs and truncation metadata.
+3. applies `min(top_k, max_evidence_items)`;
+4. truncates rendered evidence to `max_chars`;
+5. returns only frozen Lumina DTOs and truncation metadata.
 
-Backend scores and vectors are private. Public evidence may contain only the
-local cosine `relevance_score`. If the enabled scorer is unavailable, recall
-returns `relevance_unavailable` rather than silently bypassing the gate. If all
-candidates are filtered, recall returns a valid empty context without an error.
+The earlier cosine threshold experiment is not part of this path; its historical
+result is recorded in `RELEVANCE_GATE_DESIGN.md`. Backend scores remain private.
 
 There is no Cold Draft scan during recall. MAGMA UUIDs are never exposed as
 evidence identifiers.

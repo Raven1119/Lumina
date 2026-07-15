@@ -84,10 +84,8 @@ the V2 schema does not introduce a competing checkpoint.
 
 Recall ordering does not depend on MAGMA UUIDs. It uses the private descending
 backend score, then source timestamp, then the stable SHA-256 evidence ID. The
-same backend result set therefore produces the same Lumina ordering. When the
-optional local relevance gate is enabled, cosine is used only to filter; it
-does not reorder survivors. Backend scores and vectors are not exposed by
-`MemoryEvidence`.
+same backend result set therefore produces the same Lumina ordering. Backend
+scores and vectors are not exposed by `MemoryEvidence`.
 
 ## Manual production Cold Draft transition
 

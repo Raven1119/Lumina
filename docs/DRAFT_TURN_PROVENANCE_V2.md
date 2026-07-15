@@ -90,7 +90,11 @@ mislabeling either.
 Conversation Memory passes each turn timestamp to its corresponding MAGMA
 event. Relative expressions are resolved after converting the instant into
 that turn's source timezone, so midnight and daylight-saving boundaries follow
-the named local calendar. Recall `SourceProvenance` includes
+the named local calendar. Chinese and English temporal expressions use the same
+Lumina-owned half-open aware-UTC interval contract; event time remains the turn
+`created_at`, while mentioned time is retained separately in
+`temporal_mentions`/`dates_mentioned`. Directed Chinese weekdays use previous
+or next calendar-week semantics. Recall `SourceProvenance` includes
 `timezone_source` in addition to segment, conversation, turn, timestamp,
 timezone, and ingestion version.
 
@@ -118,7 +122,7 @@ without the new field also projects as `legacy_segment_fallback`.
 
 ## Current boundaries
 
-The relevance gate remains optional and disabled by default with
-`min_relevance=None`. Recall is not injected into `/api/chat`. There is no
-automatic migration, summary compression, physical Hot truncation, automatic
-Dream, or full conversation/thread identity.
+The rejected cosine relevance experiment is not part of the Recall path.
+Recall is not injected into `/api/chat`. There is no automatic migration,
+summary compression, physical Hot truncation, automatic Dream, or full
+conversation/thread identity.
