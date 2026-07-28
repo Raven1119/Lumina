@@ -1,6 +1,12 @@
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
+from Conversation_Memory.adapter.models import (
+    MemoryContext,
+    MemoryEvidence,
+    RecallPolicy,
+    SourceProvenance,
+)
 from core.cold_draft_store import ColdDraftStore
 from core.contracts import ChatRequest, MemoryTurn
 from core.draft_context import DraftContextProvider
@@ -29,6 +35,30 @@ class _FailingModel:
 
     def generate(self, recent_context, user_message):
         raise RuntimeError("provider private URL and key")
+
+
+class _RecordingRetriever:
+    def __init__(self, context=None, error: Exception | None = None) -> None:
+        self.context = context
+        self.error = error
+        self.calls: list[tuple[str, RecallPolicy]] = []
+
+    def recall(self, query, policy):
+        self.calls.append((query, policy))
+        if self.error is not None:
+            raise self.error
+        return self.context
+
+
+class _LeakyMemoryContext:
+    def __init__(self, evidence: MemoryEvidence) -> None:
+        self.rendered_text = "safe bounded memory"
+        self.evidence = (evidence,)
+        self.backend_score = "secret-backend-score"
+        self.internal_marker = "secret-internal-marker"
+
+    def __repr__(self) -> str:
+        return "secret-context-repr"
 
 
 class _SequenceClock:
@@ -180,3 +210,160 @@ def test_missing_or_invalid_client_timezone_uses_configured_default(tmp_path: Pa
     turns = hot.list_recent(4)
     assert all(turn.source_timezone == "Asia/Shanghai" for turn in turns)
     assert all(turn.timezone_source == "configured_default" for turn in turns)
+
+
+def test_recall_is_disabled_by_default_and_draft_behavior_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    model = _RecordingModel()
+    retriever = _RecordingRetriever(
+        MemoryContext("hello", rendered_text="must not be used")
+    )
+    runtime, hot, _ = _runtime(
+        tmp_path,
+        model,
+        memory_retriever=retriever,
+        recall_policy=RecallPolicy(),
+    )
+
+    runtime.handle_chat(ChatRequest(message="hello"))
+
+    assert retriever.calls == []
+    assert model.contexts == [[]]
+    assert model.messages == ["hello"]
+    assert [turn.text for turn in hot.list_recent(2)] == ["hello", "model answer"]
+
+
+def test_enabled_recall_injects_only_bounded_rendered_text(
+    tmp_path: Path,
+) -> None:
+    model = _RecordingModel()
+    policy = RecallPolicy()
+    retriever = _RecordingRetriever(
+        MemoryContext("remember", rendered_text="bounded memory text")
+    )
+    runtime, hot, _ = _runtime(
+        tmp_path,
+        model,
+        recall_enabled=True,
+        memory_retriever=retriever,
+        recall_policy=policy,
+    )
+
+    result = runtime.handle_chat(ChatRequest(message="remember"))
+
+    assert retriever.calls == [("remember", policy)]
+    assert model.contexts == [[{
+        "role": "user",
+        "text": (
+            "[Relevant conversation memory]\n"
+            "bounded memory text\n"
+            "[/Relevant conversation memory]"
+        ),
+    }]]
+    assert model.messages == ["remember"]
+    assert result.recent_context == []
+    assert [turn.text for turn in hot.list_recent(2)] == [
+        "remember",
+        "model answer",
+    ]
+    assert "[Relevant conversation memory]" not in (
+        tmp_path / "hot.jsonl"
+    ).read_text(encoding="utf-8")
+
+
+def test_enabled_empty_recall_is_normal_chat_without_empty_block(
+    tmp_path: Path,
+) -> None:
+    model = _RecordingModel()
+    retriever = _RecordingRetriever(
+        MemoryContext("hello", rendered_text=" \n\t")
+    )
+    runtime, _, _ = _runtime(
+        tmp_path,
+        model,
+        recall_enabled=True,
+        memory_retriever=retriever,
+        recall_policy=RecallPolicy(),
+    )
+
+    result = runtime.handle_chat(ChatRequest(message="hello"))
+
+    assert len(retriever.calls) == 1
+    assert model.contexts == [[]]
+    assert result.response.response.text == "model answer"
+
+
+def test_recall_exception_falls_back_to_normal_model_and_draft_flow(
+    tmp_path: Path,
+) -> None:
+    model = _RecordingModel()
+    retriever = _RecordingRetriever(
+        error=RuntimeError("private recall path and traceback")
+    )
+    runtime, hot, _ = _runtime(
+        tmp_path,
+        model,
+        recall_enabled=True,
+        memory_retriever=retriever,
+        recall_policy=RecallPolicy(),
+    )
+
+    result = runtime.handle_chat(ChatRequest(message="hello"))
+
+    assert len(retriever.calls) == 1
+    assert model.contexts == [[]]
+    assert result.response.response.text == "model answer"
+    assert [turn.text for turn in hot.list_recent(2)] == [
+        "hello",
+        "model answer",
+    ]
+    assert "private recall" not in str(result)
+    assert "traceback" not in str(result)
+
+
+def test_recall_dto_and_internal_fields_cannot_leak_into_model_or_draft(
+    tmp_path: Path,
+) -> None:
+    provenance = SourceProvenance(
+        segment_id="secret-segment-id",
+        conversation_id="secret-conversation-id",
+        turn_id="secret-turn-id",
+        source_timestamp="2026-07-15T00:00:00+00:00",
+        source_timezone="UTC",
+        ingestion_version="secret-ingestion-version",
+    )
+    evidence = MemoryEvidence(
+        evidence_id="secret-evidence-id",
+        text="secret-raw-evidence-text",
+        timestamp="2026-07-15T00:00:00+00:00",
+        provenance=provenance,
+    )
+    model = _RecordingModel()
+    retriever = _RecordingRetriever(_LeakyMemoryContext(evidence))
+    runtime, _, _ = _runtime(
+        tmp_path,
+        model,
+        recall_enabled=True,
+        memory_retriever=retriever,
+        recall_policy=RecallPolicy(),
+    )
+
+    runtime.handle_chat(ChatRequest(message="hello"))
+
+    model_input = repr(model.contexts)
+    draft_text = (tmp_path / "hot.jsonl").read_text(encoding="utf-8")
+    assert "safe bounded memory" in model_input
+    for secret in (
+        "secret-evidence-id",
+        "secret-segment-id",
+        "secret-conversation-id",
+        "secret-turn-id",
+        "secret-ingestion-version",
+        "secret-raw-evidence-text",
+        "secret-backend-score",
+        "secret-internal-marker",
+        "secret-context-repr",
+    ):
+        assert secret not in model_input
+        assert secret not in draft_text

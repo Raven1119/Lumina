@@ -1,0 +1,37 @@
+{
+	"nodes":[
+		{"id":"66374fe45fbaa988","type":"text","text":"用户消息","x":-125,"y":-30,"width":250,"height":60},
+		{"id":"2455779f954a949e","type":"text","text":"构建上下文","x":-123,"y":139,"width":250,"height":60},
+		{"id":"b7639725ac9857af","type":"text","text":"系统提示词 + 可用工具说明","x":300,"y":139,"width":250,"height":81},
+		{"id":"d7b290597f574633","type":"text","text":"Thought：分析当前问题，决定下一步","x":-124,"y":280,"width":250,"height":60},
+		{"id":"da38779bf910a5b4","type":"text","text":"Action：选择并调用工具","x":-123,"y":442,"width":250,"height":60},
+		{"id":"d373fe3e83aa3aa1","type":"text","text":"Observation：读取工具返回结果","x":-125,"y":632,"width":250,"height":60},
+		{"id":"840b3dabd36f84a2","type":"text","text":"Final Answer","x":-129,"y":806,"width":250,"height":60},
+		{"id":"1e7c170a7c9d716a","type":"text","text":"将用户消息、工具结果和回答写入会话记录","x":-137,"y":984,"width":250,"height":60},
+		{"id":"7b7191628a2d8bdb","type":"text","text":"记忆","x":-1040,"y":680,"width":250,"height":60},
+		{"id":"9ed9fbc992aecdc3","x":-860,"y":294,"width":250,"height":60,"type":"text","text":"Experience"},
+		{"id":"39f886377064ea9c","x":-790,"y":384,"width":250,"height":60,"type":"text","text":"Skill"},
+		{"id":"c71eb9ef5ab45475","x":-700,"y":454,"width":250,"height":60,"type":"text","text":"Knowledge"},
+		{"id":"b99c679a15ada9fe","x":-640,"y":560,"width":250,"height":60,"type":"text","text":"Self"}
+	],
+	"edges":[
+		{"id":"cca99e553fd8180e","fromNode":"66374fe45fbaa988","fromSide":"bottom","toNode":"2455779f954a949e","toSide":"top"},
+		{"id":"6d9b8853b4bb4ca2","fromNode":"2455779f954a949e","fromSide":"bottom","toNode":"d7b290597f574633","toSide":"top"},
+		{"id":"780146511dc170f9","fromNode":"d7b290597f574633","fromSide":"bottom","toNode":"da38779bf910a5b4","toSide":"top"},
+		{"id":"4357b20970074d1b","fromNode":"da38779bf910a5b4","fromSide":"bottom","toNode":"d373fe3e83aa3aa1","toSide":"top"},
+		{"id":"21507eed4ab4221d","fromNode":"d373fe3e83aa3aa1","fromSide":"right","toNode":"d7b290597f574633","toSide":"right"},
+		{"id":"120881333e444a2b","fromNode":"b7639725ac9857af","fromSide":"left","toNode":"2455779f954a949e","toSide":"right"},
+		{"id":"99baeb78377725ac","fromNode":"d373fe3e83aa3aa1","fromSide":"bottom","toNode":"840b3dabd36f84a2","toSide":"top"},
+		{"id":"3d5da7cc6e202aa2","fromNode":"840b3dabd36f84a2","fromSide":"bottom","toNode":"1e7c170a7c9d716a","toSide":"top"},
+		{"id":"46f7bc209aa6fc4a","fromNode":"1e7c170a7c9d716a","fromSide":"left","toNode":"7b7191628a2d8bdb","toSide":"bottom"},
+		{"id":"5f64b85fcc1e4f92","fromNode":"7b7191628a2d8bdb","fromSide":"left","toNode":"2455779f954a949e","toSide":"left"},
+		{"id":"ccd5d191be99b2de","fromNode":"7b7191628a2d8bdb","fromSide":"top","toNode":"9ed9fbc992aecdc3","toSide":"bottom"},
+		{"id":"9936927e1ba37870","fromNode":"9ed9fbc992aecdc3","fromSide":"top","toNode":"d7b290597f574633","toSide":"left"},
+		{"id":"6032ed3eb4e15a17","fromNode":"7b7191628a2d8bdb","fromSide":"top","toNode":"39f886377064ea9c","toSide":"bottom"},
+		{"id":"8333a4dbc3590a79","fromNode":"39f886377064ea9c","fromSide":"top","toNode":"d7b290597f574633","toSide":"left"},
+		{"id":"2738863dccd941bf","fromNode":"7b7191628a2d8bdb","fromSide":"top","toNode":"c71eb9ef5ab45475","toSide":"bottom"},
+		{"id":"213d4bfd104d16a5","fromNode":"c71eb9ef5ab45475","fromSide":"top","toNode":"d7b290597f574633","toSide":"left"},
+		{"id":"55e4d647735eabb0","fromNode":"7b7191628a2d8bdb","fromSide":"top","toNode":"b99c679a15ada9fe","toSide":"bottom"},
+		{"id":"2f010057a4c2d68a","fromNode":"b99c679a15ada9fe","fromSide":"top","toNode":"d7b290597f574633","toSide":"left"}
+	]
+}

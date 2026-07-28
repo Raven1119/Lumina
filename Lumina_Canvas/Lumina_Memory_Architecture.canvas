@@ -1,0 +1,39 @@
+{
+	"nodes":[
+		{"id":"1000000000000001","type":"text","text":"用户消息","x":-125,"y":-700,"width":250,"height":60},
+		{"id":"1000000000000002","type":"text","text":"构建 Hot Draft 逻辑上下文","x":-125,"y":-560,"width":250,"height":60},
+		{"id":"1000000000000003","type":"text","text":"ModelClient 生成回答","x":-125,"y":-420,"width":250,"height":60},
+		{"id":"1000000000000004","type":"text","text":"写入 user / assistant turns","x":-125,"y":-280,"width":250,"height":60},
+		{"id":"1000000000000005","type":"text","text":"Hot Draft","x":-125,"y":-140,"width":250,"height":60},
+		{"id":"1000000000000006","type":"text","text":"Cold-first 成对压缩","x":-125,"y":0,"width":250,"height":60},
+		{"id":"1000000000000007","type":"text","text":"Cold Draft（pending_digest）","x":-125,"y":140,"width":250,"height":60},
+		{"id":"2000000000000001","type":"text","text":"用户手动启动 Dream","x":-1775,"y":320,"width":250,"height":60},
+		{"id":"2000000000000002","type":"text","text":"Dream","x":-1475,"y":320,"width":250,"height":60},
+		{"id":"2000000000000003","type":"text","text":"Conversation Memory Adapter","x":-1175,"y":320,"width":250,"height":60},
+		{"id":"2000000000000004","type":"text","text":"MAGMA","x":-875,"y":320,"width":250,"height":60},
+		{"id":"2000000000000005","type":"text","text":"completed checkpoint","x":-575,"y":320,"width":250,"height":60},
+		{"id":"2000000000000006","type":"text","text":"Cold Draft（consumed）","x":-275,"y":320,"width":250,"height":60},
+		{"id":"3000000000000001","type":"text","text":"Recall 查询","x":325,"y":520,"width":250,"height":60},
+		{"id":"3000000000000002","type":"text","text":"有界 Recall","x":625,"y":520,"width":250,"height":60},
+		{"id":"3000000000000003","type":"text","text":"MemoryContext","x":925,"y":520,"width":250,"height":60},
+		{"id":"3000000000000004","type":"text","text":"尚未接入 /api/chat","x":1225,"y":520,"width":250,"height":60}
+	],
+	"edges":[
+		{"id":"8000000000000001","fromNode":"1000000000000001","fromSide":"bottom","toNode":"1000000000000002","toSide":"top"},
+		{"id":"8000000000000002","fromNode":"1000000000000002","fromSide":"bottom","toNode":"1000000000000003","toSide":"top"},
+		{"id":"8000000000000003","fromNode":"1000000000000003","fromSide":"bottom","toNode":"1000000000000004","toSide":"top"},
+		{"id":"8000000000000004","fromNode":"1000000000000004","fromSide":"bottom","toNode":"1000000000000005","toSide":"top"},
+		{"id":"8000000000000005","fromNode":"1000000000000005","fromSide":"bottom","toNode":"1000000000000006","toSide":"top"},
+		{"id":"8000000000000006","fromNode":"1000000000000006","fromSide":"bottom","toNode":"1000000000000007","toSide":"top"},
+		{"id":"8000000000000007","fromNode":"2000000000000001","fromSide":"right","toNode":"2000000000000002","toSide":"left"},
+		{"id":"8000000000000008","fromNode":"1000000000000007","fromSide":"left","toNode":"2000000000000002","toSide":"top"},
+		{"id":"8000000000000009","fromNode":"2000000000000002","fromSide":"right","toNode":"2000000000000003","toSide":"left"},
+		{"id":"8000000000000010","fromNode":"2000000000000003","fromSide":"right","toNode":"2000000000000004","toSide":"left"},
+		{"id":"8000000000000011","fromNode":"2000000000000004","fromSide":"right","toNode":"2000000000000005","toSide":"left"},
+		{"id":"8000000000000012","fromNode":"2000000000000005","fromSide":"right","toNode":"2000000000000006","toSide":"left"},
+		{"id":"8000000000000013","fromNode":"3000000000000001","fromSide":"right","toNode":"3000000000000002","toSide":"left"},
+		{"id":"8000000000000014","fromNode":"2000000000000004","fromSide":"bottom","toNode":"3000000000000002","toSide":"top"},
+		{"id":"8000000000000015","fromNode":"3000000000000002","fromSide":"right","toNode":"3000000000000003","toSide":"left"},
+		{"id":"8000000000000016","fromNode":"3000000000000003","fromSide":"right","toNode":"3000000000000004","toSide":"left"}
+	]
+}

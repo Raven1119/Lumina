@@ -37,7 +37,11 @@
   MAGMA unchanged;
 - bounded Recall without the rejected cosine threshold experiment. The
   experiment found no recommended threshold, so its policy fields, vector
-  interception, scorer, calibration CLI, and E2E branch were removed.
+  interception, scorer, calibration CLI, and E2E branch were removed;
+- optional production Recall injection into model requests, disabled by
+  default. When enabled, it injects only the existing bounded
+  `MemoryContext.rendered_text`; empty results or initialization/Recall failures
+  fall back to normal chat, and the injected block is not persisted to Draft.
 
 The active Cold Draft preservation contract is reconciled with the MVP
 implementation in `docs/COLD_DRAFT.md`.
@@ -53,8 +57,9 @@ implementation in `docs/COLD_DRAFT.md`.
 - Cold Draft pending segments can be consumed only by the explicit developer
   Dream command; there is no automatic, startup, background, or chat-time
   consumer;
-- Conversation Memory recall exists only behind its isolated Lumina-owned
-  facade and is not injected into the production chat/model request;
+- Conversation Memory Recall remains behind its Lumina-owned facade. Its public
+  evidence projection is still anchor-only, so graph-traversal expansion
+  results do not enter `MemoryContext`;
 - legacy Hot/Cold records remain role/text or segment-time only; they are not
   migrated, and Dream marks their deterministic segment-time projection as
   `legacy_segment_fallback`;
@@ -70,6 +75,11 @@ implementation in `docs/COLD_DRAFT.md`.
 - local Draft files have no multi-process transaction or writer lock;
 - Dream and the file-backed Conversation Memory checkpoint assume one active
   writer;
+- Recall remains a fixed bounded pipeline without a no/light/deep scheduling
+  layer, evidence-sufficiency escalation, or edge/depth selection;
+- Recall has no post-retrieval Evidence Organizer for duplicate merging,
+  current-versus-historical state separation, conflict presentation, timeline
+  organization, or evidence sufficiency;
 - request size and total logical context have no application-level global bound;
 - Hot and Cold JSONL reads scan their files rather than using an indexed store.
 

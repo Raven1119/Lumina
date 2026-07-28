@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from pathlib import Path
 
 from ingestion.entities import extract_entities
 from ingestion.state_store import IngestionStateStore
@@ -37,7 +38,7 @@ class MagmaMemoryAdapter:
     def create_real(
         cls,
         persist_dir,
-        state_store: IngestionStateStore,
+        state_store: IngestionStateStore | None = None,
         **kwargs,
     ) -> "MagmaMemoryAdapter":
         from . import backend as backend_module
@@ -45,6 +46,10 @@ class MagmaMemoryAdapter:
             backend = backend_module.RealMagmaBackend(persist_dir)
         except Exception:
             backend = backend_module.UnavailableMemoryBackend()
+        if state_store is None:
+            state_store = IngestionStateStore(
+                Path(persist_dir).parent / "ingestion_state.json"
+            )
         return cls(backend, state_store, **kwargs)
 
     def _evidence_id(self, segment_id: str, turn_id: str) -> str:

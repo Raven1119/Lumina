@@ -1,42 +1,73 @@
-# Lumina Cold Draft MVP
+# Lumina
 
-Lumina is currently a small local conversational runtime. This checkout proves
-one synchronous chat path with mock or explicitly configured MiniMax responses,
-restart-persistent Hot Draft turns, Cold Draft segments, and Cold-first logical
-compaction.
+Lumina is a local-first conversational runtime built around one continuity
+invariant: conversation material must be durably preserved before it leaves the
+live context.
 
-## What Works
+The synchronous chat path is intentionally small:
 
-- `GET /api/status`
-- `POST /api/chat`
-- browser chat frontend at `/`
-- deterministic mock mode by default
-- explicit MiniMax Anthropic-compatible model mode
-- safe provider fallback
-- append-only Hot Draft JSONL with recent multi-turn context
-- pending/consumed Cold Draft JSONL segments
-- pair-aware, Cold-first compaction with restart-persistent state
+```text
+Browser -> FastAPI -> MessageRuntime
+-> optional bounded Recall injection
+-> ModelClient
+-> Hot Draft -> Cold-first logical compaction -> Cold Draft
+```
 
-Compaction bounds the recent raw-turn tail, but the model-facing preservation
-markers and physical Hot Draft file do not yet have global size bounds. Draft
-write failures are handled without exposing internals or breaking the public
-response; persistence is not transactional across the user/assistant pair.
+An offline memory path is also implemented:
 
-This MVP is not long-term memory. It does not include Conversation Memory,
-Conversation Graph, Dream, MAGMA, recall, embeddings, vector search, PostgreSQL,
-agents, tasks, or background workers.
+```text
+manual Dream command
+-> pending Cold Draft segments
+-> Lumina Conversation Memory adapter
+-> unmodified upstream MAGMA
+-> durable checkpoint
+-> Cold Draft segment consumed
+```
 
-The non-lossy Draft boundary and its current limitations are documented in
-[`docs/COLD_DRAFT.md`](docs/COLD_DRAFT.md). The current product direction is in
-[`docs/final_goal.md`](docs/final_goal.md).
+Bounded Recall works behind a Lumina-owned facade, including restart recovery
+and stable evidence projection. Recall can be optionally injected into the
+production model request, but it remains disabled by default. When enabled,
+only bounded `MemoryContext.rendered_text` becomes model-visible; empty results
+or Recall initialization/execution failures fall back to ordinary chat. The
+injected memory block is not persisted into Hot or Cold Draft.
 
-## Install
+Current public Recall evidence remains anchor-only. MAGMA graph traversal runs
+internally, but traversal paths, narrative context, and expanded non-anchor
+nodes are not yet projected into `MemoryContext`.
+
+## Current Capabilities
+
+- same-origin browser chat, `GET /api/status`, and `POST /api/chat`;
+- deterministic mock mode by default and explicit MiniMax
+  Anthropic-compatible model mode;
+- safe fallback when real-model configuration or a provider call fails;
+- append-only, restart-persistent Hot Draft turns;
+- native per-turn provenance with stable IDs, distinct aware UTC timestamps,
+  and truthful IANA source timezones;
+- pair-aware Cold-first compaction into Cold Draft segments whose source content
+  stays immutable across the owner-controlled pending/consumed transition;
+- manually triggered, synchronous, bounded Dream ingestion;
+- pinned, unmodified upstream MAGMA with durable
+  `(segment_id, ingestion_version)` checkpoints;
+- one MAGMA event per conversation turn, with idempotent retry and
+  memory-complete-before-consumed ordering;
+- bounded Recall with stable evidence IDs, provenance, safe empty/failure
+  behavior, and deterministic English/Chinese temporal normalization;
+- default-disabled, opt-in Recall injection that exposes only bounded
+  `MemoryContext.rendered_text` to the model and never persists the injected
+  memory block into Draft.
+
+Dream is never run by chat, application startup, or a background worker.
+Recall does not scan Cold Draft, and the removed cosine relevance threshold is
+not part of the production path.
+
+## Install and Run Chat
+
+Install the root chat/test dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
-
-## Run In Mock Mode
 
 Mock mode requires no configuration:
 
@@ -44,36 +75,120 @@ Mock mode requires no configuration:
 python -m uvicorn core.main:app --reload
 ```
 
-Open `http://127.0.0.1:8000/` for the chat frontend. API documentation remains
-available at `http://127.0.0.1:8000/docs`.
+Open `http://127.0.0.1:8000/` for the chat frontend. API documentation is at
+`http://127.0.0.1:8000/docs`.
 
 ## Run With MiniMax
 
-Create an ignored `.env.local` from `.env.example`, set
-`LUMINA_MODEL_MODE=real`, and provide the MiniMax Anthropic-compatible provider,
-key, base URL, and model name. Existing process environment variables take
-precedence over `.env.local`. Restart the server after changing the file.
+Copy the ignored `.env.example` to `.env.local`, set
+`LUMINA_MODEL_MODE=real`, and provide the MiniMax Anthropic-compatible
+provider, key, base URL, and model name. Existing process environment variables
+take precedence over `.env.local`; restart the server after changing the file.
 
-No provider request is made at import or startup. A request happens only when a
-chat message is submitted. Provider failure returns a safe fallback response.
+No provider request is made during import or startup. A provider request occurs
+only after a chat message is submitted. Provider failure returns a safe
+fallback response without exposing credentials, provider bodies, paths, or
+tracebacks.
 
-## Draft Data
+## Enable Optional Conversation Memory Recall
 
-The default files are:
+Recall is disabled by default. To enable the existing bounded Recall injection,
+set the following in `.env.local` or the process environment and restart the
+server:
+
+```bash
+LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=true
+```
+
+When enabled:
+
+- the current user message is sent through the existing Lumina-owned
+  `MemoryRetriever`;
+- only non-empty, bounded `MemoryContext.rendered_text` is inserted into the
+  model context using fixed boundary markers;
+- evidence DTOs, provenance objects, backend scores, graph objects, MAGMA UUIDs,
+  embeddings, local paths, and raw Draft records are not injected;
+- empty Recall, unavailable dependencies, initialization failure, corruption,
+  or execution failure falls back to ordinary chat;
+- no Dream or ingestion work runs during `/api/chat`;
+- the injected memory block is not written into Hot or Cold Draft.
+
+This is currently an anchor-only Recall baseline. Enabling the switch does not
+mean that MAGMA graph-traversal expansions are exposed to the model.
+
+## Run Manual Dream Ingestion
+
+From the repository root, using the prepared Conversation Memory environment
+when real MAGMA dependencies are required:
+
+```bash
+python -m Dream.runner --max-segments 10
+```
+
+The run is bounded and serial. It processes only eligible `pending_digest`
+segments and marks a segment consumed only after memory persistence and its
+durable checkpoint succeed. Re-running the same ingestion version converges
+without duplicate logical memory.
+
+See
+[`Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md`](Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md)
+for command options, environment overrides, and recovery semantics.
+
+## Local Data
+
+Default private runtime data is stored under:
 
 ```text
 data/draft/hot_drafts.jsonl
 data/draft/cold_drafts.jsonl
 data/draft/hot_draft_compaction_state.json
+data/conversation_memory/ingestion_state.json
+data/conversation_memory/magma/
 ```
 
-`data/` and `.env.local` are ignored by Git. Preserve them when changing code.
+`data/` and `.env.local` are ignored by Git and must be preserved during code
+or documentation maintenance. Current JSONL stores assume one active writer.
 
-## Test
+Logical compaction bounds the recent raw-turn tail, but physical Hot Draft
+remains append-only and accumulated preservation markers leave total
+model-facing context without a global cap.
+
+## Validation
+
+Run the standard suites with synthetic data and temporary paths:
 
 ```bash
 python -m pytest -q
+python -m pytest Conversation_Memory/tests -q
+python -m pytest Dream/tests -q
+git diff --check
 ```
 
-Tests use fake HTTP transports and temporary Draft paths. They never call a real
-provider.
+Changes that affect the real MAGMA path should also run the isolated Recall
+acceptance harness:
+
+```powershell
+.\Conversation_Memory\.venv\Scripts\python.exe -m scripts.recall_e2e_test
+```
+
+The harness uses a marker-owned sandbox and does not read or modify default
+production Draft or Conversation Memory data. Details are in
+[`docs/RECALL_E2E_ACCEPTANCE.md`](docs/RECALL_E2E_ACCEPTANCE.md).
+
+## Project Boundaries
+
+- [`docs/final_goal.md`](docs/final_goal.md) states the product direction and
+  next production objective.
+- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) is the authority for
+  completed, partial, and not-started implementation facts.
+- [`docs/COLD_DRAFT.md`](docs/COLD_DRAFT.md) defines the active Cold-first Draft
+  contract.
+- [`docs/DRAFT_TURN_PROVENANCE_V2.md`](docs/DRAFT_TURN_PROVENANCE_V2.md) defines
+  native turn identity and time provenance.
+- [`Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`](Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md)
+  defines memory provenance and retry guarantees.
+
+Conversation Graph, PostgreSQL memory, ContextBuilder, ToolRuntime, autonomous
+Dream, schedulers, workers, agents, tasks, dynamic Recall scheduling, and an
+Evidence Organizer are not implemented. MAGMA graph-traversal expansions are
+not yet projected into public Recall evidence.

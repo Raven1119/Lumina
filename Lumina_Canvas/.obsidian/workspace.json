@@ -1,0 +1,214 @@
+{
+  "main": {
+    "id": "95b8d10415426a1e",
+    "type": "split",
+    "children": [
+      {
+        "id": "713c737cc075ec9c",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "d5776717bac1e9fc",
+            "type": "leaf",
+            "state": {
+              "type": "canvas",
+              "state": {
+                "file": "Lumina_Memory_Architecture.canvas",
+                "viewState": {
+                  "x": 1069.1867613023326,
+                  "y": 433.86100384496905,
+                  "zoom": -0.3900995975289418
+                }
+              },
+              "icon": "lucide-layout-dashboard",
+              "title": "Lumina_Memory_Architecture"
+            }
+          }
+        ]
+      },
+      {
+        "id": "e6623ad8a55ea5b5",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "594fb18cae3dde42",
+            "type": "leaf",
+            "state": {
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "关系图谱"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "de10a760869f8552",
+    "type": "split",
+    "children": [
+      {
+        "id": "7f3d5cd0b69eb086",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "37b5848cb39bfbf8",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "01c699888730ea19",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "c2772c9897e1e40d",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "6bbdbcd11a42717d",
+    "type": "split",
+    "children": [
+      {
+        "id": "924f40adb7599007",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4a5eb3a4cdb1f441",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "Lumina_ReAct.canvas",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Lumina_ReAct 的反向链接列表"
+            }
+          },
+          {
+            "id": "1c8fd923614f86e9",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "Lumina_ReAct.canvas",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Lumina_ReAct 的出链列表"
+            }
+          },
+          {
+            "id": "6554b79af7897271",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "644cb803c60316c0",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "2eec0fb4505026dd",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "Lumina_ReAct.canvas",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Lumina_ReAct 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "d5776717bac1e9fc",
+  "lastOpenFiles": [
+    "Lumina_Memory_Architecture.canvas",
+    "Lumina_MAGMA.canvas",
+    "Lumina_ReAct 1.canvas",
+    "Lumina_ReAct%201%283%29.canvas",
+    "Lumina_ReAct.canvas",
+    "欢迎.md"
+  ]
+}

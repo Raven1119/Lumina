@@ -1,5 +1,7 @@
 """Single synchronous chat path for the Cold Draft MVP."""
 
+from typing import TYPE_CHECKING
+
 from core.contracts import (
     AssistantResponse,
     ChatRequest,
@@ -18,6 +20,14 @@ from core.turn_provenance import (
     resolve_source_timezone,
 )
 
+if TYPE_CHECKING:
+    from Conversation_Memory.adapter.interfaces import MemoryRetriever
+    from Conversation_Memory.adapter.models import RecallPolicy
+
+
+_MEMORY_CONTEXT_START = "[Relevant conversation memory]"
+_MEMORY_CONTEXT_END = "[/Relevant conversation memory]"
+
 
 class MessageRuntime:
     def __init__(
@@ -30,11 +40,17 @@ class MessageRuntime:
         clock: Clock | None = None,
         turn_id_factory: TurnIdFactory | None = None,
         default_timezone: str = "UTC",
+        recall_enabled: bool = False,
+        memory_retriever: "MemoryRetriever | None" = None,
+        recall_policy: "RecallPolicy | None" = None,
     ) -> None:
         self._hot_store = hot_store
         self._draft_context_provider = draft_context_provider
         self._model_client = model_client
         self._compactor = compactor
+        self._recall_enabled = recall_enabled
+        self._memory_retriever = memory_retriever
+        self._recall_policy = recall_policy
         self._turn_factory = DraftTurnFactory(
             clock=clock,
             id_factory=turn_id_factory,
@@ -55,8 +71,9 @@ class MessageRuntime:
             timezone_source=timezone_source,
         )
         recent_context, context_event = self._load_context()
+        model_context = self._with_memory_context(recent_context, user_message)
         assistant_text, response_type, phase, model_event = self._generate(
-            recent_context,
+            model_context,
             user_message,
         )
         assistant_turn = self._turn_factory.create(
@@ -90,6 +107,34 @@ class MessageRuntime:
             return self._draft_context_provider.get_recent_context(), "draft_context_read"
         except Exception:
             return [], "draft_context_read_failed"
+
+    def _with_memory_context(
+        self,
+        recent_context: list[dict[str, str]],
+        user_message: str,
+    ) -> list[dict[str, str]]:
+        if (
+            not self._recall_enabled
+            or self._memory_retriever is None
+            or self._recall_policy is None
+        ):
+            return recent_context
+        try:
+            memory_context = self._memory_retriever.recall(
+                user_message,
+                self._recall_policy,
+            )
+            rendered_text = memory_context.rendered_text
+        except Exception:
+            return recent_context
+        if not isinstance(rendered_text, str) or not rendered_text.strip():
+            return recent_context
+        memory_block = (
+            f"{_MEMORY_CONTEXT_START}\n"
+            f"{rendered_text}\n"
+            f"{_MEMORY_CONTEXT_END}"
+        )
+        return [*recent_context, {"role": "user", "text": memory_block}]
 
     def _generate(
         self,

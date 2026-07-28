@@ -1,11 +1,16 @@
 """FastAPI application for the Cold Draft chat MVP."""
 
+from __future__ import annotations
+
 import os
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
+from Conversation_Memory.adapter.interfaces import MemoryRetriever
+from Conversation_Memory.adapter.models import RecallPolicy
 from core.cold_draft_store import ColdDraftStore
 from core.contracts import ChatRequest, ChatResponse, StatusResponse
 from core.draft_context import DraftContextProvider
@@ -18,6 +23,8 @@ from core.turn_provenance import Clock, TurnIdFactory
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
+_ROOT_DIRECTORY = Path(__file__).resolve().parent.parent
+_CONVERSATION_MEMORY_DIRECTORY = _ROOT_DIRECTORY / "Conversation_Memory"
 
 
 def _hot_path(configured: str | Path | None) -> Path:
@@ -28,6 +35,30 @@ def _hot_path(configured: str | Path | None) -> Path:
 
 def _model_kind(client: ModelClient) -> str:
     return "mock" if getattr(client, "client_kind", "model") == "mock" else "model"
+
+
+def _recall_enabled(value: str | None) -> bool:
+    return isinstance(value, str) and value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _build_memory_retriever() -> MemoryRetriever:
+    if str(_CONVERSATION_MEMORY_DIRECTORY) not in sys.path:
+        sys.path.insert(0, str(_CONVERSATION_MEMORY_DIRECTORY))
+
+    from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+
+    persist_dir = Path(
+        os.environ.get(
+            "LUMINA_DREAM_MAGMA_PERSIST_DIR",
+            str(_ROOT_DIRECTORY / "data" / "conversation_memory" / "magma"),
+        )
+    )
+    return MagmaMemoryAdapter.create_real(persist_dir)
 
 
 def create_app(
@@ -43,11 +74,35 @@ def create_app(
     default_timezone: str | None = None,
     clock: Clock | None = None,
     turn_id_factory: TurnIdFactory | None = None,
+    recall_enabled: bool | None = None,
+    memory_retriever: MemoryRetriever | None = None,
+    recall_policy: RecallPolicy | None = None,
 ) -> FastAPI:
     if env_file_path is not None:
         load_env_file(env_file_path, override=False)
 
     effective_model = model_client or build_model_client_from_env()
+    effective_recall_enabled = (
+        recall_enabled
+        if recall_enabled is not None
+        else _recall_enabled(
+            os.environ.get("LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED")
+        )
+    )
+    effective_retriever = memory_retriever
+    effective_recall_policy = (
+        recall_policy
+        if recall_policy is not None
+        else RecallPolicy()
+        if effective_recall_enabled
+        else None
+    )
+    if effective_recall_enabled and effective_retriever is None:
+        try:
+            effective_retriever = _build_memory_retriever()
+        except Exception:
+            effective_retriever = None
+
     hot_path = _hot_path(draft_store_path)
     effective_cold_path = Path(cold_draft_path) if cold_draft_path is not None else hot_path.parent / "cold_drafts.jsonl"
     effective_state_path = Path(compaction_state_path) if compaction_state_path is not None else hot_path.parent / "hot_draft_compaction_state.json"
@@ -76,6 +131,9 @@ def create_app(
             if default_timezone is not None
             else os.environ.get("LUMINA_DEFAULT_TIMEZONE", "UTC")
         ),
+        recall_enabled=effective_recall_enabled,
+        memory_retriever=effective_retriever,
+        recall_policy=effective_recall_policy,
     )
 
     app = FastAPI(title="Lumina Cold Draft MVP", version="0.1.0")

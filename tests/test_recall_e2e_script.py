@@ -297,7 +297,6 @@ def test_chat_runtime_does_not_import_recall_e2e_or_dream():
     )
     assert "recall_e2e_test" not in production
     assert "DreamRunner" not in production
-    assert "MemoryRetriever" not in production
 
 
 def test_upstream_magma_is_clean_after_real_e2e(kept_acceptance):
