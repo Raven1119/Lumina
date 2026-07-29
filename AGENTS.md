@@ -32,9 +32,10 @@ initialization failure, or Recall failure. Injected memory context is not writte
 to Hot or Cold Draft.
 
 Conversation turns remain one MAGMA event each. Dream performs memory writes;
-chat requests do not. Public Recall evidence remains anchor-only: MAGMA graph
-traversal runs internally, but non-anchor traversal expansions are not yet
-projected into `MemoryContext`.
+chat requests do not. Public Recall evidence now includes vector anchors plus
+eligible non-anchor event nodes discovered through existing MAGMA traversal
+paths. Anchors remain first, duplicate expansions are removed deterministically,
+and only nodes with complete provenance are projected into `MemoryContext`.
 
 Lumina's long-term form is defined in `docs/NORTH_STAR.md`: an independent
 digital life that co-evolves with its creator, maintains a continuous integrated
@@ -59,8 +60,11 @@ Treat these as completed behavior, not work to rebuild:
 - default-disabled, opt-in Recall injection into the production model request,
   using only bounded `MemoryContext.rendered_text`, with safe empty/failure
   fallback and no injected-memory persistence into Draft;
-- public Recall evidence remains anchor-only; MAGMA traversal expansions are
-  not yet projected into `MemoryContext`;
+- bounded projection of eligible non-anchor MAGMA traversal events into public
+  Recall evidence, with anchors first, deterministic deduplication, stable
+  expansion ordering, and provenance-safe filtering;
+- `top_k` limits vector anchors, while `max_evidence_items` limits the final
+  public evidence total across anchors and graph expansions;
 - one marker-owned Recall E2E harness;
 - deterministic English/Chinese temporal normalization based on each turn's
   timestamp and IANA timezone;
@@ -237,6 +241,10 @@ turn_id, role, text, created_at, source_timezone, timezone_source
 
 - Recall is accessed only through a Lumina-owned facade.
 - Bound candidate count, traversal depth, evidence count, and rendered size.
+- Treat `top_k` as the vector-anchor limit and `max_evidence_items` as the final
+  public evidence limit across anchors and graph expansions.
+- Preserve anchors ahead of graph expansions, deduplicate repeated expansion
+  nodes deterministically, and skip expansion nodes without complete provenance.
 - Preserve stable ordering, evidence IDs, and provenance.
 - Do not scan Cold Draft during Recall.
 - Empty Recall is valid.
@@ -261,35 +269,39 @@ turn_id, role, text, created_at, source_timezone, timezone_source
 
 ## 7. Current authorized next step
 
-The next Conversation Memory objective is a separately task-card-authorized,
-bounded projection of graph-traversal expansion nodes into Lumina evidence:
+The next Conversation Memory decision point is a separately task-card-authorized,
+bounded Recall-effectiveness evaluation. It must compare the existing
+anchor-only path with the existing graph-enhanced path before any Recall
+scheduler is designed:
 
 ```text
-MAGMA QueryContext
--> anchor nodes plus eligible non-anchor traversal expansions
--> bounded, stable Lumina-owned evidence projection
--> existing MemoryContext rendering and optional chat injection
+same fixed memory corpus and query set
+-> max_graph_depth = 0: vector anchors only
+-> max_graph_depth > 0: anchors plus eligible graph expansions
+-> compare evidence hit, irrelevant evidence, total evidence, and Recall latency
 ```
 
 Requirements:
 
-- preserve anchor evidence and keep anchors ahead of graph expansions;
-- admit only expansion nodes within the existing traversal bounds and with
-  complete source provenance;
-- deduplicate anchor and expansion nodes deterministically;
-- bound expansion evidence separately from anchors and preserve the existing
-  total evidence and rendered-size limits;
-- use stable ordering based on graph distance and existing stable identifiers;
-- do not expose traversal paths, graph objects, backend scores, MAGMA UUIDs,
-  embeddings, internal statistics, or raw Draft records;
-- do not inject or depend on MAGMA `narrative_context`;
-- do not add Recall scheduling, none/light/deep modes, query classification,
-  evidence sufficiency escalation, or an Evidence Organizer;
-- keep the existing default-disabled, failure-safe chat injection unchanged;
-- do not run Dream or ingestion during chat.
+- use a small fixed set of representative Conversation Memory queries;
+- evaluate retrieval evidence directly, not answer style or an LLM judge;
+- keep `top_k`, `max_evidence_items`, and all non-depth settings fixed between
+  the two conditions;
+- include direct-fact, historical-change, relationship/reason, and negative
+  control queries;
+- record whether target evidence is found, irrelevant evidence count, final
+  evidence count, Recall latency, and the depth-zero versus graph-enhanced
+  difference;
+- use existing fixtures, tests, or a bounded one-off artifact where possible;
+- do not create a permanent benchmark platform, evaluation framework, result
+  database, dashboard, scheduler, query classifier, or new production API;
+- do not change production Recall behavior during the evaluation task;
+- do not add none/light/deep routing, evidence-sufficiency escalation,
+  Evidence Organizer behavior, `narrative_context` injection, relevance models,
+  LLM judges, or cross-encoders.
 
 Implementation requires an explicit task card. Neither this file nor the North
-Star itself orders Codex to implement the projection.
+Star itself orders Codex to build a Recall scheduler or another memory feature.
 
 ## 8. Minimal-change rule
 
@@ -368,9 +380,11 @@ Do not describe these as complete:
 - Dream and memory checkpoints assume one active writer;
 - Hot and Cold reads scan JSONL files;
 - production Recall injection exists but is disabled by default;
-- public Recall evidence remains anchor-only;
-- MAGMA traversal paths, narrative context, and expanded non-anchor nodes are
-  not projected into `MemoryContext`;
+- eligible non-anchor traversal events can enter public evidence, but traversal
+  paths, hop metadata, relation explanations, backend scores, and MAGMA
+  `narrative_context` are not exposed through `MemoryContext`;
+- anchors and graph expansions share the existing `max_evidence_items` total;
+  there is no separate graph-evidence quota or dynamic budget allocation;
 - there is no dynamic Recall scheduler or semantic Evidence Organizer;
 - production data has no real conversation/thread ID;
 - legacy records retain only fallback provenance;
@@ -389,6 +403,10 @@ Preserve coverage for:
 - memory-complete-before-consumed ordering and recovery;
 - English/Chinese temporal normalization from source turn timezones;
 - bounded Recall, stable ordering, provenance, restart, and idempotency;
+- vector-anchor limiting by `top_k` and final evidence limiting by
+  `max_evidence_items`;
+- real-MAGMA graph-expansion projection, anchor-first ordering, multi-path
+  deduplication, invalid-provenance filtering, and stable overflow trimming;
 - safe empty/failure behavior and leak prevention;
 - production Recall disabled-path invariance;
 - successful bounded rendered-memory injection;

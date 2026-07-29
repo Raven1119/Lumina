@@ -318,6 +318,26 @@ def _memory_counts(backend: RealMagmaBackend) -> tuple[int, int]:
     return len(backend.trg.graph_db.nodes), int(backend.trg.vector_db.size())
 
 
+def _query_anchor_count(
+    backend: RealMagmaBackend,
+    query: str,
+    policy: RecallPolicy,
+) -> int:
+    constraints = backend._constraints_type(
+        max_depth=policy.max_graph_depth,
+        max_nodes=policy.max_nodes,
+        follow_temporal=True,
+        follow_semantic=True,
+        follow_causal=True,
+    )
+    context = backend.trg.query(
+        query,
+        max_results=min(policy.top_k, policy.max_nodes),
+        constraints=constraints,
+    )
+    return len(context.anchor_nodes)
+
+
 def _public_context_text(context: MemoryContext) -> str:
     return json.dumps(asdict(context), ensure_ascii=False, sort_keys=True)
 
@@ -330,7 +350,7 @@ def _validate_public_context(
 ) -> None:
     _require(context.safe_error_code is None, "recall", "recall_unavailable")
     _require(
-        len(context.evidence) <= min(policy.top_k, policy.max_evidence_items),
+        len(context.evidence) <= policy.max_evidence_items,
         "bounds",
         "evidence_count_exceeded",
     )
@@ -750,28 +770,59 @@ def _execute_pipeline(
     )
     _verbose(verbose, "nine-query recall suite passed")
 
+    top_one_policy = RecallPolicy(
+        top_k=1,
+        max_chars=1200,
+        max_evidence_items=5,
+        max_graph_depth=6,
+        max_nodes=200,
+    )
+    max_two_policy = RecallPolicy(
+        top_k=10,
+        max_chars=1200,
+        max_evidence_items=2,
+        max_graph_depth=6,
+        max_nodes=200,
+    )
+    max_chars_policy = RecallPolicy(
+        top_k=5,
+        max_chars=120,
+        max_evidence_items=5,
+        max_graph_depth=6,
+        max_nodes=200,
+    )
     top_one = _silenced(
         adapter.recall,
         _QUERY_SPECS[0][1],
-        RecallPolicy(top_k=1, max_chars=1200, max_evidence_items=5, max_graph_depth=6, max_nodes=200),
+        top_one_policy,
     )
     max_two = _silenced(
         adapter.recall,
         _QUERY_SPECS[0][1],
-        RecallPolicy(top_k=10, max_chars=1200, max_evidence_items=2, max_graph_depth=6, max_nodes=200),
+        max_two_policy,
     )
     max_chars = _silenced(
         adapter.recall,
         _QUERY_SPECS[0][1],
-        RecallPolicy(top_k=5, max_chars=120, max_evidence_items=5, max_graph_depth=6, max_nodes=200),
+        max_chars_policy,
     )
     for context, context_policy in (
-        (top_one, RecallPolicy(top_k=1, max_chars=1200, max_evidence_items=5, max_graph_depth=6, max_nodes=200)),
-        (max_two, RecallPolicy(top_k=10, max_chars=1200, max_evidence_items=2, max_graph_depth=6, max_nodes=200)),
-        (max_chars, RecallPolicy(top_k=5, max_chars=120, max_evidence_items=5, max_graph_depth=6, max_nodes=200)),
+        (top_one, top_one_policy),
+        (max_two, max_two_policy),
+        (max_chars, max_chars_policy),
     ):
         _validate_public_context(context, context_policy, segment_ids, paths.root)
-    _require(len(top_one.evidence) <= 1, "bounds", "top_k_not_enforced")
+    top_one_anchor_count = _silenced(
+        _query_anchor_count,
+        backend,
+        _QUERY_SPECS[0][1],
+        top_one_policy,
+    )
+    _require(
+        0 < top_one_anchor_count <= top_one_policy.top_k,
+        "bounds",
+        "top_k_anchor_limit_not_enforced",
+    )
     _require(len(max_two.evidence) <= 2, "bounds", "max_evidence_items_not_enforced")
     _require(len(max_chars.rendered_text) <= 120, "bounds", "max_chars_not_enforced")
     _require(max_chars.truncated, "bounds", "max_chars_truncation_flag_missing")

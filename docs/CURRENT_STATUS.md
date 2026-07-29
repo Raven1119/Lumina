@@ -57,9 +57,11 @@ implementation in `docs/COLD_DRAFT.md`.
 - Cold Draft pending segments can be consumed only by the explicit developer
   Dream command; there is no automatic, startup, background, or chat-time
   consumer;
-- Conversation Memory Recall remains behind its Lumina-owned facade. Its public
-  evidence projection is still anchor-only, so graph-traversal expansion
-  results do not enter `MemoryContext`;
+- Conversation Memory Recall remains behind its Lumina-owned facade. Qualified
+  non-anchor traversal `EventNode` records can now enter
+  `MemoryContext.evidence` after all anchors. `top_k` limits vector anchors,
+  while `max_evidence_items` limits the total public anchors plus expansions;
+  MAGMA `narrative_context` remains excluded from public output;
 - legacy Hot/Cold records remain role/text or segment-time only; they are not
   migrated, and Dream marks their deterministic segment-time projection as
   `legacy_segment_fallback`;
@@ -77,7 +79,7 @@ implementation in `docs/COLD_DRAFT.md`.
   writer;
 - Recall remains a fixed bounded pipeline without a no/light/deep scheduling
   layer, evidence-sufficiency escalation, or edge/depth selection;
-- Recall has no post-retrieval Evidence Organizer for duplicate merging,
+- Recall has no post-retrieval Evidence Organizer for semantic duplicate merging,
   current-versus-historical state separation, conflict presentation, timeline
   organization, or evidence sufficiency;
 - request size and total logical context have no application-level global bound;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -51,12 +52,14 @@ class RealMagmaBackend:
         if previous_key is None:
             os.environ["OPENAI_API_KEY"] = "adapter-import-placeholder-not-a-secret"
         try:
-            from memory.graph_db import TraversalConstraints
+            from memory.graph_db import EventNode, NodeType, TraversalConstraints
             from memory.trg_memory import TemporalResonanceGraphMemory
         finally:
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
         self._constraints_type = TraversalConstraints
+        self._event_node_type = EventNode
+        self._node_type = NodeType
         self.persist_dir = Path(persist_dir)
         self.trg = TemporalResonanceGraphMemory(
             llm_backend=None,
@@ -110,13 +113,135 @@ class RealMagmaBackend:
             constraints=constraints,
         )
         scores = context.metadata.get("search_scores", [])
-        candidates = []
-        for index, node in enumerate(context.anchor_nodes):
+
+        def to_candidate(node: Any, score: float | None) -> BackendCandidate:
             timestamp = getattr(node, "timestamp", None)
-            candidates.append(BackendCandidate(
+            return BackendCandidate(
                 text=getattr(node, "content_narrative", ""),
                 timestamp=timestamp.isoformat() if timestamp else None,
-                score=float(scores[index]) if index < len(scores) else None,
+                score=score,
                 metadata=dict(getattr(node, "attributes", {})),
-            ))
+            )
+
+        candidates: list[BackendCandidate] = []
+        anchor_ids: set[str] = set()
+        for index, node in enumerate(context.anchor_nodes):
+            node_id = getattr(node, "node_id", None)
+            if isinstance(node_id, str) and node_id:
+                if node_id in anchor_ids:
+                    continue
+                anchor_ids.add(node_id)
+            score = float(scores[index]) if index < len(scores) else None
+            candidates.append(to_candidate(node, score))
+
+        expansion_hops: dict[str, int] = {}
+        for path in getattr(context, "traversal_paths", ()) or ():
+            if (
+                not isinstance(path, (list, tuple))
+                or not path
+                or not all(
+                    isinstance(node_id, str) and bool(node_id.strip())
+                    for node_id in path
+                )
+                or path[0] not in anchor_ids
+            ):
+                continue
+            for hop, node_id in enumerate(path[1:], start=1):
+                if hop > policy.max_graph_depth:
+                    break
+                if node_id in anchor_ids:
+                    continue
+                previous_hop = expansion_hops.get(node_id)
+                if previous_hop is None or hop < previous_hop:
+                    expansion_hops[node_id] = hop
+
+        anchor_floor = min(
+            (
+                candidate.score
+                if candidate.score is not None
+                else -1.0
+                for candidate in candidates
+            ),
+            default=0.0,
+        )
+        expansions: list[tuple[int, str, str, str, BackendCandidate]] = []
+        for node_id, hop in expansion_hops.items():
+            try:
+                node = self.trg.graph_db.get_node(node_id)
+                if (
+                    not isinstance(node, self._event_node_type)
+                    or getattr(node, "node_type", None) != self._node_type.EVENT
+                ):
+                    continue
+                text = getattr(node, "content_narrative", None)
+                timestamp = getattr(node, "timestamp", None)
+                metadata = getattr(node, "attributes", None)
+                if (
+                    not isinstance(text, str)
+                    or not text.strip()
+                    or not isinstance(timestamp, datetime)
+                    or timestamp.tzinfo is None
+                    or timestamp.utcoffset() is None
+                    or not isinstance(metadata, dict)
+                ):
+                    continue
+                timestamp_text = timestamp.isoformat()
+                evidence_id = metadata.get("evidence_id")
+                provenance = metadata.get("provenance")
+                provenance_fields = (
+                    "segment_id",
+                    "conversation_id",
+                    "turn_id",
+                    "source_timestamp",
+                    "source_timezone",
+                    "ingestion_version",
+                )
+                if (
+                    not isinstance(timestamp_text, str)
+                    or not timestamp_text
+                    or not isinstance(evidence_id, str)
+                    or not evidence_id.strip()
+                    or not isinstance(provenance, dict)
+                    or not all(
+                        isinstance(provenance.get(field), str)
+                        and bool(provenance[field].strip())
+                        for field in provenance_fields
+                    )
+                ):
+                    continue
+                timezone_source = provenance.get(
+                    "timezone_source",
+                    "legacy_segment_fallback",
+                )
+                if timezone_source not in {
+                    "client",
+                    "configured_default",
+                    "legacy_segment_fallback",
+                }:
+                    continue
+                source_timestamp = datetime.fromisoformat(
+                    provenance["source_timestamp"].strip()
+                )
+                if (
+                    source_timestamp.tzinfo is None
+                    or source_timestamp.utcoffset() is None
+                ):
+                    continue
+
+                # This deterministic value only preserves anchor-first and hop
+                # ordering through the existing adapter sort. It is not a
+                # relevance score and is never projected into public evidence.
+                ordering_score = anchor_floor - float(hop)
+                candidate = to_candidate(node, ordering_score)
+                expansions.append(
+                    (hop, timestamp_text, evidence_id, node_id, candidate)
+                )
+            except Exception:
+                continue
+
+        expansions.sort(key=lambda item: item[:4])
+        remaining_nodes = max(policy.max_nodes - len(candidates), 0)
+        candidates.extend(
+            item[4] for item in expansions[:remaining_nodes]
+        )
         return candidates

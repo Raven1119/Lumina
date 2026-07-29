@@ -179,8 +179,11 @@ class MagmaMemoryAdapter:
             ))
 
             items = [item for _, item in projected]
-            limit = min(policy.top_k, policy.max_evidence_items)
-            evidence, rendered, truncated = bound_evidence(items, count=limit, max_chars=policy.max_chars)
+            evidence, rendered, truncated = bound_evidence(
+                items,
+                count=policy.max_evidence_items,
+                max_chars=policy.max_chars,
+            )
             return MemoryContext(query.strip(), evidence, rendered, truncated)
         except Exception:
             return MemoryContext(query.strip(), safe_error_code="recall_unavailable")

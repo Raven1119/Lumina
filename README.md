@@ -31,9 +31,13 @@ only bounded `MemoryContext.rendered_text` becomes model-visible; empty results
 or Recall initialization/execution failures fall back to ordinary chat. The
 injected memory block is not persisted into Hot or Cold Draft.
 
-Current public Recall evidence remains anchor-only. MAGMA graph traversal runs
-internally, but traversal paths, narrative context, and expanded non-anchor
-nodes are not yet projected into `MemoryContext`.
+Public Recall evidence now includes vector anchors plus eligible non-anchor
+event nodes discovered through existing MAGMA traversal paths. Anchors remain
+first, repeated expansions are deduplicated, and nodes without complete
+provenance are skipped. `top_k` limits vector anchors, while
+`max_evidence_items` limits the final evidence total. Traversal paths, relation
+explanations, backend scores, hop metadata, and MAGMA `narrative_context` remain
+internal.
 
 ## Current Capabilities
 
@@ -52,7 +56,10 @@ nodes are not yet projected into `MemoryContext`.
 - one MAGMA event per conversation turn, with idempotent retry and
   memory-complete-before-consumed ordering;
 - bounded Recall with stable evidence IDs, provenance, safe empty/failure
-  behavior, and deterministic English/Chinese temporal normalization;
+  behavior, deterministic English/Chinese temporal normalization, and
+  anchor-first projection of eligible graph-traversal expansion events;
+- `top_k` limits vector anchors and `max_evidence_items` limits the final public
+  evidence total across anchors and graph expansions;
 - default-disabled, opt-in Recall injection that exposes only bounded
   `MemoryContext.rendered_text` to the model and never persists the injected
   memory block into Draft.
@@ -113,8 +120,11 @@ When enabled:
 - no Dream or ingestion work runs during `/api/chat`;
 - the injected memory block is not written into Hot or Cold Draft.
 
-This is currently an anchor-only Recall baseline. Enabling the switch does not
-mean that MAGMA graph-traversal expansions are exposed to the model.
+When Recall is enabled, the bounded rendered context may contain both vector
+anchors and eligible event nodes reached through MAGMA graph traversal. Anchors
+remain first, and the final result still uses the existing evidence and rendered
+size limits. The model does not receive graph paths, relation metadata, backend
+scores, MAGMA identifiers, or `narrative_context`.
 
 ## Run Manual Dream Ingestion
 
@@ -190,5 +200,6 @@ production Draft or Conversation Memory data. Details are in
 
 Conversation Graph, PostgreSQL memory, ContextBuilder, ToolRuntime, autonomous
 Dream, schedulers, workers, agents, tasks, dynamic Recall scheduling, and an
-Evidence Organizer are not implemented. MAGMA graph-traversal expansions are
-not yet projected into public Recall evidence.
+Evidence Organizer are not implemented. Graph-enhanced Recall exists, but its
+quality, noise, and cost have not yet been characterized against the
+anchor-only path.

@@ -13,15 +13,15 @@
             "state": {
               "type": "canvas",
               "state": {
-                "file": "Lumina_Memory_Architecture.canvas",
+                "file": "task-decoupled-planning-agent-flow.canvas",
                 "viewState": {
-                  "x": 1069.1867613023326,
-                  "y": 433.86100384496905,
-                  "zoom": -0.3900995975289418
+                  "x": 1178.395000932644,
+                  "y": 607.9837207321352,
+                  "zoom": -1.5496294276088758
                 }
               },
               "icon": "lucide-layout-dashboard",
-              "title": "Lumina_Memory_Architecture"
+              "title": "task-decoupled-planning-agent-flow"
             }
           }
         ]
@@ -204,9 +204,10 @@
   },
   "active": "d5776717bac1e9fc",
   "lastOpenFiles": [
+    "Lumina_ReAct 1.canvas",
+    "task-decoupled-planning-agent-flow.canvas",
     "Lumina_Memory_Architecture.canvas",
     "Lumina_MAGMA.canvas",
-    "Lumina_ReAct 1.canvas",
     "Lumina_ReAct%201%283%29.canvas",
     "Lumina_ReAct.canvas",
     "欢迎.md"

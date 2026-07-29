@@ -10,7 +10,7 @@ import pytest
 
 from adapter.backend import RealMagmaBackend
 from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import BackendCandidate, ColdDraftTurn, RecallPolicy
+from adapter.models import BackendCandidate, ColdDraftTurn, RecallPolicy, SourceProvenance
 from ingestion.fixture_loader import SegmentValidationError, load_fixture, parse_segment
 from ingestion.state_store import IngestionStateStore
 from ingestion.temporal import normalize_temporal_references
@@ -314,6 +314,483 @@ def test_restart_recovers_completed_idempotency_state(tmp_path):
     result = restarted.ingest(load_fixture(FIXTURE))
     assert result.already_ingested and result.memory_ids == initial.memory_ids
 
+
+class _ControlledNodeType:
+    EVENT = "EVENT"
+    ENTITY = "ENTITY"
+
+
+class _ControlledEventNode:
+    def __init__(self, node_id, text, timestamp, metadata, *, node_type="EVENT"):
+        self.node_id = node_id
+        self.node_type = node_type
+        self.content_narrative = text
+        self.timestamp = timestamp
+        self.attributes = metadata
+
+
+class _ControlledTraversalConstraints:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+def _controlled_provenance(turn_id, timestamp):
+    return {
+        "segment_id": "controlled-segment",
+        "conversation_id": "controlled-conversation",
+        "turn_id": turn_id,
+        "source_timestamp": timestamp.isoformat(),
+        "source_timezone": "Asia/Shanghai",
+        "ingestion_version": "cold-draft-v1",
+        "timezone_source": "client",
+    }
+
+
+def _controlled_event(
+    node_id,
+    turn_id,
+    text,
+    timestamp,
+    *,
+    node_type=_ControlledNodeType.EVENT,
+    include_provenance=True,
+):
+    metadata = {
+        "evidence_id": f"evidence-{turn_id}",
+        "private_path": [node_id],
+        "backend_score": 0.999,
+    }
+    if include_provenance:
+        metadata["provenance"] = _controlled_provenance(turn_id, timestamp)
+    return _ControlledEventNode(
+        node_id,
+        text,
+        timestamp,
+        metadata,
+        node_type=node_type,
+    )
+
+
+def _controlled_real_backend(tmp_path, monkeypatch, nodes, context):
+    from types import ModuleType
+
+    memory_package = ModuleType("memory")
+    memory_package.__path__ = []
+    graph_module = ModuleType("memory.graph_db")
+    graph_module.TraversalConstraints = _ControlledTraversalConstraints
+    graph_module.EventNode = _ControlledEventNode
+    graph_module.NodeType = _ControlledNodeType
+
+    class ControlledGraphDB:
+        def get_node(self, node_id):
+            return nodes.get(node_id)
+
+        def load(self, _path):
+            raise AssertionError("controlled backend must not load persisted data")
+
+    class ControlledTRG:
+        def __init__(self, **_kwargs):
+            self.graph_db = ControlledGraphDB()
+            self.query_calls = []
+
+        def query(self, query, *, max_results, constraints):
+            self.query_calls.append((query, max_results, constraints))
+            return context
+
+    trg_module = ModuleType("memory.trg_memory")
+    trg_module.TemporalResonanceGraphMemory = ControlledTRG
+    monkeypatch.setitem(sys.modules, "memory", memory_package)
+    monkeypatch.setitem(sys.modules, "memory.graph_db", graph_module)
+    monkeypatch.setitem(sys.modules, "memory.trg_memory", trg_module)
+    return RealMagmaBackend(tmp_path / "controlled-magma", upstream_dir=tmp_path)
+
+
+def test_real_backend_projects_expansions_once_using_minimum_hop_and_stable_order(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    anchor = _controlled_event(
+        "magma-anchor-internal",
+        "anchor",
+        "Anchor memory",
+        datetime(2026, 7, 14, 2, tzinfo=UTC),
+    )
+    first = _controlled_event(
+        "magma-first-internal",
+        "first",
+        "First graph expansion",
+        datetime(2026, 7, 14, 3, tzinfo=UTC),
+    )
+    second = _controlled_event(
+        "magma-second-internal",
+        "second",
+        "Second graph expansion",
+        datetime(2026, 7, 14, 4, tzinfo=UTC),
+    )
+    nodes = {
+        anchor.node_id: anchor,
+        first.node_id: first,
+        second.node_id: second,
+    }
+    context = SimpleNamespace(
+        anchor_nodes=[anchor],
+        traversal_paths=[
+            [anchor.node_id, second.node_id, first.node_id],
+            [anchor.node_id, first.node_id],
+            [anchor.node_id, first.node_id],
+            [anchor.node_id, second.node_id],
+        ],
+        narrative_context="narrative-secret",
+        metadata={"search_scores": [0.8], "stats": {"private": True}},
+    )
+    backend = _controlled_real_backend(tmp_path, monkeypatch, nodes, context)
+
+    candidates = backend.recall(
+        "query",
+        RecallPolicy(top_k=1, max_evidence_items=3, max_graph_depth=3),
+    )
+
+    assert [item.metadata["evidence_id"] for item in candidates] == [
+        "evidence-anchor",
+        "evidence-first",
+        "evidence-second",
+    ]
+    assert backend.trg.query_calls[0][1] == 1
+    assert backend.trg.query_calls[0][2].max_depth == 3
+
+
+def test_real_backend_skips_malformed_paths_non_events_and_invalid_expansions(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    anchor = _controlled_event(
+        "magma-anchor-internal",
+        "anchor",
+        "Anchor memory",
+        datetime(2026, 7, 14, 2, tzinfo=UTC),
+    )
+    valid = _controlled_event(
+        "magma-valid-internal",
+        "valid",
+        "Valid expansion",
+        datetime(2026, 7, 14, 3, tzinfo=UTC),
+    )
+    behind_non_string = _controlled_event(
+        "magma-behind-non-string-internal",
+        "behind-non-string",
+        "Must not survive an invalid path",
+        datetime(2026, 7, 14, 3, tzinfo=UTC),
+    )
+    behind_blank = _controlled_event(
+        "magma-behind-blank-internal",
+        "behind-blank",
+        "Must not survive a blank path ID",
+        datetime(2026, 7, 14, 3, tzinfo=UTC),
+    )
+    non_event = _controlled_event(
+        "magma-entity-internal",
+        "entity",
+        "Entity node",
+        datetime(2026, 7, 14, 3, tzinfo=UTC),
+        node_type=_ControlledNodeType.ENTITY,
+    )
+    blank = _controlled_event(
+        "magma-blank-internal",
+        "blank",
+        " ",
+        datetime(2026, 7, 14, 3, tzinfo=UTC),
+    )
+    no_time = _controlled_event(
+        "magma-no-time-internal",
+        "no-time",
+        "Missing time",
+        datetime(2026, 7, 14, 3, tzinfo=UTC),
+    )
+    no_time.timestamp = None
+    nodes = {
+        item.node_id: item
+        for item in (anchor, valid, behind_non_string, behind_blank, non_event, blank, no_time)
+    }
+    context = SimpleNamespace(
+        anchor_nodes=[anchor],
+        traversal_paths=[
+            None,
+            [],
+            "not-a-path",
+            ["foreign-anchor", valid.node_id],
+            [anchor.node_id, 42],
+            [anchor.node_id, 42, behind_non_string.node_id],
+            [anchor.node_id, " ", behind_blank.node_id],
+            [anchor.node_id, "missing-node"],
+            [anchor.node_id, non_event.node_id],
+            [anchor.node_id, blank.node_id],
+            [anchor.node_id, no_time.node_id],
+            [anchor.node_id, valid.node_id],
+        ],
+        narrative_context="narrative-secret",
+        metadata={"search_scores": [0.8]},
+    )
+    backend = _controlled_real_backend(tmp_path, monkeypatch, nodes, context)
+
+    candidates = backend.recall("query", RecallPolicy(top_k=1))
+
+    assert [item.metadata["evidence_id"] for item in candidates] == [
+        "evidence-anchor",
+        "evidence-valid",
+    ]
+
+
+def test_adapter_uses_total_evidence_limit_and_does_not_leak_graph_internals(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    anchor = _controlled_event(
+        "magma-anchor-uuid-secret",
+        "anchor",
+        "Anchor memory",
+        datetime(2026, 7, 14, 2, tzinfo=UTC),
+    )
+    first = _controlled_event(
+        "magma-first-uuid-secret",
+        "first",
+        "First graph expansion",
+        datetime(2026, 7, 14, 3, tzinfo=UTC),
+    )
+    second = _controlled_event(
+        "magma-second-uuid-secret",
+        "second",
+        "Second graph expansion",
+        datetime(2026, 7, 14, 4, tzinfo=UTC),
+    )
+    missing_provenance = _controlled_event(
+        "magma-missing-provenance-secret",
+        "missing",
+        "Must be skipped",
+        datetime(2026, 7, 14, 2, 30, tzinfo=UTC),
+        include_provenance=False,
+    )
+    incomplete_provenance = _controlled_event(
+        "magma-incomplete-provenance-secret",
+        "incomplete",
+        "Incomplete provenance must not consume budget",
+        datetime(2026, 7, 14, 2, 10, tzinfo=UTC),
+    )
+    incomplete_provenance.attributes["provenance"].pop("source_timestamp")
+    blank_provenance = _controlled_event(
+        "magma-blank-provenance-secret",
+        "blank-provenance",
+        "Blank provenance must not consume budget",
+        datetime(2026, 7, 14, 2, 20, tzinfo=UTC),
+    )
+    blank_provenance.attributes["provenance"]["segment_id"] = " "
+    naive_timestamp = _controlled_event(
+        "magma-naive-timestamp-secret",
+        "naive-timestamp",
+        "Naive timestamp must not consume budget",
+        datetime(2026, 7, 14, 2, 30),
+    )
+    blank_evidence_id = _controlled_event(
+        "magma-blank-evidence-secret",
+        "blank-evidence",
+        "Blank evidence ID must not consume budget",
+        datetime(2026, 7, 14, 2, 40, tzinfo=UTC),
+    )
+    blank_evidence_id.attributes["evidence_id"] = " "
+    legacy_provenance = _controlled_event(
+        "magma-legacy-provenance-secret",
+        "legacy",
+        "Legacy provenance expansion",
+        datetime(2026, 7, 14, 2, 50, tzinfo=UTC),
+    )
+    legacy_provenance.attributes["provenance"].pop("timezone_source")
+    invalid_timezone_source = _controlled_event(
+        "magma-invalid-timezone-source-secret",
+        "invalid-timezone-source",
+        "Invalid timezone source must not consume budget",
+        datetime(2026, 7, 14, 2, 5, tzinfo=UTC),
+    )
+    invalid_timezone_source.attributes["provenance"]["timezone_source"] = "invalid"
+    nodes = {
+        item.node_id: item
+        for item in (
+            anchor,
+            first,
+            second,
+            missing_provenance,
+            incomplete_provenance,
+            blank_provenance,
+            naive_timestamp,
+            blank_evidence_id,
+            legacy_provenance,
+            invalid_timezone_source,
+        )
+    }
+    context = SimpleNamespace(
+        anchor_nodes=[anchor],
+        traversal_paths=[
+            [anchor.node_id, invalid_timezone_source.node_id],
+            [anchor.node_id, legacy_provenance.node_id],
+            [anchor.node_id, incomplete_provenance.node_id],
+            [anchor.node_id, blank_provenance.node_id],
+            [anchor.node_id, naive_timestamp.node_id],
+            [anchor.node_id, blank_evidence_id.node_id],
+            [anchor.node_id, missing_provenance.node_id],
+            [anchor.node_id, second.node_id],
+            [anchor.node_id, first.node_id],
+            [anchor.node_id, first.node_id],
+        ],
+        narrative_context="narrative-secret",
+        metadata={"search_scores": [0.8], "stats": {"private": True}},
+    )
+    backend = _controlled_real_backend(tmp_path, monkeypatch, nodes, context)
+    adapter = MagmaMemoryAdapter(
+        backend,
+        IngestionStateStore(tmp_path / "state.json"),
+    )
+    policy = RecallPolicy(top_k=1, max_evidence_items=2, max_chars=500, max_nodes=3)
+
+    backend_candidates = backend.recall("query", policy)
+    backend_evidence_ids = [
+        item.metadata["evidence_id"] for item in backend_candidates
+    ]
+    assert backend_evidence_ids == [
+        "evidence-anchor",
+        "evidence-legacy",
+        "evidence-first",
+    ]
+    assert "evidence-invalid-timezone-source" not in backend_evidence_ids
+
+    first_context = adapter.recall("query", policy)
+    second_context = adapter.recall("query", policy)
+
+    assert [item.evidence_id for item in first_context.evidence] == [
+        "evidence-anchor",
+        "evidence-legacy",
+    ]
+    assert len(backend_candidates) > policy.max_evidence_items
+    assert len(first_context.evidence) <= policy.max_evidence_items
+    assert [item.evidence_id for item in first_context.evidence] == [
+        item.evidence_id for item in second_context.evidence
+    ]
+    assert first_context.evidence[1].timestamp == "2026-07-14T02:50:00+00:00"
+    expected_legacy_provenance = _controlled_provenance(
+        "legacy",
+        datetime(2026, 7, 14, 2, 50, tzinfo=UTC),
+    )
+    expected_legacy_provenance.pop("timezone_source")
+    assert first_context.evidence[1].provenance == SourceProvenance(
+        **expected_legacy_provenance
+    )
+    assert (
+        first_context.evidence[1].provenance.timezone_source
+        == "legacy_segment_fallback"
+    )
+    public_output = repr(first_context)
+    for private_value in (
+        "magma-anchor-uuid-secret",
+        "magma-legacy-provenance-secret",
+        "magma-first-uuid-secret",
+        "private_path",
+        "backend_score",
+        "search_scores",
+        "narrative-secret",
+    ):
+        assert private_value not in public_output
+    assert all(not hasattr(item, "score") for item in first_context.evidence)
+
+
+@pytest.mark.skipif(
+    Path(sys.executable).resolve() != (Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe").resolve(),
+    reason="real MAGMA test runs in the isolated Conversation Memory environment",
+)
+def test_real_magma_non_anchor_traversal_event_enters_bounded_evidence(tmp_path):
+    segment = load_fixture(FIXTURE)
+    backend = RealMagmaBackend(tmp_path / "magma")
+    adapter = MagmaMemoryAdapter(
+        backend,
+        IngestionStateStore(tmp_path / "state.json"),
+    )
+    result = adapter.ingest(segment)
+    assert result.status == "completed"
+    policy = RecallPolicy(
+        top_k=1,
+        max_evidence_items=2,
+        max_chars=1000,
+        max_graph_depth=2,
+        max_nodes=10,
+    )
+    query = segment.turns[0].content
+    constraints = backend._constraints_type(
+        max_depth=policy.max_graph_depth,
+        max_nodes=policy.max_nodes,
+        follow_temporal=True,
+        follow_semantic=True,
+        follow_causal=True,
+    )
+    query_context = backend.trg.query(
+        query,
+        max_results=policy.top_k,
+        constraints=constraints,
+    )
+    anchor_id = result.memory_ids[0]
+    expansion_id = result.memory_ids[1]
+    anchor_ids = [node.node_id for node in query_context.anchor_nodes]
+    traversed_ids = {
+        node_id
+        for path in query_context.traversal_paths
+        for node_id in path[1:]
+    }
+    assert anchor_ids == [anchor_id]
+    assert expansion_id not in anchor_ids
+    assert expansion_id in traversed_ids
+
+    recalled = adapter.recall(query, policy)
+
+    expected_anchor_evidence_id = adapter._evidence_id(
+        segment.segment_id,
+        segment.turns[0].turn_id,
+    )
+    expected_expansion_evidence_id = adapter._evidence_id(
+        segment.segment_id,
+        segment.turns[1].turn_id,
+    )
+    assert [item.evidence_id for item in recalled.evidence] == [
+        expected_anchor_evidence_id,
+        expected_expansion_evidence_id,
+    ]
+    assert len(recalled.evidence) <= policy.max_evidence_items
+    expansion = recalled.evidence[1]
+    assert expansion.timestamp == segment.turns[1].timestamp.isoformat()
+    assert expansion.provenance == SourceProvenance(
+        segment_id=segment.segment_id,
+        conversation_id=segment.conversation_id,
+        turn_id=segment.turns[1].turn_id,
+        source_timestamp=segment.turns[1].timestamp.isoformat(),
+        source_timezone=segment.turns[1].source_timezone,
+        ingestion_version=adapter.ingestion_version,
+        timezone_source=segment.turns[1].timezone_source,
+    )
+    assert sum(
+        item.evidence_id == expected_expansion_evidence_id
+        for item in recalled.evidence
+    ) == 1
+    public_output = repr(recalled)
+    for internal_value in (
+        anchor_id,
+        expansion_id,
+        "traversal_paths",
+        "search_scores",
+        "narrative_context",
+        "embedding_vector",
+        "raw_content",
+    ):
+        assert internal_value not in public_output
 
 @pytest.mark.skipif(
     Path(sys.executable).resolve() != (Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe").resolve(),

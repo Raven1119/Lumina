@@ -64,45 +64,45 @@ initialization failure, unavailable dependencies, corruption, or Recall failure
 falls back to ordinary chat. Injected memory context is not persisted into Hot
 or Cold Draft.
 
-The current public Recall evidence remains anchor-only. MAGMA graph traversal
-runs internally, but traversal paths, narrative context, and expanded non-anchor
-nodes are not yet projected into `MemoryContext`.
+Public Recall evidence now contains vector anchors plus eligible non-anchor
+event nodes discovered through existing MAGMA traversal paths. Anchors remain
+first, repeated expansion nodes are deduplicated, invalid-provenance nodes are
+skipped, `top_k` limits vector anchors, and `max_evidence_items` limits the final
+public evidence total. Traversal paths, relation explanations, backend scores,
+hop metadata, and MAGMA `narrative_context` remain internal.
 
 ## Next Production Objective
 
-The next Conversation Memory objective is one separately authorized, bounded
-projection of eligible graph-traversal expansion nodes into Lumina evidence:
+The next Conversation Memory objective is a small, bounded evaluation of the
+Recall behavior that now exists. Before introducing any Recall scheduler,
+Lumina must determine where graph-enhanced Recall improves evidence retrieval
+and where it adds noise or cost:
 
 ```text
-MAGMA QueryContext
--> anchor nodes plus eligible non-anchor traversal expansions
--> bounded, stable Lumina-owned evidence projection
--> existing MemoryContext rendering
--> existing optional chat injection
+fixed memory corpus and fixed query set
+-> anchor-only Recall with max_graph_depth = 0
+-> graph-enhanced Recall with max_graph_depth > 0
+-> compare evidence quality and Recall cost
 ```
 
-The projection must satisfy all of the following:
+The evaluation must remain narrow:
 
-- preserve anchor evidence and keep anchors ahead of graph expansions;
-- admit only expansion nodes within existing traversal bounds and with complete
-  source provenance;
-- deduplicate anchor and expansion nodes deterministically;
-- bound graph-expansion evidence separately while preserving the existing total
-  evidence and rendered-size limits;
-- preserve stable ordering based on graph distance and stable identifiers;
-- expose only Lumina-owned evidence fields, never traversal paths, graph objects,
-  backend scores, MAGMA UUIDs, embeddings, internal statistics, or raw Draft
-  records;
-- do not inject or depend on MAGMA `narrative_context`;
-- keep the existing default-disabled, failure-safe Recall injection unchanged;
-- keep Dream and ingestion completely outside `/api/chat`;
-- add no Recall scheduler, none/light/deep modes, query classifier, evidence
-  sufficiency escalation, Evidence Organizer, relevance threshold, LLM judge,
-  cross-encoder, or adjacent memory feature.
+- use a small fixed set of direct-fact, historical-change,
+  relationship/reason, and negative-control questions;
+- hold `top_k`, `max_evidence_items`, and all non-depth settings constant;
+- record target-evidence recovery, irrelevant evidence count, final evidence
+  count, Recall latency, and the difference between the two conditions;
+- evaluate the retrieval layer directly rather than answer style;
+- use no LLM judge, cross-encoder, relevance threshold, or learned reranker;
+- add no permanent benchmark framework, service, dashboard, result database, or
+  new production interface;
+- do not modify production Recall behavior as part of the evaluation;
+- use the results only to decide whether a later minimal static route is
+  justified.
 
-This is the smallest step that makes MAGMA graph traversal capable of changing
-public Recall evidence without weakening the current durability, provenance,
-bounding, or failure-isolation contracts.
+A dynamic Recall scheduler, none/light/deep routing, query classification,
+evidence-sufficiency escalation, and an Evidence Organizer remain later design
+questions, not implied implementation work.
 
 ## Growth Rule
 
@@ -116,9 +116,12 @@ Later capabilities must extend these boundaries rather than route around them:
    consumed, using `(segment_id, ingestion_version)` for retry convergence.
 4. Recall remains bounded, provenance-preserving, leak-safe, optional, and
    failure-isolated from normal chat availability.
-5. Injected memory context remains model-only context and is not rewritten into
+5. Vector anchors remain bounded by `top_k`; the final public evidence set,
+   including eligible graph expansions, remains bounded by
+   `max_evidence_items`.
+6. Injected memory context remains model-only context and is not rewritten into
    user or assistant Draft records.
-6. New storage, reasoning, or automation must not weaken durability,
+7. New storage, reasoning, or automation must not weaken durability,
    idempotency, truthful provenance, or safe fallback behavior.
 
 Conversation Graph, PostgreSQL memory, ContextBuilder, ToolRuntime, autonomous

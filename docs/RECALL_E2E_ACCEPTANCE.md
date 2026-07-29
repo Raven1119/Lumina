@@ -156,6 +156,10 @@ RecallPolicy(
 )
 ```
 
+`top_k` limits the number of vector-search anchor nodes. The separate
+`max_evidence_items` limit bounds the final public evidence total, including
+both anchors and eligible graph-traversal expansions.
+
 The nine acceptance categories are:
 
 1. Exact/overlap cause query: first experiment failure.
@@ -215,8 +219,10 @@ terminal output.
 
 The script independently verifies:
 
-- `top_k=1` returns at most one evidence item;
-- `top_k=10, max_evidence_items=2` returns at most two items;
+- `top_k=1` produces at most one vector anchor in the real MAGMA
+  `QueryContext`; the public context may also contain eligible graph expansions;
+- `top_k=10, max_evidence_items=2` returns at most two public evidence items in
+  total, including anchors and graph expansions;
 - `max_chars=120` never renders more than 120 characters and reports
   `truncated=true`.
 
