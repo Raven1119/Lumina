@@ -322,17 +322,30 @@ class _ControlledNodeType:
 
 
 class _ControlledEventNode:
-    def __init__(self, node_id, text, timestamp, metadata, *, node_type="EVENT"):
+    def __init__(
+        self,
+        node_id,
+        text,
+        timestamp,
+        metadata,
+        *,
+        node_type="EVENT",
+        embedding_vector=None,
+    ):
         self.node_id = node_id
         self.node_type = node_type
         self.content_narrative = text
         self.timestamp = timestamp
         self.attributes = metadata
+        self.embedding_vector = embedding_vector
 
 
 class _ControlledTraversalConstraints:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
+    def allows_link(self, link):
+        return not getattr(link, "blocked", False)
 
 
 def _controlled_provenance(turn_id, timestamp):
@@ -372,7 +385,16 @@ def _controlled_event(
     )
 
 
-def _controlled_real_backend(tmp_path, monkeypatch, nodes, context):
+def _controlled_real_backend(
+    tmp_path,
+    monkeypatch,
+    nodes,
+    context,
+    *,
+    neighbors=None,
+    encoder=None,
+    traverse_error=None,
+):
     from types import ModuleType
 
     memory_package = ModuleType("memory")
@@ -390,8 +412,13 @@ def _controlled_real_backend(tmp_path, monkeypatch, nodes, context):
         def get_node(self, node_id):
             return nodes.get(node_id)
 
+        def get_neighbors(self, node_id):
+            return list((neighbors or {}).get(node_id, ()))
+
         def traverse(self, *, start_nodes, constraints):
             self.traverse_calls.append((list(start_nodes), constraints))
+            if traverse_error is not None:
+                raise traverse_error
             return {
                 "paths": [
                     path for path in context.traversal_paths
@@ -406,6 +433,8 @@ def _controlled_real_backend(tmp_path, monkeypatch, nodes, context):
         def __init__(self, **_kwargs):
             self.graph_db = ControlledGraphDB()
             self.query_calls = []
+            if encoder is not None:
+                self.encoder = encoder
 
         def query(self, query, *, max_results, constraints):
             self.query_calls.append((query, max_results, constraints))
@@ -504,6 +533,137 @@ def test_private_lexical_scoring_rrf_and_bounded_scan():
     assert [node.node_id for node in after_broken] == ["node-inside"]
 
 
+def test_private_adaptive_traversal_intent_beam_drop_and_hard_bounds():
+    from types import SimpleNamespace
+
+    from adapter._adaptive_traversal import _adaptive_traverse
+    from adapter._recall_execution import _timestamp_in_temporal_window
+
+    at = datetime(2026, 7, 14, 2, tzinfo=UTC)
+
+    def event(node_id, turn_id, text, vector, *, timestamp=at):
+        node = _controlled_event(node_id, turn_id, text, timestamp)
+        node.embedding_vector = vector
+        return node
+
+    anchor = event("node-anchor", "anchor", "anchor", [1.0, 0.0])
+    temporal = event("node-temporal", "temporal", "temporal", [0.8, 0.6])
+    semantic = event("node-semantic", "semantic", "semantic", [1.0, 0.0])
+    entity = event("node-entity", "entity", "entity", [0.8, 0.6])
+    outside = event(
+        "node-outside",
+        "outside",
+        "outside",
+        [1.0, 0.0],
+        timestamp=at.replace(hour=5),
+    )
+    outside_child = event(
+        "node-outside-child", "outside-child", "outside child", [1.0, 0.0]
+    )
+    deep = event("node-deep", "deep", "deep", [1.0, 0.0])
+    malformed = event("node-malformed", "malformed", "bad", [1.0, 0.0])
+    malformed.attributes.pop("provenance")
+
+    def link(link_type):
+        return SimpleNamespace(link_type=SimpleNamespace(value=link_type))
+
+    neighbors = {
+        anchor.node_id: [
+            (semantic, link("SEMANTIC")),
+            (temporal, link("TEMPORAL")),
+            (entity, link("ENTITY")),
+            (outside, link("TEMPORAL")),
+            (malformed, link("ENTITY")),
+        ],
+        entity.node_id: [(deep, link("ENTITY"))],
+        semantic.node_id: [(deep, link("SEMANTIC"))],
+        outside.node_id: [(outside_child, link("TEMPORAL"))],
+    }
+
+    class Encoder:
+        def encode(self, text):
+            assert text == "query"
+            return [[1.0, 0.0]]
+
+    graph_db = SimpleNamespace(
+        get_neighbors=lambda node_id: list(neighbors.get(node_id, ()))
+    )
+    trg = SimpleNamespace(graph_db=graph_db, encoder=Encoder())
+    constraints = SimpleNamespace(allows_link=lambda _link: True)
+
+    def run(intent, **overrides):
+        options = {
+            "beam_width": 3,
+            "drop_threshold": 1.0,
+            "max_graph_depth": 1,
+            "max_nodes": 10,
+            "temporal_window": (at, at.replace(hour=4)),
+        }
+        options.update(overrides)
+        return _adaptive_traverse(
+            trg=trg,
+            constraints=constraints,
+            event_node_type=_ControlledEventNode,
+            node_type=_ControlledNodeType,
+            query="query",
+            anchors=[anchor],
+            intent=intent,
+            timestamp_in_window=_timestamp_in_temporal_window,
+            **options,
+        )
+
+    when_result = run("WHEN")
+    entity_result = run("ENTITY")
+    general_first = run("GENERAL")
+    general_second = run("GENERAL")
+    why_result = run("WHY")
+
+    assert when_result[0].node is temporal
+    assert entity_result[0].node is entity
+    assert [item.node.node_id for item in general_first] == [
+        item.node.node_id for item in general_second
+    ]
+    assert general_first[0].node is entity
+    assert [item.node.node_id for item in why_result] == [
+        item.node.node_id for item in general_first
+    ]
+    assert [item.score for item in why_result] == pytest.approx(
+        [item.score for item in general_first]
+    )
+    assert entity_result[0].score == pytest.approx(
+        1 / 61 + 0.6 * 0.6 + 0.4 * 0.8
+    )
+    assert outside.node_id not in {item.node.node_id for item in when_result}
+    assert outside_child.node_id not in {
+        item.node.node_id for item in run("WHEN", max_graph_depth=2)
+    }
+    assert malformed.node_id not in {
+        item.node.node_id for item in entity_result
+    }
+
+    beam_one = run("GENERAL", beam_width=1)
+    assert len(beam_one) == 1
+    assert len(neighbors[anchor.node_id]) > 1
+
+    drop_pruned = run("GENERAL", drop_threshold=0.15)
+    assert semantic.node_id in {item.node.node_id for item in drop_pruned}
+    assert entity.node_id not in {item.node.node_id for item in drop_pruned}
+
+    depth_one = run("GENERAL", beam_width=1, max_graph_depth=1)
+    depth_two = run("GENERAL", beam_width=1, max_graph_depth=2)
+    assert deep.node_id not in {item.node.node_id for item in depth_one}
+    assert deep.node_id in {item.node.node_id for item in depth_two}
+    duplicate_paths = run("GENERAL", beam_width=3, max_graph_depth=2)
+    deep_items = [item for item in duplicate_paths if item.node is deep]
+    assert len(deep_items) == 1
+    assert deep_items[0].score == pytest.approx(
+        1 / 61 + 0.6 * 0.6 + 0.4 * 0.8 + 0.6 * 0.6 + 0.4 * 1.0
+    )
+    node_limited = run("GENERAL", max_nodes=2)
+    assert len(node_limited) == 1
+    assert all(1 <= item.hop <= 1 for item in node_limited)
+
+
 def test_controlled_rrf_lexical_anchor_reaches_public_evidence_and_fallback(
     tmp_path, monkeypatch
 ):
@@ -542,6 +702,7 @@ def test_controlled_rrf_lexical_anchor_reaches_public_evidence_and_fallback(
     for secret in ("node-anchor", "node-lexical", "search_scores", "private narrative"):
         assert secret not in repr(recalled)
 
+    traverse_calls_before_fallback = len(backend.trg.graph_db.traverse_calls)
     monkeypatch.setattr(
         execution_module,
         "_rank_lexical_events",
@@ -550,7 +711,125 @@ def test_controlled_rrf_lexical_anchor_reaches_public_evidence_and_fallback(
     fallback = adapter.recall("xy zq", policy)
     assert [item.evidence_id for item in fallback.evidence] == ["evidence-a", "evidence-c"]
     assert fallback.safe_error_code is None
+    assert len(backend.trg.graph_db.traverse_calls) == traverse_calls_before_fallback
     assert "private lexical path" not in repr(fallback)
+
+
+def test_controlled_adaptive_traversal_is_opt_in_and_falls_back_to_fixed(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    import adapter._recall_execution as execution_module
+
+    at = datetime(2026, 7, 14, 2, tzinfo=UTC)
+    anchor = _controlled_event(
+        "node-adaptive-anchor", "adaptive-anchor", "Dense anchor", at
+    )
+    expansion = _controlled_event(
+        "node-adaptive-expansion",
+        "adaptive-expansion",
+        "Graph expansion",
+        at.replace(hour=3),
+    )
+    anchor.embedding_vector = [1.0, 0.0]
+    expansion.embedding_vector = [1.0, 0.0]
+    link = SimpleNamespace(link_type=SimpleNamespace(value="ENTITY"))
+    context = SimpleNamespace(
+        anchor_nodes=[anchor],
+        traversal_paths=[[anchor.node_id, expansion.node_id]],
+        narrative_context="private narrative",
+        metadata={"search_scores": [0.9]},
+    )
+
+    class Encoder:
+        def encode(self, text):
+            assert text == "query"
+            return [[1.0, 0.0]]
+
+    backend = _controlled_real_backend(
+        tmp_path,
+        monkeypatch,
+        {anchor.node_id: anchor, expansion.node_id: expansion},
+        context,
+        neighbors={anchor.node_id: [(expansion, link)]},
+        encoder=Encoder(),
+    )
+    adapter = MagmaMemoryAdapter(
+        backend,
+        IngestionStateStore(tmp_path / "adaptive-state.json"),
+    )
+    fixed_policy = RecallPolicy(
+        top_k=1,
+        max_graph_depth=1,
+        max_nodes=3,
+        max_evidence_items=2,
+    )
+    adaptive_policy = replace(fixed_policy, intent="GENERAL")
+
+    fixed = adapter.recall("query", fixed_policy)
+    assert [item.evidence_id for item in fixed.evidence] == [
+        "evidence-adaptive-anchor",
+        "evidence-adaptive-expansion",
+    ]
+    assert len(backend.trg.graph_db.traverse_calls) == 1
+    beam_only = adapter.recall(
+        "query", replace(fixed_policy, beam_width=1)
+    )
+    threshold_only = adapter.recall(
+        "query", replace(fixed_policy, drop_threshold=0.15)
+    )
+    assert [item.evidence_id for item in beam_only.evidence] == [
+        "evidence-adaptive-anchor",
+        "evidence-adaptive-expansion",
+    ]
+    assert threshold_only.evidence == beam_only.evidence
+    assert len(backend.trg.graph_db.traverse_calls) == 1
+
+    adaptive = adapter.recall("query", adaptive_policy)
+    assert [item.evidence_id for item in adaptive.evidence] == [
+        "evidence-adaptive-anchor",
+        "evidence-adaptive-expansion",
+    ]
+    assert len(backend.trg.graph_db.traverse_calls) == 1
+    assert len(adaptive.evidence) <= adaptive_policy.max_evidence_items
+    public_output = repr(adaptive)
+    for secret in (
+        "node-adaptive-anchor",
+        "node-adaptive-expansion",
+        "_lumina_adaptive_expansions",
+        "beam_width",
+        "drop_threshold",
+        "internal score",
+        "hop=",
+    ):
+        assert secret not in public_output
+
+    monkeypatch.setattr(
+        execution_module,
+        "_adaptive_traverse",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("adaptive-private-failure")
+        ),
+    )
+    fallback = adapter.recall("query", adaptive_policy)
+    assert [item.evidence_id for item in fallback.evidence] == [
+        "evidence-adaptive-anchor",
+        "evidence-adaptive-expansion",
+    ]
+    assert fallback.safe_error_code is None
+    assert len(backend.trg.graph_db.traverse_calls) == 2
+    assert "adaptive-private-failure" not in repr(fallback)
+
+    def fail_fixed(**_kwargs):
+        raise RuntimeError("fixed-private-failure")
+
+    backend.trg.graph_db.traverse = fail_fixed
+    unavailable = adapter.recall("query", adaptive_policy)
+    assert unavailable.evidence == ()
+    assert unavailable.safe_error_code == "recall_unavailable"
+    assert "fixed-private-failure" not in repr(unavailable)
 
 
 def test_controlled_lexical_temporal_window_filters_before_anchor_and_evidence(
@@ -655,15 +934,11 @@ def test_real_backend_projects_expansions_once_using_minimum_hop_and_stable_orde
     assert backend.trg.query_calls[0][2].max_depth == 3
 
 
-def test_phase_one_controls_keep_legacy_fixed_query_without_router(
+def test_default_fields_keep_legacy_fixed_query_without_router(
     tmp_path,
     monkeypatch,
 ):
     from types import SimpleNamespace
-    temporal_window = (
-        datetime(2026, 7, 1, tzinfo=UTC),
-        datetime(2026, 8, 1, tzinfo=UTC),
-    )
 
     anchor = _controlled_event(
         "magma-anchor-internal",
@@ -692,27 +967,19 @@ def test_phase_one_controls_keep_legacy_fixed_query_without_router(
     )
 
     default_candidates = backend.recall("query", RecallPolicy())
-    controlled_candidates = backend.recall(
-        "query",
-        RecallPolicy(
-            intent="WHY",
-            temporal_window=temporal_window,
-            beam_width=4,
-            drop_threshold=0.15,
-        ),
-    )
     depth_zero_candidates = backend.recall(
         "query",
         RecallPolicy(top_k=1, max_graph_depth=0),
     )
 
-    assert controlled_candidates == default_candidates
+    assert [item.metadata["evidence_id"] for item in default_candidates] == [
+        "evidence-anchor",
+        "evidence-expansion",
+    ]
     assert [item.metadata["evidence_id"] for item in depth_zero_candidates] == [
         "evidence-anchor",
     ]
-    for index, (query, max_results, constraints) in enumerate(
-        backend.trg.query_calls[:2]
-    ):
+    for query, max_results, constraints in backend.trg.query_calls[:1]:
         assert query == "query"
         assert max_results == 5
         assert vars(constraints) == {
@@ -720,11 +987,11 @@ def test_phase_one_controls_keep_legacy_fixed_query_without_router(
             "max_nodes": 100,
             "follow_temporal": True,
             "follow_semantic": True,
-            "time_window": None if index == 0 else temporal_window,
+            "time_window": None,
             "follow_causal": True,
         }
-    assert backend.trg.query_calls[2][1] == 1
-    assert backend.trg.query_calls[2][2].max_depth == 0
+    assert backend.trg.query_calls[1][1] == 1
+    assert backend.trg.query_calls[1][2].max_depth == 0
     assert "memory.query_engine" not in sys.modules
 
 
@@ -1549,10 +1816,59 @@ def test_real_magma_non_anchor_traversal_event_enters_bounded_evidence(tmp_path)
         item.evidence_id == expected_expansion_evidence_id
         for item in recalled.evidence
     ) == 1
-    public_output = repr(recalled)
+
+    from adapter._recall_execution import _execute_fixed_recall
+
+    adaptive_policy = replace(
+        depth_one_policy,
+        intent="GENERAL",
+        beam_width=10,
+        drop_threshold=1.0,
+    )
+    adaptive_internal = _execute_fixed_recall(
+        trg=backend.trg,
+        constraints_type=backend._constraints_type,
+        event_node_type=backend._event_node_type,
+        node_type=backend._node_type,
+        query=query,
+        policy=adaptive_policy,
+    )
+    adaptive_expansions = getattr(
+        adaptive_internal,
+        "_lumina_adaptive_expansions",
+    )
+    adaptive_anchor_ids = {
+        node.node_id for node in adaptive_internal.anchor_nodes
+    }
+    assert adaptive_expansions
+    selected_node = adaptive_expansions[0].node
+    assert selected_node.node_id not in adaptive_anchor_ids
+    assert selected_node.node_id in {
+        neighbor.node_id
+        for anchor_node_id in adaptive_anchor_ids
+        for neighbor, _link in backend.trg.graph_db.get_neighbors(anchor_node_id)
+    }
+
+    adaptive_recalled = adapter.recall(query, adaptive_policy)
+    selected_evidence_id = selected_node.attributes["evidence_id"]
+    assert [item.evidence_id for item in adaptive_recalled.evidence] == [
+        expected_anchor_evidence_id,
+        selected_evidence_id,
+    ]
+    turns_by_evidence_id = {
+        adapter._evidence_id(segment.segment_id, turn.turn_id): turn
+        for turn in segment.turns
+    }
+    selected_turn = turns_by_evidence_id[selected_evidence_id]
+    adaptive_expansion = adaptive_recalled.evidence[1]
+    assert adaptive_expansion.timestamp == selected_turn.timestamp.isoformat()
+    assert adaptive_expansion.provenance.turn_id == selected_turn.turn_id
+    assert len(adaptive_recalled.evidence) <= adaptive_policy.max_evidence_items
+    public_output = repr(recalled) + repr(adaptive_recalled)
     for internal_value in (
         anchor_id,
         expansion_id,
+        selected_node.node_id,
         "traversal_paths",
         "search_scores",
         "narrative_context",

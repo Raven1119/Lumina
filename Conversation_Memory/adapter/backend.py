@@ -155,6 +155,34 @@ class RealMagmaBackend:
                 if previous_hop is None or hop < previous_hop:
                     expansion_hops[node_id] = hop
 
+        adaptive_expansions = getattr(
+            context,
+            "_lumina_adaptive_expansions",
+            None,
+        )
+        adaptive_nodes: dict[str, tuple[int, Any]] = {}
+        if adaptive_expansions is not None:
+            expansion_hops.clear()
+            for rank, item in enumerate(adaptive_expansions):
+                try:
+                    node = item.node
+                    node_id = node.node_id
+                    hop = item.hop
+                    if (
+                        not isinstance(node_id, str)
+                        or not node_id.strip()
+                        or node_id in anchor_ids
+                        or node_id in adaptive_nodes
+                        or not isinstance(hop, int)
+                        or hop < 1
+                        or hop > policy.max_graph_depth
+                    ):
+                        continue
+                    expansion_hops[node_id] = hop
+                    adaptive_nodes[node_id] = (rank, node)
+                except Exception:
+                    continue
+
         anchor_floor = min(
             (
                 candidate.score
@@ -167,7 +195,12 @@ class RealMagmaBackend:
         expansions: list[tuple[int, str, str, str, BackendCandidate]] = []
         for node_id, hop in expansion_hops.items():
             try:
-                node = self.trg.graph_db.get_node(node_id)
+                adaptive_item = adaptive_nodes.get(node_id)
+                node = (
+                    adaptive_item[1]
+                    if adaptive_item is not None
+                    else self.trg.graph_db.get_node(node_id)
+                )
                 if (
                     not isinstance(node, self._event_node_type)
                     or getattr(node, "node_type", None) != self._node_type.EVENT
@@ -232,13 +265,24 @@ class RealMagmaBackend:
                 ):
                     continue
 
-                # This deterministic value only preserves anchor-first and hop
-                # ordering through the existing adapter sort. It is not a
+                # This deterministic value preserves anchor-first and the
+                # selected fixed/adaptive ordering through the adapter sort. It is not a
                 # relevance score and is never projected into public evidence.
-                ordering_score = anchor_floor - float(hop)
+                ordering_rank = (
+                    adaptive_item[0] + 1
+                    if adaptive_item is not None
+                    else hop
+                )
+                ordering_score = anchor_floor - float(ordering_rank)
                 candidate = to_candidate(node, ordering_score)
                 expansions.append(
-                    (hop, timestamp_text, evidence_id, node_id, candidate)
+                    (
+                        ordering_rank,
+                        timestamp_text,
+                        evidence_id,
+                        node_id,
+                        candidate,
+                    )
                 )
             except Exception:
                 continue

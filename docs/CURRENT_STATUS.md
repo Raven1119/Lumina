@@ -67,7 +67,25 @@ implementation in `docs/COLD_DRAFT.md`.
   `max_evidence_items` limits total public evidence. A caller-supplied
   `temporal_window` remains a hard half-open `[start, end)` constraint on dense,
   lexical, and graph-expansion candidates; it is not an independent temporal
-  rank source. MAGMA `narrative_context` remains excluded from public output;
+  rank source. With `intent`, `beam_width`, and `drop_threshold` all unset,
+  Recall keeps the existing fixed traversal. Supplying any one of them enables
+  bounded Adaptive Traversal. `GENERAL` uses upstream MAGMA's actual unknown-
+  intent fallback (the ENTITY weight table), `WHEN` prioritizes temporal links,
+  `ENTITY` prioritizes entity links, and `WHY` deliberately behaves as
+  `GENERAL` without causal specialization. The MAGMA-derived execution uses
+  beam width `10`, drop threshold `0.15`, and cumulative
+  `0.6 * relation + 0.4 * cosine` transition scoring. Adaptive failure falls
+  back to fixed traversal; a subsequent fixed failure retains safe-empty
+  behavior. MAGMA `narrative_context` remains excluded from public output;
+- in one bounded 48-turn/20-question synthetic comparison, fixed depth-1 versus
+  explicitly enabled `GENERAL` Adaptive Traversal changed evidence Recall from
+  `0.620370` to `0.791667`, complete-hit from `0.388889` to `0.611111`, NDCG
+  from `0.495872` to `0.675608`, strict-gold noise ratio from `0.801667` to
+  `0.590000`, mean evidence count from `5.85` to `3.95`, and mean rendered
+  characters from `418` to `289.2`; mean local latency increased from
+  `12.4608 ms` to `25.4399 ms`. Both no-answer controls still returned six
+  evidence items, so this synthetic result demonstrates a bounded noise/context
+  improvement but not reliable abstention or general production effectiveness;
 - legacy Hot/Cold records remain role/text or segment-time only; they are not
   migrated, and Dream marks their deterministic segment-time projection as
   `legacy_segment_fallback`;
@@ -83,11 +101,11 @@ implementation in `docs/COLD_DRAFT.md`.
 - local Draft files have no multi-process transaction or writer lock;
 - Dream and the file-backed Conversation Memory checkpoint assume one active
   writer;
-- Recall remains a fixed bounded pipeline without a no/light/deep scheduling
-  layer, evidence-sufficiency escalation, or edge/depth selection;
-- `intent`, `beam_width`, and `drop_threshold` remain execution-inactive reserved
-  controls. Recall has no automatic temporal-query parsing, independent temporal
-  ranking, Adaptive Traversal, Beam Search, or Context Linearization;
+- Recall has no no/light/deep scheduling layer, evidence-sufficiency escalation,
+  automatic intent routing, or dynamic edge/depth selection. Adaptive Traversal
+  requires explicit caller fields and provides no trustworthy causal Recall;
+- Recall has no automatic temporal-query parsing, independent temporal ranking,
+  or Context Linearization;
 - Recall has no post-retrieval Evidence Organizer for semantic duplicate merging,
   current-versus-historical state separation, conflict presentation, timeline
   organization, or evidence sufficiency;

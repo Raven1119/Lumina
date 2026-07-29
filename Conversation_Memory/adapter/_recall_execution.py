@@ -1,4 +1,4 @@
-"""Private execution seam for Lumina's current fixed MAGMA Recall path.
+"""Private execution seam for Lumina's fixed and opt-in adaptive Recall paths.
 
 Upstream behavior mapped here:
 
@@ -8,10 +8,10 @@ Upstream behavior mapped here:
 Upstream MAGMA is distributed under the MIT License:
 Copyright (c) 2024 Anonymous Authors.
 
-Dense anchors are fused with a bounded lexical ranking before the existing
-graph traversal. ``temporal_window`` is enforced as a Lumina-owned hard
-constraint; ``intent``, ``beam_width``, and ``drop_threshold``
-remain reserved for later authorized phases and have no execution effect here.
+Dense anchors are fused with a bounded lexical ranking. With all adaptive
+fields unset, the existing fixed traversal remains exact. Supplying any of
+``intent``, ``beam_width``, or ``drop_threshold`` opts into private adaptive
+traversal; failure falls back to fixed traversal.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from copy import copy
 from datetime import datetime, timezone
 from typing import Any
 
+from ._adaptive_traversal import _adaptive_traverse
 from ._anchor_fusion import _rank_lexical_events, _rrf_fuse
 from .models import RecallPolicy
 
@@ -101,17 +102,51 @@ def _execute_fixed_recall(
         )
         fused_nodes = [node for node, _score in fused]
         fused_scores = [score for _node, score in fused]
-        traversal_result = trg.graph_db.traverse(
-            start_nodes=[node.node_id for node in fused_nodes],
-            constraints=constraints,
-        )
-
-        fused_context = copy(dense_context)
-        fused_context.anchor_nodes = fused_nodes
-        fused_context.traversal_paths = traversal_result.get("paths", [])
-        fused_context.narrative_context = ""
-        fused_context.metadata = dict(dense_context.metadata)
-        fused_context.metadata["search_scores"] = fused_scores
-        return fused_context
     except Exception:
         return dense_context
+
+    fused_context = copy(dense_context)
+    fused_context.anchor_nodes = fused_nodes
+    fused_context.narrative_context = ""
+    fused_context.metadata = dict(dense_context.metadata)
+    fused_context.metadata["search_scores"] = fused_scores
+
+    adaptive_enabled = any(
+        value is not None
+        for value in (
+            policy.intent,
+            policy.beam_width,
+            policy.drop_threshold,
+        )
+    )
+    if adaptive_enabled:
+        try:
+            expansions = _adaptive_traverse(
+                trg=trg,
+                constraints=constraints,
+                event_node_type=event_node_type,
+                node_type=node_type,
+                query=query,
+                anchors=fused_nodes,
+                intent=policy.intent,
+                beam_width=policy.beam_width,
+                drop_threshold=policy.drop_threshold,
+                max_graph_depth=policy.max_graph_depth,
+                max_nodes=policy.max_nodes,
+                temporal_window=policy.temporal_window,
+                timestamp_in_window=_timestamp_in_temporal_window,
+            )
+            fused_context.traversal_paths = []
+            fused_context._lumina_adaptive_expansions = expansions
+            return fused_context
+        except Exception:
+            pass
+
+    # Fixed traversal is deliberately outside the adaptive catch.
+    # If it also fails, the existing adapter boundary returns safe empty.
+    traversal_result = trg.graph_db.traverse(
+        start_nodes=[node.node_id for node in fused_nodes],
+        constraints=constraints,
+    )
+    fused_context.traversal_paths = traversal_result.get("paths", [])
+    return fused_context
