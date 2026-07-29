@@ -57,13 +57,17 @@ implementation in `docs/COLD_DRAFT.md`.
 - Cold Draft pending segments can be consumed only by the explicit developer
   Dream command; there is no automatic, startup, background, or chat-time
   consumer;
-- Conversation Memory Recall remains behind its Lumina-owned facade. Qualified
-  non-anchor traversal `EventNode` records can now enter
-  `MemoryContext.evidence` after all anchors. `top_k` limits vector anchors,
-  while `max_evidence_items` limits the total public anchors plus expansions;
-  MAGMA `narrative_context` remains excluded from public output. A caller-supplied
-  `RecallPolicy.temporal_window` is enforced as a hard half-open `[start, end)`
-  constraint on both anchors and graph expansions;
+- Conversation Memory Recall remains behind its Lumina-owned facade. Anchors are
+  now selected by RRF over the existing dense ranking and a deterministic
+  lexical ranking. The first lexical implementation scans at most `max_nodes`
+  graph entries in stable persisted order, admits only evidence-projectable
+  `EventNode` records, and falls back to dense-only anchors if lexical fusion is
+  unavailable. `top_k` limits the fused anchor total. Qualified non-anchor
+  traversal events can enter `MemoryContext.evidence` after all anchors, while
+  `max_evidence_items` limits total public evidence. A caller-supplied
+  `temporal_window` remains a hard half-open `[start, end)` constraint on dense,
+  lexical, and graph-expansion candidates; it is not an independent temporal
+  rank source. MAGMA `narrative_context` remains excluded from public output;
 - legacy Hot/Cold records remain role/text or segment-time only; they are not
   migrated, and Dream marks their deterministic segment-time projection as
   `legacy_segment_fallback`;
@@ -82,8 +86,8 @@ implementation in `docs/COLD_DRAFT.md`.
 - Recall remains a fixed bounded pipeline without a no/light/deep scheduling
   layer, evidence-sufficiency escalation, or edge/depth selection;
 - `intent`, `beam_width`, and `drop_threshold` remain execution-inactive reserved
-  controls. Recall has no automatic temporal-query parsing, RRF, Adaptive
-  Traversal, or Context Linearization;
+  controls. Recall has no automatic temporal-query parsing, independent temporal
+  ranking, Adaptive Traversal, Beam Search, or Context Linearization;
 - Recall has no post-retrieval Evidence Organizer for semantic duplicate merging,
   current-versus-historical state separation, conflict presentation, timeline
   organization, or evidence sufficiency;

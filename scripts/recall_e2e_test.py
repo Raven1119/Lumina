@@ -10,7 +10,7 @@ import json
 import re
 import shutil
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -323,19 +323,11 @@ def _query_anchor_count(
     query: str,
     policy: RecallPolicy,
 ) -> int:
-    constraints = backend._constraints_type(
-        max_depth=policy.max_graph_depth,
-        max_nodes=policy.max_nodes,
-        follow_temporal=True,
-        follow_semantic=True,
-        follow_causal=True,
-    )
-    context = backend.trg.query(
+    candidates = backend.recall(
         query,
-        max_results=min(policy.top_k, policy.max_nodes),
-        constraints=constraints,
+        replace(policy, max_graph_depth=0),
     )
-    return len(context.anchor_nodes)
+    return len(candidates)
 
 
 def _public_context_text(context: MemoryContext) -> str:

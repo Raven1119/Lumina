@@ -383,8 +383,21 @@ def _controlled_real_backend(tmp_path, monkeypatch, nodes, context):
     graph_module.NodeType = _ControlledNodeType
 
     class ControlledGraphDB:
+        def __init__(self):
+            self.nodes = nodes
+            self.traverse_calls = []
+
         def get_node(self, node_id):
             return nodes.get(node_id)
+
+        def traverse(self, *, start_nodes, constraints):
+            self.traverse_calls.append((list(start_nodes), constraints))
+            return {
+                "paths": [
+                    path for path in context.traversal_paths
+                    if path and path[0] in start_nodes
+                ]
+            }
 
         def load(self, _path):
             raise AssertionError("controlled backend must not load persisted data")
@@ -404,6 +417,186 @@ def _controlled_real_backend(tmp_path, monkeypatch, nodes, context):
     monkeypatch.setitem(sys.modules, "memory.graph_db", graph_module)
     monkeypatch.setitem(sys.modules, "memory.trg_memory", trg_module)
     return RealMagmaBackend(tmp_path / "controlled-magma", upstream_dir=tmp_path)
+
+
+def test_private_lexical_scoring_rrf_and_bounded_scan():
+    from adapter._anchor_fusion import (
+        _lexical_score,
+        _rank_lexical_events,
+        _rrf_fuse,
+    )
+    from adapter._recall_execution import _timestamp_in_temporal_window
+
+    at = datetime(2026, 7, 14, 2, tzinfo=UTC)
+    a = _controlled_event("node-a", "a", "unrelated alpha", at)
+    b = _controlled_event("node-b", "b", "xy zq", at)
+    c = _controlled_event("node-c", "c", "unrelated gamma", at)
+
+    assert _lexical_score("the xy zq", b.content_narrative) == 20
+    fused = _rrf_fuse(([a, b], [b, c]), limit=3)
+    assert [node.node_id for node, _score in fused] == ["node-b", "node-a", "node-c"]
+    assert fused[0][1] == pytest.approx(1 / 62 + 1 / 61)
+    tied_lists = ([c], [a])
+    first_tie = [node.node_id for node, _score in _rrf_fuse(tied_lists, limit=2)]
+    second_tie = [node.node_id for node, _score in _rrf_fuse(tied_lists, limit=2)]
+    assert first_tie == second_tie == ["node-a", "node-c"]
+
+    class BrokenNodeId:
+        @property
+        def node_id(self):
+            raise RuntimeError("broken node id")
+
+    class BrokenStableKey:
+        node_id = "node-broken-stable-key"
+
+        @property
+        def attributes(self):
+            raise RuntimeError("broken stable key")
+
+    safe_fused = _rrf_fuse(
+        ([BrokenNodeId(), b, BrokenStableKey(), c],),
+        limit=4,
+    )
+    assert [node.node_id for node, _score in safe_fused] == ["node-b", "node-c"]
+
+    before = _controlled_event("node-before", "before", "xy zq", at)
+    inside = _controlled_event("node-inside", "inside", "xy zq", at.replace(hour=3))
+    unseen = _controlled_event("node-unseen", "unseen", "xy zq", at.replace(hour=4))
+    reads = []
+
+    def graph_nodes():
+        for node in (before, inside, unseen):
+            reads.append(node.node_id)
+            yield node.node_id, node
+
+    ranked = _rank_lexical_events(
+        graph_nodes=graph_nodes(),
+        query="xy zq",
+        max_nodes=2,
+        event_node_type=_ControlledEventNode,
+        node_type=_ControlledNodeType,
+        temporal_window=(at.replace(hour=3), at.replace(hour=4)),
+        timestamp_in_window=_timestamp_in_temporal_window,
+    )
+    assert reads == ["node-before", "node-inside"]
+    assert [node.node_id for node in ranked] == ["node-inside"]
+
+    no_window = _rank_lexical_events(
+        graph_nodes=((node.node_id, node) for node in (before, inside)),
+        query="xy zq", max_nodes=2,
+        event_node_type=_ControlledEventNode, node_type=_ControlledNodeType,
+        temporal_window=None, timestamp_in_window=_timestamp_in_temporal_window,
+    )
+    assert [node.node_id for node in no_window] == ["node-before", "node-inside"]
+
+    class BrokenMetadata(dict):
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("broken node")
+
+    broken = _controlled_event("node-broken", "broken", "xy zq", at)
+    broken.attributes = BrokenMetadata()
+    after_broken = _rank_lexical_events(
+        graph_nodes=((node.node_id, node) for node in (broken, inside)),
+        query="xy zq", max_nodes=2,
+        event_node_type=_ControlledEventNode, node_type=_ControlledNodeType,
+        temporal_window=None, timestamp_in_window=_timestamp_in_temporal_window,
+    )
+    assert [node.node_id for node in after_broken] == ["node-inside"]
+
+
+def test_controlled_rrf_lexical_anchor_reaches_public_evidence_and_fallback(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    import adapter._recall_execution as execution_module
+
+    at = datetime(2026, 7, 14, 2, tzinfo=UTC)
+    anchor = _controlled_event("node-anchor", "a", "xy zq semantic dense result", at)
+    lexical = _controlled_event("node-lexical", "b", "xy zq rare record", at.replace(hour=3))
+    dense_second = _controlled_event("node-dense-second", "c", "second semantic result", at.replace(hour=4))
+    nodes = {node.node_id: node for node in (anchor, lexical, dense_second)}
+    context = SimpleNamespace(
+        anchor_nodes=[anchor, dense_second],
+        traversal_paths=[],
+        narrative_context="private narrative",
+        metadata={"search_scores": [0.9, 0.8]},
+    )
+    backend = _controlled_real_backend(tmp_path, monkeypatch, nodes, context)
+    adapter = MagmaMemoryAdapter(backend, IngestionStateStore(tmp_path / "state.json"))
+    policy = RecallPolicy(top_k=2, max_graph_depth=0, max_nodes=3, max_evidence_items=2)
+
+    internal = backend.recall("xy zq", policy)
+    internal_ids = [item.metadata["evidence_id"] for item in internal]
+    assert internal_ids.count("evidence-a") == 1
+    anchor_candidate = next(
+        item for item in internal if item.metadata["evidence_id"] == "evidence-a"
+    )
+    assert anchor_candidate.score == pytest.approx(2 / 61)
+
+    recalled = adapter.recall("xy zq", policy)
+    assert [item.evidence_id for item in recalled.evidence] == ["evidence-a", "evidence-b"]
+    assert [item.evidence_id for item in recalled.evidence].count("evidence-a") == 1
+    assert recalled.evidence[1].provenance == SourceProvenance(**lexical.attributes["provenance"])
+    assert backend.trg.graph_db.traverse_calls[-1][0] == ["node-anchor", "node-lexical"]
+    assert len(recalled.evidence) == policy.top_k
+    for secret in ("node-anchor", "node-lexical", "search_scores", "private narrative"):
+        assert secret not in repr(recalled)
+
+    monkeypatch.setattr(
+        execution_module,
+        "_rank_lexical_events",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("private lexical path")),
+    )
+    fallback = adapter.recall("xy zq", policy)
+    assert [item.evidence_id for item in fallback.evidence] == ["evidence-a", "evidence-c"]
+    assert fallback.safe_error_code is None
+    assert "private lexical path" not in repr(fallback)
+
+
+def test_controlled_lexical_temporal_window_filters_before_anchor_and_evidence(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    start = datetime(2026, 7, 14, 3, tzinfo=UTC)
+    end = datetime(2026, 7, 14, 4, tzinfo=UTC)
+    dense = _controlled_event("node-dense", "a-dense", "semantic result", start)
+    outside = _controlled_event(
+        "node-outside", "b-outside", "xy zq", start.replace(hour=2)
+    )
+    inside = _controlled_event(
+        "node-inside", "c-inside", "xy zq", start.replace(minute=30)
+    )
+    nodes = {node.node_id: node for node in (dense, outside, inside)}
+    context = SimpleNamespace(
+        anchor_nodes=[dense],
+        traversal_paths=[],
+        narrative_context="private",
+        metadata={"search_scores": [0.9]},
+    )
+    backend = _controlled_real_backend(tmp_path, monkeypatch, nodes, context)
+    adapter = MagmaMemoryAdapter(
+        backend,
+        IngestionStateStore(tmp_path / "window-state.json"),
+    )
+    policy = RecallPolicy(
+        top_k=3,
+        max_graph_depth=0,
+        max_nodes=3,
+        max_evidence_items=3,
+        temporal_window=(start, end),
+    )
+
+    windowed = adapter.recall("xy zq", policy)
+    windowed_ids = [item.evidence_id for item in windowed.evidence]
+    assert "evidence-c-inside" in windowed_ids
+    assert "evidence-b-outside" not in windowed_ids
+    fused_anchor_ids = backend.trg.graph_db.traverse_calls[-1][0]
+    assert "node-inside" in fused_anchor_ids
+    assert "node-outside" not in fused_anchor_ids
+
+    unwindowed = adapter.recall("xy zq", replace(policy, temporal_window=None))
+    assert "evidence-b-outside" in [item.evidence_id for item in unwindowed.evidence]
 
 
 def test_real_backend_projects_expansions_once_using_minimum_hop_and_stable_order(
@@ -1072,6 +1265,79 @@ def test_recall_policy_validates_phase_one_controls_strictly():
     for kwargs, error in invalid:
         with pytest.raises(ValueError, match=error):
             RecallPolicy(**kwargs)
+
+
+@pytest.mark.skipif(
+    Path(sys.executable).resolve() != (Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe").resolve(),
+    reason="real MAGMA test runs in the isolated Conversation Memory environment",
+)
+def test_real_magma_lexical_rrf_recovers_non_dense_anchor(tmp_path):
+    from adapter._anchor_fusion import _rank_lexical_events
+    from adapter._recall_execution import _timestamp_in_temporal_window
+
+    query = "Which polymeric membrane diffusion evaluation identifier was ZXQJ-741?"
+    contents = [
+        "The membrane experiment measured gas diffusion across the material under controlled pressure.",
+        "A laboratory trial evaluated transport through a synthetic sheet and recorded permeability.",
+        "Researchers calibrated a polymer barrier before testing molecular flow.",
+        "The film assessment compared pressure response across several manufactured samples.",
+        "A kitchen inventory reference carries the isolated code ZXQJ-741.",
+    ]
+    segment = parse_segment({
+        "schema_version": "2",
+        "segment_id": "lexical-rrf-segment",
+        "conversation_id": "lexical-rrf-conversation",
+        "state": "pending_digest",
+        "created_at": "2026-07-14T08:00:00Z",
+        "source_timezone": "UTC",
+        "turns": [
+            {
+                "turn_id": f"turn-{index}",
+                "role": "user" if index % 2 == 0 else "assistant",
+                "timestamp": f"2026-07-14T0{index}:00:00Z",
+                "source_timezone": "UTC",
+                "timezone_source": "client",
+                "content": content,
+            }
+            for index, content in enumerate(contents)
+        ],
+    })
+    backend = RealMagmaBackend(tmp_path / "lexical-rrf-magma")
+    adapter = MagmaMemoryAdapter(backend, IngestionStateStore(tmp_path / "lexical-rrf-state.json"))
+    result = adapter.ingest(segment)
+    assert result.status == "completed"
+    target_memory_id = result.memory_ids[-1]
+    policy = RecallPolicy(top_k=3, max_graph_depth=0, max_nodes=10, max_evidence_items=3, max_chars=2000)
+    constraints = backend._constraints_type(
+        max_depth=0, max_nodes=policy.max_nodes,
+        follow_temporal=True, follow_semantic=True, follow_causal=True,
+    )
+    raw_dense = backend.trg.query(query, max_results=policy.top_k, constraints=constraints)
+    raw_dense_ids = [node.node_id for node in raw_dense.anchor_nodes]
+    assert target_memory_id not in raw_dense_ids
+
+    lexical = _rank_lexical_events(
+        graph_nodes=backend.trg.graph_db.nodes.items(), query=query,
+        max_nodes=policy.max_nodes, event_node_type=backend._event_node_type,
+        node_type=backend._node_type, temporal_window=None,
+        timestamp_in_window=_timestamp_in_temporal_window,
+    )
+    lexical_ids = [node.node_id for node in lexical]
+    assert target_memory_id in lexical_ids[:policy.top_k]
+
+    recalled = adapter.recall(query, policy)
+    target_evidence_id = adapter._evidence_id(segment.segment_id, segment.turns[-1].turn_id)
+    assert target_evidence_id in [item.evidence_id for item in recalled.evidence]
+    target = next(item for item in recalled.evidence if item.evidence_id == target_evidence_id)
+    assert target.timestamp == segment.turns[-1].timestamp.isoformat()
+    assert target.provenance == SourceProvenance(
+        segment_id=segment.segment_id, conversation_id=segment.conversation_id,
+        turn_id=segment.turns[-1].turn_id,
+        source_timestamp=segment.turns[-1].timestamp.isoformat(),
+        source_timezone="UTC", ingestion_version=adapter.ingestion_version,
+        timezone_source="client",
+    )
+    assert len(recalled.evidence) <= policy.top_k
 
 
 @pytest.mark.skipif(

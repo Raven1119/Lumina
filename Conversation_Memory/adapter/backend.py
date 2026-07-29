@@ -107,6 +107,8 @@ class RealMagmaBackend:
         context = _execute_fixed_recall(
             trg=self.trg,
             constraints_type=self._constraints_type,
+            event_node_type=self._event_node_type,
+            node_type=self._node_type,
             query=query,
             policy=policy,
         )
