@@ -61,7 +61,9 @@ implementation in `docs/COLD_DRAFT.md`.
   non-anchor traversal `EventNode` records can now enter
   `MemoryContext.evidence` after all anchors. `top_k` limits vector anchors,
   while `max_evidence_items` limits the total public anchors plus expansions;
-  MAGMA `narrative_context` remains excluded from public output;
+  MAGMA `narrative_context` remains excluded from public output. A caller-supplied
+  `RecallPolicy.temporal_window` is enforced as a hard half-open `[start, end)`
+  constraint on both anchors and graph expansions;
 - legacy Hot/Cold records remain role/text or segment-time only; they are not
   migrated, and Dream marks their deterministic segment-time projection as
   `legacy_segment_fallback`;
@@ -79,6 +81,9 @@ implementation in `docs/COLD_DRAFT.md`.
   writer;
 - Recall remains a fixed bounded pipeline without a no/light/deep scheduling
   layer, evidence-sufficiency escalation, or edge/depth selection;
+- `intent`, `beam_width`, and `drop_threshold` remain execution-inactive reserved
+  controls. Recall has no automatic temporal-query parsing, RRF, Adaptive
+  Traversal, or Context Linearization;
 - Recall has no post-retrieval Evidence Organizer for semantic duplicate merging,
   current-versus-historical state separation, conflict presentation, timeline
   organization, or evidence sufficiency;

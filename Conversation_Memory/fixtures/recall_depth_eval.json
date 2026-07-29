@@ -1,0 +1,91 @@
+{
+  "dataset_id": "recall-depth-eval-v1",
+  "source_timezone": "Asia/Shanghai",
+  "turns": [
+    {"evidence_id": "turn_001", "conversation_id": "travel_plan", "role": "user", "text": "The Cedar Journey originally selected Qingdao for the spring retreat.", "created_at": "2026-01-01T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_002", "conversation_id": "travel_plan", "role": "assistant", "text": "The Cedar Journey retreat window was recorded as March 18 through March 21.", "created_at": "2026-01-01T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_003", "conversation_id": "travel_plan", "role": "user", "text": "The Orchid Summit moved to March 20 and created a schedule conflict with the retreat.", "created_at": "2026-01-01T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_004", "conversation_id": "travel_plan", "role": "assistant", "text": "No hotel had been booked for the Cedar Journey at that point.", "created_at": "2026-01-01T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_005", "conversation_id": "database_initial", "role": "user", "text": "Atlas Service originally stored customer orders in AlphaDB.", "created_at": "2026-01-02T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_006", "conversation_id": "database_initial", "role": "assistant", "text": "The Atlas Service database review was scheduled before the February release.", "created_at": "2026-01-02T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_007", "conversation_id": "database_initial", "role": "user", "text": "A load test produced repeated lock timeouts in Atlas Service.", "created_at": "2026-01-02T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_008", "conversation_id": "database_initial", "role": "assistant", "text": "The lock-timeout result blocked the planned Atlas Service release.", "created_at": "2026-01-02T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_009", "conversation_id": "camera_setup", "role": "user", "text": "The Fern Study purchased a Lumix Camera with a macro lens.", "created_at": "2026-01-03T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_010", "conversation_id": "camera_setup", "role": "assistant", "text": "The Fern Study placed the new camera beside the north greenhouse bench.", "created_at": "2026-01-03T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_011", "conversation_id": "camera_setup", "role": "user", "text": "Researchers used the Lumix Camera to photograph leaf growth every morning.", "created_at": "2026-01-03T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_012", "conversation_id": "camera_setup", "role": "assistant", "text": "Each Fern Study image was labeled with tray number and lighting condition.", "created_at": "2026-01-03T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_013", "conversation_id": "course_initial", "role": "user", "text": "The Orion Course enrollment began in the evening Data Ethics track.", "created_at": "2026-01-04T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_014", "conversation_id": "course_initial", "role": "assistant", "text": "The evening Orion Course met every Tuesday in January.", "created_at": "2026-01-04T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_015", "conversation_id": "course_initial", "role": "user", "text": "Tuesday evening choir rehearsals conflicted with the Orion Course schedule.", "created_at": "2026-01-04T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_016", "conversation_id": "course_initial", "role": "assistant", "text": "The first two Orion Course sessions were attended despite the choir conflict.", "created_at": "2026-01-04T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_017", "conversation_id": "commute_initial", "role": "user", "text": "The Nova Bike was purchased for commuting to Riverside Office.", "created_at": "2026-01-05T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_018", "conversation_id": "commute_initial", "role": "assistant", "text": "The Nova Bike commute followed the riverside path for six kilometers.", "created_at": "2026-01-05T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_019", "conversation_id": "commute_initial", "role": "user", "text": "Winter rain flooded the riverside path and stopped the office commute.", "created_at": "2026-01-05T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_020", "conversation_id": "commute_initial", "role": "assistant", "text": "Riverside Office requested a temporary commuting alternative.", "created_at": "2026-01-05T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_021", "conversation_id": "surface_distractors", "role": "user", "text": "A Qingdao supplier shipped blue ceramic tiles to Cedar Kitchen.", "created_at": "2026-01-06T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_022", "conversation_id": "surface_distractors", "role": "assistant", "text": "A Hangzhou ink illustration appeared on the packaging for the kitchen tiles.", "created_at": "2026-01-06T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_023", "conversation_id": "surface_distractors", "role": "user", "text": "Alpha pigment was tested for a printed poster and was unrelated to software databases.", "created_at": "2026-01-06T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_024", "conversation_id": "surface_distractors", "role": "assistant", "text": "A vintage camera lens poster was displayed in Cedar Kitchen.", "created_at": "2026-01-06T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_025", "conversation_id": "travel_update", "role": "user", "text": "Because the Orchid Summit moved, the Cedar Journey changed its destination from Qingdao to Hangzhou.", "created_at": "2026-01-07T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_026", "conversation_id": "travel_update", "role": "assistant", "text": "Hangzhou became the active destination for the Cedar Journey.", "created_at": "2026-01-07T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_027", "conversation_id": "travel_update", "role": "user", "text": "A room was booked at West Lake Hotel for the Cedar Journey.", "created_at": "2026-01-07T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_028", "conversation_id": "travel_update", "role": "assistant", "text": "The West Lake Hotel booking covers March 18 through March 21.", "created_at": "2026-01-07T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_029", "conversation_id": "database_update", "role": "user", "text": "After the lock timeouts, Atlas Service migrated order storage from AlphaDB to BetaDB.", "created_at": "2026-01-08T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_030", "conversation_id": "database_update", "role": "assistant", "text": "BetaDB passed the next Atlas Service load test without lock timeouts.", "created_at": "2026-01-08T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_031", "conversation_id": "database_update", "role": "user", "text": "BetaDB deployment required an expensive premium cluster.", "created_at": "2026-01-08T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_032", "conversation_id": "database_update", "role": "assistant", "text": "The premium cluster estimate exceeded the Atlas Service operations budget.", "created_at": "2026-01-08T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_033", "conversation_id": "camera_findings", "role": "user", "text": "The morning leaf photographs revealed slower growth in shaded Fern Study trays.", "created_at": "2026-01-09T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_034", "conversation_id": "camera_findings", "role": "assistant", "text": "The shaded-tray observation was checked against the labeled image sequence.", "created_at": "2026-01-09T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_035", "conversation_id": "camera_findings", "role": "user", "text": "Those leaf-growth findings were summarized in the Greenhouse Report.", "created_at": "2026-01-09T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_036", "conversation_id": "camera_findings", "role": "assistant", "text": "The Greenhouse Report was delivered to the botany review group.", "created_at": "2026-01-09T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_037", "conversation_id": "course_update", "role": "user", "text": "Because of choir rehearsals, the Orion Course switched from evening Data Ethics to the Saturday morning track.", "created_at": "2026-01-10T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_038", "conversation_id": "course_update", "role": "assistant", "text": "The Saturday Orion Course met without a choir schedule conflict.", "created_at": "2026-01-10T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_039", "conversation_id": "course_update", "role": "user", "text": "The Saturday morning Orion Course ended with a certificate on April 30.", "created_at": "2026-01-10T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_040", "conversation_id": "course_update", "role": "assistant", "text": "The Orion Course certificate was added to the learning record.", "created_at": "2026-01-10T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_041", "conversation_id": "commute_update", "role": "user", "text": "Because the riverside path flooded, the office commute changed from Nova Bike to Metro Line Seven.", "created_at": "2026-01-11T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_042", "conversation_id": "commute_update", "role": "assistant", "text": "Metro Line Seven now handles weekday travel to Riverside Office.", "created_at": "2026-01-11T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_043", "conversation_id": "commute_update", "role": "user", "text": "The Nova Bike is now reserved for weekend park rides.", "created_at": "2026-01-11T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_044", "conversation_id": "commute_update", "role": "assistant", "text": "Weekend maintenance replaced the Nova Bike rear tire.", "created_at": "2026-01-11T01:15:00Z", "source_timezone": "Asia/Shanghai"},
+
+    {"evidence_id": "turn_045", "conversation_id": "database_final", "role": "user", "text": "After reviewing premium cluster costs, Atlas Service moved order storage back from BetaDB to AlphaDB.", "created_at": "2026-01-12T01:00:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_046", "conversation_id": "database_final", "role": "assistant", "text": "AlphaDB is again the active order database for Atlas Service.", "created_at": "2026-01-12T01:05:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_047", "conversation_id": "database_final", "role": "user", "text": "Cedar Kitchen chose a Beta ceramic glaze for the oven tiles.", "created_at": "2026-01-12T01:10:00Z", "source_timezone": "Asia/Shanghai"},
+    {"evidence_id": "turn_048", "conversation_id": "database_final", "role": "assistant", "text": "A Metro Line Seven poster was placed beside the glazed kitchen tiles.", "created_at": "2026-01-12T01:15:00Z", "source_timezone": "Asia/Shanghai"}
+  ],
+  "questions": [
+    {"question_id": "direct_fact_01", "category": "direct_fact", "query": "Which hotel was booked for the Cedar Journey?", "gold_evidence_ids": ["turn_027"]},
+    {"question_id": "direct_fact_02", "category": "direct_fact", "query": "Which camera did the Fern Study purchase?", "gold_evidence_ids": ["turn_009"]},
+    {"question_id": "direct_fact_03", "category": "direct_fact", "query": "When did the Orion Course certificate get issued?", "gold_evidence_ids": ["turn_039"]},
+    {"question_id": "direct_fact_04", "category": "direct_fact", "query": "What is the Nova Bike now used for?", "gold_evidence_ids": ["turn_043"]},
+
+    {"question_id": "multi_hop_01", "category": "multi_hop", "query": "How did the Cedar Journey move from its original destination to its booked stay?", "gold_evidence_ids": ["turn_001", "turn_025", "turn_027"]},
+    {"question_id": "multi_hop_02", "category": "multi_hop", "query": "Which databases did Atlas Service use in sequence from the original choice through the final decision?", "gold_evidence_ids": ["turn_005", "turn_029", "turn_045"]},
+    {"question_id": "multi_hop_03", "category": "multi_hop", "query": "How did the Lumix Camera work lead to the Greenhouse Report?", "gold_evidence_ids": ["turn_009", "turn_011", "turn_033", "turn_035"]},
+    {"question_id": "multi_hop_04", "category": "multi_hop", "query": "How did the Orion Course schedule change and then end?", "gold_evidence_ids": ["turn_013", "turn_037", "turn_039"]},
+
+    {"question_id": "temporal_01", "category": "temporal", "query": "What was the Cedar Journey destination before and after the March schedule change?", "gold_evidence_ids": ["turn_001", "turn_025"]},
+    {"question_id": "temporal_02", "category": "temporal", "query": "What was the Atlas Service database before BetaDB and what state followed the premium cost review?", "gold_evidence_ids": ["turn_005", "turn_045"]},
+    {"question_id": "temporal_03", "category": "temporal", "query": "What happened after the Fern Study daily photographs were collected?", "gold_evidence_ids": ["turn_011", "turn_033", "turn_035"]},
+    {"question_id": "temporal_04", "category": "temporal", "query": "What commute plan followed the flooded riverside route?", "gold_evidence_ids": ["turn_019", "turn_041"]},
+
+    {"question_id": "knowledge_update_01", "category": "knowledge_update", "query": "What is the current Cedar Journey destination and which earlier destination was superseded?", "gold_evidence_ids": ["turn_001", "turn_025"]},
+    {"question_id": "knowledge_update_02", "category": "knowledge_update", "query": "What is the current Atlas Service database and which intermediate database was replaced?", "gold_evidence_ids": ["turn_029", "turn_045"]},
+    {"question_id": "knowledge_update_03", "category": "knowledge_update", "query": "What is the current use of the Nova Bike compared with its original purpose?", "gold_evidence_ids": ["turn_017", "turn_043"]},
+    {"question_id": "knowledge_update_04", "category": "knowledge_update", "query": "Which Orion Course schedule is current compared with the original schedule?", "gold_evidence_ids": ["turn_013", "turn_037"]},
+
+    {"question_id": "causal_control_01", "category": "causal_control", "query": "Why did the Cedar Journey change to Hangzhou?", "gold_evidence_ids": ["turn_003", "turn_025"]},
+    {"question_id": "causal_control_02", "category": "causal_control", "query": "Why did Atlas Service return to AlphaDB?", "gold_evidence_ids": ["turn_031", "turn_045"]},
+    {"question_id": "causal_control_03", "category": "causal_control", "query": "Which telescope did the Moon Garden purchase?", "gold_evidence_ids": []},
+    {"question_id": "causal_control_04", "category": "causal_control", "query": "Why did Harbor Bakery cancel its violin lessons?", "gold_evidence_ids": []}
+  ]
+}

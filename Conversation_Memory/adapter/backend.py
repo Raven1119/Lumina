@@ -6,6 +6,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from ._recall_execution import (
+    _execute_fixed_recall,
+    _timestamp_in_temporal_window,
+)
 from .models import BackendCandidate, RecallPolicy
 
 
@@ -100,17 +104,11 @@ class RealMagmaBackend:
         self.trg.vector_db.save(str(self.persist_dir / "vectors"))
 
     def recall(self, query: str, policy: RecallPolicy) -> list[BackendCandidate]:
-        constraints = self._constraints_type(
-            max_depth=policy.max_graph_depth,
-            max_nodes=policy.max_nodes,
-            follow_temporal=True,
-            follow_semantic=True,
-            follow_causal=True,
-        )
-        context = self.trg.query(
-            query,
-            max_results=min(policy.top_k, policy.max_nodes),
-            constraints=constraints,
+        context = _execute_fixed_recall(
+            trg=self.trg,
+            constraints_type=self._constraints_type,
+            query=query,
+            policy=policy,
         )
         scores = context.metadata.get("search_scores", [])
 
@@ -182,6 +180,10 @@ class RealMagmaBackend:
                     or not isinstance(timestamp, datetime)
                     or timestamp.tzinfo is None
                     or timestamp.utcoffset() is None
+                    or not _timestamp_in_temporal_window(
+                        timestamp,
+                        policy.temporal_window,
+                    )
                     or not isinstance(metadata, dict)
                 ):
                     continue
