@@ -6,6 +6,12 @@
 
 - deterministic mock mode by default;
 - explicit MiniMax Anthropic-compatible adapter;
+- one UTF-8 Chat background file at `prompts/chat_background.md`, loaded once
+  during application construction and injected into every normal Chat model
+  generation through the provider-native `system` field;
+- Chat background changes take effect after restart and remain isolated from
+  Hot Draft, Cold Draft, rolling summary, Recall queries, Dream, MAGMA,
+  checkpoints, public API responses, logs, and safe exceptions;
 - same-origin browser chat served by FastAPI at `/`;
 - `GET /api/status`, `POST /api/chat`, and synchronous
   `POST /api/dream/run`;

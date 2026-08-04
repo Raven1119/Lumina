@@ -4,6 +4,7 @@ import json
 from threading import Event
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from Conversation_Memory.adapter.models import BackendCandidate, MemoryContext, RecallPolicy
@@ -21,11 +22,13 @@ class _ContextModel:
     def __init__(self) -> None:
         self.contexts: list[list[dict[str, str]]] = []
         self.messages: list[str] = []
+        self.system_prompts: list[str] = []
         self.summary_calls = []
 
-    def generate(self, recent_context, user_message):
+    def generate(self, recent_context, user_message, *, system_prompt):
         self.contexts.append(recent_context)
         self.messages.append(user_message)
+        self.system_prompts.append(system_prompt)
         return f"answer:{user_message}"
 
     def summarize_hot_draft(self, old_summary, moved_turns):
@@ -37,7 +40,7 @@ class _ContextModel:
 class _FailingModel:
     client_kind = "model"
 
-    def generate(self, recent_context, user_message):
+    def generate(self, recent_context, user_message, *, system_prompt):
         raise RuntimeError("key=private provider=https://private.invalid")
 
 
@@ -128,6 +131,73 @@ def _shared_adapter(tmp_path: Path, backend=None):
         IngestionStateStore(tmp_path / "ingestion-state.json"),
         ingestion_version="dream-v1",
     ), backend
+
+
+def test_chat_background_loads_once_and_requires_restart(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    background_path = tmp_path / "chat_background.md"
+    initial = "# Test background\n\nStable internal Markdown."
+    background_path.write_text(
+        "\ufeff \n" + initial + "\n\t",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main_module, "_CHAT_BACKGROUND_PATH", background_path)
+    model = _ContextModel()
+    app = _app(tmp_path / "first-app", model)
+    background_path.write_text("replacement after restart", encoding="utf-8")
+    client = TestClient(app)
+
+    first = client.post("/api/chat", json={"message": "one"})
+    second = client.post("/api/chat", json={"message": "two"})
+
+    assert first.status_code == second.status_code == 200
+    assert model.system_prompts == [initial, initial]
+    persisted = (tmp_path / "first-app" / "hot.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert initial not in persisted
+    assert "replacement after restart" not in persisted
+    public_text = first.text + second.text + client.get("/api/status").text
+    assert initial not in public_text
+    assert str(background_path) not in public_text
+
+    restarted_model = _ContextModel()
+    restarted_client = TestClient(
+        _app(tmp_path / "restarted-app", restarted_model)
+    )
+    assert restarted_client.post(
+        "/api/chat",
+        json={"message": "after restart"},
+    ).status_code == 200
+    assert restarted_model.system_prompts == ["replacement after restart"]
+
+
+@pytest.mark.parametrize("failure", ["missing", "empty", "unreadable", "invalid"])
+def test_invalid_chat_background_fails_app_construction_safely(
+    tmp_path: Path,
+    monkeypatch,
+    failure: str,
+) -> None:
+    background_path = tmp_path / f"{failure}.md"
+    if failure == "empty":
+        background_path.write_text(" \n\t", encoding="utf-8")
+    elif failure == "unreadable":
+        background_path.mkdir()
+    elif failure == "invalid":
+        background_path.write_bytes(b"\xff\xfe\xfa")
+    monkeypatch.setattr(main_module, "_CHAT_BACKGROUND_PATH", background_path)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _app(tmp_path / "app")
+
+    rendered = str(exc_info.value)
+    assert rendered in {
+        "Chat background could not be loaded.",
+        "Chat background is empty.",
+    }
+    assert str(background_path) not in rendered
 
 
 def test_status_and_mock_chat_contract(tmp_path: Path) -> None:
@@ -393,6 +463,22 @@ def test_summary_context_order_and_second_pass_payload_are_strictly_bounded(
     summary_input = repr(model.summary_calls)
     assert "bounded recall" not in summary_input
     assert "current" not in summary_input
+    assert len(set(model.system_prompts)) == 1
+    chat_background = model.system_prompts[0]
+    assert chat_background
+    assert chat_background not in summary_input
+    assert [query for query, _policy in retriever.calls] == [
+        "old",
+        "middle",
+        "current",
+    ]
+    assert chat_background not in repr(retriever.calls)
+    assert chat_background not in (tmp_path / "hot.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert chat_background not in (tmp_path / "cold.jsonl").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_summary_failure_reports_failed_and_preserves_hot_raw_turns(
@@ -734,6 +820,44 @@ def test_dream_uses_app_cold_owner_and_current_chat_memory_backend(tmp_path: Pat
     )
 
 
+def test_chat_background_is_not_persisted_by_compaction_dream_or_memory(
+    tmp_path: Path,
+) -> None:
+    adapter, backend = _shared_adapter(tmp_path)
+    model = _ContextModel()
+    app = _app(
+        tmp_path,
+        model,
+        memory_retriever=adapter,
+        retain_recent_raw_turns=2,
+        max_raw_turns_before_compression=2,
+    )
+    client = TestClient(app)
+
+    client.post("/api/chat", json={"message": "one"})
+    second = client.post("/api/chat", json={"message": "two"})
+    assert second.json()["compaction"]["status"] == "completed"
+    assert len(set(model.system_prompts)) == 1
+    chat_background = model.system_prompts[0]
+    assert chat_background not in repr(model.summary_calls)
+    assert chat_background not in (tmp_path / "hot.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert chat_background not in (tmp_path / "cold.jsonl").read_text(
+        encoding="utf-8"
+    )
+
+    dream = client.post("/api/dream/run")
+
+    assert dream.json()["attempted"] == 1
+    assert dream.json()["consumed"] == 1
+    assert chat_background not in repr(backend.events)
+    assert chat_background not in (tmp_path / "ingestion-state.json").read_text(
+        encoding="utf-8"
+    )
+    assert chat_background not in dream.text
+
+
 def test_status_reports_bounded_safe_dream_state(tmp_path: Path) -> None:
     adapter, _ = _shared_adapter(tmp_path)
     app = _app(
@@ -816,7 +940,7 @@ def test_chat_holds_writer_lock_against_chat_and_dream(tmp_path: Path) -> None:
     class BlockingModel:
         client_kind = "model"
 
-        def generate(self, recent_context, user_message):
+        def generate(self, recent_context, user_message, *, system_prompt):
             started.set()
             if not release.wait(timeout=5):
                 raise RuntimeError("test synchronization timeout")

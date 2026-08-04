@@ -34,6 +34,8 @@ class ModelClient(Protocol):
         self,
         recent_context: list[dict[str, str]],
         user_message: str,
+        *,
+        system_prompt: str,
     ) -> str:
         ...
 
@@ -52,6 +54,8 @@ class MockModelClient:
         self,
         recent_context: list[dict[str, str]],
         user_message: str,
+        *,
+        system_prompt: str,
     ) -> str:
         return MOCK_ASSISTANT_TEXT
 
@@ -92,6 +96,8 @@ class MiniMaxAnthropicModelClient:
         self,
         recent_context: list[dict[str, str]],
         user_message: str,
+        *,
+        system_prompt: str,
     ) -> str:
         body: dict[str, Any] = {
             "model": self._model,
@@ -108,8 +114,7 @@ class MiniMaxAnthropicModelClient:
             and isinstance(item.get("text"), str)
             and item["text"].strip()
         ]
-        if summary_blocks:
-            body["system"] = "\n\n".join(summary_blocks)
+        body['system'] = '\n\n'.join([system_prompt, *summary_blocks])
         return self._request(body)
 
     def summarize_hot_draft(

@@ -39,6 +39,7 @@ class MessageRuntime:
         hot_store: JsonlDraftStore,
         draft_context_provider: DraftContextProvider,
         model_client: ModelClient,
+        chat_background: str,
         compactor: HotDraftCompactor | None = None,
         clock: Clock | None = None,
         turn_id_factory: TurnIdFactory | None = None,
@@ -50,6 +51,7 @@ class MessageRuntime:
         self._hot_store = hot_store
         self._draft_context_provider = draft_context_provider
         self._model_client = model_client
+        self._chat_background = chat_background
         self._compactor = compactor
         self._recall_enabled = recall_enabled
         self._memory_retriever = memory_retriever
@@ -159,7 +161,11 @@ class MessageRuntime:
         phase = "mock_chat" if client_kind == "mock" else "model_chat"
         response_type = "mock" if client_kind == "mock" else "model"
         try:
-            text = self._model_client.generate(recent_context, user_message)
+            text = self._model_client.generate(
+                recent_context,
+                user_message,
+                system_prompt=self._chat_background,
+            )
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("empty model response")
             return text, response_type, phase, None

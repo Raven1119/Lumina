@@ -16,6 +16,9 @@ from core.message_runtime import MessageRuntime
 from core.model_client import MOCK_ASSISTANT_TEXT, MockModelClient
 
 
+_CHAT_BACKGROUND = "stable chat background marker"
+
+
 class _RecordingModel:
     client_kind = "model"
 
@@ -23,17 +26,19 @@ class _RecordingModel:
         self.answer = answer
         self.contexts: list[list[dict[str, str]]] = []
         self.messages: list[str] = []
+        self.system_prompts: list[str] = []
 
-    def generate(self, recent_context, user_message):
+    def generate(self, recent_context, user_message, *, system_prompt):
         self.contexts.append(recent_context)
         self.messages.append(user_message)
+        self.system_prompts.append(system_prompt)
         return self.answer
 
 
 class _FailingModel:
     client_kind = "model"
 
-    def generate(self, recent_context, user_message):
+    def generate(self, recent_context, user_message, *, system_prompt):
         raise RuntimeError("provider private URL and key")
 
 
@@ -100,6 +105,7 @@ def _runtime(
             hot_store=hot,
             draft_context_provider=DraftContextProvider(hot),
             model_client=model or MockModelClient(),
+            chat_background=_CHAT_BACKGROUND,
             compactor=compactor,
             **runtime_kwargs,
         ),
@@ -119,12 +125,16 @@ def test_model_is_called_before_current_turn_is_written(tmp_path: Path) -> None:
         {"role": "assistant", "text": "model answer"},
     ]
     assert {"role": "user", "text": "second"} not in model.contexts[1]
+    assert model.system_prompts == [_CHAT_BACKGROUND, _CHAT_BACKGROUND]
     assert [turn.role for turn in hot.list_recent(10)] == [
         "user",
         "assistant",
         "user",
         "assistant",
     ]
+    assert _CHAT_BACKGROUND not in (tmp_path / "hot.jsonl").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_mock_model_returns_truthful_mock_semantics(tmp_path: Path) -> None:
@@ -153,12 +163,14 @@ def test_compaction_runs_after_user_and_assistant_writes(tmp_path: Path) -> None
 
     def summarize(old_summary, moved_turns):
         assert old_summary is None
+        assert _CHAT_BACKGROUND not in repr(moved_turns)
         return " | ".join(turn.text for turn in moved_turns)
 
     runtime = MessageRuntime(
         hot_store=hot,
         draft_context_provider=DraftContextProvider(hot),
         model_client=_RecordingModel(),
+        chat_background=_CHAT_BACKGROUND,
         compactor=HotDraftCompactor(
             hot,
             cold,
@@ -177,6 +189,12 @@ def test_compaction_runs_after_user_and_assistant_writes(tmp_path: Path) -> None
         "user",
         "assistant",
     ]
+    assert _CHAT_BACKGROUND not in (tmp_path / "hot.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert _CHAT_BACKGROUND not in (tmp_path / "cold.jsonl").read_text(
+        encoding="utf-8"
+    )
 
 
 class _FailingHotStore(JsonlDraftStore):
@@ -190,6 +208,7 @@ def test_draft_failure_does_not_leak_or_break_response(tmp_path: Path) -> None:
         hot_store=hot,
         draft_context_provider=DraftContextProvider(hot),
         model_client=MockModelClient(),
+        chat_background=_CHAT_BACKGROUND,
     )
     result = runtime.handle_chat(ChatRequest(message="hello"))
     assert result.response.response.type == "mock"
@@ -272,6 +291,7 @@ def test_enabled_recall_injects_only_bounded_rendered_text(
     result = runtime.handle_chat(ChatRequest(message="remember"))
 
     assert retriever.calls == [("remember", policy)]
+    assert model.system_prompts == [_CHAT_BACKGROUND]
     assert model.contexts == [[{
         "role": "user",
         "text": (

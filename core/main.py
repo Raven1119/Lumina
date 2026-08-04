@@ -36,6 +36,7 @@ from Dream.runner import DreamRunner
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
 _ROOT_DIRECTORY = Path(__file__).resolve().parent.parent
+_CHAT_BACKGROUND_PATH = _ROOT_DIRECTORY / "prompts" / "chat_background.md"
 _CONVERSATION_MEMORY_DIRECTORY = _ROOT_DIRECTORY / "Conversation_Memory"
 _DREAM_POLICY = DreamRunPolicy()
 _PENDING_STATUS_LIMIT = 100
@@ -71,6 +72,16 @@ def _recall_enabled(value: str | None) -> bool:
         "yes",
         "on",
     }
+
+
+def _load_chat_background(path: Path) -> str:
+    try:
+        content = path.read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeError):
+        raise RuntimeError("Chat background could not be loaded.") from None
+    if not content:
+        raise RuntimeError("Chat background is empty.")
+    return content
 
 
 def _build_memory_retriever() -> MemoryRetriever:
@@ -109,6 +120,7 @@ def create_app(
     memory_retriever: MemoryRetriever | None = None,
     recall_policy: RecallPolicy | None = None,
 ) -> FastAPI:
+    chat_background = _load_chat_background(_CHAT_BACKGROUND_PATH)
     if env_file_path is not None:
         load_env_file(env_file_path, override=False)
 
@@ -177,6 +189,7 @@ def create_app(
         hot_store=hot_store,
         draft_context_provider=context_provider,
         model_client=effective_model,
+        chat_background=chat_background,
         compactor=compactor,
         clock=clock,
         turn_id_factory=turn_id_factory,

@@ -35,6 +35,9 @@ automatic or background work.
   manual Dream control backed by `POST /api/dream/run`;
 - deterministic mock mode by default and explicit MiniMax
   Anthropic-compatible model mode;
+- one editable chat background at `prompts/chat_background.md`, loaded once
+  when the application is constructed and passed to every normal model-backed
+  Chat generation through the provider-native `system` field;
 - safe provider and Recall fallback without exposing credentials, paths,
   tracebacks, provider bodies, or memory internals;
 - restart-persistent Hot Draft with one rolling semantic summary plus recent
@@ -117,6 +120,12 @@ over `.env.local`; restart the server after changing configuration.
 
 No provider request occurs during import or startup. Provider failure returns a
 safe fallback response.
+
+The Chat background is not a memory source. Editing
+`prompts/chat_background.md` requires an application restart. Its content is
+not written to Hot or Cold Draft, sent to the rolling summarizer, used as a
+Recall query, ingested by Dream or MAGMA, returned by the API, or written to
+runtime checkpoints.
 
 ## Enable Conversation Memory Recall
 
