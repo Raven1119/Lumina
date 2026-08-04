@@ -5,13 +5,17 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 from adapter.magma_adapter import MagmaMemoryAdapter
 from adapter.models import BackendCandidate, IngestionResult
 from core.cold_draft_store import ColdDraftStore
 from core.contracts import MemoryTurn
+from core.main import create_app
+from core.model_client import MockModelClient
 from Dream.cold_draft_digest import (
     ColdDraftConversionError,
     ColdDraftDigestionTask,
@@ -170,10 +174,51 @@ def test_no_pending_segments_returns_empty_success_report():
 def test_real_owner_reads_production_record_ingests_and_consumes(tmp_path):
     path = tmp_path / "cold.jsonl"
     owner = ColdDraftStore(path)
+    turns = [
+        MemoryTurn(
+            turn_id="production-user",
+            role="user",
+            text="hello",
+            created_at=datetime(2026, 7, 14, 2, 0, tzinfo=UTC),
+            source_timezone="Asia/Shanghai",
+            timezone_source="client",
+        ).storage_turn(),
+        MemoryTurn(
+            turn_id="production-assistant",
+            role="assistant",
+            text="hi",
+            created_at=datetime(2026, 7, 14, 2, 1, tzinfo=UTC),
+            source_timezone="Asia/Shanghai",
+            timezone_source="client",
+        ).storage_turn(),
+    ]
     record = owner.append_segment(
-        [{"role": "user", "text": "hello"}, {"role": "assistant", "text": "hi"}],
+        turns,
         segment_id="production-segment",
     )
+    before = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(before) == 2
+    assert {item["record_type"] for item in before} == {"cold_turn"}
+    assert {item["segment_id"] for item in before} == {record["segment_id"]}
+    assert [item["segment_turn_index"] for item in before] == [0, 1]
+    assert {item["segment_turn_count"] for item in before} == {2}
+    assert [
+        {
+            key: item[key]
+            for key in (
+                "turn_id",
+                "role",
+                "text",
+                "created_at",
+                "source_timezone",
+                "timezone_source",
+            )
+        }
+        for item in before
+    ] == turns
     provider = FakeProvider()
     report = DreamRunner(
         owner,
@@ -182,8 +227,12 @@ def test_real_owner_reads_production_record_ingests_and_consumes(tmp_path):
     assert report.attempted == report.ingested == report.consumed == 1
     assert report.results[0].segment_id == record["segment_id"]
     assert owner.list_pending() == []
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    assert stored["state"] == "consumed"
+    after = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert {item["state"] for item in after} == {"consumed"}
+    assert len({item["consumed_at"] for item in after}) == 1
 
 
 def test_multiple_segments_use_owner_order():
@@ -271,14 +320,18 @@ def test_non_pending_record_is_skipped_without_ingest():
     assert provider.system.calls == []
 
 
-def test_malformed_production_record_is_not_consumed(tmp_path):
+def test_legacy_nested_physical_record_is_not_rebuilt_or_consumed(tmp_path):
     path = tmp_path / "cold.jsonl"
     raw = {"segment_id": "malformed", "turns": [{"role": "user", "text": "kept"}], "state": "pending_digest"}
     path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
     owner = ColdDraftStore(path)
     provider = FakeProvider()
     report = DreamRunner(owner, ColdDraftDigestionTask(owner, provider)).run_once(DreamRunPolicy(max_segments=1))
-    assert report.results[0].error_code == "invalid_created_at"
+    assert owner.list_pending() == []
+    assert report.attempted == report.consumed == 0
+    assert report.results == ()
+    assert provider.system.calls == []
+    assert owner.mark_consumed("malformed") is False
     assert json.loads(path.read_text(encoding="utf-8"))["state"] == "pending_digest"
 
 
@@ -424,13 +477,26 @@ def test_consumed_transition_changes_only_state_metadata_not_raw_turns(tmp_path)
         [{"role": "user", "text": "do not alter"}, {"role": "assistant", "text": "verbatim"}],
         segment_id="immutable-raw",
     )
-    before = json.loads(path.read_text(encoding="utf-8"))
+    before = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
     provider = FakeProvider()
     DreamRunner(owner, ColdDraftDigestionTask(owner, provider)).run_once(DreamRunPolicy(max_segments=1))
-    after = json.loads(path.read_text(encoding="utf-8"))
-    assert after["turns"] == before["turns"]
-    assert after["created_at"] == before["created_at"]
-    assert after["source"] == before["source"]
+    after = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(before) == len(after) == 2
+    assert {item["state"] for item in before} == {"pending_digest"}
+    assert {item["state"] for item in after} == {"consumed"}
+    assert len({item["consumed_at"] for item in after}) == 1
+    for original, consumed in zip(before, after, strict=True):
+        assert "consumed_at" not in original
+        unchanged = dict(consumed)
+        unchanged.pop("consumed_at")
+        unchanged["state"] = "pending_digest"
+        assert unchanged == original
 
 
 def test_dream_does_not_import_upstream_magma_networkx_or_faiss():
@@ -542,14 +608,61 @@ def test_manual_cli_empty_run_outputs_only_structured_report(tmp_path, monkeypat
     assert str(tmp_path) not in output
 
 
-def test_chat_path_has_no_dream_or_ingestion_call():
-    production = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (ROOT / "core").glob("*.py")
+def test_dream_runner_is_only_triggered_by_explicit_http_request(tmp_path):
+    class DreamRunnerSpy:
+        def __init__(self):
+            self.calls = []
+
+        def run_once(self, policy):
+            self.calls.append(policy)
+            return SimpleNamespace(
+                attempted=1,
+                ingested=1,
+                consumed=1,
+                skipped=0,
+                failed=0,
+            )
+
+    app = create_app(
+        draft_store_path=tmp_path / "hot.jsonl",
+        cold_draft_path=tmp_path / "cold.jsonl",
+        compaction_state_path=tmp_path / "compaction.json",
+        model_client=MockModelClient(),
+        env_file_path=None,
+        enable_compaction=False,
+        recall_enabled=False,
+        memory_retriever=object(),
     )
-    assert "DreamRunner" not in production
-    assert "ColdDraftDigestionTask" not in production
-    assert "MemoryIngestor" not in production
+    runner = DreamRunnerSpy()
+    app.state.dream_runner = runner
+    client = TestClient(app)
+
+    status = client.get("/api/status")
+    chat = client.post("/api/chat", json={"message": "ordinary chat"})
+
+    assert status.status_code == 200
+    assert status.json()["dream"] == {
+        "available": True,
+        "running": False,
+        "pending_segments": 0,
+        "pending_truncated": False,
+    }
+    assert chat.status_code == 200
+    assert runner.calls == []
+    assert app.state.writer_lock is not None
+    assert app.state.dream_running is False
+
+    dream = client.post("/api/dream/run")
+
+    assert dream.status_code == 200
+    assert dream.json() == {
+        "attempted": 1,
+        "ingested": 1,
+        "consumed": 1,
+        "skipped": 0,
+        "failed": 0,
+    }
+    assert len(runner.calls) == 1
 
 
 @pytest.mark.skipif(

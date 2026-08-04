@@ -12,6 +12,12 @@ ModelResponseType = Literal["mock", "model", "fallback"]
 ChatPhase = Literal["mock_chat", "model_chat"]
 
 
+class CompactionStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    running: bool
+
+
 class StatusResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -19,6 +25,28 @@ class StatusResponse(BaseModel):
     status: Literal["ok"]
     mode: Literal["mock", "model"]
     draft_enabled: Literal[True] = True
+    recall_enabled: bool
+    compaction: CompactionStatusResponse
+    dream: "DreamStatusResponse"
+
+
+class DreamStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    running: bool
+    pending_segments: int
+    pending_truncated: bool
+
+
+class DreamRunResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempted: int
+    ingested: int
+    consumed: int
+    skipped: int
+    failed: int
 
 
 class ChatRequest(BaseModel):
@@ -36,6 +64,14 @@ class AssistantResponse(BaseModel):
     text: str
 
 
+class ChatCompactionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["not_needed", "completed", "failed"]
+    archived_turns: int
+    summary_updated: bool
+
+
 class ChatResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -44,6 +80,7 @@ class ChatResponse(BaseModel):
     phase: ChatPhase
     message_consumed: bool
     response: AssistantResponse
+    compaction: ChatCompactionResponse
 
 
 TimezoneSource = Literal[

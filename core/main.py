@@ -5,14 +5,23 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from threading import Lock
+from typing import cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
-from Conversation_Memory.adapter.interfaces import MemoryRetriever
+from Conversation_Memory.adapter.interfaces import MemoryIngestor, MemoryRetriever
 from Conversation_Memory.adapter.models import RecallPolicy
 from core.cold_draft_store import ColdDraftStore
-from core.contracts import ChatRequest, ChatResponse, StatusResponse
+from core.contracts import (
+    ChatRequest,
+    ChatResponse,
+    CompactionStatusResponse,
+    DreamRunResponse,
+    DreamStatusResponse,
+    StatusResponse,
+)
 from core.draft_context import DraftContextProvider
 from core.draft_store import JsonlDraftStore
 from core.env_loader import load_env_file
@@ -20,11 +29,29 @@ from core.hot_draft_compactor import HotDraftCompactor
 from core.message_runtime import MessageRuntime
 from core.model_client import ModelClient, build_model_client_from_env
 from core.turn_provenance import Clock, TurnIdFactory
+from Dream.cold_draft_digest import ColdDraftDigestionTask
+from Dream.models import DreamRunPolicy
+from Dream.runner import DreamRunner
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
 _ROOT_DIRECTORY = Path(__file__).resolve().parent.parent
 _CONVERSATION_MEMORY_DIRECTORY = _ROOT_DIRECTORY / "Conversation_Memory"
+_DREAM_POLICY = DreamRunPolicy()
+_PENDING_STATUS_LIMIT = 100
+
+
+class _SharedMemoryIngestorProvider:
+    """Adapt the app's one memory adapter to Dream's existing provider seam."""
+
+    def __init__(self, ingestor: MemoryIngestor, ingestion_version: str) -> None:
+        self._ingestor = ingestor
+        self._ingestion_version = ingestion_version
+
+    def get(self, ingestion_version: str) -> MemoryIngestor:
+        if ingestion_version != self._ingestion_version:
+            raise RuntimeError("memory_ingestor_version_unavailable")
+        return self._ingestor
 
 
 def _hot_path(configured: str | Path | None) -> Path:
@@ -58,7 +85,11 @@ def _build_memory_retriever() -> MemoryRetriever:
             str(_ROOT_DIRECTORY / "data" / "conversation_memory" / "magma"),
         )
     )
-    return MagmaMemoryAdapter.create_real(persist_dir)
+    return MagmaMemoryAdapter.create_real(
+        persist_dir,
+        fail_if_unavailable=True,
+        ingestion_version=_DREAM_POLICY.ingestion_version,
+    )
 
 
 def create_app(
@@ -89,7 +120,7 @@ def create_app(
             os.environ.get("LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED")
         )
     )
-    effective_retriever = memory_retriever
+    effective_memory = memory_retriever
     effective_recall_policy = (
         recall_policy
         if recall_policy is not None
@@ -97,11 +128,12 @@ def create_app(
         if effective_recall_enabled
         else None
     )
-    if effective_recall_enabled and effective_retriever is None:
+    if effective_memory is None:
         try:
-            effective_retriever = _build_memory_retriever()
+            effective_memory = _build_memory_retriever()
         except Exception:
-            effective_retriever = None
+            effective_memory = None
+    runtime_retriever = effective_memory if effective_recall_enabled else None
 
     hot_path = _hot_path(draft_store_path)
     effective_cold_path = Path(cold_draft_path) if cold_draft_path is not None else hot_path.parent / "cold_drafts.jsonl"
@@ -109,13 +141,35 @@ def create_app(
 
     hot_store = JsonlDraftStore(hot_path)
     cold_store = ColdDraftStore(effective_cold_path)
+    dream_runner = None
+    if (
+        effective_memory is not None
+        and callable(getattr(effective_memory, "ingest", None))
+        and getattr(effective_memory, "ingestion_version", None)
+        == _DREAM_POLICY.ingestion_version
+    ):
+        ingestor = cast(MemoryIngestor, effective_memory)
+        provider = _SharedMemoryIngestorProvider(
+            ingestor,
+            _DREAM_POLICY.ingestion_version,
+        )
+        dream_runner = DreamRunner(
+            cold_store,
+            ColdDraftDigestionTask(cold_store, provider),
+        )
     context_provider = DraftContextProvider(hot_store)
     compactor = None
     if enable_compaction:
+        summary_callable = getattr(
+            effective_model,
+            "summarize_hot_draft",
+            None,
+        )
         compactor = HotDraftCompactor(
             hot_store,
             cold_store,
             effective_state_path,
+            summarizer=summary_callable if callable(summary_callable) else None,
             retain_recent_raw_turns=retain_recent_raw_turns,
             max_raw_turns_before_compression=max_raw_turns_before_compression,
         )
@@ -132,7 +186,7 @@ def create_app(
             else os.environ.get("LUMINA_DEFAULT_TIMEZONE", "UTC")
         ),
         recall_enabled=effective_recall_enabled,
-        memory_retriever=effective_retriever,
+        memory_retriever=runtime_retriever,
         recall_policy=effective_recall_policy,
     )
 
@@ -140,22 +194,90 @@ def create_app(
     app.state.message_runtime = runtime
     app.state.hot_draft_store = hot_store
     app.state.cold_draft_store = cold_store
+    app.state.dream_runner = dream_runner
+    app.state.writer_lock = Lock()
+    app.state.dream_running = False
+    app.state.recall_enabled = effective_recall_enabled
+    app.state.hot_draft_compactor = compactor
 
     @app.get("/api/status", response_model=StatusResponse)
     def get_status() -> StatusResponse:
+        pending = cold_store.count_pending_bounded(_PENDING_STATUS_LIMIT)
         return StatusResponse(
             app="lumina",
             status="ok",
             mode=_model_kind(effective_model),
             draft_enabled=True,
+            recall_enabled=effective_recall_enabled,
+            compaction=CompactionStatusResponse(
+                running=compactor.is_running if compactor is not None else False,
+            ),
+            dream=DreamStatusResponse(
+                available=app.state.dream_runner is not None,
+                running=app.state.dream_running,
+                pending_segments=pending.count,
+                pending_truncated=pending.truncated,
+            ),
         )
 
     @app.post("/api/chat", response_model=ChatResponse)
     def post_chat(request: ChatRequest) -> ChatResponse:
-        message = request.message if request.message is not None else request.text
-        if message is None or not message.strip():
-            raise HTTPException(status_code=400, detail="message is required")
-        return runtime.handle_chat(request).response
+        if not app.state.writer_lock.acquire(blocking=False):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "writer_busy",
+                    "message": "another write operation is in progress",
+                },
+            )
+        try:
+            message = request.message if request.message is not None else request.text
+            if message is None or not message.strip():
+                raise HTTPException(status_code=400, detail="message is required")
+            return runtime.handle_chat(request).response
+        finally:
+            app.state.writer_lock.release()
+
+    @app.post("/api/dream/run", response_model=DreamRunResponse)
+    def post_dream() -> DreamRunResponse:
+        runner = app.state.dream_runner
+        if runner is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "dream_unavailable",
+                    "message": "Dream is unavailable",
+                },
+            )
+        if not app.state.writer_lock.acquire(blocking=False):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "writer_busy",
+                    "message": "another write operation is in progress",
+                },
+            )
+        app.state.dream_running = True
+        try:
+            report = runner.run_once(_DREAM_POLICY)
+            return DreamRunResponse(
+                attempted=report.attempted,
+                ingested=report.ingested,
+                consumed=report.consumed,
+                skipped=report.skipped,
+                failed=report.failed,
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "dream_failed",
+                    "message": "Dream could not complete",
+                },
+            ) from None
+        finally:
+            app.state.dream_running = False
+            app.state.writer_lock.release()
 
     if FRONTEND_DIRECTORY.is_dir():
         app.mount(

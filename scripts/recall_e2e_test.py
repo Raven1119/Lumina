@@ -158,6 +158,15 @@ class _FixedIngestorProvider:
         return self._ingestor
 
 
+def _fake_rolling_summarizer(
+    old_summary: str | None,
+    moved_turns: list[MemoryTurn],
+) -> str:
+    parts = [old_summary] if old_summary else []
+    parts.extend(f"{turn.role}: {turn.text}" for turn in moved_turns)
+    return "\n".join(parts)
+
+
 def _is_within(path: Path, parent: Path) -> bool:
     try:
         path.relative_to(parent)
@@ -586,12 +595,13 @@ def _execute_pipeline(
         hot_store,
         cold_store,
         paths.compaction_state,
+        summarizer=_fake_rolling_summarizer,
         retain_recent_raw_turns=2,
         max_raw_turns_before_compression=6,
     )
     compaction = compactor.maybe_compact()
-    _require(compaction.status == "compacted", "compaction", "cold_first_compaction_failed")
-    pending = cold_store.list_pending(limit=10)
+    _require(compaction.status == "completed", "compaction", "cold_first_compaction_failed")
+    pending = ColdDraftStore(paths.cold_draft).list_pending(limit=10)
     _require(len(pending) == 1, "compaction", "pending_segment_count_mismatch")
     source_record = pending[0]
     _require(source_record.get("schema_version") == 2, "compaction", "cold_draft_schema_not_v2")
@@ -604,11 +614,94 @@ def _execute_pipeline(
         "compaction",
         "cold_draft_turn_provenance_changed",
     )
+    physical_cold_before = _read_jsonl(paths.cold_draft)
     _require(
-        [(turn.role, turn.text) for turn in hot_store.list_recent(limit=len(all_turns))]
-        == [(turn.role, turn.text) for turn in all_turns],
+        len(physical_cold_before) == len(expected_cold_turns),
         "compaction",
-        "physical_hot_draft_changed",
+        "cold_draft_physical_line_count_mismatch",
+    )
+    _require(
+        all(
+            item.get("record_type") == "cold_turn"
+            and item.get("segment_id") == source_record["segment_id"]
+            and item.get("segment_turn_count") == len(expected_cold_turns)
+            and item.get("state") == "pending_digest"
+            for item in physical_cold_before
+        ),
+        "compaction",
+        "cold_draft_physical_segment_metadata_mismatch",
+    )
+    _require(
+        [item.get("segment_turn_index") for item in physical_cold_before]
+        == list(range(len(expected_cold_turns))),
+        "compaction",
+        "cold_draft_physical_turn_index_mismatch",
+    )
+    _require(
+        [
+            {
+                key: item[key]
+                for key in (
+                    "turn_id",
+                    "role",
+                    "text",
+                    "created_at",
+                    "source_timezone",
+                    "timezone_source",
+                )
+            }
+            for item in physical_cold_before
+        ]
+        == expected_cold_turns,
+        "compaction",
+        "cold_draft_physical_turn_provenance_changed",
+    )
+    hot_context = hot_store.read_context()
+    expected_hot_tail = tuple(_draft_turn(turn) for turn in _HOT_TAIL)
+    expected_summary = _fake_rolling_summarizer(
+        None,
+        [_draft_turn(turn) for turn in FIXED_TURNS],
+    )
+    _require(
+        hot_context.raw_turns == expected_hot_tail,
+        "compaction",
+        "hot_draft_recent_tail_mismatch",
+    )
+    _require(
+        hot_context.summary is not None
+        and hot_context.summary.content == expected_summary
+        and hot_context.summary.generation == 1
+        and hot_context.summary.source_turn_count == len(FIXED_TURNS),
+        "compaction",
+        "hot_draft_summary_mismatch",
+    )
+    physical_hot_records = [
+        json.loads(line)
+        for line in paths.hot_draft.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    _require(
+        sum(record.get("record_type") == "summary" for record in physical_hot_records)
+        == 1
+        and physical_hot_records[0] == hot_context.summary.storage_record()
+        and physical_hot_records[1:]
+        == [
+            {
+                **turn.storage_turn(),
+                "schema_version": 2,
+                "source": "chat_draft",
+                "safe": True,
+            }
+            for turn in expected_hot_tail
+        ],
+        "compaction",
+        "hot_draft_physical_layout_mismatch",
+    )
+    restarted_hot_context = JsonlDraftStore(paths.hot_draft).read_context()
+    _require(
+        restarted_hot_context == hot_context,
+        "compaction",
+        "hot_draft_compacted_restart_mismatch",
     )
     converted = ColdDraftSegmentConverter().convert(source_record, INGESTION_VERSION)
     _require(
@@ -664,7 +757,7 @@ def _execute_pipeline(
             ingestion_version=INGESTION_VERSION,
         ),
     )
-    _require(first_dream.attempted >= 1, "dream", "dream_attempted_zero")
+    _require(first_dream.attempted == 1, "dream", "dream_segment_attempt_mismatch")
     _require(first_dream.failed == 0, "dream", "dream_failed")
     _require(
         all(item.status == "consumed" and item.consumed for item in first_dream.results),
@@ -676,16 +769,39 @@ def _execute_pipeline(
     key = state_store.key(source_record["segment_id"], INGESTION_VERSION)
     _require(state_records.get(key, {}).get("status") == "completed", "dream", "ingestion_not_completed")
     cold_records = _read_jsonl(paths.cold_draft)
-    consumed_record = next(
-        (item for item in cold_records if item.get("segment_id") == source_record["segment_id"]),
-        None,
-    )
-    _require(consumed_record is not None, "dream", "consumed_record_missing")
-    _require(consumed_record.get("state") == "consumed", "dream", "cold_draft_not_consumed")
+    consumed_records = [
+        item
+        for item in cold_records
+        if item.get("segment_id") == source_record["segment_id"]
+    ]
     _require(
-        consumed_record["turns"] == expected_cold_turns,
+        len(consumed_records) == len(physical_cold_before),
         "dream",
-        "cold_draft_raw_content_changed",
+        "consumed_record_count_mismatch",
+    )
+    _require(
+        all(item.get("state") == "consumed" for item in consumed_records)
+        and len({item.get("consumed_at") for item in consumed_records}) == 1,
+        "dream",
+        "cold_draft_not_consumed_as_segment",
+    )
+    for original, consumed in zip(
+        physical_cold_before,
+        consumed_records,
+        strict=True,
+    ):
+        unchanged = dict(consumed)
+        unchanged.pop("consumed_at", None)
+        unchanged["state"] = "pending_digest"
+        _require(
+            unchanged == original,
+            "dream",
+            "cold_draft_raw_content_changed",
+        )
+    _require(
+        ColdDraftStore(paths.cold_draft).list_pending(limit=10) == [],
+        "dream",
+        "consumed_segment_still_pending",
     )
     report["dream"].update({"attempted": first_dream.attempted, "failed": first_dream.failed})
     report["cold_draft"]["consumed"] = 1

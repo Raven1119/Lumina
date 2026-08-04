@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from core.contracts import (
     AssistantResponse,
+    ChatCompactionResponse,
     ChatRequest,
     ChatResponse,
     MemoryTurn,
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
 
 _MEMORY_CONTEXT_START = "[Relevant conversation memory]"
 _MEMORY_CONTEXT_END = "[/Relevant conversation memory]"
+_HOT_SUMMARY_START = "[Hot rolling summary]"
+_HOT_SUMMARY_END = "[/Hot rolling summary]"
 
 
 class MessageRuntime:
@@ -83,17 +86,18 @@ class MessageRuntime:
             timezone_source=timezone_source,
         )
 
+        events = ["response", context_event, model_event]
+        events.append(self._capture_turns(user_turn, assistant_turn))
+        compaction, compaction_event = self._compact()
+        events.append(compaction_event)
         response = ChatResponse(
             app="lumina",
             status="ok",
             phase=phase,
             message_consumed=True,
             response=AssistantResponse(type=response_type, text=assistant_text),
+            compaction=compaction,
         )
-
-        events = ["response", context_event, model_event]
-        events.append(self._capture_turns(user_turn, assistant_turn))
-        events.append(self._compact())
         return MessageRuntimeResult(
             response=response,
             recent_context=recent_context,
@@ -102,9 +106,19 @@ class MessageRuntime:
 
     def _load_context(self) -> tuple[list[dict[str, str]], str]:
         try:
-            if self._compactor is not None:
-                return self._compactor.get_context_turns(), "draft_context_read"
-            return self._draft_context_provider.get_recent_context(), "draft_context_read"
+            recent = self._draft_context_provider.get_recent_context()
+            summary = self._hot_store.read_summary()
+            if summary is None:
+                return recent, "draft_context_read"
+            summary_block = (
+                f"{_HOT_SUMMARY_START}\n"
+                f"{summary.content}\n"
+                f"{_HOT_SUMMARY_END}"
+            )
+            return [
+                {"role": "summary", "text": summary_block},
+                *recent,
+            ], "draft_context_read"
         except Exception:
             return [], "draft_context_read_failed"
 
@@ -165,15 +179,28 @@ class MessageRuntime:
                 succeeded = False
         return "draft_write" if succeeded else "draft_write_failed"
 
-    def _compact(self) -> str:
+    def _compact(self) -> tuple[ChatCompactionResponse, str]:
         if self._compactor is None:
-            return "compaction_skipped"
+            return ChatCompactionResponse(
+                status="not_needed",
+                archived_turns=0,
+                summary_updated=False,
+            ), "compaction_skipped"
         try:
             result = self._compactor.maybe_compact()
         except Exception:
-            return "compaction_failed"
-        if result.compacted:
-            return "compacted"
-        if result.status in {"cold_draft_failed", "hot_state_failed"}:
-            return "compaction_failed"
-        return "compaction_skipped"
+            return ChatCompactionResponse(
+                status="failed",
+                archived_turns=0,
+                summary_updated=False,
+            ), "compaction_failed"
+        response = ChatCompactionResponse(
+            status=result.status,
+            archived_turns=result.archived_turns,
+            summary_updated=result.summary_updated,
+        )
+        if result.status == "completed":
+            return response, "compacted"
+        if result.status == "failed":
+            return response, "compaction_failed"
+        return response, "compaction_skipped"

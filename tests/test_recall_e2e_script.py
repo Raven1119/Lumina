@@ -6,8 +6,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 import scripts.recall_e2e_test as recall_e2e
+from Conversation_Memory.adapter.models import IngestionResult, MemoryContext
+from core.main import create_app
+from core.model_client import MockModelClient
 from scripts.recall_e2e_test import (
     CONVERSATION_MEMORY_ROOT,
     DEFAULT_WORK_DIR,
@@ -152,17 +156,58 @@ def test_real_compaction_created_pending_then_consumed(kept_acceptance):
         "consumed": 1,
         "raw_order_preserved": True,
     }
-    record = json.loads((sandbox / "draft" / "cold_drafts.jsonl").read_text(encoding="utf-8"))
-    assert record["state"] == "consumed"
-    assert [(item["role"], item["text"]) for item in record["turns"]] == [
-        (turn.role, turn.text) for turn in FIXED_TURNS
+    assert report["dream"] == {
+        "attempted": 1,
+        "failed": 0,
+        "second_attempted": 0,
+    }
+
+    records = [
+        json.loads(line)
+        for line in (
+            sandbox / "draft" / "cold_drafts.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
     ]
-    assert record["schema_version"] == 2
-    assert [item["turn_id"] for item in record["turns"]] == [
-        turn.turn_id for turn in FIXED_TURNS
+    assert len(records) == len(FIXED_TURNS)
+    assert {record["record_type"] for record in records} == {"cold_turn"}
+    assert len({record["segment_id"] for record in records}) == 1
+    assert [record["segment_turn_index"] for record in records] == list(
+        range(len(FIXED_TURNS))
+    )
+    assert {record["segment_turn_count"] for record in records} == {
+        len(FIXED_TURNS)
+    }
+    assert len({
+        (
+            record["schema_version"],
+            record["segment_created_at"],
+            record["source"],
+        )
+        for record in records
+    }) == 1
+    assert {record["state"] for record in records} == {"consumed"}
+    assert len({record["consumed_at"] for record in records}) == 1
+
+    expected_turns = [
+        recall_e2e._draft_turn(turn).storage_turn()
+        for turn in FIXED_TURNS
     ]
-    assert all(item["source_timezone"] == SOURCE_TIMEZONE for item in record["turns"])
-    assert all(item["timezone_source"] == "client" for item in record["turns"])
+    assert [
+        {
+            key: record[key]
+            for key in (
+                "turn_id",
+                "role",
+                "text",
+                "created_at",
+                "source_timezone",
+                "timezone_source",
+            )
+        }
+        for record in records
+    ] == expected_turns
+    assert report["cold_draft"]["pending_created"] == 1
+    assert report["cold_draft"]["consumed"] == 1
 
 
 def test_real_dream_completed_without_failure(kept_acceptance):
@@ -290,13 +335,74 @@ def test_failed_pipeline_still_cleans_owned_sandbox_by_default(tmp_path, monkeyp
     assert not sandbox.exists()
 
 
-def test_chat_runtime_does_not_import_recall_e2e_or_dream():
-    production = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (ROOT / "core").glob("*.py")
+def test_chat_recall_does_not_trigger_dream_or_pending_ingestion(
+    tmp_path,
+    monkeypatch,
+):
+    class SharedMemorySpy:
+        ingestion_version = "dream-v1"
+
+        def __init__(self):
+            self.recall_calls = []
+            self.ingest_calls = []
+
+        def recall(self, query, policy):
+            self.recall_calls.append((query, policy))
+            return MemoryContext(query=query, rendered_text="bounded recalled memory")
+
+        def ingest(self, segment):
+            self.ingest_calls.append(segment.segment_id)
+            return IngestionResult(
+                segment_id=segment.segment_id,
+                ingestion_version=self.ingestion_version,
+                status="completed",
+                memory_ids=(f"memory-{segment.segment_id}",),
+            )
+
+    memory = SharedMemorySpy()
+    app = create_app(
+        draft_store_path=tmp_path / "hot.jsonl",
+        cold_draft_path=tmp_path / "cold.jsonl",
+        compaction_state_path=tmp_path / "compaction.json",
+        model_client=MockModelClient(),
+        env_file_path=None,
+        enable_compaction=False,
+        recall_enabled=True,
+        memory_retriever=memory,
     )
-    assert "recall_e2e_test" not in production
-    assert "DreamRunner" not in production
+    cold_store = app.state.cold_draft_store
+    cold_store.append_segment(
+        [{"role": "user", "text": "pending memory"}],
+        segment_id="pending-before-chat",
+    )
+    dream_calls = []
+    runner = app.state.dream_runner
+    assert runner is not None
+    original_run_once = runner.run_once
+
+    def tracked_run_once(policy):
+        dream_calls.append(policy)
+        return original_run_once(policy)
+
+    monkeypatch.setattr(runner, "run_once", tracked_run_once)
+
+    client = TestClient(app)
+    response = client.post("/api/chat", json={"message": "recall this"})
+
+    assert response.status_code == 200
+    assert len(memory.recall_calls) == 1
+    assert dream_calls == []
+    assert memory.ingest_calls == []
+    assert [record["segment_id"] for record in cold_store.list_pending()] == [
+        "pending-before-chat"
+    ]
+
+    dream_response = client.post("/api/dream/run")
+
+    assert dream_response.status_code == 200
+    assert len(dream_calls) == 1
+    assert memory.ingest_calls == ["pending-before-chat"]
+    assert cold_store.list_pending() == []
 
 
 def test_upstream_magma_is_clean_after_real_e2e(kept_acceptance):

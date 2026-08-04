@@ -1,32 +1,30 @@
-"""Cold-first logical compaction for the JSONL Hot Draft."""
+"""Cold-first rolling semantic compaction for the JSONL Hot Draft."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Callable, Literal
 
 from core.cold_draft_store import ColdDraftStore
-from core.draft_store import JsonlDraftStore
+from core.contracts import MemoryTurn
+from core.draft_store import HotDraftSummary, JsonlDraftStore
 
 
-CompactionStatus = Literal[
-    "skipped",
-    "compacted",
-    "cold_draft_failed",
-    "hot_state_failed",
-]
+CompactionStatus = Literal["not_needed", "completed", "failed"]
+SummaryCallable = Callable[[str | None, list[MemoryTurn]], str]
 
 
 @dataclass(frozen=True)
 class CompactionResult:
     status: CompactionStatus
-    compacted: bool
-    preserved_segment_id: str | None
-    compressed_turn_count: int
+    archived_turns: int
+    summary_updated: bool
 
 
 class HotDraftCompactor:
@@ -36,139 +34,168 @@ class HotDraftCompactor:
         cold_store: ColdDraftStore,
         state_path: str | Path,
         *,
+        summarizer: SummaryCallable | None = None,
         retain_recent_raw_turns: int = 12,
         max_raw_turns_before_compression: int = 24,
     ) -> None:
         self._hot_store = hot_store
         self._cold_store = cold_store
         self._state_path = Path(state_path)
+        self._summarizer = summarizer
         self._retain_recent = max(1, int(retain_recent_raw_turns))
         self._max_raw = max(1, int(max_raw_turns_before_compression))
+        self._is_running = False
+
+    @property
+    def is_running(self) -> bool:
+        return self._is_running
 
     def maybe_compact(self) -> CompactionResult:
-        raw_turns = self._read_raw_turns()
+        context = self._hot_store.read_context()
+        raw_turns = list(context.raw_turns)
         if len(raw_turns) <= self._max_raw:
-            return self._skipped()
+            return self._not_needed()
 
-        state = self._read_state()
-        already_compressed = self._compressed_until(state, len(raw_turns))
-        eligible = raw_turns[already_compressed:]
-        desired = len(eligible) - self._retain_recent
-        boundary = self._complete_pair_boundary(eligible, desired)
+        desired = len(raw_turns) - self._retain_recent
+        boundary = self._complete_pair_boundary(raw_turns, desired)
         if boundary == 0:
-            return self._skipped()
+            return self._not_needed()
 
-        segment_turns = [turn.storage_turn() for turn in eligible[:boundary]]
-        segment_id = self._stable_segment_id(already_compressed, segment_turns)
+        self._is_running = True
         try:
-            segment = self._cold_store.append_segment(
-                segment_turns,
-                source="hot_draft_precompression",
-                segment_id=segment_id,
+            moved_turns = raw_turns[:boundary]
+            recent_turns = raw_turns[boundary:]
+            old_summary = context.summary
+            try:
+                if self._summarizer is None:
+                    raise RuntimeError("rolling summary callable is unavailable")
+                summary_content = self._summarizer(
+                    old_summary.content if old_summary is not None else None,
+                    list(moved_turns),
+                )
+                if (
+                    not isinstance(summary_content, str)
+                    or not summary_content.strip()
+                ):
+                    raise ValueError("rolling summary is empty")
+            except Exception:
+                return self._failed()
+
+            segment_turns = [turn.storage_turn() for turn in moved_turns]
+            compaction_id = self._stable_compaction_id(segment_turns)
+            segment_id = f"compact-{compaction_id}"
+            try:
+                segment = self._cold_store.append_segment(
+                    segment_turns,
+                    source="hot_draft_precompression",
+                    segment_id=segment_id,
+                )
+            except Exception:
+                return self._failed()
+
+            generation = 1 if old_summary is None else old_summary.generation + 1
+            source_turn_count = boundary
+            if old_summary is not None:
+                source_turn_count += old_summary.source_turn_count
+            new_summary = HotDraftSummary(
+                content=summary_content.strip(),
+                generation=generation,
+                source_turn_count=source_turn_count,
+                updated_at=self._utc_now(),
             )
-        except Exception:
-            return CompactionResult("cold_draft_failed", False, None, 0)
+            try:
+                self._hot_store.replace_contents_atomically(
+                    new_summary,
+                    recent_turns,
+                )
+            except Exception:
+                return self._failed()
 
-        summary = {
-            "summary_id": f"summary-{segment_id}",
-            "created_at": datetime.now(UTC).isoformat(),
-            "source_segment_id": segment_id,
-            "compressed_turn_count": boundary,
-            "text": f"[Compressed conversation segment preserved in Cold Draft: {boundary} turns.]",
-        }
-        try:
-            self._write_state(
-                summaries=[*state.get("summaries", []), summary],
-                compressed_until_count=already_compressed + boundary,
-            )
-        except Exception:
-            return CompactionResult("hot_state_failed", False, segment["segment_id"], 0)
+            try:
+                self._write_state(
+                    generation=generation,
+                    compaction_id=compaction_id,
+                    archived_segment_id=segment["segment_id"],
+                )
+            except Exception:
+                # State is recovery metadata, not the authority for reading Hot.
+                # Cold preservation and atomic Hot replacement already succeeded.
+                return CompactionResult("completed", boundary, True)
 
-        return CompactionResult("compacted", True, segment["segment_id"], boundary)
-
-    def get_context_turns(self, limit: int | None = None) -> list[dict[str, str]]:
-        raw_turns = self._read_raw_turns()
-        state = self._read_state()
-        compressed_until = self._compressed_until(state, len(raw_turns))
-        summaries = state.get("summaries", [])
-        view = [
-            {"role": "assistant", "text": summary["text"]}
-            for summary in summaries
-            if isinstance(summary, dict) and isinstance(summary.get("text"), str)
-        ]
-        view.extend(
-            {"role": turn.role, "text": turn.text}
-            for turn in raw_turns[compressed_until:]
-        )
-        if limit is None:
-            return view
-        safe_limit = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 1
-        return view[-safe_limit:]
-
-    def _read_raw_turns(self) -> list[Any]:
-        return list(self._hot_store.list_recent(limit=1_000_000))
-
-    def _read_state(self) -> dict[str, Any]:
-        if not self._state_path.exists():
-            return {"summaries": [], "compressed_until_count": 0}
-        try:
-            state = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {"summaries": [], "compressed_until_count": 0}
-        if not isinstance(state, dict) or not isinstance(state.get("summaries"), list):
-            return {"summaries": [], "compressed_until_count": 0}
-        return state
+            return CompactionResult("completed", boundary, True)
+        finally:
+            self._is_running = False
 
     def _write_state(
         self,
         *,
-        summaries: list[dict[str, Any]],
-        compressed_until_count: int,
+        generation: int,
+        compaction_id: str,
+        archived_segment_id: str,
     ) -> None:
+        state = {
+            "schema_version": 2,
+            "generation": generation,
+            "last_compaction_id": compaction_id,
+            "last_archived_segment_id": archived_segment_id,
+        }
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(
-                {
-                    "summaries": summaries,
-                    "compressed_until_count": compressed_until_count,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        temporary.replace(self._state_path)
+        temporary_path: Path | None = None
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=self._state_path.parent,
+                prefix=f".{self._state_path.name}.",
+                suffix=".tmp",
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
+                json.dump(state, file, ensure_ascii=False, separators=(",", ":"))
+                file.write("\n")
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary_path, self._state_path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     @staticmethod
-    def _compressed_until(state: dict[str, Any], raw_count: int) -> int:
-        value = state.get("compressed_until_count", 0)
-        if not isinstance(value, int) or isinstance(value, bool):
-            return 0
-        return min(max(value, 0), raw_count)
-
-    @staticmethod
-    def _complete_pair_boundary(eligible: list[Any], desired: int) -> int:
+    def _complete_pair_boundary(raw_turns: list[MemoryTurn], desired: int) -> int:
         boundary = 0
-        while boundary + 2 <= desired and boundary + 1 < len(eligible):
-            if eligible[boundary].role != "user" or eligible[boundary + 1].role != "assistant":
+        while boundary + 2 <= desired and boundary + 1 < len(raw_turns):
+            if (
+                raw_turns[boundary].role != "user"
+                or raw_turns[boundary + 1].role != "assistant"
+            ):
                 break
             boundary += 2
         return boundary
 
     @staticmethod
-    def _stable_segment_id(
-        already_compressed: int,
-        turns: list[dict[str, Any]],
-    ) -> str:
+    def _stable_compaction_id(turns: list[dict[str, str]]) -> str:
         material = json.dumps(
-            {"offset": already_compressed, "turns": turns},
+            {"turns": turns},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-        return f"compact-{hashlib.sha256(material).hexdigest()[:32]}"
+        return hashlib.sha256(material).hexdigest()[:32]
 
     @staticmethod
-    def _skipped() -> CompactionResult:
-        return CompactionResult("skipped", False, None, 0)
+    def _utc_now() -> str:
+        return (
+            datetime.now(UTC)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+
+    @staticmethod
+    def _not_needed() -> CompactionResult:
+        return CompactionResult("not_needed", 0, False)
+
+    @staticmethod
+    def _failed() -> CompactionResult:
+        return CompactionResult("failed", 0, False)

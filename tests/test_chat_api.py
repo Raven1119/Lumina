@@ -1,11 +1,16 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import json
+from threading import Event
 
 import httpx
 from fastapi.testclient import TestClient
 
-from Conversation_Memory.adapter.models import MemoryContext, RecallPolicy
+from Conversation_Memory.adapter.models import BackendCandidate, MemoryContext, RecallPolicy
 from core import main as main_module
+from Conversation_Memory.adapter import backend as memory_backend_module
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from ingestion.state_store import IngestionStateStore
 from core.main import create_app
 from core.model_client import MiniMaxAnthropicModelClient, MockModelClient
 
@@ -15,10 +20,18 @@ class _ContextModel:
 
     def __init__(self) -> None:
         self.contexts: list[list[dict[str, str]]] = []
+        self.messages: list[str] = []
+        self.summary_calls = []
 
     def generate(self, recent_context, user_message):
         self.contexts.append(recent_context)
+        self.messages.append(user_message)
         return f"answer:{user_message}"
+
+    def summarize_hot_draft(self, old_summary, moved_turns):
+        self.summary_calls.append((old_summary, list(moved_turns)))
+        facts = "|".join(turn.text for turn in moved_turns)
+        return f"{old_summary + '|' if old_summary else ''}{facts}"
 
 
 class _FailingModel:
@@ -41,7 +54,63 @@ class _RecordingRetriever:
         return self.context
 
 
+class _SharedBackend:
+    def __init__(self, started: Event | None = None, release: Event | None = None):
+        self.events = {}
+        self.started = started
+        self.release = release
+
+    def find_memory_id(self, evidence_id):
+        for memory_id, event in self.events.items():
+            if event["metadata"]["evidence_id"] == evidence_id:
+                return memory_id
+        return None
+
+    def add_event(self, text, timestamp, metadata):
+        if self.started is not None:
+            self.started.set()
+        if self.release is not None and not self.release.wait(timeout=5):
+            raise RuntimeError("test synchronization timeout")
+        memory_id = f"memory-{len(self.events)}"
+        self.events[memory_id] = {
+            "text": text,
+            "timestamp": timestamp,
+            "metadata": metadata,
+        }
+        return memory_id
+
+    def create_relationships(self, memory_ids):
+        return None
+
+    def persist(self):
+        return None
+
+    def recall(self, query, policy):
+        return [
+            BackendCandidate(
+                event["text"],
+                event["timestamp"].isoformat(),
+                1.0 - index / 10,
+                event["metadata"],
+            )
+            for index, event in enumerate(reversed(tuple(self.events.values())))
+        ]
+
+
+_WRITER_BUSY_RESPONSE = {
+    "detail": {
+        "code": "writer_busy",
+        "message": "another write operation is in progress",
+    }
+}
+
+
 def _app(tmp_path: Path, model=None, **kwargs):
+    kwargs.setdefault("recall_enabled", False)
+    kwargs.setdefault(
+        "memory_retriever",
+        _RecordingRetriever(MemoryContext("")),
+    )
     return create_app(
         draft_store_path=tmp_path / "hot.jsonl",
         cold_draft_path=tmp_path / "cold.jsonl",
@@ -52,6 +121,15 @@ def _app(tmp_path: Path, model=None, **kwargs):
     )
 
 
+def _shared_adapter(tmp_path: Path, backend=None):
+    backend = backend or _SharedBackend()
+    return MagmaMemoryAdapter(
+        backend,
+        IngestionStateStore(tmp_path / "ingestion-state.json"),
+        ingestion_version="dream-v1",
+    ), backend
+
+
 def test_status_and_mock_chat_contract(tmp_path: Path) -> None:
     client = TestClient(_app(tmp_path))
     assert client.get("/api/status").json() == {
@@ -59,11 +137,24 @@ def test_status_and_mock_chat_contract(tmp_path: Path) -> None:
         "status": "ok",
         "mode": "mock",
         "draft_enabled": True,
+        "recall_enabled": False,
+        "compaction": {"running": False},
+        "dream": {
+            "available": False,
+            "running": False,
+            "pending_segments": 0,
+            "pending_truncated": False,
+        },
     }
     response = client.post("/api/chat", json={"message": "hello"})
     assert response.status_code == 200
     assert response.json()["phase"] == "mock_chat"
     assert response.json()["response"]["type"] == "mock"
+    assert response.json()["compaction"] == {
+        "status": "not_needed",
+        "archived_turns": 0,
+        "summary_updated": False,
+    }
     assert client.get("/api/stream").status_code == 404
 
 
@@ -74,10 +165,41 @@ def test_static_frontend_is_served_without_shadowing_api(tmp_path: Path) -> None
     assert index.status_code == 200
     assert index.headers["content-type"].startswith("text/html")
     assert "Lumina Local Chat" in index.text
+    assert 'id="dream-button"' in index.text
+    assert 'id="memory-status"' in index.text
+    assert 'id="dream-result"' in index.text
 
     script = client.get("/app.js")
     assert script.status_code == 200
     assert "fetch(\"/api/chat\"" in script.text
+    assert "fetch(\"/api/dream/run\"" in script.text
+    assert "dreamButton.disabled" in script.text
+    assert "payload.compaction.status" in script.text
+    assert "compaction.archived_turns" in script.text
+    assert 'compaction.status === "completed"' in script.text
+    assert 'compaction.status === "failed"' in script.text
+    assert "payload.compaction.running === true" in script.text
+    assert "setInterval(function ()" in script.text
+    assert "}, 500);" in script.text
+    assert script.text.count("setInterval(") == 1
+    assert "clearInterval(compactionPollTimer)" in script.text
+    assert "activeCompactionPollGeneration !== generation" in script.text
+    poll_function = script.text[
+        script.text.index("function pollCompactionStatus(generation)")
+        :script.text.index("function startCompactionPolling(generation)")
+    ]
+    assert poll_function.index(
+        "activeCompactionPollGeneration !== generation"
+    ) < poll_function.index('fetch("/api/status")')
+    assert (
+        "Hot Draft \\u6b63\\u5728\\u538b\\u7f29"
+        "\\uff0c\\u8bf7\\u7a0d\\u5019\\u2026\\u2026"
+    ) in script.text
+    assert "return checkBackend();" in script.text
+    assert "WebSocket" not in script.text
+    assert "EventSource" not in script.text
+    assert "textContent" in script.text
+    assert "innerHTML" not in script.text
     assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in script.text
 
     stylesheet = client.get("/styles.css")
@@ -95,9 +217,11 @@ def test_static_frontend_is_served_without_shadowing_api(tmp_path: Path) -> None
 
 
 def test_chat_rejects_empty_message(tmp_path: Path) -> None:
-    response = TestClient(_app(tmp_path)).post("/api/chat", json={"message": " "})
+    client = TestClient(_app(tmp_path))
+    response = client.post("/api/chat", json={"message": " "})
     assert response.status_code == 400
     assert response.json() == {"detail": "message is required"}
+    assert client.post("/api/chat", json={"message": "after empty"}).status_code == 200
 
 
 def test_model_chat_is_truthfully_labeled_and_receives_prior_turn(tmp_path: Path) -> None:
@@ -169,9 +293,21 @@ def test_chat_compacts_to_cold_and_restart_restores_context(tmp_path: Path) -> N
             max_raw_turns_before_compression=2,
         )
     )
-    first_client.post("/api/chat", json={"message": "one"})
-    first_client.post("/api/chat", json={"message": "two"})
+    first = first_client.post("/api/chat", json={"message": "one"})
+    second = first_client.post("/api/chat", json={"message": "two"})
+    assert first.json()["compaction"]["status"] == "not_needed"
+    assert second.json()["compaction"] == {
+        "status": "completed",
+        "archived_turns": 2,
+        "summary_updated": True,
+    }
     assert (tmp_path / "cold.jsonl").exists()
+    assert len(first_model.summary_calls) == 1
+    assert first_model.summary_calls[0][0] is None
+    assert [turn.text for turn in first_model.summary_calls[0][1]] == [
+        "one",
+        "answer:one",
+    ]
 
     restarted_model = _ContextModel()
     restarted_client = TestClient(
@@ -184,11 +320,193 @@ def test_chat_compacts_to_cold_and_restart_restores_context(tmp_path: Path) -> N
     )
     restarted_client.post("/api/chat", json={"message": "three"})
     context = restarted_model.contexts[0]
-    assert context[0]["text"].startswith("[Compressed conversation segment")
+    assert context[0] == {
+        "role": "summary",
+        "text": (
+            "[Hot rolling summary]\n"
+            "one|answer:one\n"
+            "[/Hot rolling summary]"
+        ),
+    }
     assert context[-2:] == [
         {"role": "user", "text": "two"},
         {"role": "assistant", "text": "answer:two"},
     ]
+
+
+def test_summary_context_order_and_second_pass_payload_are_strictly_bounded(
+    tmp_path: Path,
+) -> None:
+    model = _ContextModel()
+    retriever = _RecordingRetriever(
+        MemoryContext("query", rendered_text="bounded recall")
+    )
+    client = TestClient(
+        _app(
+            tmp_path,
+            model,
+            retain_recent_raw_turns=2,
+            max_raw_turns_before_compression=2,
+            recall_enabled=True,
+            memory_retriever=retriever,
+            recall_policy=RecallPolicy(),
+        )
+    )
+
+    client.post("/api/chat", json={"message": "old"})
+    client.post("/api/chat", json={"message": "middle"})
+    third = client.post("/api/chat", json={"message": "current"})
+
+    assert third.json()["compaction"] == {
+        "status": "completed",
+        "archived_turns": 2,
+        "summary_updated": True,
+    }
+    assert [item["role"] for item in model.contexts[2]] == [
+        "summary",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert model.contexts[2][0]["text"].startswith("[Hot rolling summary]\n")
+    assert model.contexts[2][1:3] == [
+        {"role": "user", "text": "middle"},
+        {"role": "assistant", "text": "answer:middle"},
+    ]
+    assert model.contexts[2][3] == {
+        "role": "user",
+        "text": (
+            "[Relevant conversation memory]\n"
+            "bounded recall\n"
+            "[/Relevant conversation memory]"
+        ),
+    }
+    assert model.messages[2] == "current"
+
+    assert len(model.summary_calls) == 2
+    old_summary, moved_turns = model.summary_calls[1]
+    assert old_summary == "old|answer:old"
+    assert [turn.text for turn in moved_turns] == [
+        "middle",
+        "answer:middle",
+    ]
+    summary_input = repr(model.summary_calls)
+    assert "bounded recall" not in summary_input
+    assert "current" not in summary_input
+
+
+def test_summary_failure_reports_failed_and_preserves_hot_raw_turns(
+    tmp_path: Path,
+) -> None:
+    class FailingSummaryModel(_ContextModel):
+        def summarize_hot_draft(self, old_summary, moved_turns):
+            raise RuntimeError("private prompt and provider path")
+
+    model = FailingSummaryModel()
+    client = TestClient(
+        _app(
+            tmp_path,
+            model,
+            retain_recent_raw_turns=2,
+            max_raw_turns_before_compression=2,
+        )
+    )
+    client.post("/api/chat", json={"message": "one"})
+    response = client.post("/api/chat", json={"message": "two"})
+
+    assert response.status_code == 200
+    assert response.json()["response"] == {
+        "type": "model",
+        "text": "answer:two",
+    }
+    assert response.json()["compaction"] == {
+        "status": "failed",
+        "archived_turns": 0,
+        "summary_updated": False,
+    }
+    assert not (tmp_path / "cold.jsonl").exists()
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "hot.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["text"] for record in records] == [
+        "one",
+        "answer:one",
+        "two",
+        "answer:two",
+    ]
+    for leaked in ("private prompt", "provider path"):
+        assert leaked not in response.text
+
+
+def test_status_observes_running_compaction_without_waiting_for_chat(
+    tmp_path: Path,
+) -> None:
+    started = Event()
+    release = Event()
+
+    class BlockingSummaryModel(_ContextModel):
+        def summarize_hot_draft(self, old_summary, moved_turns):
+            started.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("test synchronization timeout")
+            return super().summarize_hot_draft(old_summary, moved_turns)
+
+    model = BlockingSummaryModel()
+    app = _app(
+        tmp_path,
+        model,
+        retain_recent_raw_turns=2,
+        max_raw_turns_before_compression=2,
+    )
+    first_client = TestClient(app)
+    status_client = TestClient(app)
+    assert first_client.post(
+        "/api/chat",
+        json={"message": "one"},
+    ).json()["compaction"]["status"] == "not_needed"
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            first_client.post,
+            "/api/chat",
+            json={"message": "two"},
+        )
+        assert started.wait(timeout=5)
+        try:
+            running = status_client.get("/api/status")
+            assert running.status_code == 200
+            assert running.json()["compaction"] == {"running": True}
+            for forbidden in (
+                "one",
+                "answer:one",
+                "two",
+                "answer:two",
+                str(tmp_path),
+            ):
+                assert forbidden not in running.text
+        finally:
+            release.set()
+        response = future.result(timeout=5)
+
+    assert response.json()["compaction"] == {
+        "status": "completed",
+        "archived_turns": 2,
+        "summary_updated": True,
+    }
+    assert status_client.get("/api/status").json()["compaction"] == {
+        "running": False
+    }
+
+
+def test_status_reports_compaction_not_running_when_disabled(
+    tmp_path: Path,
+) -> None:
+    response = TestClient(
+        _app(tmp_path, enable_compaction=False)
+    ).get("/api/status")
+    assert response.status_code == 200
+    assert response.json()["compaction"] == {"running": False}
 
 
 def test_chat_accepts_client_timezone_and_old_clients_still_default(tmp_path: Path) -> None:
@@ -237,25 +555,34 @@ def test_recall_initialization_failure_degrades_to_normal_chat(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    def fail_initialization():
+    def fail_initialization(*_args, **_kwargs):
         raise RuntimeError("private memory path and dependency traceback")
 
     monkeypatch.setattr(
-        main_module,
-        "_build_memory_retriever",
+        memory_backend_module,
+        "RealMagmaBackend",
         fail_initialization,
     )
     model = _ContextModel()
+    app = _app(
+        tmp_path,
+        model,
+        recall_enabled=True,
+        memory_retriever=None,
+    )
+    client = TestClient(app)
 
-    response = TestClient(
-        _app(tmp_path, model, recall_enabled=True)
-    ).post("/api/chat", json={"message": "hello"})
+    response = client.post("/api/chat", json={"message": "hello"})
+    status = client.get("/api/status")
+    dream = client.post("/api/dream/run")
 
     assert response.status_code == 200
     assert response.json()["response"] == {"type": "model", "text": "answer:hello"}
     assert model.contexts == [[]]
-    assert "private memory" not in response.text
-    assert "traceback" not in response.text
+    assert status.json()["dream"]["available"] is False
+    assert dream.status_code == 503
+    for leaked in ("private memory", "dependency", "traceback", str(tmp_path)):
+        assert leaked not in response.text + status.text + dream.text
 
 
 def test_injected_retriever_gets_default_policy_without_backend_initialization(
@@ -328,3 +655,220 @@ def test_recall_and_provider_failure_preserve_safe_fallback_and_draft(
     ]
     for secret in ("private", "provider", "traceback", str(tmp_path)):
         assert secret not in response.text
+
+
+def test_dream_endpoint_uses_fixed_policy_and_returns_aggregate_only(tmp_path: Path) -> None:
+    adapter, _ = _shared_adapter(tmp_path)
+    app = _app(tmp_path, memory_retriever=adapter)
+    for index in range(11):
+        app.state.cold_draft_store.append_segment(
+            [{"role": "user", "text": f"memory {index}"}],
+            segment_id=f"segment-{index}",
+        )
+
+    response = TestClient(app).post(
+        "/api/dream/run",
+        json={"max_segments": 1, "ingestion_version": "client-value"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "attempted": 10,
+        "ingested": 10,
+        "consumed": 10,
+        "skipped": 0,
+        "failed": 0,
+    }
+    assert "results" not in response.text
+    assert len(app.state.cold_draft_store.list_pending()) == 1
+
+
+def test_dream_attempted_zero_is_success(tmp_path: Path) -> None:
+    adapter, _ = _shared_adapter(tmp_path)
+    response = TestClient(
+        _app(tmp_path, memory_retriever=adapter)
+    ).post("/api/dream/run")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "attempted": 0,
+        "ingested": 0,
+        "consumed": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+
+
+def test_dream_uses_app_cold_owner_and_current_chat_memory_backend(tmp_path: Path) -> None:
+    adapter, backend = _shared_adapter(tmp_path)
+    model = _ContextModel()
+    app = _app(
+        tmp_path,
+        model,
+        recall_enabled=True,
+        memory_retriever=adapter,
+        recall_policy=RecallPolicy(max_graph_depth=0),
+    )
+    app.state.cold_draft_store.append_segment(
+        [{"role": "user", "text": "shared backend memory"}],
+        segment_id="shared-segment",
+    )
+    client = TestClient(app)
+
+    dream = client.post("/api/dream/run")
+    chat = client.post("/api/chat", json={"message": "find shared memory"})
+
+    assert dream.json() == {
+        "attempted": 1,
+        "ingested": 1,
+        "consumed": 1,
+        "skipped": 0,
+        "failed": 0,
+    }
+    assert len(backend.events) == 1
+    assert app.state.cold_draft_store.list_pending() == []
+    assert chat.status_code == 200
+    assert any(
+        "shared backend memory" in item["text"]
+        for item in model.contexts[0]
+    )
+
+
+def test_status_reports_bounded_safe_dream_state(tmp_path: Path) -> None:
+    adapter, _ = _shared_adapter(tmp_path)
+    app = _app(
+        tmp_path,
+        recall_enabled=True,
+        memory_retriever=adapter,
+    )
+    app.state.cold_draft_store.append_segment(
+        [{"role": "user", "text": r"private Cold text C:\private\draft"}],
+        segment_id="secret-segment",
+    )
+
+    response = TestClient(app).get("/api/status")
+
+    assert response.status_code == 200
+    assert response.json()["recall_enabled"] is True
+    assert response.json()["dream"] == {
+        "available": True,
+        "running": False,
+        "pending_segments": 1,
+        "pending_truncated": False,
+    }
+    for forbidden in ("private Cold text", "secret-segment", str(tmp_path)):
+        assert forbidden not in response.text
+
+
+def test_dream_unavailable_is_safe_503_and_chat_still_works(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    client = TestClient(app)
+
+    response = client.post("/api/dream/run")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {
+            "code": "dream_unavailable",
+            "message": "Dream is unavailable",
+        }
+    }
+    assert client.post("/api/chat", json={"message": "hello"}).status_code == 200
+
+
+def test_dream_holds_writer_lock_against_dream_and_chat(tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+    adapter, _ = _shared_adapter(tmp_path, _SharedBackend(started, release))
+    app = _app(tmp_path, memory_retriever=adapter)
+    app.state.cold_draft_store.append_segment(
+        [{"role": "user", "text": "blocking memory"}],
+        segment_id="blocking-segment",
+    )
+    first_client = TestClient(app)
+    second_client = TestClient(app)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(first_client.post, "/api/dream/run")
+        assert started.wait(timeout=5)
+        assert second_client.get("/api/status").json()["dream"]["running"] is True
+        second_dream = second_client.post("/api/dream/run")
+        blocked_chat = second_client.post(
+            "/api/chat", json={"message": "busy"}
+        )
+        assert second_dream.status_code == 409
+        assert second_dream.json() == _WRITER_BUSY_RESPONSE
+        assert blocked_chat.status_code == 409
+        assert blocked_chat.json() == _WRITER_BUSY_RESPONSE
+        release.set()
+        assert future.result(timeout=5).status_code == 200
+
+    assert second_client.get("/api/status").json()["dream"]["running"] is False
+    assert second_client.post(
+        "/api/chat", json={"message": "after"}
+    ).status_code == 200
+
+
+def test_chat_holds_writer_lock_against_chat_and_dream(tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+
+    class BlockingModel:
+        client_kind = "model"
+
+        def generate(self, recent_context, user_message):
+            started.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("test synchronization timeout")
+            return f"answer:{user_message}"
+
+    adapter, _ = _shared_adapter(tmp_path)
+    app = _app(tmp_path, BlockingModel(), memory_retriever=adapter)
+    first_client = TestClient(app)
+    second_client = TestClient(app)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            first_client.post,
+            "/api/chat",
+            json={"message": "blocking chat"},
+        )
+        assert started.wait(timeout=5)
+        second_chat = second_client.post(
+            "/api/chat", json={"message": "second chat"}
+        )
+        blocked_dream = second_client.post("/api/dream/run")
+        assert second_chat.status_code == 409
+        assert second_chat.json() == _WRITER_BUSY_RESPONSE
+        assert blocked_dream.status_code == 409
+        assert blocked_dream.json() == _WRITER_BUSY_RESPONSE
+        release.set()
+        assert future.result(timeout=5).status_code == 200
+
+
+def test_unexpected_dream_failure_releases_lock_and_hides_details(tmp_path: Path) -> None:
+    adapter, _ = _shared_adapter(tmp_path)
+    app = _app(tmp_path, memory_retriever=adapter)
+    original_runner = app.state.dream_runner
+
+    class ExplodingRunner:
+        def run_once(self, policy):
+            raise RuntimeError(r"secret C:\private\graph traceback")
+
+    app.state.dream_runner = ExplodingRunner()
+    client = TestClient(app)
+    response = client.post("/api/dream/run")
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "detail": {
+            "code": "dream_failed",
+            "message": "Dream could not complete",
+        }
+    }
+    assert app.state.dream_running is False
+    for forbidden in ("secret", "private", "traceback"):
+        assert forbidden not in response.text
+    assert client.post("/api/chat", json={"message": "after failure"}).status_code == 200
+    app.state.dream_runner = original_runner
+    assert client.post("/api/dream/run").status_code == 200

@@ -39,12 +39,16 @@ class MagmaMemoryAdapter:
         cls,
         persist_dir,
         state_store: IngestionStateStore | None = None,
+        *,
+        fail_if_unavailable: bool = False,
         **kwargs,
     ) -> "MagmaMemoryAdapter":
         from . import backend as backend_module
         try:
             backend = backend_module.RealMagmaBackend(persist_dir)
         except Exception:
+            if fail_if_unavailable:
+                raise
             backend = backend_module.UnavailableMemoryBackend()
         if state_store is None:
             state_store = IngestionStateStore(

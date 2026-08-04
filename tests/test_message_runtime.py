@@ -148,11 +148,30 @@ def test_model_failure_returns_and_persists_safe_fallback(tmp_path: Path) -> Non
 
 
 def test_compaction_runs_after_user_and_assistant_writes(tmp_path: Path) -> None:
-    runtime, hot, cold = _runtime(tmp_path, _RecordingModel(), compact=True)
+    hot = JsonlDraftStore(tmp_path / "hot.jsonl")
+    cold = ColdDraftStore(tmp_path / "cold.jsonl")
+
+    def summarize(old_summary, moved_turns):
+        assert old_summary is None
+        return " | ".join(turn.text for turn in moved_turns)
+
+    runtime = MessageRuntime(
+        hot_store=hot,
+        draft_context_provider=DraftContextProvider(hot),
+        model_client=_RecordingModel(),
+        compactor=HotDraftCompactor(
+            hot,
+            cold,
+            tmp_path / "state.json",
+            summarizer=summarize,
+            retain_recent_raw_turns=2,
+            max_raw_turns_before_compression=2,
+        ),
+    )
     runtime.handle_chat(ChatRequest(message="one"))
     result = runtime.handle_chat(ChatRequest(message="two"))
     assert result.events[-1] == "compacted"
-    assert len(hot.list_recent(10)) == 4
+    assert [turn.text for turn in hot.list_recent(10)] == ["two", "model answer"]
     assert len(cold.list_pending()) == 1
     assert [turn["role"] for turn in cold.list_pending()[0]["turns"]] == [
         "user",

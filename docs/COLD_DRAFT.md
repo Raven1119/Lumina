@@ -1,226 +1,150 @@
 # Cold Draft Contract
 
-This document restores the original Hot Draft / Cold Draft design into the new
-MVP and reconciles it with the code that exists now. It is the active authority
-for the Draft boundary.
+This is the active authority for Lumina's Hot Draft / Cold Draft boundary.
 
-Historical sources were the earlier `DRAFT_SYSTEM_V1_DESIGN.md`,
-`HOT_DRAFT_COMPRESSION_BOUNDARY_DESIGN.md`, and the Draft System section of
-`MEMORY_ORGAN_FULL_SHAPE.md`. Their Cold-first preservation rule is retained;
-their unimplemented future-organ assumptions are not active in this MVP.
+## Core rule
 
-## Core Rule
-
-> Hot Draft may be compressed. Cold Draft preserves the pre-compression raw
-> material. Nothing is compressed in Hot Draft until the corresponding raw
-> segment is safely stored in Cold Draft.
-
-Cold Draft is not a rollover backup of the whole Hot Draft file. It stores the
-older, chronological user/assistant segment selected for logical compression.
+Hot Draft may be semantically compressed only after every raw turn leaving the
+live window has been durably preserved in Cold Draft. Hot Draft is live rolling
+context. Cold Draft is immutable source evidence for Dream; it is not MAGMA and
+is not queried by Recall.
 
 ## Hot Draft
 
-Hot Draft is the live conversation buffer.
+The physical hot_drafts.jsonl contains zero or one rolling summary record plus
+recent raw user/assistant turns. New raw turns preserve turn ID, role, text,
+aware UTC creation time, source IANA timezone, and truthful timezone source.
 
-It:
+Defaults are:
 
-- records user and assistant/fallback turns in append-only JSONL;
-- records native V2 `turn_id`, aware UTC `created_at`, validated IANA
-  `source_timezone`, and `timezone_source` for every new turn;
-- supplies prior conversation context to `ModelClient`;
-- remains automatic runtime infrastructure rather than a model-selected tool;
-- retains recent raw turns after logical compaction;
-- survives process restart.
+    max_raw_turns_before_compression = 24
+    retain_recent_raw_turns = 12
 
-It does not classify durable facts or become long-term memory.
+The trigger is strictly greater than 24. With complete pairs, 26 raw turns cause
+the first compaction: the oldest 14 are archived and 12 remain.
 
-## Cold Draft
+On later compaction, the previous summary and only that round's selected raw
+turns are synchronously sent to the configured model. The new summary replaces
+the previous summary. Old summaries do not accumulate as records, but the old
+summary participates in the next generation. A summary never enters Cold.
 
-Cold Draft is the durable preservation layer for raw turns leaving the hot
-context window.
+Model-facing Draft context is the current rolling summary, when present,
+followed by recent raw turns. Hot is no longer physically append-only after
+compaction: it is atomically replaced by the updated one summary plus raw tail.
 
-It:
+## Cold physical format
 
-- stores complete user/assistant pairs in original order;
-- uses an opaque internal `segment_id`;
-- records `created_at`, `source`, `turns`, and `state`;
-- copies each native V2 turn's complete provenance without substituting the
-  segment creation time;
-- begins in `pending_digest` state;
-- may be marked `consumed` through the internal store interface;
-- survives process restart;
-- never enters ordinary model context or the browser UI.
+cold_drafts.jsonl stores one original turn per JSONL line. Each cold_turn line
+contains the raw turn fields and:
 
-`pending_digest` may now be consumed only by the bounded developer-triggered
-Dream command documented in `Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md`. There is
-still no chat-time ingestion, background consumer, startup hook, scheduler, or
-autonomous long-term memory process.
+    record_type, schema_version, segment_id
+    segment_turn_index, segment_turn_count, segment_created_at
+    source, state
+    role, text
+    native V2 provenance when present
+    consumed_at when consumed
 
-## Current Chat Flow
+All lines from one compaction share one stable segment_id. Indexes are
+continuous from zero through count minus one. Count, schema, source, segment
+creation time, state, and consumed time agree. Original order, content, role,
+timestamp, ID, and provenance are preserved.
 
-The new MVP uses one synchronous path:
+The store groups lines by segment_id, validates completeness, orders turns by
+index, and reconstructs the existing aggregate segment with a turns list.
+Dream still receives one logical segment per compaction. Fourteen lines are one
+pending segment, not fourteen Dream jobs. Bounded pending status counts complete
+segments, not lines.
 
-```text
-read previous logical Draft context
--> call ModelClient
--> construct the public response
--> append the user turn to Hot Draft
--> append the assistant or fallback turn to Hot Draft
--> evaluate compaction once
--> return the already-constructed response
-```
+Incomplete, duplicate-indexed, mixed-state, conflicting-metadata, or invalid
+provenance groups are not returned to Dream, counted, or consumed.
 
-The current user message is passed directly to the model and is not duplicated
-inside `recent_context`. Prior Draft context is read before model generation.
+The former one-line nested turns-array format is not read, migrated, or
+supported in parallel. Existing old-format bytes are not rewritten merely by
+reading the store and remain unrelated raw bytes during atomic rewrites.
 
-After basic request validation, the user turn's ID/time are created before the
-model call but persisted at the existing post-response Draft boundary. The
-assistant/fallback turn receives a different ID/time after its final text is
-known. This preserves existing failure and response semantics.
+## Atomic Cold operations
 
-## Cold-First Compaction
+Appending one segment is an all-or-nothing replacement:
 
-Compaction runs after the response pair has been captured.
+1. Read the current file while preserving unrelated and malformed bytes.
+2. Construct the complete file with every new cold_turn line.
+3. Write a unique temporary file in the same directory.
+4. Flush and fsync it.
+5. Atomically replace cold_drafts.jsonl.
 
-1. Read raw Hot Draft turns.
-2. Skip while the raw turn count is at or below the configured threshold.
-3. Exclude turns already covered by compaction state.
-4. Keep the configured recent raw tail.
-5. Shrink the selected older prefix to complete user/assistant pairs.
-6. Copy each selected turn as a complete immutable object and derive a stable
-   segment identity from the prefix offset and selected turns.
-7. Append that segment to Cold Draft.
-8. Only after the append succeeds, atomically replace the logical compaction
-   state.
+Failure leaves old bytes unchanged and cleans the temporary file. Identical
+stable-ID append is idempotent, including after consumption; incomplete or
+conflicting reuse is rejected.
 
-Default constructor values are:
+mark_consumed performs one atomic full-file rewrite. Every line in the target
+segment becomes consumed with the same aware consumed_at. A segment cannot be
+partly pending and partly consumed; unrelated valid and malformed lines remain.
 
-```text
-max_raw_turns_before_compression = 24
-retain_recent_raw_turns = 12
-```
+## Cold-first compaction
 
-The trigger is strictly greater than the threshold. With ordinary complete
-turn pairs, the first default compaction therefore occurs after the thirteenth
-chat response has been captured.
+After a response pair is persisted:
 
-## Logical Context After Compaction
+1. Read the current summary and raw Hot tail.
+2. Return not_needed below threshold or without a complete pair boundary.
+3. Set read-only is_running to true.
+4. Summarize the old summary plus only the selected raw prefix.
+5. Atomically preserve that raw prefix as one Cold segment.
+6. Atomically replace Hot with the new summary plus recent raw tail.
+7. Update recovery state.
+8. Restore is_running to false in every exit path.
 
-The physical Hot Draft JSONL remains append-only. Compaction is a logical view
-implemented by a separate state file.
+is_running stays false for not_needed and covers summary generation, Cold
+preservation, Hot replacement, and recovery-state update.
 
-The model-facing context becomes:
+Summary failure changes neither file. Cold failure does not change Hot. If Hot
+replacement fails after Cold succeeds, retry reuses the stable segment ID.
+Recovery-state failure after the authoritative Cold and Hot writes does not
+undo the completed transition.
 
-```text
-zero or more deterministic preservation markers
-+ recent uncompressed user/assistant turns
-```
+## Status and browser behavior
 
-Each marker has the fixed form:
+GET /api/status exposes compaction.running without waiting for the shared
+writer mutex and without exposing summaries, turns, IDs, paths, prompts, or
+exceptions.
 
-```text
-[Compressed conversation segment preserved in Cold Draft: N turns.]
-```
+Only while one /api/chat request is in flight, the frontend polls status every
+500 ms. When running is true it displays this notice:
 
-It is represented as an assistant role/text item for compatibility with the
-minimal model-input contract. It is not an LLM summary and contains no raw
-conversation text or internal segment ID.
+Hot Draft &#27491;&#22312;&#21387;&#32553;&#65292;&#35831;&#31245;&#20505;&#8230;&#8230;
 
-## Failure Semantics
+The timer stops when Chat ends. A generation token prevents late responses from
+overwriting the final notice. completed retains the completed notice and makes
+exactly one additional status refresh so pending count comes from the backend.
+not_needed makes no extra refresh; poll failure does not fail Chat.
 
-### Cold Draft append fails
+There is no idle/permanent polling, WebSocket, SSE, background compaction,
+progress stream, or cancellation.
 
-- do not advance compaction state;
-- keep all raw Hot Draft turns logically visible;
-- return an internal `cold_draft_failed` result;
-- do not change the public chat response;
-- do not expose the exception or storage path.
+## Dream and verified browser flow
 
-### Compaction state write fails after Cold Draft succeeds
+Dream remains explicit, synchronous, bounded, and segment-oriented. One
+complete pending Cold segment produces one ingestion. Conversation Memory and
+MAGMA persistence plus checkpointing complete before the whole segment is
+atomically marked consumed. Chat never performs Dream ingestion.
 
-- keep the already-preserved Cold Draft segment;
-- do not claim logical compaction succeeded;
-- reuse the same stable segment identity on retry;
-- do not duplicate the Cold Draft record when content and identity match.
+The verified two-round browser flow displayed both running and completed
+notices. Pending changed 0 to 1 to 2 without reload or restart. Hot remained one
+summary plus its tail. The first Cold segment contained 14 cold_turn lines; the
+second compaction created its own segment using the same one-turn-per-line
+contract. Dream reported attempted=2 rather than a per-line count, consumed both
+complete segments, changed every line in each segment together, and reduced
+pending to zero. Recall continued to work.
 
-The policy is preservation before compactness. Safe retention is preferred to
-silent loss.
+## Storage, deployment, and non-goals
 
-## V2 and legacy records
+Private files are:
 
-New Hot records and Cold segments containing native turns use
-`schema_version=2`. The segment `created_at` remains segment metadata and never
-replaces a native turn time. Hot reload, compaction, and Cold reload preserve
-the exact turn ID, instant, IANA timezone, and timezone-source label.
+    data/draft/hot_drafts.jsonl
+    data/draft/cold_drafts.jsonl
+    data/draft/hot_draft_compaction_state.json
 
-Existing role/text-only Hot lines and schema-1 or unschematized Cold records
-remain readable and are not rewritten or automatically migrated. When Dream
-must ingest such a record, it derives the existing stable indexed turn ID,
-uses the segment's aware time/timezone fallback, and records
-`timezone_source=legacy_segment_fallback`.
+The file-backed system requires one process, one worker, no --reload, and no
+external Dream CLI concurrently. The process-local mutex is not cross-process.
 
-## Storage Files
-
-The default local files are:
-
-```text
-data/draft/hot_drafts.jsonl
-data/draft/cold_drafts.jsonl
-data/draft/hot_draft_compaction_state.json
-```
-
-They are private runtime data and ignored by Git. `.env.local` and Draft data
-must not be deleted during code or documentation maintenance.
-
-## No-Leak Boundary
-
-Cold Draft records, logical state, and compaction results are internal only.
-They must not appear in:
-
-- `/api/chat` or `/api/status` responses;
-- the browser DOM or JavaScript state;
-- model-visible recent context, except for the fixed preservation marker;
-- user-facing errors or logs.
-
-Never expose API keys, provider bodies or URLs, `.env.local`, absolute paths,
-tracebacks, raw JSON dumps, internal IDs, or raw Cold Draft segments.
-
-## Implemented Guarantees
-
-The current tests prove:
-
-- append, pending-list, consumed-state, and restart behavior;
-- malformed-record tolerance and input validation;
-- stable-ID idempotency and conflict rejection;
-- no compaction below threshold;
-- complete-pair preservation and recent-tail retention;
-- Cold-first failure safety;
-- retry after state-write failure without duplicate segments;
-- restart recovery of logical context and compaction state;
-- unchanged, no-leak chat responses and frontend/API coexistence;
-- V2 Hot restart fidelity and complete Cold-first turn-provenance preservation;
-- safe optional client-timezone validation and configured-default fallback;
-- continued read compatibility without rewriting legacy JSONL.
-
-## Known MVP Limits
-
-- Hot Draft is physically append-only and is not truncated by compaction.
-- Preservation markers accumulate; the raw tail is bounded, but the total
-  marker count does not yet have a global cap.
-- The marker records preservation only; it carries no semantic summary.
-- Only the manual Dream command consumes `pending_digest` segments; there is no
-  automatic or chat-time consumer.
-- The JSONL files and state file do not provide a multi-process transaction or
-  cross-process writer lock.
-- Cold Draft is not searchable, model-visible, or a long-term memory system.
-
-These limits must remain visible. They cannot be described as completed memory
-features.
-
-## Non-Goals
-
-This contract does not authorize further memory-graph or recall integration,
-query routing, ContextBuilder, ToolRuntime, autonomous/background Dream,
-background workers, LLM summarization, a Cold Draft viewer, or a new root
-dependency. The separately authorized manual Dream command is limited to the
-durable ingestion and consumed transition described above.
+This contract adds no automatic Dream, background work, WebSocket/SSE, Cold
+migration, dual-format reader, database/WAL, viewer, or Recall algorithm.

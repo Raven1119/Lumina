@@ -2,15 +2,31 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
 import httpx
 
+from core.contracts import MemoryTurn
+
 
 MOCK_ASSISTANT_TEXT = "Lumina backend shell received your message."
 ModelClientKind = Literal["mock", "model"]
+_HOT_DRAFT_SUMMARY_PROMPT = """You maintain Lumina's rolling Hot Draft summary.
+Rewrite the existing summary together with the supplied archived conversation turns into one concise, directly readable summary.
+
+Preserve, when present:
+- the user's identity and stable background;
+- long-term and current goals;
+- explicit constraints and acceptance criteria;
+- confirmed decisions;
+- rejected approaches and their important reasons;
+- current work state and unresolved items;
+- important transitions from an earlier state to a newer state.
+
+Do not invent facts or recommendations. Preserve uncertainty, distinguish historical state from current state, retain important negative conclusions, and remove stale or valueless repetition. Use only the supplied existing summary and archived turns. Return summary text only."""
 
 
 class ModelClient(Protocol):
@@ -18,6 +34,13 @@ class ModelClient(Protocol):
         self,
         recent_context: list[dict[str, str]],
         user_message: str,
+    ) -> str:
+        ...
+
+    def summarize_hot_draft(
+        self,
+        old_summary: str | None,
+        moved_turns: list[MemoryTurn],
     ) -> str:
         ...
 
@@ -31,6 +54,13 @@ class MockModelClient:
         user_message: str,
     ) -> str:
         return MOCK_ASSISTANT_TEXT
+
+    def summarize_hot_draft(
+        self,
+        old_summary: str | None,
+        moved_turns: list[MemoryTurn],
+    ) -> str:
+        raise ModelClientError("Rolling summary requires a configured model.")
 
 
 class ModelClientError(RuntimeError):
@@ -63,7 +93,7 @@ class MiniMaxAnthropicModelClient:
         recent_context: list[dict[str, str]],
         user_message: str,
     ) -> str:
-        body = {
+        body: dict[str, Any] = {
             "model": self._model,
             "max_tokens": self._max_tokens,
             "messages": [
@@ -71,6 +101,48 @@ class MiniMaxAnthropicModelClient:
                 {"role": "user", "content": user_message},
             ],
         }
+        summary_blocks = [
+            item.get("text")
+            for item in recent_context
+            if item.get("role") == "summary"
+            and isinstance(item.get("text"), str)
+            and item["text"].strip()
+        ]
+        if summary_blocks:
+            body["system"] = "\n\n".join(summary_blocks)
+        return self._request(body)
+
+    def summarize_hot_draft(
+        self,
+        old_summary: str | None,
+        moved_turns: list[MemoryTurn],
+    ) -> str:
+        payload = {
+            "existing_summary": old_summary,
+            "archived_turns": [
+                {"role": turn.role, "text": turn.text}
+                for turn in moved_turns
+            ],
+        }
+        body: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "temperature": 0.0,
+            "system": _HOT_DRAFT_SUMMARY_PROMPT,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                }
+            ],
+        }
+        return self._request(body)
+
+    def _request(self, body: dict[str, Any]) -> str:
         headers = {
             "X-Api-Key": self._api_key,
             "Content-Type": "application/json",

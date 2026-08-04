@@ -43,6 +43,47 @@ html, body {
 .chat-status.is-ok { color: #2f7a3a; }
 .chat-status.is-down { color: #a13a2a; }
 
+.maintenance-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 8px 10px;
+  border: 1px solid #e1e3e6;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.maintenance-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 0.82rem;
+  color: #5a6068;
+}
+
+.dream-button {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #455f9f;
+  color: #ffffff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dream-button:disabled {
+  background: #99a2b3;
+  cursor: default;
+}
+
+.dream-result {
+  grid-column: 1 / -1;
+  min-height: 1.2em;
+  font-size: 0.82rem;
+  color: #4b525c;
+}
+
 .chat-log {
   flex: 1;
   overflow-y: auto;
