@@ -8,9 +8,7 @@ continuity invariant.
 Production chat path:
 
 ```text
-Browser -> FastAPI -> MessageRuntime
--> optional bounded Recall injection
--> ModelClient
+Browser -> FastAPI -> MessageRuntime -> ModelClient
 -> Hot Draft -> Cold-first compaction -> Cold Draft
 ```
 
@@ -25,17 +23,15 @@ manual Dream command
 -> Cold Draft segment consumed
 ```
 
-Recall can be optionally injected into the production model request through
-the Lumina-owned bounded facade. It is disabled by default, injects only bounded
-`MemoryContext.rendered_text`, and falls back to normal chat on empty results,
-initialization failure, or Recall failure. Injected memory context is not written
-to Hot or Cold Draft.
+Recall is implemented behind a Lumina-owned bounded facade and can be injected
+into `/api/chat` through an opt-in production seam that is disabled by default.
+Only bounded rendered memory text enters the model request; empty or failed
+Recall falls back to ordinary chat, and recalled text is not persisted as a new
+Draft source.
 
 Conversation turns remain one MAGMA event each. Dream performs memory writes;
-chat requests do not. Public Recall evidence now includes vector anchors plus
-eligible non-anchor event nodes discovered through existing MAGMA traversal
-paths. Anchors remain first, duplicate expansions are removed deterministically,
-and only nodes with complete provenance are projected into `MemoryContext`.
+chat requests do not. Dream is currently CLI-only and the running application
+does not yet provide a shared Chat/Dream writer mutex or browser control.
 
 Lumina's long-term form is defined in `docs/NORTH_STAR.md`: an independent
 digital life that co-evolves with its creator, maintains a continuous integrated
@@ -57,17 +53,18 @@ Treat these as completed behavior, not work to rebuild:
 - durable `(segment_id, ingestion_version)` checkpoints;
 - per-turn provenance through Draft, Dream, MAGMA, and Recall;
 - bounded Recall with stable evidence projection and restart recovery;
-- default-disabled, opt-in Recall injection into the production model request,
-  using only bounded `MemoryContext.rendered_text`, with safe empty/failure
-  fallback and no injected-memory persistence into Draft;
-- bounded projection of eligible non-anchor MAGMA traversal events into public
-  Recall evidence, with anchors first, deterministic deduplication, stable
-  expansion ordering, and provenance-safe filtering;
-- `top_k` limits vector anchors, while `max_evidence_items` limits the final
-  public evidence total across anchors and graph expansions;
+- dense and bounded lexical anchor rankings fused with MAGMA-style RRF;
+- aware-UTC half-open temporal hard constraints;
+- fixed traversal and explicit adaptive relation-aware traversal;
+- deterministic intent-aware Context Linearization;
+- optional production chat Recall injection, disabled by default, with safe
+  empty/failure fallback;
 - one marker-owned Recall E2E harness;
 - deterministic English/Chinese temporal normalization based on each turn's
   timestamp and IANA timezone;
+- completed Recall depth, adaptive traversal, Context Linearization, GENERAL
+  weight, and temporal-ranking audits. These results must not be repeated or
+  generalized beyond their documented synthetic fixtures;
 - no active relevance threshold. The failed cosine-threshold experiment and its
   production wiring have been removed.
 
@@ -136,6 +133,7 @@ Active authority:
 - `docs/CURRENT_STATUS.md`;
 - `docs/DRAFT_TURN_PROVENANCE_V2.md`;
 - `docs/RECALL_E2E_ACCEPTANCE.md`;
+- `docs/DREAM_UI_CODE_AUDIT.md` for the verified next-step integration facts;
 - `Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`;
 - `Conversation_Memory/docs/CHINESE_TEMPORAL_PARSER.md`;
 - `Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md`;
@@ -161,8 +159,9 @@ milestones is historical and must not trigger duplicate implementation.
 ### `core/`
 
 Owns API validation, the single `MessageRuntime`, the single `ModelClient`
-protocol, Draft turn creation, Hot Draft, compaction, and the existing narrow
-optional Recall injection seam.
+protocol, Draft turn creation, Hot Draft, compaction, the existing optional
+Recall injection seam, and narrow product wiring that coordinates app-owned
+Chat/Dream resources without moving Dream logic into `MessageRuntime`.
 
 Do not put MAGMA, FAISS, graph traversal, temporal parsing, or Dream
 orchestration inside `MessageRuntime`.
@@ -222,6 +221,11 @@ turn_id, role, text, created_at, source_timezone, timezone_source
 ### Dream and ingestion
 
 - Dream remains manual, synchronous, bounded, and single-writer.
+- Reuse `DreamRunner.run_once(...)`; do not copy CLI orchestration or create a
+  second Dream service.
+- Any in-app Dream entry must reuse the app-owned Cold Draft owner and the same
+  Conversation Memory adapter/backend used by the resident retriever, or an
+  equivalently verified locked refresh strategy.
 - Process only eligible `pending_digest` segments.
 - Use `(segment_id, ingestion_version)` as the durable checkpoint key.
 - Consume only after memory persistence and checkpointing succeed.
@@ -241,18 +245,10 @@ turn_id, role, text, created_at, source_timezone, timezone_source
 
 - Recall is accessed only through a Lumina-owned facade.
 - Bound candidate count, traversal depth, evidence count, and rendered size.
-- Treat `top_k` as the vector-anchor limit and `max_evidence_items` as the final
-  public evidence limit across anchors and graph expansions.
-- Preserve anchors ahead of graph expansions, deduplicate repeated expansion
-  nodes deterministically, and skip expansion nodes without complete provenance.
 - Preserve stable ordering, evidence IDs, and provenance.
 - Do not scan Cold Draft during Recall.
 - Empty Recall is valid.
-- Production Recall injection is disabled by default.
-- Only bounded `MemoryContext.rendered_text` may become model-visible.
-- Injected memory context must never be persisted as user or assistant Draft.
-- Recall initialization or execution failure must preserve the ordinary chat
-  path and must not block normal chat.
+- Recall failure must not block normal chat.
 - Do not expose embeddings, backend scores, graph objects, MAGMA UUIDs, paths,
   credentials, provider bodies, tracebacks, or raw Draft records.
 - Do not restore the removed cosine gate, `min_relevance`, vector interception,
@@ -264,44 +260,63 @@ turn_id, role, text, created_at, source_timezone, timezone_source
 - Keep one `MessageRuntime` and one `ModelClient` protocol.
 - Preserve mock mode and safe provider fallback.
 - Keep the default path synchronous and restart-persistent.
-- Dream and MAGMA must not become startup requirements.
-- No ingestion or Dream work may run during `/api/chat`.
+- Dream and MAGMA must not become mandatory startup requirements for normal
+  chat availability.
+- No ingestion or Dream work may run inside `/api/chat`.
+- Until a cross-process solution is explicitly implemented, shared file-backed
+  writes require one process, one worker, no reload, and no concurrent external
+  Dream CLI.
 
 ## 7. Current authorized next step
 
-The next Conversation Memory decision point is a separately task-card-authorized,
-bounded Recall-effectiveness evaluation. It must compare the existing
-anchor-only path with the existing graph-enhanced path before any Recall
-scheduler is designed:
+The next production objective is a minimal manual Dream control in the existing
+browser frontend, based on the verified findings in
+`docs/DREAM_UI_CODE_AUDIT.md`.
+
+Required chain:
 
 ```text
-same fixed memory corpus and query set
--> max_graph_depth = 0: vector anchors only
--> max_graph_depth > 0: anchors plus eligible graph expansions
--> compare evidence hit, irrelevant evidence, total evidence, and Recall latency
+existing DreamRunner.run_once
++ app-owned ColdDraftStore
++ shared Conversation Memory adapter/backend
++ one process-local writer mutex shared by Chat and Dream
++ synchronous POST /api/dream/run
++ expanded GET /api/status
++ bounded no-body pending count
++ native frontend maintenance row
 ```
 
 Requirements:
 
-- use a small fixed set of representative Conversation Memory queries;
-- evaluate retrieval evidence directly, not answer style or an LLM judge;
-- keep `top_k`, `max_evidence_items`, and all non-depth settings fixed between
-  the two conditions;
-- include direct-fact, historical-change, relationship/reason, and negative
-  control queries;
-- record whether target evidence is found, irrelevant evidence count, final
-  evidence count, Recall latency, and the depth-zero versus graph-enhanced
-  difference;
-- use existing fixtures, tests, or a bounded one-off artifact where possible;
-- do not create a permanent benchmark platform, evaluation framework, result
-  database, dashboard, scheduler, query classifier, or new production API;
-- do not change production Recall behavior during the evaluation task;
-- do not add none/light/deep routing, evidence-sufficiency escalation,
-  Evidence Organizer behavior, `narrative_context` injection, relevance models,
-  LLM judges, or cross-encoders.
+- keep Dream manual, synchronous, serial, and bounded;
+- use the current policy defaults: `max_segments=10`,
+  `stop_on_error=False`, `ingestion_version="dream-v1"`;
+- do not accept client-controlled Dream strategy fields;
+- do not call `build_default_runner()` per request or construct a second Cold
+  Draft or MAGMA owner;
+- serialize complete Chat handling and complete Dream runs with one shared
+  process-local writer mutex for the first safe version;
+- return stable `409 Conflict` when the writer is busy and safe unavailable
+  behavior when Dream cannot initialize;
+- expose only bounded aggregate status and results, never Cold Draft text,
+  segment IDs, paths, tracebacks, MAGMA objects, UUIDs, scores, or provider
+  configuration;
+- ensure memory written by Dream is immediately visible to the current Chat
+  retriever;
+- keep deployment to one worker, without `--reload`, and without a concurrent
+  external Dream CLI;
+- add only a compact maintenance row to the existing native frontend; no UI
+  framework, queue, polling loop, WebSocket, history, or Memory Viewer.
 
-Implementation requires an explicit task card. Neither this file nor the North
-Star itself orders Codex to build a Recall scheduler or another memory feature.
+Expected implementation scope is limited to the existing app wiring, Cold Draft
+owner, narrow HTTP contracts, three native static files, and existing API/store
+tests. `Dream/runner.py`, Dream orchestration, RecallPolicy, memory DTOs, Draft
+state machines, and upstream MAGMA should remain unchanged unless a verified
+blocking defect is reported before coding.
+
+Implementation still requires an explicit task card with acceptance tests. This
+section defines the objective and boundaries; it does not authorize adjacent
+work.
 
 ## 8. Minimal-change rule
 
@@ -353,8 +368,6 @@ Do not add:
 - forgetting, deletion, decay, contradiction resolution, duplicate merging, or
   salience mutation;
 - M-flow multi-granularity redesign;
-- Recall scheduling, none/light/deep routing, Evidence Organizer, or
-  `narrative_context` injection;
 - Conversation Graph;
 - PostgreSQL, Neo4j, or another production database;
 - a conversation/thread identity system;
@@ -376,16 +389,15 @@ Do not describe these as complete:
 - Hot Draft is physically append-only;
 - user/assistant Draft writes are not transactional as a pair;
 - public `message_consumed` does not fully represent persistence failure;
-- local JSONL stores have no multi-process writer lock;
+- local JSONL stores have no process-local or cross-process writer lock;
+- Chat/Chat, Chat/Dream, and Dream/Dream writes can currently race;
 - Dream and memory checkpoints assume one active writer;
-- Hot and Cold reads scan JSONL files;
-- production Recall injection exists but is disabled by default;
-- eligible non-anchor traversal events can enter public evidence, but traversal
-  paths, hop metadata, relation explanations, backend scores, and MAGMA
-  `narrative_context` are not exposed through `MemoryContext`;
-- anchors and graph expansions share the existing `max_evidence_items` total;
-  there is no separate graph-evidence quota or dynamic budget allocation;
-- there is no dynamic Recall scheduler or semantic Evidence Organizer;
+- the external Dream CLI creates a separate memory backend, so a resident Chat
+  retriever can retain an old in-memory snapshot until rebuild or restart;
+- Hot and Cold reads scan JSONL files, and pending count has no bounded no-body
+  store operation;
+- Dream has no HTTP endpoint or browser control;
+- Recall injection is opt-in and disabled by default;
 - production data has no real conversation/thread ID;
 - legacy records retain only fallback provenance;
 - only one explicit real-model adapter exists.
@@ -403,16 +415,11 @@ Preserve coverage for:
 - memory-complete-before-consumed ordering and recovery;
 - English/Chinese temporal normalization from source turn timezones;
 - bounded Recall, stable ordering, provenance, restart, and idempotency;
-- vector-anchor limiting by `top_k` and final evidence limiting by
-  `max_evidence_items`;
-- real-MAGMA graph-expansion projection, anchor-first ordering, multi-path
-  deduplication, invalid-provenance filtering, and stable overflow trimming;
 - safe empty/failure behavior and leak prevention;
-- production Recall disabled-path invariance;
-- successful bounded rendered-memory injection;
-- empty and failed Recall fallback;
-- injected-memory Draft isolation;
-- internal-field leak prevention.
+- memory-disabled chat behavior and production Recall failure fallback;
+- for the next Dream UI task: shared-writer 409 behavior, lock release on every
+  path, bounded no-body pending count, safe status/result projection, and
+  immediate post-Dream visibility to the resident retriever.
 
 Standard validation:
 

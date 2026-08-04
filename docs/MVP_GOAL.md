@@ -1,20 +1,30 @@
-# Cold Draft MVP Goal
+# Cold Draft MVP Goal — Completed Historical Milestone
 
-Lumina's current goal is a minimal, restart-persistent local chat runtime with a
-same-origin browser frontend:
+This file records the original Cold Draft MVP target. It is no longer Lumina's
+current production objective and must not be used to infer that Conversation
+Memory, Dream, or Recall are unimplemented.
+
+The completed milestone was:
 
 ```text
-existing Hot Draft context
+browser chat
 -> mock or explicitly configured real model
--> user and assistant/fallback Hot Draft persistence
--> threshold-triggered Cold-first compaction
+-> restart-persistent Hot Draft
+-> Cold-first logical compaction
 -> pending Cold Draft segment
--> bounded logical Hot Draft context after restart
+-> bounded recent raw context after restart
 ```
 
-The MVP includes only real/mock chat, Hot Draft, Cold Draft, compaction, safe
-fallback, and restart continuity. It is not long-term memory and does not include
-Conversation Memory, Dream, graph recall, PostgreSQL memory, or other organs.
+Lumina has since added manual Dream ingestion, an unmodified MAGMA-backed
+Conversation Memory adapter, bounded graph-enhanced Recall, deterministic Context
+Linearization, and optional production chat Recall injection.
 
-The product direction is recorded in `docs/final_goal.md`. The restored
-Cold-first preservation contract is authoritative in `docs/COLD_DRAFT.md`.
+Use these documents for current decisions:
+
+- `docs/CURRENT_STATUS.md` for implementation facts;
+- `docs/final_goal.md` for the current production objective;
+- `AGENTS.md` for active development boundaries;
+- `docs/COLD_DRAFT.md` for the preservation invariant.
+
+The historical MVP remains important because every later memory and product
+feature must preserve its Cold-first durability contract.
