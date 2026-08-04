@@ -183,6 +183,7 @@ class MagmaMemoryAdapter:
                 items,
                 count=policy.max_evidence_items,
                 max_chars=policy.max_chars,
+                intent=policy.intent,
             )
             return MemoryContext(query.strip(), evidence, rendered, truncated)
         except Exception:

@@ -11,10 +11,17 @@ import pytest
 
 from adapter.backend import RealMagmaBackend
 from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import BackendCandidate, ColdDraftTurn, RecallPolicy, SourceProvenance
+from adapter.models import (
+    BackendCandidate,
+    ColdDraftTurn,
+    MemoryEvidence,
+    RecallPolicy,
+    SourceProvenance,
+)
 from ingestion.fixture_loader import SegmentValidationError, load_fixture, parse_segment
 from ingestion.state_store import IngestionStateStore
 from ingestion.temporal import normalize_temporal_references
+from recall.rendering import bound_evidence
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v2.json"
 LEGACY_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v1.json"
@@ -274,10 +281,178 @@ def test_recall_is_bounded_stable_and_contains_only_dtos(tmp_path):
     assert all(item.provenance.segment_id == "fixture-segment-membrane-001" for item in first.evidence)
 
 
+def _linearization_evidence(evidence_id, text, timestamp):
+    return MemoryEvidence(
+        evidence_id,
+        text,
+        timestamp,
+        SourceProvenance(
+            segment_id=f"segment-{evidence_id}",
+            conversation_id=f"conversation-{evidence_id}",
+            turn_id=f"turn-{evidence_id}",
+            source_timestamp=timestamp,
+            source_timezone="UTC",
+            ingestion_version="test-v1",
+            timezone_source="client",
+        ),
+    )
+
+
+def test_context_linearization_default_when_and_stable_ties():
+    late = _linearization_evidence(
+        "evidence-late", "late event", "2026-01-08T14:00:00+00:00"
+    )
+    early_b = _linearization_evidence(
+        "evidence-b", "early B", "2026-01-03T18:00:00+08:00"
+    )
+    early_a = _linearization_evidence(
+        "evidence-a", "early A", "2026-01-03T10:00:00Z"
+    )
+    items = [late, early_b, early_a]
+
+    default = bound_evidence(items, count=3, max_chars=2000)
+    assert default == ((late, early_b, early_a), "late event\nearly B\nearly A", False)
+    assert "[2026-" not in default[1]
+    legacy_truncated = bound_evidence(items, count=1, max_chars=4)
+    assert legacy_truncated[0][0].text == "late"
+    assert legacy_truncated[1:] == ("late", True)
+
+    first = bound_evidence(items, count=3, max_chars=2000, intent="WHEN")
+    second = bound_evidence(items, count=3, max_chars=2000, intent="WHEN")
+    assert [item.evidence_id for item in first[0]] == [
+        "evidence-a",
+        "evidence-b",
+        "evidence-late",
+    ]
+    assert first == second
+    assert first[1].splitlines() == [
+        "[2026-01-03T10:00:00Z] early A",
+        "[2026-01-03T10:00:00Z] early B",
+        "[2026-01-08T14:00:00Z] late event",
+    ]
+
+    # Count bounds the retrieval-selected set before WHEN reorders it.
+    bounded = bound_evidence(items, count=2, max_chars=2000, intent="WHEN")
+    assert {item.evidence_id for item in bounded[0]} == {
+        "evidence-b",
+        "evidence-late",
+    }
+
+
+@pytest.mark.parametrize("intent", ["GENERAL", "ENTITY", "WHY"])
+def test_context_linearization_non_temporal_intents_preserve_order(intent):
+    late = _linearization_evidence(
+        "evidence-late", "late event", "2026-01-08T14:00:00Z"
+    )
+    early = _linearization_evidence(
+        "evidence-early", "early event", "2026-01-03T10:00:00Z"
+    )
+
+    evidence, rendered, truncated = bound_evidence(
+        [late, early], count=2, max_chars=2000, intent=intent
+    )
+    assert evidence == (late, early)
+    assert rendered.splitlines() == [
+        "[2026-01-08T14:00:00Z] late event",
+        "[2026-01-03T10:00:00Z] early event",
+    ]
+    assert truncated is False
+    assert not any(
+        hidden in rendered
+        for hidden in (
+            "evidence-late",
+            "segment-evidence-late",
+            "turn-evidence-late",
+            "score",
+            "hop",
+            "path",
+            "intent",
+            "relation",
+        )
+    )
+
+
+def test_context_linearization_character_bound_keeps_dto_and_empty_has_no_shell():
+    item = _linearization_evidence(
+        "evidence-one", "original text", "2026-01-03T10:00:00Z"
+    )
+    original = item
+
+    evidence, rendered, truncated = bound_evidence(
+        [item], count=1, max_chars=25, intent="WHEN"
+    )
+    assert len(rendered) == 25
+    assert rendered == "[2026-01-03T10:00:00Z] or"
+    assert truncated is True
+    assert evidence == (original,)
+    assert evidence[0].text == "original text"
+
+    assert bound_evidence([], count=1, max_chars=25, intent="WHEN") == (
+        (),
+        "",
+        False,
+    )
+
+
+def test_adapter_passes_intent_to_linearization_after_backend_ranking(tmp_path):
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    provenance = {
+        "segment_id": "segment",
+        "conversation_id": "conversation",
+        "source_timezone": "UTC",
+        "ingestion_version": "test-v1",
+        "timezone_source": "client",
+    }
+
+    class LinearizationBackend(FakeBackend):
+        def recall(self, query, policy):
+            return [
+                BackendCandidate(
+                    "late", "2026-01-03T10:00:00Z", 1.0,
+                    {
+                        "evidence_id": "late-id",
+                        "provenance": {
+                            **provenance,
+                            "turn_id": "late-turn",
+                            "source_timestamp": "2026-01-03T10:00:00Z",
+                        },
+                    },
+                ),
+                BackendCandidate(
+                    "early", at.isoformat(), 0.5,
+                    {
+                        "evidence_id": "early-id",
+                        "provenance": {
+                            **provenance,
+                            "turn_id": "early-turn",
+                            "source_timestamp": at.isoformat(),
+                        },
+                    },
+                ),
+            ]
+
+    adapter, _ = make_adapter(tmp_path, LinearizationBackend())
+    general = adapter.recall("query", RecallPolicy(intent="GENERAL"))
+    when = adapter.recall("query", RecallPolicy(intent="WHEN"))
+
+    assert [item.evidence_id for item in general.evidence] == ["late-id", "early-id"]
+    assert [item.evidence_id for item in when.evidence] == ["early-id", "late-id"]
+    assert {item.evidence_id for item in general.evidence} == {
+        item.evidence_id for item in when.evidence
+    }
+    assert general.rendered_text.splitlines()[0].endswith(" late")
+    assert when.rendered_text.splitlines()[0].endswith(" early")
+
+
 def test_empty_and_failed_recall_are_safe(tmp_path):
     adapter, backend = make_adapter(tmp_path)
     empty = adapter.recall("nothing", RecallPolicy())
     assert empty.evidence == () and empty.safe_error_code is None
+    linearized_empty = adapter.recall("nothing", RecallPolicy(intent="WHEN"))
+    assert linearized_empty.evidence == ()
+    assert linearized_empty.rendered_text == ""
+    assert linearized_empty.truncated is False
+    assert linearized_empty.safe_error_code is None
     backend.fail_recall = True
     failed = adapter.recall("nothing", RecallPolicy())
     assert failed.evidence == () and failed.safe_error_code == "recall_unavailable"

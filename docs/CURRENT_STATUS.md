@@ -76,7 +76,15 @@ implementation in `docs/COLD_DRAFT.md`.
   beam width `10`, drop threshold `0.15`, and cumulative
   `0.6 * relation + 0.4 * cosine` transition scoring. Adaptive failure falls
   back to fixed traversal; a subsequent fixed failure retains safe-empty
-  behavior. MAGMA `narrative_context` remains excluded from public output;
+  behavior. A caller-supplied explicit `intent` also enables deterministic
+  Context Linearization after the bounded evidence set is fixed: `WHEN` orders
+  evidence by the actual UTC event instant and then `evidence_id`, while
+  `GENERAL` and `ENTITY` preserve retrieval order and `WHY` continues to behave
+  as `GENERAL`. Explicit-intent model context renders each item as
+  `[UTC timestamp] original text`; with `intent=None`, the previous flat
+  newline-only evidence format and ordering remain unchanged. There is no
+  causal linearization, Evidence Organizer, or narrative generation, and MAGMA
+  `narrative_context` remains excluded from public output;
 - in one bounded 48-turn/20-question synthetic comparison, fixed depth-1 versus
   explicitly enabled `GENERAL` Adaptive Traversal changed evidence Recall from
   `0.620370` to `0.791667`, complete-hit from `0.388889` to `0.611111`, NDCG
@@ -86,6 +94,15 @@ implementation in `docs/COLD_DRAFT.md`.
   `12.4608 ms` to `25.4399 ms`. Both no-answer controls still returned six
   evidence items, so this synthetic result demonstrates a bounded noise/context
   improvement but not reliable abstention or general production effectiveness;
+- a one-off Context Linearization serialization check over the same 20-query
+  synthetic fixture covered 117 evidence items. All `100/100` mode-query
+  comparisons retained the same bounded evidence-ID set; `GENERAL`, `ENTITY`,
+  and `WHY` each preserved retrieval order in `20/20` queries, while `WHEN`
+  produced strict event-time order in `20/20` and differed from the original
+  retrieval order in `20/20`. Mean rendered characters increased from `416.55`
+  to `551.10` (`+32.301%`); both forms had zero truncations, and repeated-run
+  fingerprints matched. This check validates deterministic serialization only;
+  it does not establish answer-quality or retrieval-effectiveness gains;
 - legacy Hot/Cold records remain role/text or segment-time only; they are not
   migrated, and Dream marks their deterministic segment-time projection as
   `legacy_segment_fallback`;
@@ -104,8 +121,9 @@ implementation in `docs/COLD_DRAFT.md`.
 - Recall has no no/light/deep scheduling layer, evidence-sufficiency escalation,
   automatic intent routing, or dynamic edge/depth selection. Adaptive Traversal
   requires explicit caller fields and provides no trustworthy causal Recall;
-- Recall has no automatic temporal-query parsing, independent temporal ranking,
-  or Context Linearization;
+- Recall has no automatic temporal-query parsing or independent temporal
+  ranking. Context Linearization requires an explicit caller-provided intent and
+  does not infer intent, causality, current state, conflicts, or sufficiency;
 - Recall has no post-retrieval Evidence Organizer for semantic duplicate merging,
   current-versus-historical state separation, conflict presentation, timeline
   organization, or evidence sufficiency;
