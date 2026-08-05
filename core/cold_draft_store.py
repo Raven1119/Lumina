@@ -130,6 +130,20 @@ class ColdDraftStore:
             pending = pending[: self._safe_limit(limit)]
         return deepcopy(pending)
 
+    def list_all_turns(self) -> list[DraftTurn]:
+        """Return turns from every valid segment in stable file/index order."""
+        try:
+            segments, _ = self._reconstruct_segments(
+                self._physical_lines(self._read_bytes())
+            )
+        except OSError:
+            return []
+        return [
+            DraftTurn.model_validate(turn)
+            for segment in segments.values()
+            for turn in segment.aggregate["turns"]
+        ]
+
     def count_pending_bounded(self, limit: int) -> PendingCount:
         """Stream complete contiguous segments without retaining Draft bodies."""
         safe_limit = self._safe_limit(limit)

@@ -133,6 +133,36 @@ def _shared_adapter(tmp_path: Path, backend=None):
     ), backend
 
 
+def test_default_hot_path_and_shared_store_wiring(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("LUMINA_DRAFT_STORE_PATH", raising=False)
+    app = create_app(
+        cold_draft_path=tmp_path / "cold.jsonl",
+        compaction_state_path=tmp_path / "state.json",
+        model_client=MockModelClient(),
+        env_file_path=None,
+        recall_enabled=False,
+        memory_retriever=_RecordingRetriever(MemoryContext("")),
+    )
+    hot_store = app.state.hot_draft_store
+    history_reads = 0
+    original_history_reader = hot_store.list_all_raw
+
+    def read_history_hot():
+        nonlocal history_reads
+        history_reads += 1
+        return original_history_reader()
+
+    hot_store.list_all_raw = read_history_hot
+    assert hot_store._path == Path("data/draft/hot_drafts.jsonl")
+    assert app.state.message_runtime._hot_store is hot_store
+    assert app.state.hot_draft_compactor._hot_store is hot_store
+    assert TestClient(app).get("/api/history").status_code == 200
+    assert history_reads == 1
+
+
 def test_chat_background_loads_once_and_requires_restart(
     tmp_path: Path,
     monkeypatch,
@@ -244,6 +274,14 @@ def test_static_frontend_is_served_without_shadowing_api(tmp_path: Path) -> None
     assert "fetch(\"/api/chat\"" in script.text
     assert "fetch(\"/api/dream/run\"" in script.text
     assert "dreamButton.disabled" in script.text
+    assert 'var url = "/api/history?limit=40"' in script.text
+    assert "encodeURIComponent(historyNextBefore)" in script.text
+    assert "historyLoading || (!initial && !historyHasMore)" in script.text
+    assert "chatLog.scrollTop <= 125" in script.text
+    assert "chatLog.insertBefore(fragment, chatLog.firstChild)" in script.text
+    assert "oldTop + (chatLog.scrollHeight - oldHeight)" in script.text
+    assert "createMessageBubble(turn.content, turn.role)" in script.text
+    assert 'chatLog.addEventListener("scroll", handleHistoryScroll)' in script.text
     assert "payload.compaction.status" in script.text
     assert "compaction.archived_turns" in script.text
     assert 'compaction.status === "completed"' in script.text

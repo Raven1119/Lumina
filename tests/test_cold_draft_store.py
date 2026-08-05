@@ -96,6 +96,26 @@ def test_two_fourteen_turn_segments_are_28_lines_but_count_as_two(
     assert store.count_pending_bounded(10) == PendingCount(2, False)
 
 
+def test_list_all_turns_includes_pending_and_consumed_in_stable_order(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "cold.jsonl"
+    store = ColdDraftStore(path)
+    first = [_native_turn(index) for index in range(4)]
+    second = [_native_turn(index + 4) for index in range(2)]
+    store.append_segment(first, segment_id="first")
+    store.append_segment(second, segment_id="second")
+    assert store.mark_consumed("first")
+
+    expected = [
+        MemoryTurn.model_validate(turn)
+        for turn in [*first, *second]
+    ]
+    before = path.read_bytes()
+    assert ColdDraftStore(path).list_all_turns() == expected
+    assert path.read_bytes() == before
+
+
 def test_mark_consumed_updates_every_segment_line_and_survives_restart(
     tmp_path: Path,
 ) -> None:

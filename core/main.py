@@ -8,7 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import cast
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
 from Conversation_Memory.adapter.interfaces import MemoryIngestor, MemoryRetriever
@@ -20,6 +20,9 @@ from core.contracts import (
     CompactionStatusResponse,
     DreamRunResponse,
     DreamStatusResponse,
+    DraftTurn,
+    HistoryResponse,
+    HistoryTurnResponse,
     StatusResponse,
 )
 from core.draft_context import DraftContextProvider
@@ -40,6 +43,68 @@ _CHAT_BACKGROUND_PATH = _ROOT_DIRECTORY / "prompts" / "chat_background.md"
 _CONVERSATION_MEMORY_DIRECTORY = _ROOT_DIRECTORY / "Conversation_Memory"
 _DREAM_POLICY = DreamRunPolicy()
 _PENDING_STATUS_LIMIT = 100
+
+
+def _history_projection(turn: DraftTurn) -> HistoryTurnResponse | None:
+    if not turn.has_native_provenance:
+        return None
+    stored = turn.storage_turn()
+    return HistoryTurnResponse(
+        turn_id=stored["turn_id"],
+        role=turn.role,
+        content=turn.text,
+        timestamp=stored["created_at"],
+    )
+
+
+def _history_snapshot(
+    hot_store: JsonlDraftStore,
+    cold_store: ColdDraftStore,
+) -> list[HistoryTurnResponse]:
+    # Read Hot first so Cold-first compaction can only create an overlap, never
+    # a missing turn. Cold then wins the stable-ID deduplication below.
+    hot_turns = hot_store.list_all_raw()
+    cold_turns = cold_store.list_all_turns()
+    seen: set[str] = set()
+    projected: list[HistoryTurnResponse] = []
+    for turn in [*cold_turns, *hot_turns]:
+        history_turn = _history_projection(turn)
+        if history_turn is None or history_turn.turn_id in seen:
+            continue
+        seen.add(history_turn.turn_id)
+        projected.append(history_turn)
+    return projected
+
+
+def _history_page(
+    turns: list[HistoryTurnResponse],
+    *,
+    limit: int,
+    before: str | None,
+) -> HistoryResponse:
+    end = len(turns)
+    if before is not None:
+        try:
+            end = next(
+                index for index, turn in enumerate(turns)
+                if turn.turn_id == before
+            )
+        except StopIteration:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "invalid_history_cursor",
+                    "message": "history cursor is invalid",
+                },
+            ) from None
+    start = max(0, end - limit)
+    page = turns[start:end]
+    has_more = start > 0
+    return HistoryResponse(
+        turns=page,
+        has_more=has_more,
+        next_before=page[0].turn_id if has_more and page else None,
+    )
 
 
 class _SharedMemoryIngestorProvider:
@@ -231,6 +296,17 @@ def create_app(
                 pending_segments=pending.count,
                 pending_truncated=pending.truncated,
             ),
+        )
+
+    @app.get("/api/history", response_model=HistoryResponse)
+    def get_history(
+        limit: int = Query(default=40, ge=1, le=100),
+        before: str | None = None,
+    ) -> HistoryResponse:
+        return _history_page(
+            _history_snapshot(hot_store, cold_store),
+            limit=limit,
+            before=before,
         )
 
     @app.post("/api/chat", response_model=ChatResponse)

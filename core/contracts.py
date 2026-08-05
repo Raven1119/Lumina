@@ -83,6 +83,23 @@ class ChatResponse(BaseModel):
     compaction: ChatCompactionResponse
 
 
+class HistoryTurnResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    turn_id: str
+    role: Literal["user", "assistant"]
+    content: str
+    timestamp: str
+
+
+class HistoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    turns: list[HistoryTurnResponse]
+    has_more: bool
+    next_before: str | None
+
+
 TimezoneSource = Literal[
     "client",
     "configured_default",

@@ -17,6 +17,9 @@
   var compactionPollTimer = null;
   var chatRequestGeneration = 0;
   var activeCompactionPollGeneration = null;
+  var historyLoading = false;
+  var historyHasMore = true;
+  var historyNextBefore = null;
 
   function setNotice(text) {
     noticeEl.textContent = text || "";
@@ -65,10 +68,29 @@
     updateControls();
   }
 
-  function appendUserMessage(text) {
+  function createMessageBubble(text, role, phase, responseType) {
     var bubble = document.createElement("div");
-    bubble.className = "chat-message is-user";
-    bubble.textContent = text;
+    bubble.className = "chat-message is-" + role;
+
+    if (role === "assistant") {
+      var body = document.createElement("div");
+      body.textContent = text;
+      bubble.appendChild(body);
+
+      if (phase && responseType) {
+        var badge = document.createElement("span");
+        badge.className = "chat-badge " + badgeKind(responseType);
+        badge.textContent = phase + " / " + responseType;
+        bubble.appendChild(badge);
+      }
+    } else {
+      bubble.textContent = text;
+    }
+    return bubble;
+  }
+
+  function appendUserMessage(text) {
+    var bubble = createMessageBubble(text, "user");
     chatLog.appendChild(bubble);
     chatLog.scrollTop = chatLog.scrollHeight;
   }
@@ -80,22 +102,98 @@
   }
 
   function appendAssistantMessage(text, phase, responseType) {
-    var bubble = document.createElement("div");
-    bubble.className = "chat-message is-assistant";
-
-    var body = document.createElement("div");
-    body.textContent = text;
-    bubble.appendChild(body);
-
-    if (phase && responseType) {
-      var badge = document.createElement("span");
-      badge.className = "chat-badge " + badgeKind(responseType);
-      badge.textContent = phase + " / " + responseType;
-      bubble.appendChild(badge);
-    }
-
+    var bubble = createMessageBubble(
+      text,
+      "assistant",
+      phase,
+      responseType
+    );
     chatLog.appendChild(bubble);
     chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  function isValidHistoryPayload(payload) {
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      !Array.isArray(payload.turns) ||
+      typeof payload.has_more !== "boolean" ||
+      !(
+        payload.next_before === null ||
+        typeof payload.next_before === "string"
+      )
+    ) {
+      return false;
+    }
+    return payload.turns.every(function (turn) {
+      return turn &&
+        typeof turn === "object" &&
+        typeof turn.turn_id === "string" &&
+        (turn.role === "user" || turn.role === "assistant") &&
+        typeof turn.content === "string" &&
+        typeof turn.timestamp === "string";
+    });
+  }
+
+  function historyUrl() {
+    var url = "/api/history?limit=40";
+    if (historyNextBefore) {
+      url += "&before=" + encodeURIComponent(historyNextBefore);
+    }
+    return url;
+  }
+
+  function loadHistoryPage(initial) {
+    if (historyLoading || (!initial && !historyHasMore)) {
+      return Promise.resolve();
+    }
+    historyLoading = true;
+    var oldHeight = chatLog.scrollHeight;
+    var oldTop = chatLog.scrollTop;
+
+    return fetch(historyUrl()).then(function (response) {
+      if (!response.ok) {
+        throw new Error("history_http_error");
+      }
+      return response.json();
+    }).then(function (payload) {
+      if (!isValidHistoryPayload(payload)) {
+        throw new Error("history_parse_error");
+      }
+      var fragment = document.createDocumentFragment();
+      payload.turns.forEach(function (turn) {
+        fragment.appendChild(
+          createMessageBubble(turn.content, turn.role)
+        );
+      });
+      chatLog.insertBefore(fragment, chatLog.firstChild);
+      historyHasMore = payload.has_more;
+      historyNextBefore = payload.next_before;
+      if (initial) {
+        chatLog.scrollTop = chatLog.scrollHeight;
+      } else {
+        chatLog.scrollTop =
+          oldTop + (chatLog.scrollHeight - oldHeight);
+      }
+    }).catch(function () {
+      historyHasMore = false;
+      historyNextBefore = null;
+      if (!chatBusy) {
+        setNotice("History unavailable. Chat is still available.");
+      }
+    }).then(function () {
+      historyLoading = false;
+    });
+  }
+
+  function handleHistoryScroll() {
+    if (
+      chatLog.scrollTop <= 125 &&
+      historyHasMore &&
+      !historyLoading
+    ) {
+      loadHistoryPage(false);
+    }
   }
 
   function isValidChatPayload(payload) {
@@ -360,5 +458,8 @@
   chatForm.addEventListener("submit", handleSubmit);
   dreamButton.addEventListener("click", handleDream);
   updateControls();
+  loadHistoryPage(true).then(function () {
+    chatLog.addEventListener("scroll", handleHistoryScroll);
+  });
   checkBackend();
 })();
