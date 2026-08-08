@@ -1,141 +1,255 @@
-# Cold Draft Fixture Adapter Design
+# Cold Draft Adapter and Recall Design
 
-## Scope
+## Status and scope
 
-The adapter contract is covered by the native V2 synthetic fixture
-`fixtures/cold_draft_segment_v2.json`, the retained V1 adapter fixture, and a
-synthetic production-format legacy fixture. Dream, not this adapter, reads
-production Cold Draft JSONL and owns the consumed-state transition. Upstream
-MAGMA remains unchanged.
-
-## Data flow
+This document describes the current production Conversation Memory v1 boundary,
+not only the original synthetic-fixture milestone.
 
 ```text
-synthetic JSON fixture
--> ingestion.fixture_loader schema validation
--> Lumina ColdDraftSegment / ColdDraftTurn
--> per-turn temporal normalization + deterministic entity fallback
+production ColdDraftSegment
+-> Lumina-owned ingestion DTOs
 -> MagmaMemoryAdapter
--> private MemoryBackend protocol
--> unmodified MAGMA event/graph/vector persistence
--> backend candidates
--> stable Lumina MemoryEvidence
--> bounded MemoryContext
+-> pinned unmodified MAGMA backend
+-> durable graph/vector memory
+
+query + RecallPolicy
+-> bounded Lumina-owned Recall execution
+-> MemoryContext
 ```
 
-MAGMA objects remain behind `adapter.backend.MemoryBackend`. The public adapter
-accepts and returns only Lumina-owned frozen dataclasses.
-
-## Schema
-
-Schema versions `1` and `2` require a non-empty segment and conversation ID,
-`pending_digest` state, aware ISO-8601 `created_at`, an explicit source timezone,
-and at least one turn. Each turn requires a unique-facing ID, `user` or
-`assistant` role, non-empty content, and an aware ISO-8601 timestamp. Native V2
-turns additionally carry their own validated IANA `source_timezone` and
-`timezone_source`; V1 fixtures are projected as
-`legacy_segment_fallback`.
-
-The loader rejects malformed/missing fields with a stable
-`SegmentValidationError.code`. The adapter repeats invariant checks for callers
-that construct DTOs directly. Neither layer returns paths, tracebacks, provider
-payloads, credentials, or MAGMA objects.
+Production Cold ownership, Dream scheduling, and Chat injection remain outside
+this workspace.
 
 ## Lumina-owned interfaces
 
-- `MemoryIngestor.ingest(ColdDraftSegment) -> IngestionResult`
-- `MemoryRetriever.recall(str, RecallPolicy) -> MemoryContext`
-- `MagmaMemoryAdapter` implements both interfaces.
-- `MemoryBackend` is the only MAGMA-facing protocol.
+```text
+MemoryIngestor.ingest(ColdDraftSegment) -> IngestionResult
+MemoryRetriever.recall(query, RecallPolicy) -> MemoryContext
+```
 
-The DTO set comprises `ColdDraftSegment`, `ColdDraftTurn`,
-`SourceProvenance`, `NormalizedTemporalReference`, `IngestionResult`,
-`RecallPolicy`, `MemoryEvidence`, and `MemoryContext`.
+`MagmaMemoryAdapter` implements both. `MemoryBackend` is the private
+MAGMA-facing protocol.
 
-## MAGMA conversion
+Public DTOs include:
 
-Every source turn becomes one MAGMA event. The original source timestamp is
-passed directly as the event timestamp—there is no session timestamp or
-`dia_id` offset. Metadata includes:
+- `ColdDraftSegment` / `ColdDraftTurn`;
+- `SourceProvenance`;
+- `NormalizedTemporalReference`;
+- `IngestionResult`;
+- `RecallPolicy`;
+- `MemoryEvidence`;
+- `MemoryContext`.
+
+MAGMA classes, graph nodes, UUIDs, paths, scores, embeddings, NetworkX, and
+FAISS never cross the facade.
+
+## Ingestion conversion
+
+Every source turn becomes one MAGMA event. The original source text and source
+turn timestamp are retained. Metadata includes:
 
 - stable `evidence_id`;
 - role and original text;
-- deterministic entities;
-- canonical normalized `temporal_mentions` and MAGMA-style
-  `dates_mentioned`;
-- provenance containing segment, conversation, turn, timestamp, timezone,
-  timezone source, and ingestion version.
+- deterministic entity fallback;
+- normalized temporal references;
+- source provenance containing segment, conversation, turn, timestamp,
+  timezone, and ingestion version.
 
-`RealMagmaBackend` uses `TemporalResonanceGraphMemory.add_event`, upstream graph
-and vector persistence, upstream entity-edge construction, and upstream query.
-It does not copy graph extraction or traversal algorithms. The one-time
-MiniLM model must already exist in the isolated environment cache; runs set
-Hugging Face offline mode.
+The adapter does not replace source timestamps with Dream time, session time, or
+`dia_id` offsets.
 
-## Time normalization
+## Temporal normalization
 
-The private Lumina-owned parser keeps MAGMA's relative, directed-weekday, and
-absolute-date matching order. Its only cross-module entry point accepts a
-`ColdDraftTurn`; unused query/question/compatibility APIs are not retained.
-Supported English and Chinese write-time forms are documented in
-`CHINESE_TEMPORAL_PARSER.md`.
+Temporal normalization is Lumina-owned and uses each source turn's own
+`created_at` and `source_timezone`.
 
-Each expression is resolved from its own source turn's aware timestamp after
-conversion into that turn's source timezone. Local day/week/month/year calendar
-boundaries are serialized as aware UTC half-open `[start, end)` intervals. The
-original expression, reference timestamp, reference timezone, normalized
-start/end, method, confidence, and language are preserved. The original
-content and MAGMA event timestamp are never replaced by a mentioned date.
+- English and Chinese relative/calendar expressions are supported according to
+  the active parser contracts.
+- Results are stored as aware UTC half-open intervals `[start, end)`.
+- Original text and expressions remain unchanged.
+- DST and real local calendar boundaries are respected.
+- Upstream MAGMA remains unmodified.
 
-Offset strings such as `+08:00` remain supported for legacy schema V1. Native
-V2 uses validated IANA names, allowing midnight and DST boundaries to follow
-the correct local calendar while the aware timestamp remains authoritative for
-the instant. Longest non-overlapping spans win and all retained mentions return
-in source order. Invalid, ambiguous, or unsupported forms do not invent dates.
+## Idempotency and persistence
 
-## Entity fallback
+Durable ingestion key:
 
-`ingestion.entities.extract_entities` is a small explainable regular expression
-for capitalized proper names plus optional configured entities. It deduplicates
-in encounter order and excludes a short stop list. It is not presented as full
-NER. Extracted names enter MAGMA metadata, allowing upstream entity relationship
-construction; the integration test verifies an ENTITY link for Raven.
+```text
+(segment_id, ingestion_version)
+```
 
-## Recall boundary
+The adapter checkpoints pending/in-progress/completed state and the private
+memory IDs written so far. Stable evidence IDs allow retry to converge after
+partial graph/vector persistence.
 
-`RecallPolicy` requires positive `top_k`, `max_chars`,
-`max_evidence_items`, `max_graph_depth`, and `max_nodes`. The backend receives
-the graph budgets. The facade then:
+Dream may consume the source segment only after the adapter returns a complete,
+validated durable result.
 
-1. discards candidates without valid provenance/stable evidence IDs;
-2. sorts deterministically by descending score, timestamp, and evidence ID;
-3. applies `min(top_k, max_evidence_items)`;
-4. truncates rendered evidence to `max_chars`;
-5. returns only frozen Lumina DTOs and truncation metadata.
+MAGMA graph, vectors, and the Lumina checkpoint are separate files and are not
+one ACID transaction. Current correctness relies on per-event persistence,
+stable IDs, checkpoints, and retry convergence.
 
-The earlier cosine threshold experiment is not part of this path; its historical
-result is recorded in `RELEVANCE_GATE_DESIGN.md`. Backend scores remain private.
+## RecallPolicy
 
-There is no Cold Draft scan during recall. MAGMA UUIDs are never exposed as
-evidence identifiers.
+Current fields:
+
+| Field | Default | Meaning |
+| --- | ---: | --- |
+| `top_k` | 5 | maximum fused anchors |
+| `max_chars` | 2000 | maximum rendered context characters |
+| `max_evidence_items` | 5 | maximum public anchors + expansions |
+| `max_graph_depth` | 5 | graph depth; `0` is valid anchor-only |
+| `max_nodes` | 100 | bounded lexical/traversal candidate budget |
+| `intent` | `None` | caller-supplied `GENERAL/WHY/WHEN/ENTITY` |
+| `temporal_window` | `None` | aware UTC `[start,end)` hard filter |
+| `beam_width` | `None` | optional adaptive beam width |
+| `drop_threshold` | `None` | optional adaptive relative-drop threshold |
+
+All optional fields `None` preserves the fixed traversal path. Supplying
+`intent`, `beam_width`, or `drop_threshold` opts into adaptive traversal.
+Supplying only a temporal window does not enable adaptive traversal.
+
+## Anchor identification
+
+```text
+MiniLM dense ranking
++ bounded deterministic lexical ranking
+-> RRF(k=60)
+-> stable fused top_k anchors
+```
+
+Lexical ranking scans at most `max_nodes` graph entries and only projects valid
+event nodes. Lexical failure safely falls back to dense-only.
+
+`top_k` limits anchors only. The final public evidence total is separately
+limited by `max_evidence_items`.
+
+The pinned upstream contains no generic production-ready temporal anchor rank
+source. `temporal_window` therefore remains a hard filter, not a custom temporal
+ranking algorithm.
+
+## Temporal hard filtering
+
+Lumina applies:
+
+```text
+start <= event_timestamp < end
+```
+
+in aware UTC to dense anchors, lexical candidates, and graph expansions.
+Missing, naive, or invalid event timestamps are skipped. Window-excluded events
+cannot re-enter through graph traversal.
+
+## Fixed traversal
+
+The default path uses the current MAGMA graph traversal under
+`max_graph_depth`/`max_nodes` constraints.
+
+- Anchors are projected first.
+- Valid non-anchor event expansions may be projected afterward.
+- Entity and other internal nodes never become public evidence.
+- Expansions are deduplicated using stable IDs and bounded before rendering.
+
+## Adaptive traversal
+
+Caller opt-in adaptive traversal uses bounded relation-aware beam search.
+Current transition score is:
+
+```text
+0.6 * relation_weight + 0.4 * query/event cosine similarity
+```
+
+Current relation weights:
+
+- GENERAL/ENTITY: ENTITY `0.60`, SEMANTIC `0.30`, TEMPORAL `0.05`, CAUSAL `0.05`;
+- WHEN: TEMPORAL `0.70`, other relation types `0.10` each;
+- WHY: currently maps to GENERAL; no causal specialization.
+
+Defaults when adaptive is enabled without explicit values are beam width `10`
+and drop threshold `0.15`.
+
+Adaptive failure falls back to fixed traversal. If both fail, Recall returns a
+safe empty context with a stable error code.
+
+## Evidence projection
+
+Before public projection, candidates must have:
+
+- non-empty event text;
+- aware timestamp;
+- stable evidence ID;
+- complete valid provenance.
+
+Public `MemoryEvidence` contains only:
+
+```text
+evidence_id
+text
+timestamp
+SourceProvenance
+```
+
+No graph path, relation metadata, score, embedding, MAGMA UUID, local path, or
+narrative context is returned.
+
+## Context Linearization
+
+- `intent=None`: preserve retrieval order and render plain evidence text for
+  compatibility.
+- Explicit intents: add normalized UTC timestamps.
+- `WHEN`: sort the selected evidence chronologically, then by evidence ID.
+- `GENERAL`, `ENTITY`, `WHY`: preserve retrieval order.
+- `WHY` does not synthesize causal explanations.
+- Rendering obeys `max_chars`; final-line truncation is allowed and reported.
+
+## Chat injection boundary
+
+Recall is optional and disabled by default. When enabled, normal Chat receives
+only non-empty bounded `MemoryContext.rendered_text` as a temporary context
+block.
+
+Recall does not:
+
+- scan Cold Draft;
+- trigger Dream or ingestion;
+- persist the injected block into Draft;
+- expose evidence DTOs or backend internals to the provider.
+
+Empty or failed Recall falls back to ordinary Chat.
+
+## Current capability boundaries
+
+- No relevance threshold, LLM judge, cross-encoder, or reliable abstention.
+- No automatic intent/query classification or Recall scheduler.
+- No Evidence Organizer/Ledger, conflict/current-state resolver, fact
+  supersession, or semantic deduplication.
+- Cross-turn reference is only partially supported through joint recall and
+  graph adjacency; there is no explicit coreference resolution.
+- Knowledge updates are preserved as new/old events and interpreted by the
+  final model; no memory is automatically invalidated.
 
 ## Failure handling
 
 - Schema failures use stable validation codes.
-- Corrupt state returns `state_corrupt` and does not overwrite the file.
-- `MagmaMemoryAdapter.create_real` catches MAGMA/embedding initialization
-  failures and installs a safe unavailable backend, so ingestion and recall
-  still return their structured failure DTOs.
-- Write/persistence failures return `memory_write_failed`, remain retryable,
-  and never become completed.
-- Recall exceptions, missing models, or corrupt memory return an empty
-  `MemoryContext` with `recall_unavailable`.
+- Corrupt checkpoint state is not overwritten.
+- Initialization failure creates a safe unavailable backend where configured.
+- Write failure remains retryable and never becomes completed.
+- Recall exception/corruption returns an empty context with
+  `recall_unavailable`.
 - Empty retrieval returns a valid empty context without an error.
+- Raw exception text is discarded at the facade boundary.
 
-Raw exception strings are intentionally discarded at the facade boundary.
+## Validation
 
-## Explicit non-integration
+Use synthetic fixtures and temporary/marker-owned paths:
 
-The Conversation Memory facade does not import Draft stores, MessageRuntime,
-ModelClient, API routes, or frontend code. Production conversion and the
-consumed transition remain in the separately bounded manual Dream layer.
+```bash
+python -m pytest Conversation_Memory/tests -q
+python -m pytest -q
+python -m scripts.recall_e2e_test
+git diff --check
+git -C Conversation_Memory/upstream/MAGMA status --short
+git -C Conversation_Memory/upstream/MAGMA diff --stat
+```
+
+The upstream MAGMA worktree must remain clean.

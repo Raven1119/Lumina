@@ -1,126 +1,120 @@
 # Lumina Final Goal
 
-Lumina is intended to become a local-first companion whose continuity is earned
-through durable, inspectable behavior rather than simulated by tone alone.
+Lumina is intended to become a local-first digital companion whose continuity is
+built from durable evidence, integrated cognition, relationships, experience,
+and action rather than simulated by tone alone.
 
-The product promise is:
+The long-term direction is defined more fully in `docs/NORTH_STAR.md`. This file
+sets the current product direction and the next bounded development boundary; it
+does not claim that future organs already exist.
 
-> Preserve what happened before compressing it, transform preserved experience
-> into memory through an explicit durable process, and use recalled context
-> without making ordinary conversation depend on memory availability.
+## Continuity foundation
 
-## Continuity Invariant
-
-Cold-first preservation remains non-negotiable:
-
-```text
-Hot Draft
--> durably preserve older raw turns in Cold Draft
--> advance logical compaction state
--> retain the recent raw tail for the next response
-```
-
-If preservation fails, the logical Hot view must remain uncompacted. Cold Draft
-source records remain the immutable authority for conversation material that has
-left the immediate prompt.
-
-Stable per-turn identity, aware UTC time, source IANA timezone, and truthful
-timezone source must survive Draft persistence, compaction, Dream ingestion,
-MAGMA persistence, Recall projection, and model-context injection.
-
-## Current Baseline
-
-The first end-to-end continuity loop now exists:
+The implemented continuity chain is:
 
 ```text
-Production chat
-Browser -> FastAPI -> MessageRuntime
-        -> optional bounded Recall
-        -> ModelClient
-        -> Hot Draft -> Cold-first compaction -> Cold Draft
-
-Memory formation
-manual Dream -> pending Cold Draft -> Conversation Memory
-             -> unmodified MAGMA -> durable checkpoint -> consumed
-
-Memory use
-query -> bounded Lumina-owned Recall -> rendered MemoryContext
-      -> optional model-context injection -> ordinary response path
+normal Chat
+-> stable background system prompt
+-> rolling Hot working context
+-> Cold-first immutable raw archive
+-> explicit Dream
+-> persistent MAGMA event memory
+-> optional bounded Recall
+-> later Chat
 ```
 
-This baseline includes:
+A separate History projection restores the original single-conversation
+transcript after restart without replaying the entire transcript into the model.
 
-- restart-persistent Hot and Cold Draft state;
-- Cold-first compaction and immutable source preservation;
-- native per-turn provenance;
-- manual bounded Dream ingestion;
-- durable idempotent MAGMA persistence;
-- dense and lexical RRF anchors;
-- temporal hard constraints;
-- fixed and adaptive graph traversal;
-- deterministic intent-aware Context Linearization;
-- optional, bounded, failure-isolated production Recall injection.
+## Current baseline
 
-The memory execution boundary is now sufficiently complete for its current
-role. Unverified query-time temporal ranking was deliberately not invented, and
-the current upstream GENERAL fallback was retained after controlled evaluation.
+The current product already provides:
 
-## Next Production Objective
+- a local single-user, single-continuous-conversation chatbot;
+- fixed background injection for every normal Chat generation;
+- rolling semantic Hot Draft plus recent raw turns;
+- per-turn Cold Draft raw archive with segment-level atomic state changes;
+- explicit browser Dream and stop-the-service CLI Dream;
+- shared resident memory backend and process-local Chat/Dream write exclusion;
+- pinned MAGMA event/graph/vector persistence with provenance and idempotency;
+- dense + lexical RRF anchors, temporal hard filters, fixed/adaptive traversal,
+  bounded evidence, and Context Linearization;
+- default-disabled safe Recall injection;
+- restart-persistent read-only transcript history with cursor pagination.
 
-The next objective is not a new memory algorithm. It is a safe, minimal product
-control for the existing manual Dream operation:
+The current system is a long-memory chatbot prototype. It is not yet a complete
+Mind System, autonomous agent runtime, or digital life.
+
+## Memory v1 freeze
+
+Freeze the following unless a later task identifies a reproducible defect, a
+real failure sample, or a narrow caller-contract requirement:
 
 ```text
-browser Dream button
--> bounded synchronous POST /api/dream/run
--> existing DreamRunner.run_once
--> shared app-owned Cold Draft and memory backend
--> memory-complete-before-consumed
--> current Chat Recall immediately sees the new memory
+Cold-first raw evidence authority
+one source turn -> one MAGMA event
+stable source provenance and evidence IDs
+(segment_id, ingestion_version) idempotency
+Lumina-owned MemoryIngestor / MemoryRetriever facade
+bounded Recall and safe failure
+pinned unmodified MAGMA backend
 ```
 
-This step must also establish one process-local writer boundary shared by Chat
-and Dream. A browser button without backend mutual exclusion would make the
-system easier to operate while weakening continuity, which is unacceptable.
+Freezing this boundary does not mean memory quality is final. Known open
+problems include abstention, state/conflict interpretation, fact supersession,
+explicit coreference, real-user quality evaluation, and cross-file transaction
+safety.
 
-The first version should provide only:
+## Next development boundary
 
-- one compact Dream maintenance row in the existing native frontend;
-- bounded pending-segment status without exposing source text;
-- truthful `running` and Recall-enabled status;
-- one synchronous manual-run action;
-- aggregate results using the existing Dream terminology;
-- stable busy and unavailable responses;
-- single-worker, no-reload, single-writer deployment guidance.
+The next stage should begin with a **Mind System caller-contract design**, not
+another memory-backend expansion.
 
-It should not add background execution, scheduling, progress streaming, task
-queues, Dream history, memory editing, graph visualization, strategy controls,
-or autonomous behavior.
+The caller must eventually decide:
 
-## Growth Rule
+```text
+whether memory is needed
+which Recall intent applies
+whether a temporal window is known
+anchor-only or graph-enhanced search depth
+node/evidence/context budgets
+whether returned evidence is sufficient
+whether another bounded Recall is justified
+```
 
-Later capabilities must extend rather than bypass these boundaries:
+The first step is docs-only: define the ownership boundary, inputs, outputs,
+failure behavior, and synthetic acceptance cases around the existing
+`MemoryRetriever.recall(query, policy) -> MemoryContext` interface.
 
-1. Cold Draft remains the durable authority for raw material leaving Hot
-   context.
-2. Dream consumes only eligible preserved segments and marks them consumed only
-   after memory completion is durable.
-3. Retry converges through `(segment_id, ingestion_version)` without duplicate
-   logical memory.
-4. Recall remains bounded, provenance-preserving, optional, and safe to ignore
-   on failure.
-5. User-facing controls must share the same owners and write boundaries as the
-   underlying runtime; they must not create parallel stores or split memory
-   views.
-6. Future automation may replace manual triggering only after its scheduling,
-   interruption, persistence, and audit semantics are explicitly designed.
-7. New storage, reasoning, and autonomous systems must not weaken continuity,
-   truthful provenance, idempotency, or whole-system coherence.
+Do not yet implement:
 
-Conversation Graph as a separate organ, Evidence Organizer, Mind System,
-PostgreSQL memory, ContextBuilder, ToolRuntime, autonomous Dream, agents, tasks,
-and schedulers are future capabilities, not implications of the current step.
+- automatic intent or query classification;
+- autonomous Recall scheduling;
+- Evidence Organizer/Ledger;
+- automatic Dream;
+- workers, queues, background cognition, or agents;
+- conflict/current-state resolution or fact supersession;
+- self-modification or evolution.
 
-The active Cold Draft contract is defined in `docs/COLD_DRAFT.md`. Current
-implementation facts belong in `docs/CURRENT_STATUS.md`. The verified integration
-boundary for the next step is recorded in `docs/DREAM_UI_CODE_AUDIT.md`.
+These require separate design and authorization.
+
+## Growth rules
+
+Later organs must extend rather than bypass the implemented continuity
+foundation:
+
+1. Cold raw evidence remains authoritative for what was actually said.
+2. Hot remains a bounded rolling working representation, not the complete
+   transcript authority.
+3. Dream remains separate from normal Chat until an explicit later design
+   changes that ownership.
+4. Memory completion is durable before a Cold segment is consumed.
+5. Recall remains bounded, provenance-preserving, leak-safe, and optional for
+   Chat availability.
+6. The future Mind owns decisions about attention and memory use; the memory
+   backend should not become an implicit global router.
+7. New capabilities must preserve identity continuity, auditability, safe
+   failure, and future evolvability.
+
+Current implementation facts belong in `docs/CURRENT_STATUS.md`. The current
+codebase-wide evidence baseline is `docs/LUMINA_CODEBASE_SCAN.md`.

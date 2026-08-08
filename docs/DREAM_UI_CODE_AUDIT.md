@@ -1,3 +1,12 @@
+> **Status: HISTORICAL — IMPLEMENTATION COMPLETED**
+>
+> This was the pre-implementation audit for the manual Dream browser/API
+> milestone. The recommended shared runner/backend, writer mutex, status API,
+> and native frontend control have since been implemented. Use
+> `docs/CURRENT_STATUS.md` and `docs/LUMINA_CODEBASE_SCAN.md` for current facts.
+>
+> The body below is preserved as design and risk-analysis history.
+
 # Dream UI Code Audit
 
 ## Result

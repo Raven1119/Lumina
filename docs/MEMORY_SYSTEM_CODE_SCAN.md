@@ -1,3 +1,12 @@
+> **Status: HISTORICAL — SUPERSEDED SCAN**
+>
+> This July 2026 scan predates rolling physical Hot compaction, line-level Cold
+> storage, browser Dream, adaptive/RRF/linearized Recall completion, fixed
+> background injection, and single-conversation History. Use
+> `docs/LUMINA_CODEBASE_SCAN.md` for the current codebase-wide baseline.
+>
+> The body below is retained for historical architecture and debt context.
+
 # Lumina 记忆系统全量代码扫描报告
 
 扫描日期：2026-07-30  

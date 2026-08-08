@@ -2,425 +2,179 @@
 
 ## Scope
 
-This file applies to all work under:
+This file applies to all work under `Dream/`.
+
+Dream is Lumina's explicit, synchronous, bounded Cold-to-Conversation-Memory
+orchestration layer. It is implemented and available through:
 
 ```text
-Lumina/Dream/
+browser button -> POST /api/dream/run -> app-owned DreamRunner
 ```
 
-`Dream/` is Lumina's offline digestion and maintenance orchestration layer. It is not part of the synchronous chat request path.
-
-The first authorized milestone is limited to a manually triggered Cold Draft digestion flow:
-
-```text
-manual Dream run
--> read real pending Cold Draft segments
--> convert each segment to Conversation Memory DTOs
--> call the existing Conversation Memory ingestion interface
--> verify durable memory completion
--> mark the source Cold Draft segment consumed through the existing Cold Draft owner
--> emit a structured run report
-```
-
-Future Dream capabilities may be added only through later explicit task authorization.
-
-## Authoritative boundaries
-
-Also obey:
-
-- `Lumina/AGENTS.md`
-- `Lumina/Conversation_Memory/AGENTS.md`
-- `docs/COLD_DRAFT.md`
-- `docs/CURRENT_STATUS.md`
-- `Conversation_Memory/docs/COLD_DRAFT_ADAPTER_DESIGN.md`
-- `Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`
-
-When instructions conflict:
-
-1. preserve the Cold-first durability invariant;
-2. preserve the synchronous chat path;
-3. follow the most specific instruction for `Dream/`;
-4. do not weaken the Conversation Memory provenance or idempotency contract.
-
-## Authorized objective
-
-Implement a manual, bounded, restart-safe Dream runner that consumes real Cold Draft segments only after their raw content has already been durably preserved.
-
-Preferred public boundary:
-
-```python
-class DreamRunner:
-    def run_once(self, policy: DreamRunPolicy) -> DreamRunReport:
-        ...
-```
-
-The initial run should orchestrate one task:
-
-```text
-ColdDraftDigestionTask
-```
-
-The task must:
-
-1. obtain eligible `pending_digest` segments through a Lumina-owned Cold Draft read interface;
-2. process segments in deterministic order;
-3. convert each segment into the existing `Conversation_Memory` DTO schema;
-4. call the existing memory ingestion interface;
-5. verify that the ingestion result is durably completed;
-6. request the existing Cold Draft owner to transition that segment to `consumed`;
-7. record success, skip, and failure results without leaking internals.
-
-## Preferred layout
-
-```text
-Dream/
-├── AGENTS.md
-├── __init__.py
-├── runner.py
-├── cold_draft_digest.py
-├── interfaces.py
-├── models.py
-├── state/
-├── tests/
-└── docs/
-```
-
-Keep orchestration code inside `Dream/`. Reuse existing Draft and Conversation Memory interfaces instead of copying their implementation.
-
-## Required separation of responsibilities
-
-### Dream owns
-
-- manual run orchestration;
-- selection of eligible segments;
-- deterministic ordering;
-- per-run limits;
-- per-segment failure isolation;
-- cancellation or early-stop policy;
-- structured run reports;
-- coordination between Cold Draft and Conversation Memory.
-
-### Conversation Memory owns
-
-- schema validation for memory ingestion;
-- time normalization;
-- entity fallback;
-- provenance projection;
-- MAGMA writes;
-- graph and vector persistence;
-- memory-side idempotency;
-- bounded recall.
-
-### Cold Draft owner owns
-
-- reading production Cold Draft records;
-- authoritative segment state;
-- transition from `pending_digest` to `consumed`;
-- durable persistence of that transition.
-
-Dream must not implement a second Draft parser, graph store, vector store, or memory idempotency system when an existing owner already provides that responsibility.
-
-## Cold Draft rules
-
-- Read only segments in `pending_digest` state.
-- Do not read or modify Hot Draft data.
-- Do not rewrite, truncate, delete, summarize in place, or replace Cold Draft source content.
-- Do not edit Cold Draft JSONL files directly.
-- Do not construct a second writer for Cold Draft.
-- Use the existing Cold Draft owner or add one narrow owner method if required.
-- Mark a segment `consumed` only after memory ingestion is durably completed.
-- A skipped, failed, unavailable, partial, or timed-out ingestion must leave the segment pending.
-- Re-running Dream must not duplicate memory nodes or consume an incompletely written segment.
-- Preserve the original segment ID, conversation ID, turn IDs, timestamps, roles, ordering, and timezone.
-
-## Conversation Memory boundary
-
-Dream may depend only on Lumina-owned Conversation Memory interfaces and DTOs.
-
-Allowed shape:
-
-```text
-MemoryIngestor.ingest(ColdDraftSegment) -> IngestionResult
-```
-
-Dream must not import or expose:
-
-- upstream MAGMA classes;
-- NetworkX objects;
-- FAISS objects;
-- embedding model objects;
-- MAGMA node UUIDs;
-- MAGMA storage paths;
-- provider payloads.
-
-Do not modify `Conversation_Memory/upstream/MAGMA/`.
-
-## Manual execution only
-
-For this milestone, Dream may be triggered only through an explicit developer-facing command, script, or direct Python entry point.
-
-Allowed examples:
+and, only while the application service is stopped:
 
 ```text
 python -m Dream.runner
-python -m Dream.runner --max-segments 10
 ```
 
-Not authorized:
+Dream is not part of the synchronous `/api/chat` business flow and never runs
+automatically.
 
-- invocation from `/api/chat`;
-- automatic execution after compaction;
-- startup hooks;
-- background threads;
-- schedulers;
-- workers;
-- cron integration;
-- autonomous triggering;
-- model-decided Dream execution;
-- public frontend controls.
+## Authority
 
-The normal chat path must have identical behavior and latency whether Dream succeeds, fails, or has never run.
+Also obey:
 
-## Run policy and bounds
+- root `AGENTS.md`;
+- `Conversation_Memory/AGENTS.md`;
+- `docs/COLD_DRAFT.md`;
+- `docs/CURRENT_STATUS.md`;
+- `docs/LUMINA_CODEBASE_SCAN.md`;
+- `Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md`;
+- `Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`.
 
-Define a bounded policy, for example:
+## Current application boundary
+
+Reuse the existing application service boundary:
 
 ```python
-@dataclass(frozen=True)
-class DreamRunPolicy:
-    max_segments: int
-    stop_on_error: bool = False
+DreamRunner.run_once(policy: DreamRunPolicy) -> DreamRunReport
 ```
 
-The first milestone must impose at least:
+The in-app runner is constructed once by `create_app()` and reuses:
 
-- maximum segments per run;
-- deterministic segment ordering;
-- no unbounded file or graph scan initiated by Dream;
-- no parallel writes unless later explicitly authorized;
-- one active writer assumption documented.
+- the app-owned `ColdDraftStore`;
+- the same `MagmaMemoryAdapter` / backend used by the resident Chat retriever;
+- the same process-local writer mutex used by Chat.
 
-Do not introduce concurrency in the initial implementation.
+Do not call `build_default_runner()` for each HTTP request and do not create a
+second Cold owner or a second resident MAGMA backend.
 
-## Run result models
+## Current data flow
 
-Return Lumina-owned structured models, for example:
-
-```python
-@dataclass(frozen=True)
-class SegmentDigestResult:
-    segment_id: str
-    status: str
-    already_ingested: bool
-    consumed: bool
-    error_code: str | None
-
-@dataclass(frozen=True)
-class DreamRunReport:
-    attempted: int
-    ingested: int
-    consumed: int
-    skipped: int
-    failed: int
-    results: tuple[SegmentDigestResult, ...]
+```text
+explicit Dream trigger
+-> bounded complete pending segments from ColdDraftStore
+-> ColdDraftSegmentConverter
+-> MemoryIngestor.ingest(...)
+-> durable graph/vector persistence and ingestion checkpoint
+-> verify complete IngestionResult
+-> ColdDraftStore.mark_consumed(segment_id)
+-> safe aggregate DreamRunReport
 ```
 
-Public result objects must not contain:
+Cold is physically one `cold_turn` JSONL record per source turn, but Dream works
+on reconstructed complete logical segments. Fourteen lines in one segment are
+one Dream job, not fourteen jobs.
 
-- local file paths;
-- raw exceptions or tracebacks;
-- credentials;
-- provider URLs or response bodies;
-- raw Cold Draft contents;
-- graph internals;
-- upstream MAGMA objects.
+## Current policy
 
-## Failure semantics
+Default HTTP policy is fixed and not client-configurable:
 
-Each segment is an independent unit of work.
+```text
+max_segments = 10
+stop_on_error = false
+ingestion_version = dream-v1
+```
 
-Required behavior:
+Execution is serial and deterministic. One segment failure does not block later
+segments unless `stop_on_error=True` is explicitly used by a direct Python/CLI
+caller.
 
-- one segment failure does not prevent later segments unless `stop_on_error=True`;
-- memory ingestion failure leaves the segment pending;
-- consumed transition failure after completed ingestion is retryable;
-- rerun recognizes completed memory ingestion and retries only the consumed transition;
-- corrupt Draft data returns a stable error code and is not silently discarded;
-- unavailable Conversation Memory returns a stable error code;
-- unexpected exceptions are converted to safe structured failures;
-- no failure may break or mutate the synchronous chat path.
+## Responsibilities
+
+Dream owns:
+
+- explicit run orchestration;
+- bounded deterministic segment selection;
+- per-segment failure isolation;
+- conversion to current Conversation Memory DTOs;
+- verification of memory completion before consume;
+- safe aggregate reports.
+
+Dream does not own:
+
+- Hot Draft compaction or summarization;
+- Cold JSONL parsing rules or state transitions;
+- temporal parsing or entity extraction;
+- graph/vector persistence internals;
+- memory idempotency;
+- Recall algorithms.
+
+Reuse the existing owners.
+
+## Cold Draft rules
+
+- Read only complete `pending_digest` segments reconstructed by the Cold owner.
+- Never read or modify rolling Hot summary state.
+- Never edit Cold JSONL directly.
+- Never rewrite source turn text, order, IDs, timestamps, role, or provenance.
+- Mark the whole segment consumed only after memory completion is durable.
+- Ingestion failure, unavailable memory, malformed source, partial result, or
+  timeout leaves the segment pending.
+- Consumed transition updates all lines in a segment atomically.
 
 ## Idempotency and recovery
 
-Reuse the existing Conversation Memory idempotency key:
+Use the Conversation Memory key:
 
 ```text
 segment_id + ingestion_version
 ```
 
-Dream must support these recovery windows:
+Required recovery windows:
 
 ```text
-memory incomplete
--> retry ingestion
--> do not consume
+memory incomplete -> retry ingestion -> do not consume
+memory completed + consume failed -> retry consume only
+already consumed -> skip safely
 ```
 
-```text
-memory completed
--> consumed transition failed
--> next Dream run detects completed ingestion
--> retry consumed transition only
-```
+Dream must not create a competing source of truth for memory completion.
 
-```text
-segment already consumed
--> skip safely
-```
+## Writer and deployment boundary
 
-Dream may keep run diagnostics, but must not create a competing source of truth for memory completion or Draft state.
+- Complete in-app Chat and complete in-app Dream runs share one nonblocking
+  process-local mutex.
+- Busy requests return stable `409 Conflict`.
+- Current supported service mode is one process, one worker, no `--reload`.
+- Do not run the external Dream CLI concurrently with the service.
+- Multi-worker or cross-process safety is not implemented.
 
-## Initially allowed production changes
+## Safe output boundary
 
-Codex may make minimal changes outside `Dream/` only when necessary to expose narrow owner interfaces, such as:
+Public Dream status and result objects may expose aggregate counts only. Do not
+expose:
 
-```text
-ColdDraftOwner.list_pending(limit) -> list[ColdDraftSegmentRecord]
-ColdDraftOwner.mark_consumed(segment_id) -> transition result
-```
+- Cold turn text or segment IDs;
+- memory IDs, MAGMA UUIDs, graph/vector details, or scores;
+- local paths, provider data, credentials, raw exceptions, or tracebacks.
 
-Any such change must:
-
-- preserve the current Cold-first contract;
-- remain synchronous and bounded;
-- avoid exposing Draft internals publicly;
-- keep the existing owner as the sole writer;
-- be covered by focused tests;
-- modify no more than three existing production modules unless a task card explicitly authorizes more.
-
-Do not place Dream orchestration inside the Draft owner.
-
-## Not authorized in the first milestone
+## Not authorized by default
 
 Do not add:
 
-- LLM-based Dream reasoning;
-- summaries, abstraction, consolidation, or reflection;
-- duplicate merging;
-- contradiction detection or resolution;
-- salience updates;
-- forgetting or deletion;
-- memory rewriting;
+- automatic, scheduled, startup, compaction-triggered, or model-decided Dream;
+- background jobs, workers, queues, WebSocket/SSE progress, or cancellation;
+- LLM reflection, abstraction, pattern mining, salience mutation, forgetting,
+  contradiction handling, fact supersession, or memory rewriting;
 - multi-granularity redesign;
-- M-flow features;
-- task planning;
-- habit or pattern extraction;
-- lifecycle management;
-- autonomous agents;
-- schedulers or workers;
 - parallel ingestion;
 - chat-time memory writing;
-- chat-time Dream execution;
-- changes to recall behavior;
-- changes to upstream MAGMA.
+- changes to Recall or upstream MAGMA.
 
-The current goal is scheduling separation only: conversation turns remain MAGMA memory events, but their writes occur during a manual Dream run.
+## Testing
 
-## Required implementation order
-
-1. Inspect the real Cold Draft schema and existing owner APIs.
-2. Document the exact current state transition mechanism.
-3. Define Dream-owned policy and result DTOs.
-4. Define or reuse a read-only pending-segment interface.
-5. Define or reuse the authoritative consumed-transition interface.
-6. Implement one-segment digestion.
-7. Implement bounded `run_once`.
-8. Add recovery for completed-ingestion / failed-consume.
-9. Add a manual developer entry point.
-10. Verify that `/api/chat` never invokes Dream.
-11. Update current-status documentation truthfully.
-
-## Required tests
-
-At minimum, test:
-
-1. no pending segments returns an empty successful report;
-2. one valid pending segment is ingested and consumed;
-3. multiple segments are processed in deterministic order;
-4. `max_segments` is enforced;
-5. one failed segment does not block later segments by default;
-6. `stop_on_error=True` stops after the first failure;
-7. ingestion failure leaves the segment pending;
-8. partial memory failure is retryable;
-9. completed ingestion plus failed consumed transition is recovered on rerun;
-10. duplicate Dream runs do not duplicate memory;
-11. already consumed segments are skipped;
-12. malformed segment data is not consumed;
-13. provenance and aware timestamps survive conversion;
-14. Dream never edits raw Cold Draft content;
-15. Dream never imports upstream MAGMA classes;
-16. Dream output does not leak paths, exceptions, credentials, graph data, or raw Draft contents;
-17. restart recovery works;
-18. Conversation Memory tests continue to pass;
-19. existing Lumina chat, fallback, compaction, persistence, and restart tests continue to pass;
-20. upstream MAGMA remains clean.
-
-Use temporary Draft paths and fake memory backends for failure tests. Use real production Draft owner code against temporary files. Do not use committed real user conversation data.
-
-## Documentation
-
-Maintain:
-
-```text
-Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md
-```
-
-It must document:
-
-- scope;
-- manual trigger;
-- exact data flow;
-- Draft owner interface;
-- Conversation Memory interface;
-- state transitions;
-- idempotency and retry windows;
-- bounds;
-- failure behavior;
-- test commands;
-- explicit non-features.
-
-Update `docs/CURRENT_STATUS.md` only after implementation and tests pass. Planned behavior must not be described as complete.
-
-## Validation
+Use temporary production-format Hot/Cold stores and fake memory backends for
+failure tests. Use the real pinned MAGMA only in the isolated project
+environment and marker-owned E2E paths.
 
 Run:
 
 ```bash
+python -m pytest Dream/tests -q
+python -m pytest Conversation_Memory/tests -q
 python -m pytest -q
+python -m scripts.recall_e2e_test
 git diff --check
 git -C Conversation_Memory/upstream/MAGMA status --short
 ```
-
-If Dream has focused tests, also run:
-
-```bash
-python -m pytest Dream/tests -q
-python -m pytest Conversation_Memory/tests -q
-```
-
-The upstream MAGMA status output must be empty.
-
-## Completion criteria
-
-The milestone is complete only when:
-
-- a real pending Cold Draft segment from a temporary production-format store can be read;
-- its turns are ingested through the existing Conversation Memory interface;
-- memory completion is durable;
-- the segment is then marked consumed through the existing Cold Draft owner;
-- reruns are idempotent;
-- failure windows recover correctly;
-- processing is manual and bounded;
-- no chat request invokes Dream;
-- no upstream MAGMA source is modified;
-- all existing tests pass.
