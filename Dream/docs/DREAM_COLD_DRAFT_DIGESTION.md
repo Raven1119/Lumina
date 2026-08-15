@@ -25,7 +25,7 @@ The HTTP client cannot supply policy fields. Current defaults are:
 ```text
 max_segments = 10
 stop_on_error = false
-ingestion_version = dream-v1
+ingestion_version = grounded-formation-v1  # configured real-model app
 ```
 
 ### CLI
@@ -99,6 +99,11 @@ explicit trigger
 -> ColdDraftStore.list_pending(limit)
 -> complete logical Cold segment
 -> ColdDraftSegmentConverter
+-> one bounded MiniMax-M3 Formation call (non-thinking, max_tokens=2000)
+   for a new segment
+-> deterministic source-grounding validation plus bounded semantic fallback
+   and value-only guard
+-> formed-unit checkpoint
 -> MemoryIngestor.ingest(ColdDraftSegment)
 -> MAGMA graph/vector persistence
 -> ingestion checkpoint completed
@@ -107,8 +112,13 @@ explicit trigger
 -> DreamRunReport
 ```
 
-Each source turn becomes one MAGMA event. Dream does not combine a segment into
-one memory event.
+Dream passes the bounded source segment to the adapter. With a configured real
+model, the adapter sends that segment once to dedicated MiniMax-M3 Formation
+in non-thinking mode with `max_tokens=2000`, accepts only units admitted by the
+current grounding validator and bounded semantic fallback, and checkpoints them
+before MAGMA. Retry after a MAGMA failure reuses the checkpoint. Mock/legacy adapters
+retain deterministic `grounded-span-v2`; either path may produce `0..M`
+memory IDs.
 
 ## Policy and ordering
 
@@ -126,8 +136,10 @@ A Cold segment is consumed only when the memory result:
 
 - refers to the same segment and ingestion version;
 - is durably `completed`;
-- contains the expected number of source-turn memory IDs;
-- has passed the adapter's validation boundary.
+- returns a tuple of non-empty memory-ID strings; an empty tuple is valid;
+- has passed the adapter's durable validation boundary.
+
+Dream does not compare memory count with source-turn count.
 
 Only then may Dream ask the Cold owner to change the segment from
 `pending_digest` to `consumed`.

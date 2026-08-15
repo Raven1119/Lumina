@@ -28,7 +28,6 @@ Also obey:
 - `Conversation_Memory/AGENTS.md`;
 - `docs/COLD_DRAFT.md`;
 - `docs/CURRENT_STATUS.md`;
-- `docs/LUMINA_CODEBASE_SCAN.md`;
 - `Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md`;
 - `Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`.
 
@@ -55,7 +54,9 @@ second Cold owner or a second resident MAGMA backend.
 explicit Dream trigger
 -> bounded complete pending segments from ColdDraftStore
 -> ColdDraftSegmentConverter
--> MemoryIngestor.ingest(...)
+-> one bounded MiniMax-M3 Formation call in non-thinking mode with
+   max_tokens=2000 when a real model is configured
+-> validated units checkpointed before MemoryIngestor MAGMA writes
 -> durable graph/vector persistence and ingestion checkpoint
 -> verify complete IngestionResult
 -> ColdDraftStore.mark_consumed(segment_id)
@@ -68,15 +69,17 @@ one Dream job, not fourteen jobs.
 
 ## Current policy
 
-Default HTTP policy is fixed and not client-configurable:
+The HTTP policy is fixed and not client-configurable. A configured real-model
+app uses the shared adapter's Formation version:
 
 ```text
 max_segments = 10
 stop_on_error = false
-ingestion_version = dream-v1
+ingestion_version = grounded-formation-v1
 ```
 
-Execution is serial and deterministic. One segment failure does not block later
+Mock/legacy injected adapters retain `grounded-span-v2`. Execution is serial
+and deterministic. One segment failure does not block later
 segments unless `stop_on_error=True` is explicitly used by a direct Python/CLI
 caller.
 

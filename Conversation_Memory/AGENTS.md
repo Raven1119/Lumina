@@ -13,14 +13,18 @@ Current chain:
 ```text
 ColdDraftSegment
 -> MagmaMemoryAdapter.ingest(...)
--> per-turn MAGMA events + graph/vector persistence
--> durable ingestion checkpoint
+-> one bounded Formation call for configured real-model Dream
+-> deterministic validation of atomic GroundedMemoryUnit values
+-> durable formed-unit checkpoint
+-> 0..M MAGMA events + graph/vector persistence
 
 query + RecallPolicy
 -> dense + bounded lexical rankings
 -> RRF anchors
--> temporal hard filtering
--> fixed or caller-opted adaptive traversal
+-> fixed bounded traversal
+-> fail-open controlled relation compatibility for supplied relation surfaces
+-> fixed BGE batch rerank
+-> pinned Hindsight post-rerank score composition
 -> bounded MemoryEvidence / MemoryContext
 ```
 
@@ -30,7 +34,6 @@ Also obey:
 
 - root `AGENTS.md`;
 - `docs/CURRENT_STATUS.md`;
-- `docs/LUMINA_CODEBASE_SCAN.md`;
 - `docs/COLD_DRAFT.md`;
 - `Conversation_Memory/docs/COLD_DRAFT_ADAPTER_DESIGN.md`;
 - `Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`;
@@ -54,16 +57,26 @@ private.
 
 ## Current ingestion behavior
 
-- One source turn becomes one MAGMA event.
-- The original source text and event timestamp are preserved.
-- Stable evidence IDs are derived from source identity and ingestion version.
-- Provenance includes segment, conversation, turn, timestamp, timezone, and
-  ingestion version.
+- Configured real-model manual Dream uses `grounded-formation-v1` with
+  MiniMax-M3 in non-thinking mode and a Formation-only 2000-token output budget;
+  the deterministic `grounded-span-v2` path remains for mock/legacy callers.
+- Formation makes one call for a newly seen bounded segment, then validates
+  atomic subject/relation/value units, exact source refs, role authorization,
+  negation, uncertainty, and exact details.
+- One accepted `GroundedMemoryUnit` becomes one MAGMA event. A source segment may produce
+  `0..M` events, and a completed empty manifest is valid.
+- Cold remains immutable. Unit source refs preserve source turn identity, role,
+  exact unambiguous span offsets, timestamp, and timezone.
+- Stable evidence IDs are derived from grounded-unit identity and ingestion
+  version.
+- Provenance includes segment, conversation, turn, exact offsets, timestamp,
+  timezone, and ingestion version.
 - Temporal normalization uses each source turn's own timestamp/timezone.
 - English and Chinese temporal mentions are stored as aware UTC half-open
   intervals `[start, end)` without replacing the original text.
-- Ingestion is durable and retryable through
-  `(segment_id, ingestion_version)` checkpoints.
+- Formation checkpoints contain the validated units and ordered IDs before any
+  MAGMA event. A downstream retry revalidates and reuses them without another
+  Formation call.
 - Memory completion must be established before Dream may consume the source
   Cold segment.
 
@@ -77,10 +90,8 @@ max_chars
 max_evidence_items
 max_graph_depth
 max_nodes
-intent
-temporal_window
-beam_width
-drop_threshold
+final_min_score
+relation_surfaces
 ```
 
 Semantics:
@@ -89,28 +100,18 @@ Semantics:
 - `max_evidence_items` limits final public anchors plus graph expansions;
 - `max_graph_depth=0` is valid and means anchor-only;
 - `max_nodes` is a hard internal scan/traversal budget;
-- `temporal_window` is an aware UTC half-open hard filter applied to anchors and
-  expansions;
-- optional caller fields default to `None` and preserve the fixed traversal
-  path;
-- explicit `intent`, `beam_width`, or `drop_threshold` enables adaptive
-  traversal;
-- adaptive failure falls back to fixed traversal; fixed failure returns a safe
-  empty context.
-
-Intent behavior:
-
-- `GENERAL` and `ENTITY` use the validated ENTITY-biased upstream fallback
-  weights;
-- `WHEN` strongly favors temporal relations;
-- `WHY` currently maps to GENERAL and is not causal specialization.
+- `final_min_score` is an optional inclusive floor over the composed Hindsight
+  post-rerank score; production sets it to `0.144`;
+- `relation_surfaces` accepts explicit caller-supplied relation text. Resolved
+  incompatibility rejects a candidate; compatible or either-side `UNRESOLVED`
+  keeps existing Recall behavior. Normal Chat currently supplies `None`;
+- fixed traversal failure returns a safe empty context.
 
 ## Current anchor and traversal behavior
 
 - Dense MiniLM and bounded lexical rankings are fused with RRF using `k=60`.
 - Lexical failure safely falls back to dense-only.
 - Fixed traversal projects valid event expansions behind anchors.
-- Adaptive traversal uses bounded beam search and relation-aware scoring.
 - Internal graph nodes may participate in traversal, but only event nodes with
   valid text, aware timestamp, stable evidence ID, and provenance may become
   public evidence.
@@ -119,23 +120,27 @@ Intent behavior:
 
 ## Context Linearization
 
-- `intent=None` preserves retrieval order and the legacy plain-text rendering.
-- Explicit intents add UTC timestamps.
-- `WHEN` orders selected evidence chronologically.
-- `GENERAL`, `ENTITY`, and `WHY` preserve retrieval order.
-- Rendering obeys `max_chars` and never exposes internal metadata.
+- Rendering preserves retrieval order, obeys `max_chars`, and never exposes
+  internal metadata.
 
-## Frozen v1 boundaries
+## Frozen production boundaries
 
 Do not change the following without an explicit task and supporting evidence:
 
-- one-turn-one-event granularity;
+- bounded, source-grounded atomic unit granularity;
+- `N` source turns to `0..M` grounded events with at most one Formation call
+  for a newly seen configured real-model segment;
 - Cold-first source authority;
 - Lumina-owned DTO/facade boundary;
 - stable evidence/provenance projection;
-- fixed/adaptive selection semantics;
+- fixed traversal semantics;
 - RRF constants and validated GENERAL weights;
 - safe empty/failure behavior;
+- fixed production BGE batch reranking with private scores and lazy per-adapter
+  reuse;
+- pinned Hindsight post-rerank normalization, linear recency, and
+  multiplicative composition with neutral unsupported signals; final scores
+  remain private;
 - pinned upstream MAGMA revision.
 
 A narrow change is permitted only for a reproducible bug, a real failure sample,
@@ -154,7 +159,8 @@ Do not add or infer authorization for:
 - fact supersession, contradiction resolution, forgetting, deletion, or memory
   rewriting;
 - automatic intent/query classification or Recall scheduling;
-- Evidence Organizer/Ledger, LLM Judge, cross-encoder, or relevance gate;
+- Evidence Organizer/Ledger, LLM Judge, another cross-encoder, or relevance
+  gate;
 - PostgreSQL, Neo4j, another graph database, or a new vector backend;
 - public exposure of MAGMA internals;
 - modification of `upstream/MAGMA/`.

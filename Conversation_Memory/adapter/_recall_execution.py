@@ -1,4 +1,4 @@
-"""Private execution seam for Lumina's fixed and opt-in adaptive Recall paths.
+"""Private execution seam for Lumina's fixed Recall path.
 
 Upstream behavior mapped here:
 
@@ -8,41 +8,17 @@ Upstream behavior mapped here:
 Upstream MAGMA is distributed under the MIT License:
 Copyright (c) 2024 Anonymous Authors.
 
-Dense anchors are fused with a bounded lexical ranking. With all adaptive
-fields unset, the existing fixed traversal remains exact. Supplying any of
-``intent``, ``beam_width``, or ``drop_threshold`` opts into private adaptive
-traversal; failure falls back to fixed traversal.
+Dense anchors are fused with a bounded lexical ranking before the fixed,
+bounded graph traversal.
 """
 
 from __future__ import annotations
 
 from copy import copy
-from datetime import datetime, timezone
 from typing import Any
 
-from ._adaptive_traversal import _adaptive_traverse
 from ._anchor_fusion import _rank_lexical_events, _rrf_fuse
 from .models import RecallPolicy
-
-
-def _timestamp_in_temporal_window(
-    timestamp: Any,
-    temporal_window: tuple[datetime, datetime] | None,
-) -> bool:
-    """Return whether an event timestamp satisfies the requested ``[start, end)``."""
-    if temporal_window is None:
-        return True
-    if not isinstance(timestamp, datetime) or timestamp.tzinfo is None:
-        return False
-    try:
-        if timestamp.utcoffset() is None:
-            return False
-        timestamp_utc = timestamp.astimezone(timezone.utc)
-        start_utc = temporal_window[0].astimezone(timezone.utc)
-        end_utc = temporal_window[1].astimezone(timezone.utc)
-    except (OverflowError, TypeError, ValueError):
-        return False
-    return start_utc <= timestamp_utc < end_utc
 
 
 def _execute_fixed_recall(
@@ -60,7 +36,7 @@ def _execute_fixed_recall(
         follow_temporal=True,
         follow_semantic=True,
         follow_causal=True,
-        time_window=policy.temporal_window,
+        time_window=None,
     )
     context = trg.query(
         query,
@@ -69,22 +45,17 @@ def _execute_fixed_recall(
     )
 
     scores = context.metadata.get("search_scores", [])
-    filtered_nodes = []
-    filtered_scores = []
+    dense_nodes = []
+    dense_scores = []
     for index, node in enumerate(context.anchor_nodes):
-        if policy.temporal_window is not None and not _timestamp_in_temporal_window(
-            getattr(node, "timestamp", None),
-            policy.temporal_window,
-        ):
-            continue
-        filtered_nodes.append(node)
+        dense_nodes.append(node)
         if index < len(scores):
-            filtered_scores.append(scores[index])
+            dense_scores.append(scores[index])
 
     dense_context = copy(context)
-    dense_context.anchor_nodes = filtered_nodes
+    dense_context.anchor_nodes = dense_nodes
     dense_context.metadata = dict(context.metadata)
-    dense_context.metadata["search_scores"] = filtered_scores
+    dense_context.metadata["search_scores"] = dense_scores
 
     try:
         lexical_nodes = _rank_lexical_events(
@@ -93,11 +64,9 @@ def _execute_fixed_recall(
             max_nodes=policy.max_nodes,
             event_node_type=event_node_type,
             node_type=node_type,
-            temporal_window=policy.temporal_window,
-            timestamp_in_window=_timestamp_in_temporal_window,
         )
         fused = _rrf_fuse(
-            (filtered_nodes, lexical_nodes),
+            (dense_nodes, lexical_nodes),
             limit=min(policy.top_k, policy.max_nodes),
         )
         fused_nodes = [node for node, _score in fused]
@@ -111,39 +80,6 @@ def _execute_fixed_recall(
     fused_context.metadata = dict(dense_context.metadata)
     fused_context.metadata["search_scores"] = fused_scores
 
-    adaptive_enabled = any(
-        value is not None
-        for value in (
-            policy.intent,
-            policy.beam_width,
-            policy.drop_threshold,
-        )
-    )
-    if adaptive_enabled:
-        try:
-            expansions = _adaptive_traverse(
-                trg=trg,
-                constraints=constraints,
-                event_node_type=event_node_type,
-                node_type=node_type,
-                query=query,
-                anchors=fused_nodes,
-                intent=policy.intent,
-                beam_width=policy.beam_width,
-                drop_threshold=policy.drop_threshold,
-                max_graph_depth=policy.max_graph_depth,
-                max_nodes=policy.max_nodes,
-                temporal_window=policy.temporal_window,
-                timestamp_in_window=_timestamp_in_temporal_window,
-            )
-            fused_context.traversal_paths = []
-            fused_context._lumina_adaptive_expansions = expansions
-            return fused_context
-        except Exception:
-            pass
-
-    # Fixed traversal is deliberately outside the adaptive catch.
-    # If it also fails, the existing adapter boundary returns safe empty.
     traversal_result = trg.graph_db.traverse(
         start_nodes=[node.node_id for node in fused_nodes],
         constraints=constraints,

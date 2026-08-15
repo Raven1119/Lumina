@@ -34,7 +34,7 @@ from core.model_client import ModelClient, build_model_client_from_env
 from core.turn_provenance import Clock, TurnIdFactory
 from Dream.cold_draft_digest import ColdDraftDigestionTask
 from Dream.models import DreamRunPolicy
-from Dream.runner import DreamRunner
+from Dream.runner import DreamRunner, build_formation_model_client
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
@@ -42,6 +42,15 @@ _ROOT_DIRECTORY = Path(__file__).resolve().parent.parent
 _CHAT_BACKGROUND_PATH = _ROOT_DIRECTORY / "prompts" / "chat_background.md"
 _CONVERSATION_MEMORY_DIRECTORY = _ROOT_DIRECTORY / "Conversation_Memory"
 _DREAM_POLICY = DreamRunPolicy()
+_FORMATION_INGESTION_VERSION = "grounded-formation-v1"
+_CHAT_RECALL_POLICY = RecallPolicy(
+    top_k=10,
+    max_graph_depth=1,
+    max_nodes=20,
+    max_evidence_items=3,
+    max_chars=5000,
+    final_min_score=0.144,
+)
 _PENDING_STATUS_LIMIT = 100
 
 
@@ -131,12 +140,12 @@ def _model_kind(client: ModelClient) -> str:
 
 
 def _recall_enabled(value: str | None) -> bool:
-    return isinstance(value, str) and value.strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    if value is None:
+        return True
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    return False
 
 
 def _load_chat_background(path: Path) -> str:
@@ -149,7 +158,9 @@ def _load_chat_background(path: Path) -> str:
     return content
 
 
-def _build_memory_retriever() -> MemoryRetriever:
+def _build_memory_retriever(
+    formation_model: ModelClient | None = None,
+) -> MemoryRetriever:
     if str(_CONVERSATION_MEMORY_DIRECTORY) not in sys.path:
         sys.path.insert(0, str(_CONVERSATION_MEMORY_DIRECTORY))
 
@@ -164,7 +175,12 @@ def _build_memory_retriever() -> MemoryRetriever:
     return MagmaMemoryAdapter.create_real(
         persist_dir,
         fail_if_unavailable=True,
-        ingestion_version=_DREAM_POLICY.ingestion_version,
+        ingestion_version=(
+            _FORMATION_INGESTION_VERSION
+            if formation_model is not None
+            else _DREAM_POLICY.ingestion_version
+        ),
+        formation_model=formation_model,
     )
 
 
@@ -198,16 +214,26 @@ def create_app(
         )
     )
     effective_memory = memory_retriever
+    effective_dream_policy = _DREAM_POLICY
     effective_recall_policy = (
         recall_policy
         if recall_policy is not None
-        else RecallPolicy()
+        else _CHAT_RECALL_POLICY
         if effective_recall_enabled
         else None
     )
     if effective_memory is None:
         try:
-            effective_memory = _build_memory_retriever()
+            formation_model = (
+                model_client
+                if model_client is not None
+                else build_formation_model_client()
+            )
+            effective_memory = _build_memory_retriever(
+                formation_model
+                if getattr(formation_model, "client_kind", None) == "model"
+                else None
+            )
         except Exception:
             effective_memory = None
     runtime_retriever = effective_memory if effective_recall_enabled else None
@@ -223,13 +249,19 @@ def create_app(
         effective_memory is not None
         and callable(getattr(effective_memory, "ingest", None))
         and getattr(effective_memory, "ingestion_version", None)
-        == _DREAM_POLICY.ingestion_version
+        in {_DREAM_POLICY.ingestion_version, _FORMATION_INGESTION_VERSION}
     ):
         ingestor = cast(MemoryIngestor, effective_memory)
         provider = _SharedMemoryIngestorProvider(
             ingestor,
-            _DREAM_POLICY.ingestion_version,
+            getattr(effective_memory, "ingestion_version"),
         )
+        dream_policy = DreamRunPolicy(
+            max_segments=_DREAM_POLICY.max_segments,
+            stop_on_error=_DREAM_POLICY.stop_on_error,
+            ingestion_version=getattr(effective_memory, "ingestion_version"),
+        )
+        effective_dream_policy = dream_policy
         dream_runner = DreamRunner(
             cold_store,
             ColdDraftDigestionTask(cold_store, provider),
@@ -348,7 +380,7 @@ def create_app(
             )
         app.state.dream_running = True
         try:
-            report = runner.run_once(_DREAM_POLICY)
+            report = runner.run_once(effective_dream_policy)
             return DreamRunResponse(
                 attempted=report.attempted,
                 ingested=report.ingested,

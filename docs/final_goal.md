@@ -1,120 +1,146 @@
 # Lumina Final Goal
 
-Lumina is intended to become a local-first digital companion whose continuity is
-built from durable evidence, integrated cognition, relationships, experience,
-and action rather than simulated by tone alone.
+Lumina is intended to become a local-first companion whose continuity is earned
+through durable, inspectable behavior and increasingly accurate use of its own
+history.
 
-The long-term direction is defined more fully in `docs/NORTH_STAR.md`. This file
-sets the current product direction and the next bounded development boundary; it
-does not claim that future organs already exist.
+The long-term direction remains defined by `docs/NORTH_STAR.md`. The current
+product-development goal is narrower: **make durable conversation memory
+reliably retrievable and useful during ordinary chat without weakening the
+existing persistence and failure-isolation guarantees.**
 
-## Continuity foundation
+## Continuity Invariant
 
-The implemented continuity chain is:
-
-```text
-normal Chat
--> stable background system prompt
--> rolling Hot working context
--> Cold-first immutable raw archive
--> explicit Dream
--> persistent MAGMA event memory
--> optional bounded Recall
--> later Chat
-```
-
-A separate History projection restores the original single-conversation
-transcript after restart without replaying the entire transcript into the model.
-
-## Current baseline
-
-The current product already provides:
-
-- a local single-user, single-continuous-conversation chatbot;
-- fixed background injection for every normal Chat generation;
-- rolling semantic Hot Draft plus recent raw turns;
-- per-turn Cold Draft raw archive with segment-level atomic state changes;
-- explicit browser Dream and stop-the-service CLI Dream;
-- shared resident memory backend and process-local Chat/Dream write exclusion;
-- pinned MAGMA event/graph/vector persistence with provenance and idempotency;
-- dense + lexical RRF anchors, temporal hard filters, fixed/adaptive traversal,
-  bounded evidence, and Context Linearization;
-- default-disabled safe Recall injection;
-- restart-persistent read-only transcript history with cursor pagination.
-
-The current system is a long-memory chatbot prototype. It is not yet a complete
-Mind System, autonomous agent runtime, or digital life.
-
-## Memory v1 freeze
-
-Freeze the following unless a later task identifies a reproducible defect, a
-real failure sample, or a narrow caller-contract requirement:
+Cold-first preservation remains non-negotiable:
 
 ```text
-Cold-first raw evidence authority
-one source turn -> one MAGMA event
-stable source provenance and evidence IDs
-(segment_id, ingestion_version) idempotency
-Lumina-owned MemoryIngestor / MemoryRetriever facade
-bounded Recall and safe failure
-pinned unmodified MAGMA backend
+Hot Draft
+-> durably preserve older raw turns in Cold Draft
+-> advance logical compaction state
+-> retain the recent raw tail
 ```
 
-Freezing this boundary does not mean memory quality is final. Known open
-problems include abstention, state/conflict interpretation, fact supersession,
-explicit coreference, real-user quality evaluation, and cross-file transaction
-safety.
+Cold source records remain authoritative evidence. Recall optimization must not
+rewrite, delete, summarize in place, or reinterpret those source records.
 
-## Next development boundary
+Each native user/assistant turn preserves stable identity and truthful time
+provenance through Draft, Dream, MAGMA, Recall, and final evidence projection.
 
-The next stage should begin with a **Mind System caller-contract design**, not
-another memory-backend expansion.
+## Current Baseline
 
-The caller must eventually decide:
+The user-facing memory loop is now connected:
 
 ```text
-whether memory is needed
-which Recall intent applies
-whether a temporal window is known
-anchor-only or graph-enhanced search depth
-node/evidence/context budgets
-whether returned evidence is sufficient
-whether another bounded Recall is justified
+Production chat
+Browser -> FastAPI -> MessageRuntime
+        -> bounded Recall
+        -> optional MemoryContext injection
+        -> ModelClient
+        -> Hot Draft -> Cold-first compaction -> Cold Draft
+
+Offline memory
+manual Dream -> pending Cold Draft
+             -> MiniMax-M3 Grounded Formation
+                (non-thinking, max_tokens=2000)
+             -> grounding validator + bounded semantic fallback
+                + value-only guard
+             -> durable GroundedMemoryUnit checkpoint before MAGMA
+             -> Conversation Memory adapter -> unmodified MAGMA
+             -> consumed
 ```
 
-The first step is docs-only: define the ownership boundary, inputs, outputs,
-failure behavior, and synthetic acceptance cases around the existing
-`MemoryRetriever.recall(query, policy) -> MemoryContext` interface.
+Current production Recall is:
 
-Do not yet implement:
+```text
+query
+-> keyword-enriched MAGMA dense anchors
+-> bounded lexical anchors
+-> two-list RRF
+-> fixed depth-1 bounded graph BFS
+-> fail-open ControlledRelationResolver when relation surfaces are supplied
+-> BGE rerank
+-> Hindsight recency adjustment
+-> final_score >= 0.144
+-> stable bounded top-3 MemoryContext
+```
 
-- automatic intent or query classification;
-- autonomous Recall scheduling;
-- Evidence Organizer/Ledger;
-- automatic Dream;
-- workers, queues, background cognition, or agents;
-- conflict/current-state resolution or fact supersession;
-- self-modification or evolution.
+Recall is enabled by source default, remains explicitly disableable, and fails
+soft to normal chat when memory is empty or unavailable.
 
-These require separate design and authorization.
+## Current Problem
 
-## Growth rules
+The adopted memory loop works end to end. On the authorization-aligned 36-case
+development subset, Grounded Write scores 29/36 versus the raw-turn baseline at
+26/36, preserving all 6 currently authorized positive cases and improving
+negative correctness from 20/30 to 23/30.
 
-Later organs must extend rather than bypass the implemented continuity
-foundation:
+The remaining boundary is explicit: `ControlledRelationResolver` can use
+caller-supplied relation surfaces, but normal Chat supplies none. Assistant
+utterance alone is not verified fact/self-action provenance, and future
+self-action memory waits for Execution Trace or tool-result provenance.
 
-1. Cold raw evidence remains authoritative for what was actually said.
-2. Hot remains a bounded rolling working representation, not the complete
-   transcript authority.
-3. Dream remains separate from normal Chat until an explicit later design
-   changes that ownership.
-4. Memory completion is durable before a Cold segment is consumed.
-5. Recall remains bounded, provenance-preserving, leak-safe, and optional for
-   Chat availability.
-6. The future Mind owns decisions about attention and memory use; the memory
-   backend should not become an implicit global router.
-7. New capabilities must preserve identity continuity, auditability, safe
-   failure, and future evolvability.
+## Current Product Objective: Consolidate Before Mind
 
-Current implementation facts belong in `docs/CURRENT_STATUS.md`. The current
-codebase-wide evidence baseline is `docs/LUMINA_CODEBASE_SCAN.md`.
+The immediate objective is to preserve the adopted memory implementation and
+make its caller seams explicit before Mind development.
+
+```text
+current Chat -> raw query, no relation metadata -> resolver fails open
+structured caller / future Mind -> explicit relation surfaces -> controlled
+relation compatibility
+```
+
+Do not bridge this seam with a free-text parser, entity resolver, ontology, or
+new LLM call under the consolidation objective. Future capabilities must be
+authorized as separate, evidence-backed tasks.
+
+## Recall Optimization Principles
+
+1. **Source-first.** Reuse official algorithm/source implementations before
+   inventing new Recall logic.
+2. **One variable at a time.** Separate anchor, routing, traversal, ranking,
+   admission, and graph-formation failures.
+3. **No benchmark patching.** Do not tune production behavior to individual
+   fixture strings, entities, or final-regression score gaps.
+4. **BGE remains the fixed reranker by default.** Replace or retrain it only
+   when evidence isolates ranking as the bottleneck.
+5. **MAGMA upstream stays pinned and unmodified.** Lumina may adapt behavior
+   behind its own facade, but must not patch upstream.
+6. **Recall remains bounded and fail-soft.** Better retrieval must not make
+   normal chat depend on memory availability.
+7. **Write-side memory stays stable during read-side experiments.** Dream,
+   Cold-first ownership, and GroundedMemoryUnit persistence are not changed merely
+   to improve a read benchmark.
+
+## Quality Target
+
+The objective is not a particular threshold or model score. The objective is:
+
+```text
+relevant historical evidence is retained
++ irrelevant/insufficient evidence is withheld
++ temporal and relation-sensitive queries behave correctly
++ results are deterministic, bounded, provenance-preserving, and restart-safe
+```
+
+The existing 60-case synthetic set is a development diagnostic, not a blinded
+holdout and not proof of real-user Answer quality. It should be used to expose
+failure strata and compare isolated changes. Production-quality claims require
+independent evaluation and regression protection.
+
+## Growth Rule
+
+Later memory capabilities must extend, not bypass, these boundaries:
+
+1. Cold remains the durable authority for conversation evidence leaving Hot.
+2. Dream remains separate from synchronous chat.
+3. Memory persistence and checkpointing remain idempotent before Cold consume.
+4. Recall remains Lumina-owned, bounded, provenance-preserving, optional for
+   chat availability, and leak-safe.
+5. Retrieval quality should be improved before adding architectural complexity.
+6. New mechanisms require reproducible failures that the smaller design cannot
+   solve.
+
+Conversation Graph as a separate production system, PostgreSQL/Neo4j,
+autonomous Dream, schedulers, additional organs, and generalized memory
+management are not implied by the current Recall-optimization objective.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from math import isfinite
 from typing import Any, Literal
 
@@ -43,10 +43,18 @@ class SourceProvenance:
     segment_id: str
     conversation_id: str
     turn_id: str
+    source_role: Literal["user", "assistant"]
     source_timestamp: str
     source_timezone: str
     ingestion_version: str
     timezone_source: str = "legacy_segment_fallback"
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.source_role, str)
+            or self.source_role not in {"user", "assistant"}
+        ):
+            raise ValueError("source_role must be user or assistant")
 
 
 @dataclass(frozen=True)
@@ -67,10 +75,8 @@ class RecallPolicy:
     max_evidence_items: int = 5
     max_graph_depth: int = 5
     max_nodes: int = 100
-    intent: Literal["GENERAL", "WHY", "WHEN", "ENTITY"] | None = None
-    temporal_window: tuple[datetime, datetime] | None = None
-    beam_width: int | None = None
-    drop_threshold: float | None = None
+    final_min_score: float | None = None
+    relation_surfaces: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -83,53 +89,32 @@ class RecallPolicy:
                 raise ValueError(f"{name} must be positive")
         if self.max_graph_depth < 0:
             raise ValueError("max_graph_depth must be non-negative")
-        if self.intent is not None and (
-            not isinstance(self.intent, str)
-            or self.intent not in {"GENERAL", "WHY", "WHEN", "ENTITY"}
+        if self.relation_surfaces is not None and (
+            not isinstance(self.relation_surfaces, tuple)
+            or not all(
+                isinstance(surface, str) and bool(surface.strip())
+                for surface in self.relation_surfaces
+            )
         ):
             raise ValueError(
-                "intent must be one of GENERAL, WHY, WHEN, ENTITY, or None"
+                "relation_surfaces must be a tuple of non-empty strings or None"
             )
-        if self.temporal_window is not None:
-            if (
-                not isinstance(self.temporal_window, tuple)
-                or len(self.temporal_window) != 2
-                or not all(
-                    isinstance(value, datetime)
-                    and value.tzinfo is not None
-                    and value.utcoffset() is not None
-                    for value in self.temporal_window
-                )
+        if self.final_min_score is not None:
+            if isinstance(self.final_min_score, bool) or not isinstance(
+                self.final_min_score, (int, float)
             ):
                 raise ValueError(
-                    "temporal_window must be a pair of aware datetimes"
-                )
-            start_utc = self.temporal_window[0].astimezone(timezone.utc)
-            end_utc = self.temporal_window[1].astimezone(timezone.utc)
-            if start_utc >= end_utc:
-                raise ValueError("temporal_window start must be before end")
-        if self.beam_width is not None and (
-            isinstance(self.beam_width, bool)
-            or not isinstance(self.beam_width, int)
-            or self.beam_width < 1
-        ):
-            raise ValueError("beam_width must be a positive integer or None")
-        if self.drop_threshold is not None:
-            if isinstance(self.drop_threshold, bool) or not isinstance(
-                self.drop_threshold, (int, float)
-            ):
-                raise ValueError(
-                    "drop_threshold must be a finite number between 0 and 1, or None"
+                    'final_min_score must be a finite number or None'
                 )
             try:
-                drop_threshold = float(self.drop_threshold)
+                final_min_score = float(self.final_min_score)
             except (OverflowError, ValueError):
                 raise ValueError(
-                    "drop_threshold must be a finite number between 0 and 1, or None"
+                    'final_min_score must be a finite number or None'
                 ) from None
-            if not isfinite(drop_threshold) or not 0.0 <= drop_threshold <= 1.0:
+            if not isfinite(final_min_score):
                 raise ValueError(
-                    "drop_threshold must be a finite number between 0 and 1, or None"
+                    'final_min_score must be a finite number or None'
                 )
 
 
@@ -143,6 +128,8 @@ class MemoryEvidence:
 
 @dataclass(frozen=True)
 class MemoryContext:
+    """Bounded Recall result; successful evidence cardinality is zero to K."""
+
     query: str
     evidence: tuple[MemoryEvidence, ...] = ()
     rendered_text: str = ""

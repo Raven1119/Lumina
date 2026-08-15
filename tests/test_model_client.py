@@ -36,6 +36,48 @@ def test_complete_explicit_configuration_builds_minimax_adapter() -> None:
     assert isinstance(client, MiniMaxAnthropicModelClient)
 
 
+def test_explicit_model_name_override_selects_dedicated_model(monkeypatch) -> None:
+    import core.model_client as model_client_module
+
+    configured = {
+        "LUMINA_MODEL_MODE": "real",
+        "LUMINA_MODEL_PROVIDER": "minimax-anthropic",
+        "LUMINA_MODEL_API_KEY": "test-value",
+        "LUMINA_MODEL_BASE_URL": "https://provider.invalid/anthropic",
+        "LUMINA_MODEL_NAME": "MiniMax-M2.7",
+    }
+    captured = {}
+    sentinel = object()
+
+    def build_minimax(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        model_client_module,
+        "MiniMaxAnthropicModelClient",
+        build_minimax,
+    )
+    client = build_model_client_from_env(
+        configured,
+        model_name_override="MiniMax-M3",
+        max_tokens_override=2000,
+    )
+    assert client is sentinel
+    assert captured == {
+        "api_key": "test-value",
+        "base_url": "https://provider.invalid/anthropic",
+        "model": "MiniMax-M3",
+        "max_tokens": 2000,
+    }
+    assert configured["LUMINA_MODEL_NAME"] == "MiniMax-M2.7"
+
+    captured.clear()
+    default_client = build_model_client_from_env(configured)
+    assert default_client is sentinel
+    assert captured["model"] == "MiniMax-M2.7"
+
+
 def test_incomplete_or_unsupported_real_configuration_falls_back_to_mock() -> None:
     assert isinstance(
         build_model_client_from_env({"LUMINA_MODEL_MODE": "real"}),

@@ -2,287 +2,442 @@
 
 ## 1. Repository state
 
-Lumina is currently a local-first, single-user, single-continuous-conversation
-chatbot runtime. The implemented product loop is:
+Lumina is a local-first conversational runtime built around a Cold-first
+continuity invariant.
+
+Production chat path:
 
 ```text
-Browser
--> FastAPI / MessageRuntime / ModelClient
--> rolling Hot Draft summary + recent raw turns
--> Cold-first per-turn Cold archive
--> explicit Dream
--> shared Conversation Memory / pinned MAGMA backend
--> optional bounded Recall
--> model request
+Browser -> FastAPI -> MessageRuntime
+-> source-default-on bounded Recall
+   -> MAGMA bounded candidates
+   -> fixed BGE reranker
+   -> Hindsight post-rerank score
+   -> final_min_score >= 0.144
+   -> bounded MemoryContext
+-> ModelClient
+-> Hot Draft -> Cold-first compaction -> Cold Draft
 ```
 
-A separate read-only history projection restores the single conversation after
-restart:
+Offline memory path:
 
 ```text
-Cold raw turns + Hot recent raw turns
--> GET /api/history
--> initial latest-page restore
--> upward cursor pagination
+manual Dream
+-> pending Cold Draft segments
+-> one bounded Grounded Formation call when a real model is configured
+-> deterministic source-grounding validation
+-> durable grounded-formation-v1 unit checkpoint
+-> Lumina Conversation Memory adapter
+-> unmodified upstream MAGMA
+-> durable checkpoint
+-> Cold Draft segment consumed
 ```
 
-The Conversation Memory v1 execution boundary is implemented and should now be
-treated as a stable subsystem boundary, not as an unfinished integration
-milestone. This does not mean retrieval quality, abstention, conflict handling,
-or autonomous scheduling are complete.
+Recall is already injected into production chat. It is enabled by source default
+and may be explicitly disabled with
+`LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false`.
+
+The current development goal is **Recall quality optimization**. Do not rebuild
+already working Chat, Draft, Dream, persistence, or memory injection behavior.
+
+Lumina's long-term form remains defined by `docs/NORTH_STAR.md`. The North Star
+is a design compass, not authorization to expand the current task.
 
 ## 2. Existing capabilities
 
-Treat the following as completed behavior. Do not rebuild or redesign them
-without a verified defect, a reproducible real failure, or an explicit task
-that requires a narrow caller-contract change.
+Treat these as completed behavior unless a task identifies a verified defect:
 
-- same-origin browser chat;
-- `GET /api/status`, `POST /api/chat`, `POST /api/dream/run`, and
-  `GET /api/history`;
-- deterministic mock mode and explicit MiniMax Anthropic-compatible mode;
-- startup-loaded `prompts/chat_background.md`, injected only as the native
-  system prompt for normal Chat generations;
-- one physical Hot Draft containing zero or one rolling summary record plus
-  recent raw user/assistant turns;
-- default rolling compaction rule: compress when raw turns exceed 24 and retain
-  the latest 12 raw turns, moving only complete user/assistant pairs;
-- Cold-first preservation with one original Cold turn per JSONL line and
-  segment-level atomic append/consume behavior;
-- restart-persistent, read-only single-conversation history with cursor
-  pagination and upward lazy loading;
-- explicit browser/API Dream and a separate stop-the-service CLI entry;
-- app-owned shared Cold store, memory adapter/backend, and process-local
-  Chat/Dream writer mutex;
-- pinned, unmodified upstream MAGMA at the recorded commit;
-- one MAGMA event per source turn, stable evidence IDs, provenance, and durable
-  `(segment_id, ingestion_version)` checkpoints;
-- dense + bounded lexical anchor retrieval fused with RRF;
-- aware-UTC half-open temporal hard filtering;
-- fixed traversal and caller-opted adaptive relation-aware traversal;
-- bounded evidence projection and intent-aware Context Linearization;
-- optional production Recall injection, disabled by default, with safe empty or
-  failure fallback;
-- real-MAGMA synthetic end-to-end validation, restart recovery, and idempotency;
-- documented depth, adaptive traversal, GENERAL weight, temporal-ranking, and
-  cross-turn-reference experiments. Synthetic results must not be generalized
-  into production-quality claims.
+- same-origin browser chat, `/api/status`, and `/api/chat`;
+- mock mode plus one explicit MiniMax Anthropic-compatible real-model adapter;
+- safe provider fallback;
+- restart-persistent Hot Draft and Cold-first logical compaction;
+- Draft Turn Provenance V2 with stable IDs and truthful aware time provenance;
+- immutable Cold source records with owner-controlled pending/consumed state;
+- manual, synchronous, bounded Dream;
+- configured real-model Dream uses MiniMax-M3 in non-thinking mode with a
+  Formation-only 2000-token output budget;
+- deterministic `grounded-span-v2` projection from eligible Cold source spans
+  remains for mock/legacy ingestion;
+- real-model manual Dream uses one bounded `grounded-formation-v1` call per
+  Cold segment, validates atomic SRV units against exact source spans, applies
+  the bounded semantic fallback and value-only guard, and checkpoints accepted
+  units before MAGMA writes;
+- pinned, unmodified upstream MAGMA;
+- durable `(segment_id, ingestion_version)` checkpoints and retry convergence;
+- Lumina-owned Recall DTOs and provenance projection;
+- source-default-on production Recall injection into the Answer Model system
+  context;
+- bounded dense + lexical anchor retrieval with RRF fusion;
+- fixed production graph traversal at `max_graph_depth=1`, `max_nodes=20`;
+- fixed `BAAI/bge-reranker-v2-m3` reranking;
+- deterministic Hindsight-style post-rerank scoring with wall-clock-independent
+  reference time;
+- inclusive production `final_min_score=0.144`;
+- bounded top-3 / 5000-character `MemoryContext` rendering;
+- fail-soft empty/unavailable Recall behavior that does not block normal chat;
+- isolated real-MAGMA Recall E2E validation with restart/idempotency coverage.
 
-## 3. Authority
+Do not duplicate these capabilities or silently replace their boundaries.
 
-Use these documents according to their purpose:
+## 3. Current Recall facts
 
-- `docs/NORTH_STAR.md`: long-term form and direction only;
-- `docs/final_goal.md`: current product direction and next development boundary;
-- `docs/CURRENT_STATUS.md`: current implementation facts;
-- `docs/LUMINA_CODEBASE_SCAN.md`: current codebase-wide architecture baseline;
-- `docs/COLD_DRAFT.md`: active Hot/Cold preservation contract;
-- `docs/DRAFT_TURN_PROVENANCE_V2.md`: native turn identity and time provenance;
-- `docs/RECALL_E2E_ACCEPTANCE.md`: real-MAGMA synthetic E2E contract;
+The production Recall path is currently:
+
+```text
+query
+-> TRG keyword-enriched dense anchors
+-> bounded lexical anchors
+-> dense + lexical RRF
+-> fixed graph BFS from fused anchors
+-> projectable bounded candidates
+-> fail-open ControlledRelationResolver gate when relation surfaces are supplied
+-> BGE rerank
+-> Hindsight recency adjustment
+-> final_score >= 0.144
+-> stable top-3
+-> MemoryContext
+```
+
+Current production policy:
+
+```text
+top_k=10
+max_graph_depth=1
+max_nodes=20
+max_evidence_items=3
+max_chars=5000
+final_min_score=0.144
+relation_surfaces=None
+```
+
+The current local MAGMA audit established:
+
+```text
+MAGMA_NATIVE_RECALL: PARTIAL
+MAGMA_ADAPTIVE_QUERY_POLICY: NOT_USED
+MAGMA_FOUR_GRAPH_TRAVERSAL: PARTIALLY_USED
+```
+
+Lumina reuses MAGMA storage, TRG dense retrieval, graph primitives, and generic
+traversal, but does not call upstream `QueryEngine.query()` in production.
+Upstream query classification, adaptive parameters, active semantic-gated
+traversal, third scan-anchor list, benchmark reranking, and QA/session expansion
+are not part of the current production path.
+
+Do not describe upstream MAGMA as four physically separate graphs. The pinned
+implementation uses one `MultiDiGraph` with temporal, semantic, causal, and
+entity link types.
+
+Do not describe upstream MAGMA's probabilistic beam helper as its active query
+path. In the pinned source, that helper has no active caller.
+
+## 4. Current development objective: consolidate before Mind
+
+The repository's current priority is to keep the adopted memory path narrow and
+truthful before Mind development. Durability, provenance, boundedness, safety,
+and fail-soft behavior remain non-negotiable.
+
+The authorization-aligned 36-case development subset reports raw-turn Recall at
+26/36 and Grounded Write at 29/36, with both retaining all 6 currently
+authorized positive cases. The original 60-case result remains historical: 24
+positive cases depended only on assistant utterances and are outside the
+current fact/self-action authorization contract.
+
+`ControlledRelationResolver` is the existing structured seam. It rejects only
+when both caller-supplied query relations and memory relations resolve and are
+incompatible; either side unresolved fails open. Normal Chat supplies no
+relation surfaces, so this capability remains available to structured callers
+and future Mind rather than acting as a free-text query parser.
+
+Do not add a parser, entity resolver, assistant self-action authorization, or
+execution provenance without a separate explicit task. Rejected experiments
+and quantitative decisions are consolidated in
+`docs/MEMORY_EXPERIMENT_HISTORY.md`.
+
+## 5. Algorithm-development rules
+
+### Copy first
+
+Prefer:
+
+```text
+official source code
+> official package/release
+> official pretrained implementation
+> paper + official code
+> paper-only specification
+> Lumina-specific invention
+```
+
+If a suitable upstream implementation exists, port its behavior instead of
+re-deriving a similar algorithm from the paper.
+
+For each nontrivial Recall mechanism, record:
+
+```text
+SOURCE
+VERSION / COMMIT
+LICENSE
+SOURCE SYMBOL
+ORIGINAL INPUT / OUTPUT
+ORIGINAL DECISION OR TRAVERSAL RULE
+LUMINA ADAPTATION
+```
+
+### Diagnose before changing models
+
+Do not model-hop. BGE is the current fixed reranker. Do not replace it merely
+because a downstream case fails.
+
+A failed experiment must first be classified as one of:
+
+```text
+anchor failure
+routing failure
+traversal failure
+ranking failure
+admission failure
+graph-formation/data failure
+```
+
+Only modify the component implicated by evidence.
+
+### One variable at a time
+
+Do not simultaneously change query routing, traversal, BGE, Hindsight,
+thresholds, graph construction, and admission. An experiment must identify
+which mechanism caused the measured change.
+
+### No benchmark patching
+
+Forbidden:
+
+- case IDs, fixture strings, entity-specific exceptions, or regex patches built
+  from failed cases;
+- threshold fishing on a final regression set;
+- modifying labels/fixtures to obtain PASS;
+- hidden reranking inside an admission gate;
+- adding multiple magic-number features until a small benchmark passes.
+
+## 6. Authority
+
+Active authority:
+
+- `docs/NORTH_STAR.md` — long-term form and direction only;
+- `docs/final_goal.md` — current product direction and next objective;
+- `docs/CURRENT_STATUS.md` — current implementation facts;
+- `docs/COLD_DRAFT.md` — Cold-first persistence contract;
+- `docs/DRAFT_TURN_PROVENANCE_V2.md` — turn provenance contract;
+- `docs/RECALL_E2E_ACCEPTANCE.md` — Recall E2E contract;
+- `docs/MAGMA_RECALL_ALGORITHM_AUDIT.md` — pinned MAGMA/Lumina query-path audit;
 - `Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`;
-- `Conversation_Memory/docs/CHINESE_TEMPORAL_PARSER.md`;
-- `Conversation_Memory/docs/COLD_DRAFT_ADAPTER_DESIGN.md`;
 - `Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md`;
-- `Conversation_Memory/AGENTS.md`;
-- `Dream/AGENTS.md`;
+- `Conversation_Memory/AGENTS.md` and `Dream/AGENTS.md` where more specific;
 - this file.
 
 Decision order:
 
-1. obey the explicit task card and acceptance criteria;
-2. preserve Cold-first durability and the synchronous Chat path;
-3. preserve truthful provenance, idempotency, and safe failure behavior;
-4. use `docs/CURRENT_STATUS.md` and current tests for implementation facts;
-5. follow the most specific non-stale workspace rule;
-6. use `docs/NORTH_STAR.md` only as a tie-breaker among already-valid options.
+1. explicit task card and acceptance criteria;
+2. Cold-first durability and synchronous chat availability;
+3. truthful provenance, idempotency, boundedness, and leak safety;
+4. `docs/CURRENT_STATUS.md` for implementation facts;
+5. the most specific non-stale workspace contract;
+6. source-faithful algorithm reuse;
+7. `docs/NORTH_STAR.md` as a tie-breaker only.
 
-Historical audits and scans are reference material, not current implementation
-authority unless their header explicitly says otherwise.
-
-## 4. Ownership
+## 7. Ownership
 
 ### `core/`
 
-Owns application composition, API validation, the single `MessageRuntime`, the
-single `ModelClient` protocol, background-prompt loading, Hot and Cold store
-ownership, rolling compaction, shared writer coordination, read-only History
-projection, and narrow product wiring.
+Owns API validation, one `MessageRuntime`, one `ModelClient` protocol, Recall
+invocation/injection, Draft creation, Hot Draft, and Cold-first compaction.
 
-Do not put MAGMA, FAISS, graph traversal, temporal parsing, or Dream business
-logic inside `MessageRuntime`.
+Do not put MAGMA traversal, graph internals, BGE implementation, or Dream
+orchestration inside `MessageRuntime`.
 
 ### `Conversation_Memory/`
 
-Owns the pinned upstream MAGMA checkout, ingestion validation, temporal
-normalization, checkpoints, backend isolation, bounded Recall execution,
-Lumina-owned DTO projection, fixtures, tests, and memory documentation.
+Owns the pinned MAGMA checkout, ingestion adapter, graph-backed retrieval,
+Recall policy execution, BGE/Hindsight scoring, public memory DTOs, provenance,
+fixtures, tests, and memory documentation.
 
 Production code outside this workspace may depend only on Lumina-owned
-interfaces and DTOs, never directly on MAGMA, NetworkX, FAISS, or embedding
-classes.
+interfaces/DTOs, never directly on MAGMA, NetworkX, FAISS, or model internals.
 
 ### `Dream/`
 
-Owns explicit bounded run orchestration, deterministic pending-segment
-selection, per-segment failure isolation, conversion to Conversation Memory
-DTOs, memory-complete-before-consumed coordination, and safe aggregate reports.
+Owns manual bounded orchestration from eligible Cold segments through
+the configured ingestion version and memory-complete-before-consumed
+coordination. Real-model manual Dream uses `grounded-formation-v1`;
+mock/legacy callers retain `grounded-span-v2`.
 
-Dream must not duplicate Draft parsing, temporal parsing, graph storage, vector
-storage, or memory idempotency.
+Recall optimization must not move Dream into chat or mutate write-side memory.
 
 ### Cold Draft owner
 
-The existing `ColdDraftStore` is the sole authority for reconstructing logical
-segments and for the `pending_digest -> consumed` transition. Do not edit the
-Cold JSONL directly or create another writer.
+The existing Cold Draft owner remains the only authority for source records and
+`pending_digest -> consumed` transitions.
 
-### `edge/static/`
+## 8. Non-negotiable invariants
 
-Owns the current native browser UI only. Do not introduce a framework, state
-library, WebSocket/SSE layer, or background job model without explicit
-authorization.
+### Cold-first and provenance
 
-## 5. Non-negotiable invariants
+- Cold persistence succeeds before logical compaction advances.
+- Cold source text/provenance is immutable.
+- New turns preserve `turn_id`, `role`, `text`, `created_at`,
+  `source_timezone`, and `timezone_source` through all layers.
+- No Recall optimization may rewrite Cold evidence.
 
-### Cold-first rolling work memory
+### Dream
 
-- Hot Draft is physically rewritten during successful compaction; it is not an
-  append-only full transcript.
-- Hot contains at most one current rolling summary plus recent raw turns.
-- The summary input is only the previous summary plus the raw turns being moved
-  during the current compaction.
-- Cold persistence of the complete source segment must succeed before Hot is
-  replaced.
-- A failed summary or Cold append leaves the previous Hot representation valid.
-- Cold source turn text and provenance are immutable; only owner-controlled
-  state metadata changes on consume.
-- Rolling summaries do not enter Cold, Dream, MAGMA, or History.
-
-### Turn provenance
-
-New native turns preserve through every layer:
-
-```text
-turn_id, role, text, created_at, source_timezone, timezone_source
-```
-
-- User and assistant/fallback turns have distinct IDs and timestamps.
-- IDs exist before first persistence and survive compaction, retry, Dream,
-  MAGMA, Recall projection, History, and restart.
-- Timestamps are aware RFC 3339 UTC values with truthful source timezone.
-- Do not fabricate missing native provenance or silently treat legacy records as
-  native V2 evidence.
-
-### Background prompt isolation
-
-- `prompts/chat_background.md` is loaded once at application startup.
-- It is sent only as the native system prompt for normal Chat generations.
-- It must not enter Hot, Cold, rolling-summary inputs, Dream, Recall queries,
-  MAGMA, History, logs, or public API output.
-
-### Dream and ingestion
-
-- Dream is explicit, synchronous, serial, bounded, and never triggered by Chat,
-  startup, compaction, Recall, a timer, or a model decision.
-- The browser/API path reuses the app-owned Cold owner and the same memory
-  adapter/backend used by the resident retriever.
-- The CLI path is allowed only while the application service is stopped.
-- Use `(segment_id, ingestion_version)` as the durable checkpoint key.
-- Consume a segment only after complete memory persistence and checkpoint
-  verification.
-- Retry must converge without duplicate logical memory.
-- Conversation turns remain one MAGMA event each.
+- Dream stays manual, synchronous, bounded, and single-writer.
+- No Dream/ingestion work runs during `/api/chat`.
+- Retry remains idempotent through `(segment_id, ingestion_version)`.
+- Grounded Formation makes at most one provider call for a newly seen bounded
+  segment, persists validated units before MAGMA, and reuses that checkpoint
+  on MAGMA retry.
 
 ### Recall
 
-- Recall is accessed only through the Lumina-owned facade.
-- Bound anchors, graph depth, graph nodes, public evidence count, and rendered
-  characters.
-- `top_k` limits fused anchors; `max_evidence_items` limits the final public
-  anchors-plus-expansions total.
-- `max_graph_depth=0` is valid and means anchor-only.
-- Do not scan Cold Draft during Recall.
-- Empty Recall is valid; Recall failure must not block normal Chat.
-- Do not expose embeddings, scores, paths, graph objects, MAGMA UUIDs,
-  credentials, provider bodies, local paths, tracebacks, or raw Draft records.
-- Do not restore the rejected cosine relevance gate, LLM judge, cross-encoder,
-  or a custom temporal/coreference algorithm without a separate task and new
-  evidence.
+- Recall remains behind a Lumina-owned facade.
+- Bound anchors, depth, nodes, evidence count, and rendered size.
+- Preserve stable ordering, evidence IDs, and provenance.
+- Do not scan Cold Draft from Recall.
+- Empty Recall is valid.
+- Recall failure must not block normal chat.
+- Do not expose BGE scores, embeddings, graph objects, MAGMA UUIDs, local paths,
+  credentials, provider bodies, tracebacks, or raw Draft records.
+- Do not modify pinned upstream MAGMA.
+- BGE/Hindsight/threshold changes require explicit evidence and task scope; they
+  must not be side effects of traversal work.
 
-### History
+## 9. Minimal-change rule
 
-- History is a read-only projection of valid Cold raw turns plus current Hot raw
-  turns, deduplicated by stable `turn_id` with Cold winning overlaps.
-- History must exclude the rolling summary, Recall evidence, MAGMA metadata,
-  Dream state, and the background prompt.
-- History must not be injected into the model context or mutate any store.
+Default to the smallest vertical change that tests the current hypothesis.
+Unless a task explicitly authorizes more:
 
-### Writer and deployment boundary
+- modify at most three existing production modules;
+- add at most one production file and one test file;
+- prefer extending existing tests and E2E harnesses;
+- add no generic `Manager`, `Registry`, `Factory`, framework, service, worker,
+  database, or model-serving layer;
+- do not refactor neighboring modules;
+- do not add future-facing extension points without a current caller;
+- do not update unrelated documents;
+- remove TEMP experiments after extracting the maintained conclusion.
 
-- One process-local nonblocking writer mutex serializes complete Chat and
-  in-app Dream operations.
-- Current supported deployment is one process, one worker, no `--reload`, and no
-  concurrent external Dream CLI.
-- A process-local lock does not make multi-worker or multi-instance operation
-  safe.
+If the minimum correct experiment exceeds this budget, report the smallest
+extra surface required before coding further.
 
-## 6. Current development boundary
+## 10. Not authorized by the Recall-optimization goal alone
 
-The Memory v1 ownership, DTO, provenance, Cold-first, Dream, and bounded Recall
-facade boundaries are frozen unless a task presents:
+Do not add or redesign:
 
-1. a reproducible correctness or data-loss bug;
-2. a real Recall failure sample that justifies a narrow change; or
-3. a minimal contract adjustment required by an explicitly designed caller.
+- automatic/startup/background/chat-time Dream;
+- schedulers, workers, agents, or autonomous ingestion;
+- new long-term memory databases;
+- Conversation Graph as a separate production system;
+- ContextBuilder or ToolRuntime;
+- forgetting, decay, global contradiction resolution, or memory rewrite;
+- new providers;
+- new model-training infrastructure;
+- repository-wide package/layout refactors;
+- upstream MAGMA patches;
+- unrelated organs or Mind work.
 
-The recommended next stage is a narrow **Mind System caller-contract design**:
-when to recall, which intent/window/budget to request, how to assess evidence
-sufficiency, and how to request another search. Start docs-only. This file does
-not authorize Mind implementation, automatic routing, Evidence Organizer,
-automatic Dream, workers, agents, or background behavior.
+A Recall experiment may inspect graph formation if evidence points there, but
+write-side changes require a separate explicit task.
 
-## 7. Known limitations
+## 11. Current known quality evidence
 
-Do not describe these as implemented:
+The current 60-case synthetic development set is diagnostic data, not a blinded
+holdout and not real-user Answer quality.
 
-- automatic or scheduled Dream;
-- Recall scheduler, automatic query/intent classification, or none/light/deep
-  routing;
-- evidence sufficiency, reliable abstention, or no-answer rejection;
-- Evidence Organizer/Ledger, conflict/current-state resolution, fact
-  supersession, or timeline synthesis;
-- explicit coreference resolution;
-- multi-conversation identity, multi-user isolation, multi-worker safety, or
-  cross-process transactions;
-- global model-context token budgeting;
-- database-backed History indexes or consistent cross-file snapshots;
-- production-scale or real-user answer-quality validation.
+At `final_min_score=0.144` it currently reports:
 
-## 8. Change discipline
+```text
+positive required-source complete: 17 / 30
+negative empty evidence:           20 / 30
+combined:                          37 / 60
 
-- Prefer the smallest correct vertical change.
-- Preserve `.env.local`, `data/`, model caches, and user-owned worktree changes.
-- Never commit credentials, provider bodies, generated memory data, embeddings,
-  or user conversations.
-- Do not silently patch upstream MAGMA.
-- Do not automatically commit, push, rebase, reset, delete branches, or rewrite
-  history.
-- When a task changes a public contract, persistence schema, or more than one
-  organ, stop at explicit checkpoints and report the exact boundary change.
+temporal positive:                 4 / 12
+ordinary positive:                13 / 18
+missing-private negative:          4 / 9
+wrong-relation negative:           4 / 9
+public closed-form negative:      12 / 12
+```
 
-## 9. Validation
+The authorization-aligned current-contract subset is:
 
-Use the existing project environment so real MAGMA tests do not skip:
+```text
+currently authorized positive:     6 / 6
+negative empty evidence:           23 / 30
+combined Grounded Write:           29 / 36
+raw-turn comparison:               26 / 36
+```
+
+The original strata remain useful historical diagnostics, but the 24
+assistant-utterance-only positives are not required memories without verified
+Execution Trace or tool-result provenance. Use all synthetic results to locate
+failure modes, not to justify ad-hoc case patches; production claims still
+require independent evidence.
+
+## 12. Validation
+
+Use synthetic data and temporary paths only.
+
+Standard validation:
 
 ```bash
 python -m pytest -q
 python -m pytest Conversation_Memory/tests -q
 python -m pytest Dream/tests -q
-python -m scripts.recall_e2e_test
 git diff --check
 git -C Conversation_Memory/upstream/MAGMA status --short
 git -C Conversation_Memory/upstream/MAGMA diff --stat
 ```
 
-The MAGMA status and diff outputs must remain empty unless a separate upstream
-patch task explicitly authorizes otherwise.
+Run the existing real-MAGMA Recall E2E whenever a task affects Recall behavior.
+Upstream MAGMA status/diff must remain empty.
+
+For Recall optimization, report at minimum:
+
+```text
+baseline vs candidate
+per-stratum results
+candidate count / depth / node budget
+ranking/admission components intentionally held fixed
+regressions
+restart/idempotency
+determinism
+TEMP artifacts removed
+```
+
+## 13. Change safety
+
+- Preserve `.env.local`, `data/`, and real runtime memory.
+- Do not commit, push, rebase, hard-reset, or rewrite history unless explicitly
+  authorized.
+- Do not silently patch upstream MAGMA.
+- Do not change unrelated public behavior.
+- Update `docs/CURRENT_STATUS.md` only after tests establish the implementation
+  fact.
+- Never describe an experiment as production behavior before promotion and
+  regression validation.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in GitHub Issues for `Raven1119/Lumina`. See
+`docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-label mattpocock/skills vocabulary. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository using root `CONTEXT.md` and `docs/adr/`,
+created lazily when needed. See `docs/agents/domain.md`.

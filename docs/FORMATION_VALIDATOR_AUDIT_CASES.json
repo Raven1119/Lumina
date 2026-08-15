@@ -1,0 +1,298 @@
+{
+  "audit_version": "formation-validator-audit-v1",
+  "scope": {
+    "formation": "current real single-pass MiniMax ModelClient",
+    "validator": "current grounding validator, unchanged",
+    "cases": 5,
+    "semantic_retry": false,
+    "transport_attempt_limit_per_case": 3
+  },
+  "trace_method": "The harness asserted reconstructed accepted booleans were identical to _validate_candidate(candidate, segment) returning a unit. Rejection stage is the runtime helper/branch returning None; rejection reason is the first failing source predicate reconstructed in runtime predicate order. Runtime does not expose native rejection codes.",
+  "provider": {
+    "attempts": 7,
+    "failures": 3,
+    "successful_outputs": 4
+  },
+  "cases": [
+    {
+      "case_id": "single_fact",
+      "expected_legitimate_facts": [
+        {"fact_id": "access_pass", "subject": "AP-317", "relation": "access pass", "value": "TEAL-PASS-317"}
+      ],
+      "source_turns": [
+        {"turn_id": "u1", "role": "user", "text": "My access pass for AP-317 is TEAL-PASS-317 at 52.4 kilohertz."}
+      ],
+      "provider_attempts": 3,
+      "provider_failures": 3,
+      "transport_exhausted": true,
+      "candidate_count": 0,
+      "candidates": [],
+      "formation_omissions": [
+        {"fact_id": "access_pass", "reason": "No successful provider output after the permitted transport attempts; not a validator decision."}
+      ]
+    },
+    {
+      "case_id": "same_turn_split",
+      "expected_legitimate_facts": [
+        {"fact_id": "sleep_early", "subject": "我", "relation": "早点睡", "value": "早点"},
+        {"fact_id": "printer_broken", "subject": "实验室打印机", "relation": "坏了", "value": "坏了"}
+      ],
+      "source_turns": [
+        {"turn_id": "u1", "role": "user", "text": "我今晚早点睡。另外实验室打印机坏了。"}
+      ],
+      "provider_attempts": 1,
+      "provider_failures": 0,
+      "candidate_count": 2,
+      "candidates": [
+        {
+          "candidate_index": 0,
+          "candidate": {
+            "text": "I will sleep early tonight",
+            "subject": "I",
+            "relation": "plan",
+            "value": "sleep early tonight",
+            "source_refs": [{"turn_id": "u1", "supporting_span": "我今晚早点睡"}],
+            "referenced_time": "tonight"
+          },
+          "source_spans": [{"turn_id": "u1", "role": "user", "supporting_span": "我今晚早点睡"}],
+          "validator": {
+            "accepted": false,
+            "rejection_stage": "source_role_authorization",
+            "rejection_reason": "not_all_refs_are_relevant_user_refs"
+          },
+          "semantic_audit": {
+            "semantically_grounded": "YES",
+            "classification": "VALIDATOR_FALSE_REJECTION",
+            "reason": "The cited user span explicitly supports the same subject, intended action, value, and time. The candidate translates them into faithful English equivalents; that violates the literal validator contract but not semantic grounding."
+          },
+          "reason_bucket": "OTHER",
+          "span_contract_mismatch": false
+        },
+        {
+          "candidate_index": 1,
+          "candidate": {
+            "text": "The lab printer is broken",
+            "subject": "lab printer",
+            "relation": "status",
+            "value": "broken",
+            "source_refs": [{"turn_id": "u1", "supporting_span": "实验室打印机坏了"}],
+            "referenced_time": null
+          },
+          "source_spans": [{"turn_id": "u1", "role": "user", "supporting_span": "实验室打印机坏了"}],
+          "validator": {
+            "accepted": false,
+            "rejection_stage": "source_role_authorization",
+            "rejection_reason": "not_all_refs_are_relevant_user_refs"
+          },
+          "semantic_audit": {
+            "semantically_grounded": "YES",
+            "classification": "VALIDATOR_FALSE_REJECTION",
+            "reason": "The cited user span explicitly says the lab printer is broken. The English SRV fields are faithful equivalents; they fail literal grounding, not semantic support."
+          },
+          "reason_bucket": "OTHER",
+          "span_contract_mismatch": false
+        }
+      ],
+      "formation_omissions": []
+    },
+    {
+      "case_id": "multi_turn_grounding",
+      "expected_legitimate_facts": [
+        {"fact_id": "xiaolin_trip", "subject": "小林", "relation": "下周要出差", "value": "上海"}
+      ],
+      "source_turns": [
+        {"turn_id": "u1", "role": "user", "text": "小林下周要出差。"},
+        {"turn_id": "a1", "role": "assistant", "text": "去哪？"},
+        {"turn_id": "u2", "role": "user", "text": "上海。"}
+      ],
+      "provider_attempts": 1,
+      "provider_failures": 0,
+      "candidate_count": 2,
+      "candidates": [
+        {
+          "candidate_index": 0,
+          "candidate": {
+            "text": "小林下周要出差。",
+            "subject": "小林",
+            "relation": "要出差",
+            "value": "下周",
+            "source_refs": [{"turn_id": "u1", "supporting_span": "小林下周要出差。"}],
+            "referenced_time": "下周"
+          },
+          "source_spans": [{"turn_id": "u1", "role": "user", "supporting_span": "小林下周要出差。"}],
+          "validator": {"accepted": true, "rejection_stage": null, "rejection_reason": null},
+          "semantic_audit": {
+            "semantically_grounded": "YES",
+            "classification": "ACCEPTED_VALID",
+            "reason": "This is a valid partial trip-timing fact, but it does not recover the expected destination binding."
+          },
+          "reason_bucket": null,
+          "span_contract_mismatch": false
+        },
+        {
+          "candidate_index": 1,
+          "candidate": {
+            "text": "上海。",
+            "subject": "小林出差目的地",
+            "relation": "是",
+            "value": "上海",
+            "source_refs": [
+              {"turn_id": "a1", "supporting_span": "去哪？"},
+              {"turn_id": "u2", "supporting_span": "上海。"}
+            ],
+            "referenced_time": null
+          },
+          "source_spans": [
+            {"turn_id": "a1", "role": "assistant", "supporting_span": "去哪？"},
+            {"turn_id": "u2", "role": "user", "supporting_span": "上海。"}
+          ],
+          "validator": {
+            "accepted": false,
+            "rejection_stage": "source_role_authorization",
+            "rejection_reason": "user_ref_is_not_bare_explicit_acceptance"
+          },
+          "semantic_audit": {
+            "semantically_grounded": "NO",
+            "classification": "VALIDATOR_CORRECT_REJECTION",
+            "reason": "The cited turns support the destination in dialogue context, but neither source span literally contains the invented subject or relation; candidate text also omits both."
+          },
+          "reason_bucket": "ROLE_AUTHORIZATION",
+          "span_contract_mismatch": false
+        }
+      ],
+      "formation_omissions": []
+    },
+    {
+      "case_id": "user_correction",
+      "expected_legitimate_facts": [
+        {"fact_id": "setting_alpha", "subject": "PW-875", "relation": "current setting", "value": "Alpha"},
+        {"fact_id": "setting_beta", "subject": "PW-875", "relation": "current setting", "value": "Beta"}
+      ],
+      "source_turns": [
+        {"turn_id": "u1", "role": "user", "text": "My panel PW-875 current setting is Alpha."},
+        {"turn_id": "u2", "role": "user", "text": "I later changed panel PW-875 current setting to Beta."}
+      ],
+      "provider_attempts": 1,
+      "provider_failures": 0,
+      "candidate_count": 2,
+      "candidates": [
+        {
+          "candidate_index": 0,
+          "candidate": {
+            "text": "Panel PW-875 had setting Alpha.",
+            "subject": "panel PW-875",
+            "relation": "had setting",
+            "value": "Alpha",
+            "source_refs": [{"turn_id": "u1", "supporting_span": "panel PW-875 current setting is Alpha"}],
+            "referenced_time": null
+          },
+          "source_spans": [{"turn_id": "u1", "role": "user", "supporting_span": "panel PW-875 current setting is Alpha"}],
+          "validator": {
+            "accepted": false,
+            "rejection_stage": "source_role_authorization",
+            "rejection_reason": "literal_relation_not_grounded_in_authorized_user_source"
+          },
+          "semantic_audit": {
+            "semantically_grounded": "YES",
+            "classification": "VALIDATOR_FALSE_REJECTION",
+            "reason": "Subject, value, and source ref are correct; relation 'had setting' is a faithful equivalent of the source's 'current setting is' but fails literal relation grounding."
+          },
+          "reason_bucket": "RELATION_GROUNDING",
+          "span_contract_mismatch": false
+        },
+        {
+          "candidate_index": 1,
+          "candidate": {
+            "text": "Panel PW-875 had setting changed to Beta.",
+            "subject": "panel PW-875",
+            "relation": "had setting changed to",
+            "value": "Beta",
+            "source_refs": [{"turn_id": "u2", "supporting_span": "panel PW-875 current setting to Beta"}],
+            "referenced_time": null
+          },
+          "source_spans": [{"turn_id": "u2", "role": "user", "supporting_span": "panel PW-875 current setting to Beta"}],
+          "validator": {
+            "accepted": false,
+            "rejection_stage": "source_role_authorization",
+            "rejection_reason": "literal_relation_not_grounded_in_authorized_user_source"
+          },
+          "semantic_audit": {
+            "semantically_grounded": "NO",
+            "classification": "VALIDATOR_CORRECT_REJECTION",
+            "reason": "The full turn contains 'changed', but the candidate's cited supporting span omits that word while the candidate text and relation assert it. The provided source_refs are therefore insufficient for this candidate."
+          },
+          "reason_bucket": "RELATION_GROUNDING",
+          "span_contract_mismatch": false
+        }
+      ],
+      "formation_omissions": []
+    },
+    {
+      "case_id": "assistant_contamination",
+      "expected_legitimate_facts": [
+        {"fact_id": "corrected_doorplate", "subject": "我", "relation": "门牌号码", "value": "5434"}
+      ],
+      "source_turns": [
+        {"turn_id": "a1", "role": "assistant", "text": "你的门牌号码是5433。"},
+        {"turn_id": "u1", "role": "user", "text": "不，我的门牌号码是5434。"}
+      ],
+      "provider_attempts": 1,
+      "provider_failures": 0,
+      "candidate_count": 1,
+      "candidates": [
+        {
+          "candidate_index": 0,
+          "candidate": {
+            "text": "我的门牌号码是5434。",
+            "subject": "用户",
+            "relation": "门牌号码是",
+            "value": "5434",
+            "source_refs": [{"turn_id": "u1", "supporting_span": "我的门牌号码是5434"}],
+            "referenced_time": null
+          },
+          "source_spans": [{"turn_id": "u1", "role": "user", "supporting_span": "我的门牌号码是5434"}],
+          "validator": {
+            "accepted": false,
+            "rejection_stage": "source_role_authorization",
+            "rejection_reason": "subject_not_grounded_in_authorized_user_source"
+          },
+          "semantic_audit": {
+            "semantically_grounded": "YES",
+            "classification": "VALIDATOR_FALSE_REJECTION",
+            "reason": "The cited user correction explicitly binds the speaker/user's doorplate number to 5434. Subject '用户' is a faithful role-level normalization of '我的'; it fails literal grounding, not semantic or epistemic support. The unsupported assistant value 5433 was not proposed or accepted."
+          },
+          "reason_bucket": "SUBJECT_GROUNDING",
+          "span_contract_mismatch": false
+        }
+      ],
+      "formation_omissions": []
+    }
+  ],
+  "aggregate": {
+    "expected_legitimate_facts": 7,
+    "formation_proposed_legitimate_facts": 6,
+    "semantically_valid_proposed_facts": 4,
+    "invalid_candidate_attempts_targeting_expected_facts": 2,
+    "formation_omissions": 1,
+    "unassessed_due_to_transport": 1,
+    "validator_accepted": 1,
+    "validator_rejected": 6,
+    "validator_correct_rejections": 2,
+    "validator_false_rejections": 4,
+    "validator_inconclusive_rejections": 0,
+    "rejection_reason_counts": {
+      "SPAN_ALIGNMENT": 0,
+      "SUBJECT_GROUNDING": 1,
+      "RELATION_GROUNDING": 2,
+      "VALUE_GROUNDING": 0,
+      "ROLE_AUTHORIZATION": 1,
+      "NEGATION": 0,
+      "UNCERTAINTY": 0,
+      "OTHER": 2
+    },
+    "span_contract_mismatches": 0,
+    "correction_failure": "VALIDATOR_REJECTION",
+    "assistant_contamination": "PASS",
+    "main_problem": "VALIDATOR_CONTRACT_IS_MAIN_PROBLEM"
+  }
+}

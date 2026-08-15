@@ -10,6 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from core.cold_draft_store import ColdDraftStore
+from core.model_client import ModelClient, build_model_client_from_env
 
 from .cold_draft_digest import ColdDraftDigestionTask
 from .interfaces import ColdDraftOwner
@@ -18,26 +19,46 @@ from .models import DreamRunPolicy, DreamRunReport, SegmentDigestResult
 
 _ROOT = Path(__file__).resolve().parents[1]
 _CONVERSATION_MEMORY_ROOT = _ROOT / "Conversation_Memory"
+_LEGACY_INGESTION_VERSION = "grounded-span-v2"
+_FORMATION_MODEL_NAME = "MiniMax-M3"
+_FORMATION_MAX_TOKENS = 2000
 if str(_CONVERSATION_MEMORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_CONVERSATION_MEMORY_ROOT))
 
 from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
+from adapter.grounded_formation import FORMATION_VERSION  # noqa: E402
 from adapter.interfaces import MemoryIngestor  # noqa: E402
 from ingestion.state_store import IngestionStateStore  # noqa: E402
 
 
 class RealMemoryIngestorProvider:
-    def __init__(self, persist_dir: Path, state_path: Path) -> None:
+    def __init__(
+        self,
+        persist_dir: Path,
+        state_path: Path,
+        formation_model: ModelClient | None = None,
+    ) -> None:
         self._persist_dir = persist_dir
         self._state_store = IngestionStateStore(state_path)
+        self._formation_model = formation_model
         self._cache: dict[str, MemoryIngestor] = {}
 
     def get(self, ingestion_version: str) -> MemoryIngestor:
+        if (
+            ingestion_version == FORMATION_VERSION
+            and self._formation_model is None
+        ):
+            raise RuntimeError("formation_model_unavailable")
         if ingestion_version not in self._cache:
             self._cache[ingestion_version] = MagmaMemoryAdapter.create_real(
                 self._persist_dir,
                 self._state_store,
                 ingestion_version=ingestion_version,
+                formation_model=(
+                    self._formation_model
+                    if ingestion_version == FORMATION_VERSION
+                    else None
+                ),
             )
         return self._cache[ingestion_version]
 
@@ -83,7 +104,16 @@ class DreamRunner:
         return DreamRunReport.from_results(tuple(results))
 
 
-def build_default_runner() -> DreamRunner:
+def build_formation_model_client() -> ModelClient:
+    return build_model_client_from_env(
+        model_name_override=_FORMATION_MODEL_NAME,
+        max_tokens_override=_FORMATION_MAX_TOKENS,
+    )
+
+
+def build_default_runner(
+    model_client: ModelClient | None = None,
+) -> DreamRunner:
     cold_path = Path(
         os.environ.get(
             "LUMINA_DREAM_COLD_DRAFT_PATH",
@@ -103,7 +133,14 @@ def build_default_runner() -> DreamRunner:
         )
     )
     owner = ColdDraftStore(cold_path)
-    provider = RealMemoryIngestorProvider(persist_dir, state_path)
+    effective_model = model_client or build_formation_model_client()
+    provider = RealMemoryIngestorProvider(
+        persist_dir,
+        state_path,
+        effective_model
+        if getattr(effective_model, "client_kind", None) == "model"
+        else None,
+    )
     task = ColdDraftDigestionTask(owner, provider)
     return DreamRunner(owner, task)
 
@@ -112,19 +149,25 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run bounded Cold Draft digestion once")
     parser.add_argument("--max-segments", type=int, default=10)
     parser.add_argument("--stop-on-error", action="store_true")
-    parser.add_argument("--ingestion-version", default="dream-v1")
+    parser.add_argument("--ingestion-version", default=None)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        effective_model = build_formation_model_client()
+        ingestion_version = args.ingestion_version or (
+            FORMATION_VERSION
+            if getattr(effective_model, "client_kind", None) == "model"
+            else _LEGACY_INGESTION_VERSION
+        )
         policy = DreamRunPolicy(
             max_segments=args.max_segments,
             stop_on_error=args.stop_on_error,
-            ingestion_version=args.ingestion_version,
+            ingestion_version=ingestion_version,
         )
-        report = build_default_runner().run_once(policy)
+        report = build_default_runner(effective_model).run_once(policy)
     except Exception:
         report = DreamRunReport.from_results((
             SegmentDigestResult(

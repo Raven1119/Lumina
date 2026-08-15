@@ -1,26 +1,23 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from adapter.models import MemoryEvidence
 
 
 # Deterministic separation of retrieval from context serialization follows the
-# bounded-set-first shape of upstream MAGMA's TRGMemory.query and its event
-# timestamp serialization (MIT, Copyright (c) 2024 Anonymous Authors).  MAGMA's
+# bounded-set-first shape of upstream MAGMA's TRGMemory.query (MIT, Copyright
+# (c) 2024 Anonymous Authors). MAGMA's
 # narrative synthesis, causal rendering, prompts, and benchmark formatting are
 # deliberately not used here.
-def _aware_utc_timestamp(item: MemoryEvidence) -> datetime:
-    if not isinstance(item.timestamp, str) or not item.timestamp.strip():
-        raise ValueError("evidence timestamp must be an aware RFC 3339 value")
-    timestamp = datetime.fromisoformat(item.timestamp.strip())
-    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-        raise ValueError("evidence timestamp must be aware")
-    return timestamp.astimezone(UTC)
+def _speaker_label(item: MemoryEvidence) -> str:
+    if item.provenance.source_role == "user":
+        return "USER"
+    if item.provenance.source_role == "assistant":
+        return "LUMINA"
+    raise ValueError("unsupported evidence source role")
 
 
-def _render_timestamp(item: MemoryEvidence) -> str:
-    return _aware_utc_timestamp(item).isoformat().replace("+00:00", "Z")
+def _render_header(item: MemoryEvidence) -> str:
+    return f"[{_speaker_label(item)}]"
 
 
 def bound_evidence(
@@ -28,37 +25,7 @@ def bound_evidence(
     *,
     count: int,
     max_chars: int,
-    intent: str | None = None,
 ) -> tuple[tuple[MemoryEvidence, ...], str, bool]:
-    if intent is not None:
-        bounded = list(items[:count])
-        if intent == "WHEN":
-            bounded.sort(
-                key=lambda item: (_aware_utc_timestamp(item), item.evidence_id)
-            )
-
-        selected: list[MemoryEvidence] = []
-        parts: list[str] = []
-        used = 0
-        truncated = len(items) > count
-        for item in bounded:
-            prefix = "\n" if parts else ""
-            available = max_chars - used - len(prefix)
-            if available <= 0:
-                truncated = True
-                break
-            full_line = f"[{_render_timestamp(item)}] {item.text}"
-            line = full_line
-            if len(line) > available:
-                line = line[:available]
-                truncated = True
-            selected.append(item)
-            parts.append(line)
-            used += len(prefix) + len(line)
-            if len(line) < len(full_line):
-                break
-        return tuple(selected), "\n".join(parts), truncated
-
     selected: list[MemoryEvidence] = []
     parts: list[str] = []
     used = 0
@@ -69,10 +36,17 @@ def bound_evidence(
         if available <= 0:
             truncated = True
             break
-        text = item.text
-        if len(text) > available:
-            text = text[:available]
+        header = _render_header(item)
+        if available <= len(header) + 1:
             truncated = True
+            break
+        full_line = f"{header}\n{item.text}"
+        line = full_line
+        if len(line) > available:
+            line = line[:available]
+            truncated = True
+        visible_text_chars = max(0, len(line) - len(header) - 1)
+        text = item.text[:visible_text_chars]
         selected.append(
             MemoryEvidence(
                 item.evidence_id,
@@ -81,8 +55,8 @@ def bound_evidence(
                 item.provenance,
             )
         )
-        parts.append(text)
-        used += len(prefix) + len(text)
-        if len(text) < len(item.text):
+        parts.append(line)
+        used += len(prefix) + len(line)
+        if len(line) < len(full_line):
             break
     return tuple(selected), "\n".join(parts), truncated

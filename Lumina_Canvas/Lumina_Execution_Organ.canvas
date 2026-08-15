@@ -1,0 +1,11 @@
+{
+	"nodes":[
+		{"id":"0203f1ce03db6894","x":-125,"y":-30,"width":250,"height":60,"type":"text","text":"Task"},
+		{"id":"c9b06de2aaea0f67","x":-125,"y":180,"width":250,"height":60,"type":"text","text":"Supervisor"},
+		{"id":"6a9a537f9aef3b92","x":-125,"y":360,"width":250,"height":60,"type":"text","text":"DAG_Nodes"}
+	],
+	"edges":[
+		{"id":"f92ffea85828b28e","fromNode":"0203f1ce03db6894","fromSide":"bottom","toNode":"c9b06de2aaea0f67","toSide":"top"},
+		{"id":"c45a3d3f9518d1d0","fromNode":"c9b06de2aaea0f67","fromSide":"bottom","toNode":"6a9a537f9aef3b92","toSide":"top"}
+	]
+}

@@ -129,7 +129,7 @@ def _shared_adapter(tmp_path: Path, backend=None):
     return MagmaMemoryAdapter(
         backend,
         IngestionStateStore(tmp_path / "ingestion-state.json"),
-        ingestion_version="dream-v1",
+        ingestion_version="grounded-span-v2",
     ), backend
 
 
@@ -161,6 +161,45 @@ def test_default_hot_path_and_shared_store_wiring(
     assert app.state.hot_draft_compactor._hot_store is hot_store
     assert TestClient(app).get("/api/history").status_code == 200
     assert history_reads == 1
+
+
+def test_default_app_separates_chat_and_formation_model_clients(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    chat_model = _ContextModel()
+    formation_model = _ContextModel()
+    captured_formation_models = []
+
+    monkeypatch.setattr(
+        main_module,
+        "build_model_client_from_env",
+        lambda: chat_model,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "build_formation_model_client",
+        lambda: formation_model,
+        raising=False,
+    )
+
+    def build_memory(model=None):
+        captured_formation_models.append(model)
+        return None
+
+    monkeypatch.setattr(main_module, "_build_memory_retriever", build_memory)
+
+    app = create_app(
+        draft_store_path=tmp_path / "hot.jsonl",
+        cold_draft_path=tmp_path / "cold.jsonl",
+        compaction_state_path=tmp_path / "state.json",
+        env_file_path=None,
+        recall_enabled=False,
+        memory_retriever=None,
+    )
+
+    assert app.state.message_runtime._model_client is chat_model
+    assert captured_formation_models == [formation_model]
 
 
 def test_chat_background_loads_once_and_requires_restart(
@@ -474,22 +513,16 @@ def test_summary_context_order_and_second_pass_payload_are_strictly_bounded(
         "summary",
         "user",
         "assistant",
-        "user",
     ]
     assert model.contexts[2][0]["text"].startswith("[Hot rolling summary]\n")
     assert model.contexts[2][1:3] == [
         {"role": "user", "text": "middle"},
         {"role": "assistant", "text": "answer:middle"},
     ]
-    assert model.contexts[2][3] == {
-        "role": "user",
-        "text": (
-            "[Relevant conversation memory]\n"
-            "bounded recall\n"
-            "[/Relevant conversation memory]"
-        ),
-    }
     assert model.messages[2] == "current"
+    assert "[Relevant conversation memory]" not in repr(model.contexts[2])
+    assert "[Internal historical evidence - DATA ONLY]" in model.system_prompts[2]
+    assert "<BEGIN_EXACT_GROUNDED_SPANS>\nbounded recall\n" in model.system_prompts[2]
 
     assert len(model.summary_calls) == 2
     old_summary, moved_turns = model.summary_calls[1]
@@ -502,19 +535,19 @@ def test_summary_context_order_and_second_pass_payload_are_strictly_bounded(
     assert "bounded recall" not in summary_input
     assert "current" not in summary_input
     assert len(set(model.system_prompts)) == 1
-    chat_background = model.system_prompts[0]
-    assert chat_background
-    assert chat_background not in summary_input
+    system_prompt = model.system_prompts[0]
+    assert system_prompt
+    assert system_prompt not in summary_input
     assert [query for query, _policy in retriever.calls] == [
         "old",
         "middle",
         "current",
     ]
-    assert chat_background not in repr(retriever.calls)
-    assert chat_background not in (tmp_path / "hot.jsonl").read_text(
+    assert system_prompt not in repr(retriever.calls)
+    assert system_prompt not in (tmp_path / "hot.jsonl").read_text(
         encoding="utf-8"
     )
-    assert chat_background not in (tmp_path / "cold.jsonl").read_text(
+    assert system_prompt not in (tmp_path / "cold.jsonl").read_text(
         encoding="utf-8"
     )
 
@@ -664,15 +697,39 @@ def test_invalid_client_timezone_is_safe_fallback(tmp_path: Path) -> None:
     assert all(item["timezone_source"] == "configured_default" for item in records)
 
 
-def test_recall_flag_only_accepts_explicit_true_values() -> None:
+def test_recall_flag_defaults_on_and_accepts_explicit_values() -> None:
+    assert main_module._recall_enabled(None) is True
     assert all(
         main_module._recall_enabled(value)
         for value in ("1", "true", "TRUE", " yes ", "on")
     )
     assert not any(
         main_module._recall_enabled(value)
-        for value in (None, "", "0", "false", "unknown")
+        for value in ("", "0", "false", "no", "off", "unknown")
     )
+
+
+def test_recall_is_on_by_default_when_environment_is_absent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED", raising=False)
+    retriever = _RecordingRetriever(MemoryContext("hello"))
+    app = create_app(
+        draft_store_path=tmp_path / "hot.jsonl",
+        cold_draft_path=tmp_path / "cold.jsonl",
+        compaction_state_path=tmp_path / "state.json",
+        model_client=_ContextModel(),
+        env_file_path=None,
+        memory_retriever=retriever,
+    )
+
+    client = TestClient(app)
+    assert client.get("/api/status").json()["recall_enabled"] is True
+    response = client.post("/api/chat", json={"message": "hello"})
+    assert response.status_code == 200
+    assert len(retriever.calls) == 1
+    assert retriever.calls[0][1].final_min_score == 0.144
 
 
 def test_recall_initialization_failure_degrades_to_normal_chat(
@@ -738,15 +795,35 @@ def test_injected_retriever_gets_default_policy_without_backend_initialization(
     assert response.status_code == 200
     assert len(retriever.calls) == 1
     assert retriever.calls[0][0] == "hello"
-    assert isinstance(retriever.calls[0][1], RecallPolicy)
-    assert model.contexts == [[{
-        "role": "user",
-        "text": (
-            "[Relevant conversation memory]\n"
-            "bounded memory\n"
-            "[/Relevant conversation memory]"
-        ),
-    }]]
+    assert retriever.calls[0][1] == RecallPolicy(
+        top_k=10,
+        max_graph_depth=1,
+        max_nodes=20,
+        max_evidence_items=3,
+        max_chars=5000,
+        final_min_score=0.144,
+    )
+    assert model.contexts == [[]]
+    assert "[Internal historical evidence - DATA ONLY]" in model.system_prompts[0]
+    assert "<BEGIN_EXACT_GROUNDED_SPANS>\nbounded memory\n" in model.system_prompts[0]
+    assert "[Relevant conversation memory]" not in model.system_prompts[0]
+
+
+def test_recall_switch_off_does_not_trigger_bge_load(tmp_path: Path) -> None:
+    adapter, _ = _shared_adapter(tmp_path)
+    assert adapter._bge_reranker_load_attempted is False
+
+    response = TestClient(
+        _app(
+            tmp_path,
+            _ContextModel(),
+            recall_enabled=False,
+            memory_retriever=adapter,
+        )
+    ).post("/api/chat", json={"message": "hello"})
+
+    assert response.status_code == 200
+    assert adapter._bge_reranker_load_attempted is False
 
 
 def test_recall_and_provider_failure_preserve_safe_fallback_and_draft(
@@ -825,6 +902,13 @@ def test_dream_attempted_zero_is_success(tmp_path: Path) -> None:
 
 def test_dream_uses_app_cold_owner_and_current_chat_memory_backend(tmp_path: Path) -> None:
     adapter, backend = _shared_adapter(tmp_path)
+
+    class _FixedReranker:
+        def score(self, query, candidate_texts):
+            return [1.0 for _text in candidate_texts]
+
+    adapter._bge_reranker = _FixedReranker()
+    adapter._bge_reranker_load_attempted = True
     model = _ContextModel()
     app = _app(
         tmp_path,
@@ -852,10 +936,9 @@ def test_dream_uses_app_cold_owner_and_current_chat_memory_backend(tmp_path: Pat
     assert len(backend.events) == 1
     assert app.state.cold_draft_store.list_pending() == []
     assert chat.status_code == 200
-    assert any(
-        "shared backend memory" in item["text"]
-        for item in model.contexts[0]
-    )
+    assert model.contexts[0] == []
+    assert "shared backend memory" in model.system_prompts[0]
+    assert "[Internal historical evidence - DATA ONLY]" in model.system_prompts[0]
 
 
 def test_chat_background_is_not_persisted_by_compaction_dream_or_memory(

@@ -1,0 +1,432 @@
+{
+  "schema_version": "exact-nine-validator-rejection-audit-v1",
+  "result": "EXACT_9_VALIDATOR_REJECTION_AUDIT_COMPLETE",
+  "provider_calls": 0,
+  "production_changed": false,
+  "test_changed": false,
+  "raw_provider_response_persisted": false,
+  "frozen_hashes": {
+    "shadow": "34655e52e80b479010a825c0cba3d21646639859a9a0786a299cb30610e0b561",
+    "capture": "7d984767476588b7c270d46bed8a81c20bb707532e808dd0b542652dfc7cf6bf",
+    "sources": "b88aaa7e14895d26f1acee92b32445d86011b9c5e32ad84a3f544298364f804c",
+    "validator": "c6afdc305612ae340405e2337fb785b061afc49a7320e6cf81913a62fcde7907"
+  },
+  "rejections": 9,
+  "assistant_source_cases": 8,
+  "user_source_cases": 1,
+  "false_rejections": 9,
+  "correct_rejections": 0,
+  "inconclusive": 0,
+  "exclusive_root_causes": {
+    "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP": 8,
+    "CROSS_FIELD_HARD_DETAIL_MATCH_AT_TEMPORAL_BOUNDARY": 1,
+    "OTHER": 0
+  },
+  "overlapping_diagnostics": {
+    "deterministic_relation_not_literal": 9,
+    "assistant_role_blocks_semantic_fallback": 8,
+    "temporal_cross_field_detail_false_rejection": 1
+  },
+  "cases": [
+    {
+      "turn_id": "r3b03",
+      "corpus_id": "cx-r3b7",
+      "source_role": "assistant",
+      "candidate": {
+        "text": "Field roll FR-428 is in BIN-SAFFRON-428.",
+        "subject": "FR-428",
+        "relation": "is in bin",
+        "value": "BIN-SAFFRON-428",
+        "source_refs": [
+          {
+            "turn_id": "r3b03",
+            "supporting_span": "I placed field roll FR-428 in BIN-SAFFRON-428."
+          }
+        ],
+        "referenced_time": null
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:single_assistant_self_action",
+      "deterministic_validator_reason": "The source is a first-person assistant action, but it does not start with the normalized candidate relation prefix 'i is in bin'; the paraphrased relation is also not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "_validate_candidate semantic-equivalence eligibility requires exactly one USER ref; this exact single ref has role ASSISTANT.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited assistant sentence explicitly says it placed field roll FR-428 in BIN-SAFFRON-428; the candidate is a passive paraphrase of that self-action.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. This is a first-person assistant self-action with exact subject/value evidence, not an assistant assertion about the user's doorplate or another user/world property. The existing literal self-action control authorizes it.",
+      "root_cause": "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP",
+      "diagnostic": {
+        "assistant_self_action_prefix_expected": "i is in bin",
+        "assistant_self_action_prefix_matches": false,
+        "relation_literal_in_source": false,
+        "literal_self_action_counterfactual_accepted": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    },
+    {
+      "turn_id": "r3b06",
+      "corpus_id": "cx-r3b7",
+      "source_role": "assistant",
+      "candidate": {
+        "text": "Clamp for GD-519 is labeled CLAMP-PEARL-519.",
+        "subject": "GD-519",
+        "relation": "has clamp label",
+        "value": "CLAMP-PEARL-519",
+        "source_refs": [
+          {
+            "turn_id": "r3b06",
+            "supporting_span": "I labeled the clamp for GD-519 as CLAMP-PEARL-519."
+          }
+        ],
+        "referenced_time": null
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:single_assistant_self_action",
+      "deterministic_validator_reason": "The source is a first-person assistant action, but it does not start with the normalized candidate relation prefix 'i has clamp label'; the paraphrased relation is also not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "_validate_candidate semantic-equivalence eligibility requires exactly one USER ref; this exact single ref has role ASSISTANT.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited assistant sentence explicitly says it labeled the clamp for GD-519 as CLAMP-PEARL-519; the candidate preserves that self-action.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. This is a first-person assistant self-action with exact subject/value evidence, not an assistant assertion about the user's doorplate or another user/world property. The existing literal self-action control authorizes it.",
+      "root_cause": "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP",
+      "diagnostic": {
+        "assistant_self_action_prefix_expected": "i has clamp label",
+        "assistant_self_action_prefix_matches": false,
+        "relation_literal_in_source": false,
+        "literal_self_action_counterfactual_accepted": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    },
+    {
+      "turn_id": "r3b08",
+      "corpus_id": "cx-r3b7",
+      "source_role": "assistant",
+      "candidate": {
+        "text": "Mount MT-734 is assigned to RACK-PLUM-734.",
+        "subject": "MT-734",
+        "relation": "is assigned to rack",
+        "value": "RACK-PLUM-734",
+        "source_refs": [
+          {
+            "turn_id": "r3b08",
+            "supporting_span": "I assigned mount MT-734 to RACK-PLUM-734."
+          }
+        ],
+        "referenced_time": null
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:single_assistant_self_action",
+      "deterministic_validator_reason": "The source is a first-person assistant action, but it does not start with the normalized candidate relation prefix 'i is assigned to rack'; the paraphrased relation is also not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "_validate_candidate semantic-equivalence eligibility requires exactly one USER ref; this exact single ref has role ASSISTANT.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited assistant sentence explicitly says it assigned mount MT-734 to RACK-PLUM-734; the candidate preserves that self-action.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. This is a first-person assistant self-action with exact subject/value evidence, not an assistant assertion about the user's doorplate or another user/world property. The existing literal self-action control authorizes it.",
+      "root_cause": "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP",
+      "diagnostic": {
+        "assistant_self_action_prefix_expected": "i is assigned to rack",
+        "assistant_self_action_prefix_matches": false,
+        "relation_literal_in_source": false,
+        "literal_self_action_counterfactual_accepted": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    },
+    {
+      "turn_id": "r3b11",
+      "corpus_id": "cx-r3b7",
+      "source_role": "assistant",
+      "candidate": {
+        "text": "Fuse for PW-875 is marked FUSE-TOPAZ-875.",
+        "subject": "PW-875",
+        "relation": "has fuse mark",
+        "value": "FUSE-TOPAZ-875",
+        "source_refs": [
+          {
+            "turn_id": "r3b11",
+            "supporting_span": "I marked the fuse for PW-875 as FUSE-TOPAZ-875."
+          }
+        ],
+        "referenced_time": null
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:single_assistant_self_action",
+      "deterministic_validator_reason": "The source is a first-person assistant action, but it does not start with the normalized candidate relation prefix 'i has fuse mark'; the paraphrased relation is also not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "_validate_candidate semantic-equivalence eligibility requires exactly one USER ref; this exact single ref has role ASSISTANT.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited assistant sentence explicitly says it marked the fuse for PW-875 as FUSE-TOPAZ-875; the candidate preserves that self-action.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. This is a first-person assistant self-action with exact subject/value evidence, not an assistant assertion about the user's doorplate or another user/world property. The existing literal self-action control authorizes it.",
+      "root_cause": "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP",
+      "diagnostic": {
+        "assistant_self_action_prefix_expected": "i has fuse mark",
+        "assistant_self_action_prefix_matches": false,
+        "relation_literal_in_source": false,
+        "literal_self_action_counterfactual_accepted": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    },
+    {
+      "turn_id": "r3c03",
+      "corpus_id": "cx-r3c8",
+      "source_role": "assistant",
+      "candidate": {
+        "text": "Lens card LC-381 is filed in CASE-AZURE-381.",
+        "subject": "LC-381",
+        "relation": "filed_in",
+        "value": "CASE-AZURE-381",
+        "source_refs": [
+          {
+            "turn_id": "r3c03",
+            "supporting_span": "I filed lens card LC-381 in CASE-AZURE-381."
+          }
+        ],
+        "referenced_time": null
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:single_assistant_self_action",
+      "deterministic_validator_reason": "The source is a first-person assistant action, but it does not start with the normalized candidate relation prefix 'i filed_in'; the paraphrased relation is also not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "_validate_candidate semantic-equivalence eligibility requires exactly one USER ref; this exact single ref has role ASSISTANT.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited assistant sentence explicitly says it filed lens card LC-381 in CASE-AZURE-381; the candidate is a passive paraphrase of that self-action.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. This is a first-person assistant self-action with exact subject/value evidence, not an assistant assertion about the user's doorplate or another user/world property. The existing literal self-action control authorizes it.",
+      "root_cause": "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP",
+      "diagnostic": {
+        "assistant_self_action_prefix_expected": "i filed_in",
+        "assistant_self_action_prefix_matches": false,
+        "relation_literal_in_source": false,
+        "literal_self_action_counterfactual_accepted": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    },
+    {
+      "turn_id": "r3c06",
+      "corpus_id": "cx-r3c8",
+      "source_role": "assistant",
+      "candidate": {
+        "text": "Strap for HB-492 is tagged as STRAP-MARBLE-492.",
+        "subject": "HB-492",
+        "relation": "strap_tag",
+        "value": "STRAP-MARBLE-492",
+        "source_refs": [
+          {
+            "turn_id": "r3c06",
+            "supporting_span": "I tagged the strap for HB-492 as STRAP-MARBLE-492."
+          }
+        ],
+        "referenced_time": null
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:single_assistant_self_action",
+      "deterministic_validator_reason": "The source is a first-person assistant action, but it does not start with the normalized candidate relation prefix 'i strap_tag'; the paraphrased relation is also not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "_validate_candidate semantic-equivalence eligibility requires exactly one USER ref; this exact single ref has role ASSISTANT.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited assistant sentence explicitly says it tagged the strap for HB-492 as STRAP-MARBLE-492; the candidate preserves that self-action.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. This is a first-person assistant self-action with exact subject/value evidence, not an assistant assertion about the user's doorplate or another user/world property. The existing literal self-action control authorizes it.",
+      "root_cause": "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP",
+      "diagnostic": {
+        "assistant_self_action_prefix_expected": "i strap_tag",
+        "assistant_self_action_prefix_matches": false,
+        "relation_literal_in_source": false,
+        "literal_self_action_counterfactual_accepted": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    },
+    {
+      "turn_id": "r3c09",
+      "corpus_id": "cx-r3c8",
+      "source_role": "assistant",
+      "candidate": {
+        "text": "Plate PT-658 is assigned to TRAY-SILVER-658.",
+        "subject": "PT-658",
+        "relation": "assigned_to",
+        "value": "TRAY-SILVER-658",
+        "source_refs": [
+          {
+            "turn_id": "r3c09",
+            "supporting_span": "I assigned plate PT-658 to TRAY-SILVER-658."
+          }
+        ],
+        "referenced_time": null
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:single_assistant_self_action",
+      "deterministic_validator_reason": "The source is a first-person assistant action, but it does not start with the normalized candidate relation prefix 'i assigned_to'; the paraphrased relation is also not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "_validate_candidate semantic-equivalence eligibility requires exactly one USER ref; this exact single ref has role ASSISTANT.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited assistant sentence explicitly says it assigned plate PT-658 to TRAY-SILVER-658; the candidate preserves that self-action.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. This is a first-person assistant self-action with exact subject/value evidence, not an assistant assertion about the user's doorplate or another user/world property. The existing literal self-action control authorizes it.",
+      "root_cause": "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP",
+      "diagnostic": {
+        "assistant_self_action_prefix_expected": "i assigned_to",
+        "assistant_self_action_prefix_matches": false,
+        "relation_literal_in_source": false,
+        "literal_self_action_counterfactual_accepted": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    },
+    {
+      "turn_id": "r3c11",
+      "corpus_id": "cx-r3c8",
+      "source_role": "assistant",
+      "candidate": {
+        "text": "Cell for VB-769 is marked as CELL-INDIGO-769.",
+        "subject": "VB-769",
+        "relation": "cell_mark",
+        "value": "CELL-INDIGO-769",
+        "source_refs": [
+          {
+            "turn_id": "r3c11",
+            "supporting_span": "I marked the cell for VB-769 as CELL-INDIGO-769."
+          }
+        ],
+        "referenced_time": null
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:single_assistant_self_action",
+      "deterministic_validator_reason": "The source is a first-person assistant action, but it does not start with the normalized candidate relation prefix 'i cell_mark'; the paraphrased relation is also not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "_validate_candidate semantic-equivalence eligibility requires exactly one USER ref; this exact single ref has role ASSISTANT.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited assistant sentence explicitly says it marked the cell for VB-769 as CELL-INDIGO-769; the candidate preserves that self-action.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. This is a first-person assistant self-action with exact subject/value evidence, not an assistant assertion about the user's doorplate or another user/world property. The existing literal self-action control authorizes it.",
+      "root_cause": "ASSISTANT_SELF_ACTION_SEMANTIC_AUTHORIZATION_GAP",
+      "diagnostic": {
+        "assistant_self_action_prefix_expected": "i cell_mark",
+        "assistant_self_action_prefix_matches": false,
+        "relation_literal_in_source": false,
+        "literal_self_action_counterfactual_accepted": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    },
+    {
+      "turn_id": "r3c13",
+      "corpus_id": "cx-r3c8",
+      "source_role": "user",
+      "candidate": {
+        "text": "Aperture unit AP-471 earlier used f/4.8.",
+        "subject": "AP-471",
+        "relation": "aperture_setting",
+        "value": "f/4.8",
+        "source_refs": [
+          {
+            "turn_id": "r3c13",
+            "supporting_span": "Aperture unit AP-471 earlier used f/4.8."
+          }
+        ],
+        "referenced_time": "earlier"
+      },
+      "deterministic_validator_accepted": false,
+      "deterministic_validator_stage": "_authorized_grounding_source:user_relation_grounding",
+      "deterministic_validator_reason": "The single USER span contains the exact subject and value, but the candidate relation 'aperture_setting' is not literal in the source.",
+      "semantic_fallback_eligible": false,
+      "semantic_fallback_called_for_candidate": false,
+      "actual_fallback_boolean": null,
+      "semantic_ineligible_reason": "The hard-detail scan joins text/subject/relation/value/referenced_time with newlines. `_DETAIL` uses `\\s*`, so it produces the synthetic detail `4.8\\nearlier`, which is not a substring of the cited source.",
+      "proposition_fully_supported": true,
+      "support_rationale": "The cited USER source is byte-identical to the candidate text and explicitly states AP-471 earlier used f/4.8.",
+      "acceptance_would_violate_assistant_contamination_contract": false,
+      "assistant_contamination_rationale": "NO. The only source is USER-authored and exactly states the proposition.",
+      "root_cause": "CROSS_FIELD_HARD_DETAIL_MATCH_AT_TEMPORAL_BOUNDARY",
+      "diagnostic": {
+        "relation_literal_in_source": false,
+        "joined_hard_details": [
+          "AP-471",
+          "4.8",
+          "AP-471",
+          "4.8\nearlier"
+        ],
+        "synthetic_missing_detail": "4.8\nearlier",
+        "without_referenced_time_semantic_eligible": true
+      },
+      "final_accepted": false,
+      "classification": "FALSE_REJECTION"
+    }
+  ],
+  "controls": {
+    "assistant_literal_self_action_probes": [
+      {
+        "turn_id": "r3b03",
+        "literal_relation": "placed field roll",
+        "normal_accepted": true
+      },
+      {
+        "turn_id": "r3b06",
+        "literal_relation": "labeled the clamp for",
+        "normal_accepted": true
+      },
+      {
+        "turn_id": "r3b08",
+        "literal_relation": "assigned mount",
+        "normal_accepted": true
+      },
+      {
+        "turn_id": "r3b11",
+        "literal_relation": "marked the fuse for",
+        "normal_accepted": true
+      },
+      {
+        "turn_id": "r3c03",
+        "literal_relation": "filed lens card",
+        "normal_accepted": true
+      },
+      {
+        "turn_id": "r3c06",
+        "literal_relation": "tagged the strap for",
+        "normal_accepted": true
+      },
+      {
+        "turn_id": "r3c09",
+        "literal_relation": "assigned plate",
+        "normal_accepted": true
+      },
+      {
+        "turn_id": "r3c11",
+        "literal_relation": "marked the cell for",
+        "normal_accepted": true
+      }
+    ],
+    "assistant_literal_self_action_all_accepted": true,
+    "assistant_contamination_5433": {
+      "normal_accepted": false,
+      "semantic_fallback_eligible": false,
+      "result": "PASS_UNAUTHORIZED"
+    }
+  },
+  "assistant_authorization_conclusion": "B_FALSE_REJECTION: the eight sources are authorized assistant self-actions under the existing literal self-memory contract, but relation paraphrase cannot pass deterministic authorization and assistant refs cannot enter the semantic-equivalence fallback.",
+  "ap471_root_cause": "Independent temporal-field hard-detail bug: `_DETAIL` crosses the newline between value `f/4.8` and referenced_time `earlier`, creating an unsupported synthetic detail even though the cited USER sentence exactly supports the fact.",
+  "next_single_task": "Design a narrow Assistant Self-Action Semantic Authorization boundary that can admit relation paraphrases only after proving the source is a first-person assistant action; preserve the 5433 assistant assertion rejection. Address the AP-471 cross-field detail bug separately."
+}

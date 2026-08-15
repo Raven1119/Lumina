@@ -1,0 +1,5 @@
+-r upstream/MAGMA/requirements.txt
+
+# Supported production BGE reranker runtime.
+torch==2.13.0
+transformers==5.14.1

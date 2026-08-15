@@ -8,13 +8,19 @@ The durable key is:
 segment_id + ":" + ingestion_version
 ```
 
-Different ingestion versions intentionally produce a fresh derived memory set.
-For each turn, the stable public evidence ID is:
+Configured real-model manual Dream uses `grounded-formation-v1`. Each unit ID
+is a stable hash of the atomic SRV/text, exact source refs, optional referenced
+time, and Formation version. Mock/legacy ingestion retains
+`grounded-span-v2`; for every deterministic eligible user or assistant span,
+its stable external evidence identity is:
 
 ```text
-sha256(segment_id + NUL + turn_id + NUL + ingestion_version)
+grounded_span_v2:{turn_id}:{start}:{end}
 ```
 
+The identity is used directly for MAGMA lookup/idempotency. No second span hash
+is introduced and role is not duplicated in the ID because `turn_id` is
+globally unique. Immutable `source_role` is stored in provenance.
 MAGMA UUID4 node IDs are retained only as private backend handles.
 
 ## State machine
@@ -24,9 +30,11 @@ absent -> pending -> in_progress -> completed
                              \-> failed -> in_progress (retry)
 ```
 
-The state record contains only status and private memory IDs. A completed key
-returns `already_ingested=true` without writing nodes. Failures never write a
-completed status.
+A Formation state record contains validated `formed_units`, ordered
+`unit_ids`, and private `memory_ids`; it is written before MAGMA. The legacy
+span record remains manifest-only. A completed key returns
+`already_ingested=true` without writing nodes. Failures never write a completed
+status, and a same-version rebuilt-manifest mismatch fails closed.
 
 ## Atomic state writes
 
@@ -41,36 +49,38 @@ transaction or lock.
 
 ## Checkpoints and retry
 
-Ingestion persists MAGMA after every new event, then atomically records the
-private memory ID. Before writing a turn, the adapter searches existing MAGMA
-metadata by stable evidence ID. This closes the important retry window where a
-MAGMA event exists but its state checkpoint did not complete.
+Ingestion persists MAGMA after every new grounded event, then atomically records
+progress. Before writing a unit, the adapter searches existing MAGMA metadata by
+the stable unit ID. A Formation retry deserializes and revalidates the durable
+units against immutable Cold, reuses found events, and never calls Formation
+again. Legacy span retry still deterministically rebuilds its manifest.
 
-After all turns, entity relationships are constructed, MAGMA is persisted
-again, and only then is the key marked completed. A partial retry reuses found
-events and adds only missing events. Tests cover event-write failure,
-persistence failure after a node write, and restart recovery.
-
+After all manifest events are confirmed present, existing relationship creation
+runs, MAGMA is persisted again, and only then is the key marked completed.
+Completed zero-output manifests are valid. Tests cover event-write failure,
+failure after event persistence but before completion, restart recovery, and
+manifest mismatch.
 ## Provenance fields
 
-Every event stores:
+Every grounded event stores:
 
-- `segment_id`;
-- `conversation_id`;
-- `turn_id`;
+- the grounded span evidence/unit ID;
+- source `turn_id`;
+- exact `source_start` and `source_end` offsets;
+- `role=user`;
+- `segment_id` and `conversation_id`;
 - exact aware `source_timestamp`;
 - declared `source_timezone`;
 - truthful `timezone_source` (`client`, `configured_default`, or
   `legacy_segment_fallback`);
 - `ingestion_version`.
-
 Temporal metadata additionally stores the original expression, reference
 timestamp/timezone, normalized start/end, normalization method, and confidence.
 Recall reconstructs `SourceProvenance`; candidates with malformed or missing
 provenance are excluded.
 
-Native V2 events use each source turn's own ID, timestamp, IANA timezone, and
-timezone source. Legacy records keep the stable indexed turn ID and segment
+Grounded events inherit their eligible user source turn's ID, timestamp, IANA
+timezone, and timezone source. Legacy records keep the stable indexed turn ID and segment
 timestamp fallback and are explicitly marked `legacy_segment_fallback`. Old
 persisted provenance that predates the field is projected with the same legacy
 default; it is not rewritten or automatically re-ingested.

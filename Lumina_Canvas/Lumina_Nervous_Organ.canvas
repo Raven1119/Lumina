@@ -1,0 +1,27 @@
+{
+	"nodes":[
+		{"id":"0dbd3ff8a9fcb9b1","type":"text","text":"Mind Organ","x":-116,"y":-201,"width":250,"height":60},
+		{"id":"19a013dd3d037bdf","type":"text","text":"Execution Organ","x":-116,"y":80,"width":250,"height":60},
+		{"id":"b5b9f1a292fd33f1","type":"text","text":"Event Bus","x":-116,"y":-480,"width":250,"height":60},
+		{"id":"6eebf08c1394a0d5","type":"text","text":"Memory Organ","x":-116,"y":360,"width":250,"height":60},
+		{"id":"28feb5cc13461ae0","type":"text","text":"user message","x":-560,"y":-480,"width":250,"height":60},
+		{"id":"7bda6225338a5ddc","type":"text","text":"user","x":-980,"y":-480,"width":250,"height":60},
+		{"id":"dbf1d3b1ec991ae7","type":"text","text":"Trigger","x":-116,"y":-720,"width":250,"height":60},
+		{"id":"fea8abcc553a3135","type":"text","text":"External Signals","x":-560,"y":-715,"width":250,"height":50},
+		{"id":"e60b5273e13e460d","type":"text","text":"Internal Signals","x":340,"y":-720,"width":250,"height":60}
+	],
+	"edges":[
+		{"id":"2e1a9fae474fb174","fromNode":"0dbd3ff8a9fcb9b1","fromSide":"left","toNode":"19a013dd3d037bdf","toSide":"left","label":"Action Request"},
+		{"id":"c490f53436fa2101","fromNode":"b5b9f1a292fd33f1","fromSide":"bottom","toNode":"0dbd3ff8a9fcb9b1","toSide":"top","label":"route/dispatch"},
+		{"id":"3c7ca4e2a4ecf6f7","fromNode":"19a013dd3d037bdf","fromSide":"left","toNode":"6eebf08c1394a0d5","toSide":"left","label":"写入"},
+		{"id":"b2dea34f0c106b06","fromNode":"6eebf08c1394a0d5","fromSide":"right","toNode":"19a013dd3d037bdf","toSide":"right","label":"读取"},
+		{"id":"39bba3f40c9ecd97","fromNode":"6eebf08c1394a0d5","fromSide":"right","toNode":"0dbd3ff8a9fcb9b1","toSide":"right","label":"读取"},
+		{"id":"de551e17fa8607ca","fromNode":"19a013dd3d037bdf","fromSide":"right","toNode":"b5b9f1a292fd33f1","toSide":"right","label":"反馈"},
+		{"id":"6690926737fef72b","fromNode":"28feb5cc13461ae0","fromSide":"right","toNode":"b5b9f1a292fd33f1","toSide":"left","label":"emit"},
+		{"id":"252fc275acf2c1b8","fromNode":"7bda6225338a5ddc","fromSide":"right","toNode":"28feb5cc13461ae0","toSide":"left","label":"发送"},
+		{"id":"5109ba2036599243","fromNode":"0dbd3ff8a9fcb9b1","fromSide":"left","toNode":"7bda6225338a5ddc","toSide":"bottom","label":"send message"},
+		{"id":"27b876abcf199745","fromNode":"19a013dd3d037bdf","fromSide":"left","toNode":"7bda6225338a5ddc","toSide":"bottom","label":"human function"},
+		{"id":"7960d3819d4bc36d","fromNode":"fea8abcc553a3135","fromSide":"right","toNode":"dbf1d3b1ec991ae7","toSide":"left","label":"Exciting"},
+		{"id":"4cbdf3c28b42603b","fromNode":"e60b5273e13e460d","fromSide":"left","toNode":"dbf1d3b1ec991ae7","toSide":"right","label":"Exciting"}
+	]
+}

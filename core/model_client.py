@@ -203,6 +203,9 @@ class MiniMaxAnthropicModelClient:
 
 def build_model_client_from_env(
     environ: Mapping[str, str] | None = None,
+    *,
+    model_name_override: str | None = None,
+    max_tokens_override: int | None = None,
 ) -> ModelClient:
     env = environ if environ is not None else os.environ
     if env.get("LUMINA_MODEL_MODE", "mock").strip().lower() != "real":
@@ -211,12 +214,26 @@ def build_model_client_from_env(
     provider = env.get("LUMINA_MODEL_PROVIDER", "").strip().lower()
     api_key = env.get("LUMINA_MODEL_API_KEY", "").strip()
     base_url = env.get("LUMINA_MODEL_BASE_URL", "").strip()
-    model = env.get("LUMINA_MODEL_NAME", "").strip()
-    if provider != "minimax-anthropic" or not all((api_key, base_url, model)):
+    configured_model = env.get("LUMINA_MODEL_NAME", "").strip()
+    if provider != "minimax-anthropic" or not all(
+        (api_key, base_url, configured_model)
+    ):
+        return MockModelClient()
+    model = (
+        model_name_override.strip()
+        if model_name_override is not None
+        else configured_model
+    )
+    if not model:
         return MockModelClient()
 
+    client_options: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+    }
+    if max_tokens_override is not None:
+        client_options["max_tokens"] = max_tokens_override
     return MiniMaxAnthropicModelClient(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
+        **client_options,
     )

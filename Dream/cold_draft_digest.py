@@ -41,6 +41,8 @@ _SAFE_INGESTION_ERRORS = {
     "invalid_source_timezone",
     "invalid_timezone_source",
     "state_corrupt",
+    "state_write_failed",
+    "grounded_manifest_mismatch",
     "memory_write_failed",
 }
 
@@ -272,7 +274,6 @@ class ColdDraftDigestionTask:
         memory_ids = getattr(ingestion, "memory_ids", ())
         if (
             not isinstance(memory_ids, tuple)
-            or len(memory_ids) != len(segment.turns)
             or not all(isinstance(item, str) and item for item in memory_ids)
         ):
             return SegmentDigestResult(

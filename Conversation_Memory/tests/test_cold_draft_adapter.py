@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import replace
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 
+import adapter.magma_adapter as magma_adapter_module
+from adapter._grounded_spans import build_grounded_spans
 from adapter.backend import RealMagmaBackend
 from adapter.magma_adapter import MagmaMemoryAdapter
 from adapter.models import (
@@ -25,6 +26,20 @@ from recall.rendering import bound_evidence
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v2.json"
 LEGACY_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v1.json"
+
+
+class _PreserveMagmaOrderReranker:
+    def score(self, _query, texts):
+        return tuple(-float(index) for index, _text in enumerate(texts))
+
+
+@pytest.fixture(autouse=True)
+def _use_fake_production_reranker(monkeypatch):
+    monkeypatch.setattr(
+        magma_adapter_module,
+        "_create_bge_reranker",
+        _PreserveMagmaOrderReranker,
+    )
 
 
 class FakeBackend:
@@ -85,21 +100,31 @@ def make_adapter(tmp_path, backend=None, version="v1"):
 
 def test_valid_fixture_ingests_and_preserves_provenance(tmp_path):
     segment = load_fixture(FIXTURE)
+    units = build_grounded_spans(segment.turns)
     adapter, backend = make_adapter(tmp_path)
     result = adapter.ingest(segment)
     assert result.status == "completed"
-    assert len(result.memory_ids) == len(segment.turns)
+    assert len(result.memory_ids) == len(units) == 4
     metadata = backend.events[result.memory_ids[0]]["metadata"]
     assert metadata["provenance"] == {
         "segment_id": segment.segment_id,
         "conversation_id": segment.conversation_id,
         "turn_id": "turn-001",
+        "source_role": "user",
         "source_timestamp": "2026-07-14T02:00:00+00:00",
         "source_timezone": "Asia/Shanghai",
         "ingestion_version": "v1",
         "timezone_source": "client",
     }
     assert backend.events[result.memory_ids[0]]["timestamp"] == segment.turns[0].timestamp
+    assert metadata["evidence_id"] == units[0].unit_id
+    assert metadata["source_start"] == units[0].start
+    assert metadata["source_end"] == units[0].end
+    assert segment.turns[0].content[units[0].start:units[0].end] == units[0].text
+    assistant_metadata = backend.events[result.memory_ids[1]]["metadata"]
+    assert assistant_metadata["role"] == "assistant"
+    assert assistant_metadata["provenance"]["source_role"] == "assistant"
+    assert backend.events[result.memory_ids[1]]["text"] == segment.turns[1].content
     mention = metadata["temporal_mentions"][0]
     assert mention == {
         "original_expression": "yesterday",
@@ -116,22 +141,145 @@ def test_valid_fixture_ingests_and_preserves_provenance(tmp_path):
     ]
 
 
+def _role_segment(segment_id, turns):
+    return parse_segment({
+        "schema_version": "2",
+        "segment_id": segment_id,
+        "conversation_id": f"{segment_id}-conversation",
+        "state": "pending_digest",
+        "created_at": "2026-08-09T12:00:00Z",
+        "source_timezone": "Asia/Shanghai",
+        "turns": [
+            {
+                "turn_id": f"{segment_id}-turn-{index}",
+                "role": role,
+                "timestamp": f"2026-08-09T{index:02d}:00:00Z",
+                "source_timezone": "Asia/Shanghai",
+                "timezone_source": "client",
+                "content": text,
+            }
+            for index, (role, text) in enumerate(turns)
+        ],
+    })
+
+
+def test_meeting_role_case_stores_and_recalls_both_speakers(tmp_path):
+    user_text = "我明天没有组会。"
+    assistant_text = "你明天还有组会。"
+    segment = _role_segment(
+        "meeting-role",
+        (("user", user_text), ("assistant", assistant_text)),
+    )
+    adapter, backend = make_adapter(tmp_path)
+
+    ingested = adapter.ingest(segment)
+
+    assert ingested.status == "completed"
+    assert [backend.events[item]["text"] for item in ingested.memory_ids] == [
+        user_text,
+        assistant_text,
+    ]
+    assert [
+        backend.events[item]["metadata"]["provenance"]["source_role"]
+        for item in ingested.memory_ids
+    ] == ["user", "assistant"]
+    context = adapter.recall(
+        "我明天有组会吗？",
+        RecallPolicy(
+            top_k=2,
+            max_graph_depth=0,
+            max_nodes=20,
+            max_evidence_items=2,
+            max_chars=500,
+        ),
+    )
+    assert {item.text for item in context.evidence} == {
+        user_text,
+        assistant_text,
+    }
+    assert {item.provenance.source_role for item in context.evidence} == {
+        "user",
+        "assistant",
+    }
+    assert f"[USER]\n{user_text}" in context.rendered_text
+    assert f"[LUMINA]\n{assistant_text}" in context.rendered_text
+
+
+def test_assistant_recommendation_and_user_decision_are_both_recallable(
+    tmp_path,
+):
+    assistant_text = "我建议你选 Beta。"
+    user_text = "好，最终就选 Beta。"
+    segment = _role_segment(
+        "choice-role",
+        (("assistant", assistant_text), ("user", user_text)),
+    )
+    adapter, _ = make_adapter(tmp_path)
+    assert adapter.ingest(segment).status == "completed"
+    policy = RecallPolicy(
+        top_k=2,
+        max_graph_depth=0,
+        max_nodes=20,
+        max_evidence_items=2,
+        max_chars=500,
+    )
+
+    recommendation = adapter.recall("你当时建议我选什么？", policy)
+    decision = adapter.recall("我最终决定了什么？", policy)
+
+    assert any(
+        item.text == assistant_text
+        and item.provenance.source_role == "assistant"
+        for item in recommendation.evidence
+    )
+    assert any(
+        item.text == user_text and item.provenance.source_role == "user"
+        for item in decision.evidence
+    )
+
+
+def test_exact_assistant_wording_is_recallable(tmp_path):
+    assistant_text = "我当时说“先不要改数据库”。"
+    segment = _role_segment(
+        "assistant-wording",
+        (("assistant", assistant_text),),
+    )
+    adapter, _ = make_adapter(tmp_path)
+    assert adapter.ingest(segment).status == "completed"
+
+    context = adapter.recall(
+        "你当时具体怎么说的？",
+        RecallPolicy(
+            top_k=1,
+            max_graph_depth=0,
+            max_nodes=20,
+            max_evidence_items=1,
+            max_chars=500,
+        ),
+    )
+
+    assert len(context.evidence) == 1
+    assert context.evidence[0].text == assistant_text
+    assert context.evidence[0].provenance.source_role == "assistant"
+    assert context.rendered_text == f"[LUMINA]\n{assistant_text}"
+
+
 def test_duplicate_key_does_not_duplicate_nodes(tmp_path):
     adapter, backend = make_adapter(tmp_path)
     first = adapter.ingest(load_fixture(FIXTURE))
     second = adapter.ingest(load_fixture(FIXTURE))
     assert first.memory_ids == second.memory_ids
     assert second.already_ingested is True
-    assert len(backend.events) == 4
+    assert len(backend.events) == len(build_grounded_spans(load_fixture(FIXTURE).turns))
 
 
-def test_different_ingestion_version_can_reimport(tmp_path):
+def test_grounded_unit_identity_is_stable_across_checkpoint_versions(tmp_path):
     backend = FakeBackend()
     first, _ = make_adapter(tmp_path, backend, "v1")
     second, _ = make_adapter(tmp_path, backend, "v2")
     assert first.ingest(load_fixture(FIXTURE)).status == "completed"
     assert second.ingest(load_fixture(FIXTURE)).status == "completed"
-    assert len(backend.events) == 8
+    assert len(backend.events) == len(build_grounded_spans(load_fixture(FIXTURE).turns))
 
 
 def test_write_failure_is_not_completed_and_retry_converges(tmp_path):
@@ -144,7 +292,7 @@ def test_write_failure_is_not_completed_and_retry_converges(tmp_path):
     assert next(iter(state.values()))["status"] == "failed"
     retried = adapter.ingest(load_fixture(FIXTURE))
     assert retried.status == "completed"
-    assert len(backend.events) == 4
+    assert len(backend.events) == len(build_grounded_spans(load_fixture(FIXTURE).turns))
 
 
 def test_persist_failure_does_not_leak_or_duplicate_on_retry(tmp_path):
@@ -155,7 +303,7 @@ def test_persist_failure_does_not_leak_or_duplicate_on_retry(tmp_path):
     assert result.safe_error_code == "memory_write_failed"
     assert "private" not in repr(result).lower()
     assert adapter.ingest(load_fixture(FIXTURE)).status == "completed"
-    assert len(backend.events) == 4
+    assert len(backend.events) == len(build_grounded_spans(load_fixture(FIXTURE).turns))
 
 
 def test_relative_time_uses_each_source_timestamp_and_timezone():
@@ -281,7 +429,13 @@ def test_recall_is_bounded_stable_and_contains_only_dtos(tmp_path):
     assert all(item.provenance.segment_id == "fixture-segment-membrane-001" for item in first.evidence)
 
 
-def _linearization_evidence(evidence_id, text, timestamp):
+def _linearization_evidence(
+    evidence_id,
+    text,
+    timestamp,
+    *,
+    source_role="user",
+):
     return MemoryEvidence(
         evidence_id,
         text,
@@ -290,6 +444,7 @@ def _linearization_evidence(evidence_id, text, timestamp):
             segment_id=f"segment-{evidence_id}",
             conversation_id=f"conversation-{evidence_id}",
             turn_id=f"turn-{evidence_id}",
+            source_role=source_role,
             source_timestamp=timestamp,
             source_timezone="UTC",
             ingestion_version="test-v1",
@@ -298,12 +453,15 @@ def _linearization_evidence(evidence_id, text, timestamp):
     )
 
 
-def test_context_linearization_default_when_and_stable_ties():
+def test_context_linearization_preserves_order_roles_and_bounds():
     late = _linearization_evidence(
         "evidence-late", "late event", "2026-01-08T14:00:00+00:00"
     )
     early_b = _linearization_evidence(
-        "evidence-b", "early B", "2026-01-03T18:00:00+08:00"
+        "evidence-b",
+        "early B",
+        "2026-01-03T18:00:00+08:00",
+        source_role="assistant",
     )
     early_a = _linearization_evidence(
         "evidence-a", "early A", "2026-01-03T10:00:00Z"
@@ -311,148 +469,44 @@ def test_context_linearization_default_when_and_stable_ties():
     items = [late, early_b, early_a]
 
     default = bound_evidence(items, count=3, max_chars=2000)
-    assert default == ((late, early_b, early_a), "late event\nearly B\nearly A", False)
+    assert default == (
+        (late, early_b, early_a),
+        "[USER]\nlate event\n[LUMINA]\nearly B\n[USER]\nearly A",
+        False,
+    )
     assert "[2026-" not in default[1]
-    legacy_truncated = bound_evidence(items, count=1, max_chars=4)
+    legacy_truncated = bound_evidence(items, count=1, max_chars=11)
     assert legacy_truncated[0][0].text == "late"
-    assert legacy_truncated[1:] == ("late", True)
-
-    first = bound_evidence(items, count=3, max_chars=2000, intent="WHEN")
-    second = bound_evidence(items, count=3, max_chars=2000, intent="WHEN")
-    assert [item.evidence_id for item in first[0]] == [
-        "evidence-a",
-        "evidence-b",
-        "evidence-late",
-    ]
-    assert first == second
-    assert first[1].splitlines() == [
-        "[2026-01-03T10:00:00Z] early A",
-        "[2026-01-03T10:00:00Z] early B",
-        "[2026-01-08T14:00:00Z] late event",
-    ]
-
-    # Count bounds the retrieval-selected set before WHEN reorders it.
-    bounded = bound_evidence(items, count=2, max_chars=2000, intent="WHEN")
-    assert {item.evidence_id for item in bounded[0]} == {
-        "evidence-b",
-        "evidence-late",
-    }
+    assert legacy_truncated[1:] == ("[USER]\nlate", True)
 
 
-@pytest.mark.parametrize("intent", ["GENERAL", "ENTITY", "WHY"])
-def test_context_linearization_non_temporal_intents_preserve_order(intent):
-    late = _linearization_evidence(
-        "evidence-late", "late event", "2026-01-08T14:00:00Z"
-    )
-    early = _linearization_evidence(
-        "evidence-early", "early event", "2026-01-03T10:00:00Z"
-    )
 
-    evidence, rendered, truncated = bound_evidence(
-        [late, early], count=2, max_chars=2000, intent=intent
-    )
-    assert evidence == (late, early)
-    assert rendered.splitlines() == [
-        "[2026-01-08T14:00:00Z] late event",
-        "[2026-01-03T10:00:00Z] early event",
-    ]
-    assert truncated is False
-    assert not any(
-        hidden in rendered
-        for hidden in (
-            "evidence-late",
-            "segment-evidence-late",
-            "turn-evidence-late",
-            "score",
-            "hop",
-            "path",
-            "intent",
-            "relation",
-        )
-    )
-
-
-def test_context_linearization_character_bound_keeps_dto_and_empty_has_no_shell():
+def test_context_linearization_character_bound_and_empty_have_no_shell():
     item = _linearization_evidence(
         "evidence-one", "original text", "2026-01-03T10:00:00Z"
     )
-    original = item
-
     evidence, rendered, truncated = bound_evidence(
-        [item], count=1, max_chars=25, intent="WHEN"
+        [item], count=1, max_chars=11
     )
-    assert len(rendered) == 25
-    assert rendered == "[2026-01-03T10:00:00Z] or"
+    assert rendered == "[USER]\norig"
     assert truncated is True
-    assert evidence == (original,)
-    assert evidence[0].text == "original text"
+    assert evidence[0].text == "orig"
+    assert item.text == "original text"
 
-    assert bound_evidence([], count=1, max_chars=25, intent="WHEN") == (
+    assert bound_evidence([], count=1, max_chars=25) == (
         (),
         "",
         False,
     )
 
 
-def test_adapter_passes_intent_to_linearization_after_backend_ranking(tmp_path):
-    at = datetime(2026, 1, 1, tzinfo=UTC)
-    provenance = {
-        "segment_id": "segment",
-        "conversation_id": "conversation",
-        "source_timezone": "UTC",
-        "ingestion_version": "test-v1",
-        "timezone_source": "client",
-    }
-
-    class LinearizationBackend(FakeBackend):
-        def recall(self, query, policy):
-            return [
-                BackendCandidate(
-                    "late", "2026-01-03T10:00:00Z", 1.0,
-                    {
-                        "evidence_id": "late-id",
-                        "provenance": {
-                            **provenance,
-                            "turn_id": "late-turn",
-                            "source_timestamp": "2026-01-03T10:00:00Z",
-                        },
-                    },
-                ),
-                BackendCandidate(
-                    "early", at.isoformat(), 0.5,
-                    {
-                        "evidence_id": "early-id",
-                        "provenance": {
-                            **provenance,
-                            "turn_id": "early-turn",
-                            "source_timestamp": at.isoformat(),
-                        },
-                    },
-                ),
-            ]
-
-    adapter, _ = make_adapter(tmp_path, LinearizationBackend())
-    general = adapter.recall("query", RecallPolicy(intent="GENERAL"))
-    when = adapter.recall("query", RecallPolicy(intent="WHEN"))
-
-    assert [item.evidence_id for item in general.evidence] == ["late-id", "early-id"]
-    assert [item.evidence_id for item in when.evidence] == ["early-id", "late-id"]
-    assert {item.evidence_id for item in general.evidence} == {
-        item.evidence_id for item in when.evidence
-    }
-    assert general.rendered_text.splitlines()[0].endswith(" late")
-    assert when.rendered_text.splitlines()[0].endswith(" early")
-
-
-def test_empty_and_failed_recall_are_safe(tmp_path):
+def test_empty_memory_store_and_failed_recall_remain_distinct(tmp_path):
     adapter, backend = make_adapter(tmp_path)
     empty = adapter.recall("nothing", RecallPolicy())
-    assert empty.evidence == () and empty.safe_error_code is None
-    linearized_empty = adapter.recall("nothing", RecallPolicy(intent="WHEN"))
-    assert linearized_empty.evidence == ()
-    assert linearized_empty.rendered_text == ""
-    assert linearized_empty.truncated is False
-    assert linearized_empty.safe_error_code is None
+    assert empty.evidence == ()
+    assert empty.rendered_text == ""
+    assert empty.truncated is False
+    assert empty.safe_error_code is None
     backend.fail_recall = True
     failed = adapter.recall("nothing", RecallPolicy())
     assert failed.evidence == () and failed.safe_error_code == "recall_unavailable"
@@ -528,6 +582,7 @@ def _controlled_provenance(turn_id, timestamp):
         "segment_id": "controlled-segment",
         "conversation_id": "controlled-conversation",
         "turn_id": turn_id,
+        "source_role": "user",
         "source_timestamp": timestamp.isoformat(),
         "source_timezone": "Asia/Shanghai",
         "ingestion_version": "cold-draft-v1",
@@ -629,8 +684,6 @@ def test_private_lexical_scoring_rrf_and_bounded_scan():
         _rank_lexical_events,
         _rrf_fuse,
     )
-    from adapter._recall_execution import _timestamp_in_temporal_window
-
     at = datetime(2026, 7, 14, 2, tzinfo=UTC)
     a = _controlled_event("node-a", "a", "unrelated alpha", at)
     b = _controlled_event("node-b", "b", "xy zq", at)
@@ -679,19 +732,9 @@ def test_private_lexical_scoring_rrf_and_bounded_scan():
         max_nodes=2,
         event_node_type=_ControlledEventNode,
         node_type=_ControlledNodeType,
-        temporal_window=(at.replace(hour=3), at.replace(hour=4)),
-        timestamp_in_window=_timestamp_in_temporal_window,
     )
     assert reads == ["node-before", "node-inside"]
-    assert [node.node_id for node in ranked] == ["node-inside"]
-
-    no_window = _rank_lexical_events(
-        graph_nodes=((node.node_id, node) for node in (before, inside)),
-        query="xy zq", max_nodes=2,
-        event_node_type=_ControlledEventNode, node_type=_ControlledNodeType,
-        temporal_window=None, timestamp_in_window=_timestamp_in_temporal_window,
-    )
-    assert [node.node_id for node in no_window] == ["node-before", "node-inside"]
+    assert [node.node_id for node in ranked] == ["node-before", "node-inside"]
 
     class BrokenMetadata(dict):
         def get(self, *_args, **_kwargs):
@@ -703,140 +746,8 @@ def test_private_lexical_scoring_rrf_and_bounded_scan():
         graph_nodes=((node.node_id, node) for node in (broken, inside)),
         query="xy zq", max_nodes=2,
         event_node_type=_ControlledEventNode, node_type=_ControlledNodeType,
-        temporal_window=None, timestamp_in_window=_timestamp_in_temporal_window,
     )
     assert [node.node_id for node in after_broken] == ["node-inside"]
-
-
-def test_private_adaptive_traversal_intent_beam_drop_and_hard_bounds():
-    from types import SimpleNamespace
-
-    from adapter._adaptive_traversal import _adaptive_traverse
-    from adapter._recall_execution import _timestamp_in_temporal_window
-
-    at = datetime(2026, 7, 14, 2, tzinfo=UTC)
-
-    def event(node_id, turn_id, text, vector, *, timestamp=at):
-        node = _controlled_event(node_id, turn_id, text, timestamp)
-        node.embedding_vector = vector
-        return node
-
-    anchor = event("node-anchor", "anchor", "anchor", [1.0, 0.0])
-    temporal = event("node-temporal", "temporal", "temporal", [0.8, 0.6])
-    semantic = event("node-semantic", "semantic", "semantic", [1.0, 0.0])
-    entity = event("node-entity", "entity", "entity", [0.8, 0.6])
-    outside = event(
-        "node-outside",
-        "outside",
-        "outside",
-        [1.0, 0.0],
-        timestamp=at.replace(hour=5),
-    )
-    outside_child = event(
-        "node-outside-child", "outside-child", "outside child", [1.0, 0.0]
-    )
-    deep = event("node-deep", "deep", "deep", [1.0, 0.0])
-    malformed = event("node-malformed", "malformed", "bad", [1.0, 0.0])
-    malformed.attributes.pop("provenance")
-
-    def link(link_type):
-        return SimpleNamespace(link_type=SimpleNamespace(value=link_type))
-
-    neighbors = {
-        anchor.node_id: [
-            (semantic, link("SEMANTIC")),
-            (temporal, link("TEMPORAL")),
-            (entity, link("ENTITY")),
-            (outside, link("TEMPORAL")),
-            (malformed, link("ENTITY")),
-        ],
-        entity.node_id: [(deep, link("ENTITY"))],
-        semantic.node_id: [(deep, link("SEMANTIC"))],
-        outside.node_id: [(outside_child, link("TEMPORAL"))],
-    }
-
-    class Encoder:
-        def encode(self, text):
-            assert text == "query"
-            return [[1.0, 0.0]]
-
-    graph_db = SimpleNamespace(
-        get_neighbors=lambda node_id: list(neighbors.get(node_id, ()))
-    )
-    trg = SimpleNamespace(graph_db=graph_db, encoder=Encoder())
-    constraints = SimpleNamespace(allows_link=lambda _link: True)
-
-    def run(intent, **overrides):
-        options = {
-            "beam_width": 3,
-            "drop_threshold": 1.0,
-            "max_graph_depth": 1,
-            "max_nodes": 10,
-            "temporal_window": (at, at.replace(hour=4)),
-        }
-        options.update(overrides)
-        return _adaptive_traverse(
-            trg=trg,
-            constraints=constraints,
-            event_node_type=_ControlledEventNode,
-            node_type=_ControlledNodeType,
-            query="query",
-            anchors=[anchor],
-            intent=intent,
-            timestamp_in_window=_timestamp_in_temporal_window,
-            **options,
-        )
-
-    when_result = run("WHEN")
-    entity_result = run("ENTITY")
-    general_first = run("GENERAL")
-    general_second = run("GENERAL")
-    why_result = run("WHY")
-
-    assert when_result[0].node is temporal
-    assert entity_result[0].node is entity
-    assert [item.node.node_id for item in general_first] == [
-        item.node.node_id for item in general_second
-    ]
-    assert general_first[0].node is entity
-    assert [item.node.node_id for item in why_result] == [
-        item.node.node_id for item in general_first
-    ]
-    assert [item.score for item in why_result] == pytest.approx(
-        [item.score for item in general_first]
-    )
-    assert entity_result[0].score == pytest.approx(
-        1 / 61 + 0.6 * 0.6 + 0.4 * 0.8
-    )
-    assert outside.node_id not in {item.node.node_id for item in when_result}
-    assert outside_child.node_id not in {
-        item.node.node_id for item in run("WHEN", max_graph_depth=2)
-    }
-    assert malformed.node_id not in {
-        item.node.node_id for item in entity_result
-    }
-
-    beam_one = run("GENERAL", beam_width=1)
-    assert len(beam_one) == 1
-    assert len(neighbors[anchor.node_id]) > 1
-
-    drop_pruned = run("GENERAL", drop_threshold=0.15)
-    assert semantic.node_id in {item.node.node_id for item in drop_pruned}
-    assert entity.node_id not in {item.node.node_id for item in drop_pruned}
-
-    depth_one = run("GENERAL", beam_width=1, max_graph_depth=1)
-    depth_two = run("GENERAL", beam_width=1, max_graph_depth=2)
-    assert deep.node_id not in {item.node.node_id for item in depth_one}
-    assert deep.node_id in {item.node.node_id for item in depth_two}
-    duplicate_paths = run("GENERAL", beam_width=3, max_graph_depth=2)
-    deep_items = [item for item in duplicate_paths if item.node is deep]
-    assert len(deep_items) == 1
-    assert deep_items[0].score == pytest.approx(
-        1 / 61 + 0.6 * 0.6 + 0.4 * 0.8 + 0.6 * 0.6 + 0.4 * 1.0
-    )
-    node_limited = run("GENERAL", max_nodes=2)
-    assert len(node_limited) == 1
-    assert all(1 <= item.hop <= 1 for item in node_limited)
 
 
 def test_controlled_rrf_lexical_anchor_reaches_public_evidence_and_fallback(
@@ -888,169 +799,6 @@ def test_controlled_rrf_lexical_anchor_reaches_public_evidence_and_fallback(
     assert fallback.safe_error_code is None
     assert len(backend.trg.graph_db.traverse_calls) == traverse_calls_before_fallback
     assert "private lexical path" not in repr(fallback)
-
-
-def test_controlled_adaptive_traversal_is_opt_in_and_falls_back_to_fixed(
-    tmp_path,
-    monkeypatch,
-):
-    from types import SimpleNamespace
-
-    import adapter._recall_execution as execution_module
-
-    at = datetime(2026, 7, 14, 2, tzinfo=UTC)
-    anchor = _controlled_event(
-        "node-adaptive-anchor", "adaptive-anchor", "Dense anchor", at
-    )
-    expansion = _controlled_event(
-        "node-adaptive-expansion",
-        "adaptive-expansion",
-        "Graph expansion",
-        at.replace(hour=3),
-    )
-    anchor.embedding_vector = [1.0, 0.0]
-    expansion.embedding_vector = [1.0, 0.0]
-    link = SimpleNamespace(link_type=SimpleNamespace(value="ENTITY"))
-    context = SimpleNamespace(
-        anchor_nodes=[anchor],
-        traversal_paths=[[anchor.node_id, expansion.node_id]],
-        narrative_context="private narrative",
-        metadata={"search_scores": [0.9]},
-    )
-
-    class Encoder:
-        def encode(self, text):
-            assert text == "query"
-            return [[1.0, 0.0]]
-
-    backend = _controlled_real_backend(
-        tmp_path,
-        monkeypatch,
-        {anchor.node_id: anchor, expansion.node_id: expansion},
-        context,
-        neighbors={anchor.node_id: [(expansion, link)]},
-        encoder=Encoder(),
-    )
-    adapter = MagmaMemoryAdapter(
-        backend,
-        IngestionStateStore(tmp_path / "adaptive-state.json"),
-    )
-    fixed_policy = RecallPolicy(
-        top_k=1,
-        max_graph_depth=1,
-        max_nodes=3,
-        max_evidence_items=2,
-    )
-    adaptive_policy = replace(fixed_policy, intent="GENERAL")
-
-    fixed = adapter.recall("query", fixed_policy)
-    assert [item.evidence_id for item in fixed.evidence] == [
-        "evidence-adaptive-anchor",
-        "evidence-adaptive-expansion",
-    ]
-    assert len(backend.trg.graph_db.traverse_calls) == 1
-    beam_only = adapter.recall(
-        "query", replace(fixed_policy, beam_width=1)
-    )
-    threshold_only = adapter.recall(
-        "query", replace(fixed_policy, drop_threshold=0.15)
-    )
-    assert [item.evidence_id for item in beam_only.evidence] == [
-        "evidence-adaptive-anchor",
-        "evidence-adaptive-expansion",
-    ]
-    assert threshold_only.evidence == beam_only.evidence
-    assert len(backend.trg.graph_db.traverse_calls) == 1
-
-    adaptive = adapter.recall("query", adaptive_policy)
-    assert [item.evidence_id for item in adaptive.evidence] == [
-        "evidence-adaptive-anchor",
-        "evidence-adaptive-expansion",
-    ]
-    assert len(backend.trg.graph_db.traverse_calls) == 1
-    assert len(adaptive.evidence) <= adaptive_policy.max_evidence_items
-    public_output = repr(adaptive)
-    for secret in (
-        "node-adaptive-anchor",
-        "node-adaptive-expansion",
-        "_lumina_adaptive_expansions",
-        "beam_width",
-        "drop_threshold",
-        "internal score",
-        "hop=",
-    ):
-        assert secret not in public_output
-
-    monkeypatch.setattr(
-        execution_module,
-        "_adaptive_traverse",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("adaptive-private-failure")
-        ),
-    )
-    fallback = adapter.recall("query", adaptive_policy)
-    assert [item.evidence_id for item in fallback.evidence] == [
-        "evidence-adaptive-anchor",
-        "evidence-adaptive-expansion",
-    ]
-    assert fallback.safe_error_code is None
-    assert len(backend.trg.graph_db.traverse_calls) == 2
-    assert "adaptive-private-failure" not in repr(fallback)
-
-    def fail_fixed(**_kwargs):
-        raise RuntimeError("fixed-private-failure")
-
-    backend.trg.graph_db.traverse = fail_fixed
-    unavailable = adapter.recall("query", adaptive_policy)
-    assert unavailable.evidence == ()
-    assert unavailable.safe_error_code == "recall_unavailable"
-    assert "fixed-private-failure" not in repr(unavailable)
-
-
-def test_controlled_lexical_temporal_window_filters_before_anchor_and_evidence(
-    tmp_path, monkeypatch
-):
-    from types import SimpleNamespace
-
-    start = datetime(2026, 7, 14, 3, tzinfo=UTC)
-    end = datetime(2026, 7, 14, 4, tzinfo=UTC)
-    dense = _controlled_event("node-dense", "a-dense", "semantic result", start)
-    outside = _controlled_event(
-        "node-outside", "b-outside", "xy zq", start.replace(hour=2)
-    )
-    inside = _controlled_event(
-        "node-inside", "c-inside", "xy zq", start.replace(minute=30)
-    )
-    nodes = {node.node_id: node for node in (dense, outside, inside)}
-    context = SimpleNamespace(
-        anchor_nodes=[dense],
-        traversal_paths=[],
-        narrative_context="private",
-        metadata={"search_scores": [0.9]},
-    )
-    backend = _controlled_real_backend(tmp_path, monkeypatch, nodes, context)
-    adapter = MagmaMemoryAdapter(
-        backend,
-        IngestionStateStore(tmp_path / "window-state.json"),
-    )
-    policy = RecallPolicy(
-        top_k=3,
-        max_graph_depth=0,
-        max_nodes=3,
-        max_evidence_items=3,
-        temporal_window=(start, end),
-    )
-
-    windowed = adapter.recall("xy zq", policy)
-    windowed_ids = [item.evidence_id for item in windowed.evidence]
-    assert "evidence-c-inside" in windowed_ids
-    assert "evidence-b-outside" not in windowed_ids
-    fused_anchor_ids = backend.trg.graph_db.traverse_calls[-1][0]
-    assert "node-inside" in fused_anchor_ids
-    assert "node-outside" not in fused_anchor_ids
-
-    unwindowed = adapter.recall("xy zq", replace(policy, temporal_window=None))
-    assert "evidence-b-outside" in [item.evidence_id for item in unwindowed.evidence]
 
 
 def test_real_backend_projects_expansions_once_using_minimum_hop_and_stable_order(
@@ -1168,208 +916,6 @@ def test_default_fields_keep_legacy_fixed_query_without_router(
     assert backend.trg.query_calls[1][1] == 1
     assert backend.trg.query_calls[1][2].max_depth == 0
     assert "memory.query_engine" not in sys.modules
-
-
-def test_temporal_window_filters_all_evidence_with_half_open_utc_semantics(
-    tmp_path,
-    monkeypatch,
-):
-    from types import SimpleNamespace
-
-    start = datetime(2026, 7, 14, 2, tzinfo=UTC)
-    end = datetime(2026, 7, 14, 4, tzinfo=UTC)
-    before = _controlled_event(
-        "magma-before-internal", "before", "Before window", datetime(2026, 7, 14, 1, 59, tzinfo=UTC)
-    )
-    at_start = _controlled_event(
-        "magma-start-internal", "start", "At window start", start
-    )
-    same_instant = _controlled_event(
-        "magma-same-instant-internal",
-        "same-instant",
-        "Same instant in Shanghai",
-        datetime(2026, 7, 14, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
-    )
-    at_end = _controlled_event(
-        "magma-end-internal", "end", "At excluded end", end
-    )
-    after = _controlled_event(
-        "magma-after-internal", "after", "After window", datetime(2026, 7, 14, 4, 1, tzinfo=UTC)
-    )
-    no_time = _controlled_event(
-        "magma-no-time-anchor-internal", "no-time-anchor", "No timestamp", start
-    )
-    no_time.timestamp = None
-    inside_expansion = _controlled_event(
-        "magma-inside-expansion-internal",
-        "inside-expansion",
-        "Inside graph expansion",
-        datetime(2026, 7, 14, 3, tzinfo=UTC),
-    )
-    end_expansion = _controlled_event(
-        "magma-end-expansion-internal", "end-expansion", "End graph expansion", end
-    )
-    naive_expansion = _controlled_event(
-        "magma-naive-expansion-internal",
-        "naive-expansion",
-        "Naive graph expansion",
-        datetime(2026, 7, 14, 3, 30),
-    )
-    all_nodes = (
-        before,
-        at_start,
-        same_instant,
-        at_end,
-        after,
-        no_time,
-        inside_expansion,
-        end_expansion,
-        naive_expansion,
-    )
-    context = SimpleNamespace(
-        anchor_nodes=[before, at_start, same_instant, at_end, after, no_time],
-        traversal_paths=[
-            [at_start.node_id, inside_expansion.node_id],
-            [at_start.node_id, end_expansion.node_id],
-            [same_instant.node_id, naive_expansion.node_id],
-        ],
-        narrative_context="narrative-secret",
-        metadata={
-            "search_scores": [0.99, 0.9, 0.8, 0.7, 0.6, 0.5],
-            "stats": {"private": True},
-        },
-    )
-    backend = _controlled_real_backend(
-        tmp_path,
-        monkeypatch,
-        {node.node_id: node for node in all_nodes},
-        context,
-    )
-    adapter = MagmaMemoryAdapter(
-        backend,
-        IngestionStateStore(tmp_path / "state.json"),
-    )
-    policy = RecallPolicy(
-        top_k=6,
-        max_evidence_items=10,
-        max_chars=4000,
-        max_graph_depth=1,
-        max_nodes=20,
-    )
-
-    no_window = adapter.recall("query", policy)
-    explicit_none = adapter.recall(
-        "query",
-        replace(policy, temporal_window=None),
-    )
-    assert explicit_none == no_window
-    assert {item.evidence_id for item in no_window.evidence} == {
-        "evidence-before",
-        "evidence-start",
-        "evidence-same-instant",
-        "evidence-end",
-        "evidence-after",
-        "evidence-no-time-anchor",
-        "evidence-inside-expansion",
-        "evidence-end-expansion",
-    }
-
-    windowed = adapter.recall(
-        "query",
-        replace(policy, temporal_window=(start, end)),
-    )
-    assert [item.evidence_id for item in windowed.evidence] == [
-        "evidence-start",
-        "evidence-same-instant",
-        "evidence-inside-expansion",
-    ]
-    assert backend.trg.query_calls[-1][2].time_window == (start, end)
-    restored_default = adapter.recall("query", policy)
-    assert restored_default == no_window
-    public_output = repr(windowed)
-    for internal_value in (
-        "magma-start-internal",
-        "magma-inside-expansion-internal",
-        "time_window",
-        "traversal_paths",
-        "search_scores",
-        "narrative-secret",
-    ):
-        assert internal_value not in public_output
-
-    empty = adapter.recall(
-        "query",
-        replace(
-            policy,
-            temporal_window=(
-                datetime(2027, 1, 1, tzinfo=UTC),
-                datetime(2027, 1, 2, tzinfo=UTC),
-            ),
-        ),
-    )
-    assert empty.evidence == ()
-    assert empty.rendered_text == ""
-    assert empty.safe_error_code is None
-
-
-def test_temporal_window_skips_anchor_with_broken_timezone_offset(
-    tmp_path,
-    monkeypatch,
-):
-    from types import SimpleNamespace
-
-    class BrokenOffset(tzinfo):
-        def utcoffset(self, _value):
-            raise TypeError("malformed timezone offset")
-
-        def dst(self, _value):
-            return None
-
-    start = datetime(2026, 7, 14, 2, tzinfo=UTC)
-    end = datetime(2026, 7, 14, 4, tzinfo=UTC)
-    broken = _controlled_event(
-        "magma-broken-time-internal",
-        "broken-time",
-        "Broken time anchor",
-        start,
-    )
-    broken.timestamp = datetime(2026, 7, 14, 3, tzinfo=BrokenOffset())
-    valid = _controlled_event(
-        "magma-valid-time-internal",
-        "valid-time",
-        "Valid time anchor",
-        datetime(2026, 7, 14, 3, tzinfo=UTC),
-    )
-    context = SimpleNamespace(
-        anchor_nodes=[broken, valid],
-        traversal_paths=[],
-        narrative_context="narrative-secret",
-        metadata={"search_scores": [0.9, 0.8]},
-    )
-    backend = _controlled_real_backend(
-        tmp_path,
-        monkeypatch,
-        {broken.node_id: broken, valid.node_id: valid},
-        context,
-    )
-    adapter = MagmaMemoryAdapter(
-        backend,
-        IngestionStateStore(tmp_path / "state.json"),
-    )
-
-    recalled = adapter.recall(
-        "query",
-        RecallPolicy(
-            top_k=2,
-            max_graph_depth=0,
-            temporal_window=(start, end),
-        ),
-    )
-
-    assert [item.evidence_id for item in recalled.evidence] == [
-        "evidence-valid-time"
-    ]
-    assert recalled.safe_error_code is None
 
 
 def test_real_backend_skips_malformed_paths_non_events_and_invalid_expansions(
@@ -1569,13 +1115,6 @@ def test_adapter_uses_total_evidence_limit_and_does_not_leak_graph_internals(
         max_evidence_items=2,
         max_chars=500,
         max_nodes=3,
-        intent="ENTITY",
-        temporal_window=(
-            datetime(2026, 7, 1, tzinfo=UTC),
-            datetime(2026, 8, 1, tzinfo=UTC),
-        ),
-        beam_width=3,
-        drop_threshold=0.2,
     )
 
     backend_candidates = backend.recall("query", policy)
@@ -1621,92 +1160,58 @@ def test_adapter_uses_total_evidence_limit_and_does_not_leak_graph_internals(
         "magma-first-uuid-secret",
         "private_path",
         "backend_score",
-        "intent",
-        "temporal_window",
-        "beam_width",
-        "drop_threshold",
         "search_scores",
         "narrative-secret",
     ):
         assert private_value not in public_output
-    for control_name in (
-        "intent",
-        "temporal_window",
-        "beam_width",
-        "drop_threshold",
-    ):
-        assert not hasattr(first_context, control_name)
     assert all(not hasattr(item, "score") for item in first_context.evidence)
+
+
+    assert 'final_min_score' not in public_output
+    assert not hasattr(first_context, 'final_min_score')
 
 
 def test_recall_policy_allows_zero_graph_depth_and_rejects_negative_depth():
     defaults = RecallPolicy()
     assert defaults == RecallPolicy(5, 2000, 5, 5, 100)
-    assert (
-        defaults.intent,
-        defaults.temporal_window,
-        defaults.beam_width,
-        defaults.drop_threshold,
-    ) == (None, None, None, None)
+    assert defaults.final_min_score is None
+    assert defaults.relation_surfaces is None
     assert RecallPolicy(max_graph_depth=0).max_graph_depth == 0
     with pytest.raises(ValueError, match="max_graph_depth must be non-negative"):
         RecallPolicy(max_graph_depth=-1)
 
 
-def test_recall_policy_validates_phase_one_controls_strictly():
-    start = datetime(2026, 7, 1, tzinfo=UTC)
-    end = datetime(2026, 8, 1, tzinfo=UTC)
-    for intent in ("GENERAL", "WHY", "WHEN", "ENTITY"):
-        policy = RecallPolicy(
-            intent=intent,
-            temporal_window=(start, end),
-            beam_width=1,
-            drop_threshold=0.0,
-        )
-        assert policy.intent == intent
-    assert RecallPolicy(drop_threshold=1.0).drop_threshold == 1.0
-
-    fallback_zone = ZoneInfo("America/New_York")
-    fallback_start = datetime(
-        2026, 11, 1, 1, 30, tzinfo=fallback_zone, fold=0
-    )
-    fallback_end = datetime(
-        2026, 11, 1, 1, 30, tzinfo=fallback_zone, fold=1
-    )
-    fallback_policy = RecallPolicy(
-        temporal_window=(fallback_start, fallback_end)
-    )
-    assert fallback_policy.temporal_window == (fallback_start, fallback_end)
-
-    invalid = (
-        ({"intent": "general"}, "intent must be one of"),
-        ({"intent": 1}, "intent must be one of"),
-        ({"temporal_window": [start, end]}, "pair of aware datetimes"),
-        ({"temporal_window": (start,)}, "pair of aware datetimes"),
+@pytest.mark.parametrize(
+    ('removed_field', 'value'),
+    (
+        ('intent', 'GENERAL'),
         (
-            {"temporal_window": (start.replace(tzinfo=None), end)},
-            "pair of aware datetimes",
+            'temporal_window',
+            (datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 8, 1, tzinfo=UTC)),
         ),
-        (
-            {"temporal_window": (start, "2026-08-01T00:00:00Z")},
-            "pair of aware datetimes",
-        ),
-        ({"temporal_window": (start, start)}, "start must be before end"),
-        ({"temporal_window": (end, start)}, "start must be before end"),
-        ({"beam_width": 0}, "beam_width must be a positive integer"),
-        ({"beam_width": 1.5}, "beam_width must be a positive integer"),
-        ({"beam_width": True}, "beam_width must be a positive integer"),
-        ({"drop_threshold": -0.01}, "finite number between 0 and 1"),
-        ({"drop_threshold": 1.01}, "finite number between 0 and 1"),
-        ({"drop_threshold": float("nan")}, "finite number between 0 and 1"),
-        ({"drop_threshold": float("inf")}, "finite number between 0 and 1"),
-        ({"drop_threshold": 10**10000}, "finite number between 0 and 1"),
-        ({"drop_threshold": True}, "finite number between 0 and 1"),
-        ({"drop_threshold": "0.15"}, "finite number between 0 and 1"),
+        ('beam_width', 1),
+        ('drop_threshold', 0.1),
+        ('reranker_min_score', 0.0),
+    ),
+)
+def test_recall_policy_rejects_removed_experimental_controls(
+    removed_field, value,
+):
+    with pytest.raises(TypeError):
+        RecallPolicy(**{removed_field: value})
+
+
+def test_recall_policy_validates_retained_controls_strictly():
+    assert RecallPolicy(final_min_score=0.5).final_min_score == 0.5
+    assert RecallPolicy(relation_surfaces=("doorplate",)).relation_surfaces == (
+        "doorplate",
     )
-    for kwargs, error in invalid:
-        with pytest.raises(ValueError, match=error):
-            RecallPolicy(**kwargs)
+    for value in (("",), (1,), ["doorplate"]):
+        with pytest.raises(ValueError, match="tuple of non-empty strings"):
+            RecallPolicy(relation_surfaces=value)
+    for value in (float('nan'), float('inf'), 10**10000, True, '0.5'):
+        with pytest.raises(ValueError, match='finite number or None'):
+            RecallPolicy(final_min_score=value)
 
 
 @pytest.mark.skipif(
@@ -1715,7 +1220,6 @@ def test_recall_policy_validates_phase_one_controls_strictly():
 )
 def test_real_magma_lexical_rrf_recovers_non_dense_anchor(tmp_path):
     from adapter._anchor_fusion import _rank_lexical_events
-    from adapter._recall_execution import _timestamp_in_temporal_window
 
     query = "Which polymeric membrane diffusion evaluation identifier was ZXQJ-741?"
     contents = [
@@ -1735,7 +1239,7 @@ def test_real_magma_lexical_rrf_recovers_non_dense_anchor(tmp_path):
         "turns": [
             {
                 "turn_id": f"turn-{index}",
-                "role": "user" if index % 2 == 0 else "assistant",
+                "role": "user",
                 "timestamp": f"2026-07-14T0{index}:00:00Z",
                 "source_timezone": "UTC",
                 "timezone_source": "client",
@@ -1761,20 +1265,20 @@ def test_real_magma_lexical_rrf_recovers_non_dense_anchor(tmp_path):
     lexical = _rank_lexical_events(
         graph_nodes=backend.trg.graph_db.nodes.items(), query=query,
         max_nodes=policy.max_nodes, event_node_type=backend._event_node_type,
-        node_type=backend._node_type, temporal_window=None,
-        timestamp_in_window=_timestamp_in_temporal_window,
+        node_type=backend._node_type,
     )
     lexical_ids = [node.node_id for node in lexical]
     assert target_memory_id in lexical_ids[:policy.top_k]
 
     recalled = adapter.recall(query, policy)
-    target_evidence_id = adapter._evidence_id(segment.segment_id, segment.turns[-1].turn_id)
+    target_evidence_id = build_grounded_spans(segment.turns)[-1].unit_id
     assert target_evidence_id in [item.evidence_id for item in recalled.evidence]
     target = next(item for item in recalled.evidence if item.evidence_id == target_evidence_id)
     assert target.timestamp == segment.turns[-1].timestamp.isoformat()
     assert target.provenance == SourceProvenance(
         segment_id=segment.segment_id, conversation_id=segment.conversation_id,
         turn_id=segment.turns[-1].turn_id,
+        source_role=segment.turns[-1].role,
         source_timestamp=segment.turns[-1].timestamp.isoformat(),
         source_timezone="UTC", ingestion_version=adapter.ingestion_version,
         timezone_source="client",
@@ -1786,136 +1290,22 @@ def test_real_magma_lexical_rrf_recovers_non_dense_anchor(tmp_path):
     Path(sys.executable).resolve() != (Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe").resolve(),
     reason="real MAGMA test runs in the isolated Conversation Memory environment",
 )
-def test_real_magma_temporal_window_filters_anchors_and_expansions(tmp_path):
-    query = "Zephyr lattice calibration exact anchor phrase"
-    segment = parse_segment({
-        "schema_version": "2",
-        "segment_id": "temporal-window-segment",
-        "conversation_id": "temporal-window-conversation",
-        "state": "pending_digest",
-        "created_at": "2026-07-14T04:00:00Z",
-        "source_timezone": "UTC",
-        "turns": [
-            {
-                "turn_id": "turn-a",
-                "role": "user",
-                "timestamp": "2026-06-30T23:00:00Z",
-                "source_timezone": "UTC",
-                "timezone_source": "client",
-                "content": query,
-            },
-            {
-                "turn_id": "turn-b",
-                "role": "assistant",
-                "timestamp": "2026-07-14T02:00:00Z",
-                "source_timezone": "UTC",
-                "timezone_source": "client",
-                "content": f"{query} was confirmed during the active window.",
-            },
-            {
-                "turn_id": "turn-c",
-                "role": "user",
-                "timestamp": "2026-07-14T03:00:00Z",
-                "source_timezone": "UTC",
-                "timezone_source": "client",
-                "content": "A quiet follow-up note recorded durable source provenance.",
-            },
-        ],
-    })
-    backend = RealMagmaBackend(tmp_path / "temporal-window-magma")
-    adapter = MagmaMemoryAdapter(
-        backend,
-        IngestionStateStore(tmp_path / "temporal-window-state.json"),
-    )
-    result = adapter.ingest(segment)
-    assert result.status == "completed"
-    memory_a, memory_b, memory_c = result.memory_ids
-    window = (
-        datetime(2026, 7, 14, 10, tzinfo=ZoneInfo("Asia/Shanghai")),
-        datetime(2026, 7, 14, 12, tzinfo=ZoneInfo("Asia/Shanghai")),
-    )
-    depth_one = RecallPolicy(
-        top_k=2,
-        max_evidence_items=3,
-        max_chars=2000,
-        max_graph_depth=1,
-        max_nodes=10,
-    )
-    constraints = backend._constraints_type(
-        max_depth=depth_one.max_graph_depth,
-        max_nodes=depth_one.max_nodes,
-        follow_temporal=True,
-        follow_semantic=True,
-        follow_causal=True,
-        time_window=window,
-    )
-    raw_context = backend.trg.query(
-        query,
-        max_results=depth_one.top_k,
-        constraints=constraints,
-    )
-    raw_anchor_ids = [node.node_id for node in raw_context.anchor_nodes]
-    raw_traversed_ids = {
-        node_id
-        for path in raw_context.traversal_paths
-        for node_id in path[1:]
-    }
-    assert raw_anchor_ids == [memory_a, memory_b]
-    assert memory_c not in raw_anchor_ids
-    assert memory_c in raw_traversed_ids
+def test_real_magma_non_anchor_traversal_event_enters_bounded_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    class _NonnegativeOrderReranker:
+        def score(self, _query, texts):
+            return tuple(
+                float(len(texts) - index)
+                for index, _text in enumerate(texts)
+            )
 
-    evidence_ids = [
-        adapter._evidence_id(segment.segment_id, turn.turn_id)
-        for turn in segment.turns
-    ]
-    no_window = adapter.recall(query, depth_one)
-    assert [item.evidence_id for item in no_window.evidence] == evidence_ids
-
-    depth_zero_windowed = adapter.recall(
-        query,
-        replace(depth_one, max_graph_depth=0, temporal_window=window),
+    monkeypatch.setattr(
+        magma_adapter_module,
+        "_create_bge_reranker",
+        _NonnegativeOrderReranker,
     )
-    assert [item.evidence_id for item in depth_zero_windowed.evidence] == [
-        evidence_ids[1]
-    ]
-
-    depth_one_windowed = adapter.recall(
-        query,
-        replace(depth_one, temporal_window=window),
-    )
-    assert [item.evidence_id for item in depth_one_windowed.evidence] == [
-        evidence_ids[1],
-        evidence_ids[2],
-    ]
-    expansion = depth_one_windowed.evidence[1]
-    assert expansion.timestamp == segment.turns[2].timestamp.isoformat()
-    assert expansion.provenance == SourceProvenance(
-        segment_id=segment.segment_id,
-        conversation_id=segment.conversation_id,
-        turn_id=segment.turns[2].turn_id,
-        source_timestamp=segment.turns[2].timestamp.isoformat(),
-        source_timezone=segment.turns[2].source_timezone,
-        ingestion_version=adapter.ingestion_version,
-        timezone_source=segment.turns[2].timezone_source,
-    )
-    public_output = repr(depth_one_windowed)
-    for internal_value in (
-        memory_a,
-        memory_b,
-        memory_c,
-        "time_window",
-        "traversal_paths",
-        "search_scores",
-        "narrative_context",
-    ):
-        assert internal_value not in public_output
-
-
-@pytest.mark.skipif(
-    Path(sys.executable).resolve() != (Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe").resolve(),
-    reason="real MAGMA test runs in the isolated Conversation Memory environment",
-)
-def test_real_magma_non_anchor_traversal_event_enters_bounded_evidence(tmp_path):
     segment = load_fixture(FIXTURE)
     backend = RealMagmaBackend(tmp_path / "magma")
     adapter = MagmaMemoryAdapter(
@@ -1957,14 +1347,9 @@ def test_real_magma_non_anchor_traversal_event_enters_bounded_evidence(tmp_path)
     assert expansion_id not in anchor_ids
     assert expansion_id in traversed_ids
 
-    expected_anchor_evidence_id = adapter._evidence_id(
-        segment.segment_id,
-        segment.turns[0].turn_id,
-    )
-    expected_expansion_evidence_id = adapter._evidence_id(
-        segment.segment_id,
-        segment.turns[1].turn_id,
-    )
+    units = build_grounded_spans(segment.turns)
+    expected_anchor_evidence_id = units[0].unit_id
+    expected_expansion_evidence_id = units[1].unit_id
     depth_zero_recalled = adapter.recall(query, depth_zero_policy)
     assert [item.evidence_id for item in depth_zero_recalled.evidence] == [
         expected_anchor_evidence_id,
@@ -1977,73 +1362,30 @@ def test_real_magma_non_anchor_traversal_event_enters_bounded_evidence(tmp_path)
     ]
     assert len(recalled.evidence) <= depth_one_policy.max_evidence_items
     expansion = recalled.evidence[1]
-    assert expansion.timestamp == segment.turns[1].timestamp.isoformat()
+    expansion_turn = next(
+        turn for turn in segment.turns if turn.turn_id == units[1].turn_id
+    )
+    assert expansion.timestamp == expansion_turn.timestamp.isoformat()
     assert expansion.provenance == SourceProvenance(
         segment_id=segment.segment_id,
         conversation_id=segment.conversation_id,
-        turn_id=segment.turns[1].turn_id,
-        source_timestamp=segment.turns[1].timestamp.isoformat(),
-        source_timezone=segment.turns[1].source_timezone,
+        turn_id=expansion_turn.turn_id,
+        source_role=expansion_turn.role,
+        source_timestamp=expansion_turn.timestamp.isoformat(),
+        source_timezone=expansion_turn.source_timezone,
         ingestion_version=adapter.ingestion_version,
-        timezone_source=segment.turns[1].timezone_source,
+        timezone_source=expansion_turn.timezone_source,
     )
+    assert expansion.provenance.source_role == expansion_turn.role
     assert sum(
         item.evidence_id == expected_expansion_evidence_id
         for item in recalled.evidence
     ) == 1
 
-    from adapter._recall_execution import _execute_fixed_recall
-
-    adaptive_policy = replace(
-        depth_one_policy,
-        intent="GENERAL",
-        beam_width=10,
-        drop_threshold=1.0,
-    )
-    adaptive_internal = _execute_fixed_recall(
-        trg=backend.trg,
-        constraints_type=backend._constraints_type,
-        event_node_type=backend._event_node_type,
-        node_type=backend._node_type,
-        query=query,
-        policy=adaptive_policy,
-    )
-    adaptive_expansions = getattr(
-        adaptive_internal,
-        "_lumina_adaptive_expansions",
-    )
-    adaptive_anchor_ids = {
-        node.node_id for node in adaptive_internal.anchor_nodes
-    }
-    assert adaptive_expansions
-    selected_node = adaptive_expansions[0].node
-    assert selected_node.node_id not in adaptive_anchor_ids
-    assert selected_node.node_id in {
-        neighbor.node_id
-        for anchor_node_id in adaptive_anchor_ids
-        for neighbor, _link in backend.trg.graph_db.get_neighbors(anchor_node_id)
-    }
-
-    adaptive_recalled = adapter.recall(query, adaptive_policy)
-    selected_evidence_id = selected_node.attributes["evidence_id"]
-    assert [item.evidence_id for item in adaptive_recalled.evidence] == [
-        expected_anchor_evidence_id,
-        selected_evidence_id,
-    ]
-    turns_by_evidence_id = {
-        adapter._evidence_id(segment.segment_id, turn.turn_id): turn
-        for turn in segment.turns
-    }
-    selected_turn = turns_by_evidence_id[selected_evidence_id]
-    adaptive_expansion = adaptive_recalled.evidence[1]
-    assert adaptive_expansion.timestamp == selected_turn.timestamp.isoformat()
-    assert adaptive_expansion.provenance.turn_id == selected_turn.turn_id
-    assert len(adaptive_recalled.evidence) <= adaptive_policy.max_evidence_items
-    public_output = repr(recalled) + repr(adaptive_recalled)
+    public_output = repr(recalled)
     for internal_value in (
         anchor_id,
         expansion_id,
-        selected_node.node_id,
         "traversal_paths",
         "search_scores",
         "narrative_context",
@@ -2065,3 +1407,82 @@ def test_real_magma_fixture_ingestion_and_recall(tmp_path):
     context = adapter.recall("Why did the membrane experiment fail?", RecallPolicy(top_k=3, max_chars=500, max_evidence_items=3))
     assert context.evidence
     assert any("solvent" in item.text.lower() for item in context.evidence)
+
+
+@pytest.mark.skipif(
+    Path(sys.executable).resolve()
+    != (
+        Path(__file__).resolve().parents[1]
+        / ".venv"
+        / "Scripts"
+        / "python.exe"
+    ).resolve(),
+    reason="real MAGMA+BGE test runs in the isolated Conversation Memory environment",
+)
+def test_real_magma_bge_bounded_recall_preserves_both_role_directions(
+    tmp_path,
+    monkeypatch,
+):
+    user_target = "The final user notebook choice was titanium blue."
+    assistant_target = (
+        "I recommended the saffron cedar trail for the weekend hike."
+    )
+    segment = _role_segment(
+        "role-distribution",
+        (
+            ("user", user_target),
+            ("assistant", "I can help organize the remaining notes."),
+            ("assistant", "The weather report may change later this week."),
+            ("assistant", "Remember to charge the spare battery."),
+            ("assistant", "A concise checklist can make packing easier."),
+            ("assistant", "We can review the calendar after lunch."),
+            ("user", "The kitchen light was replaced on Tuesday."),
+            ("user", "The library book is due near the end of August."),
+            ("user", "The balcony plants need water every other day."),
+            ("assistant", assistant_target),
+        ),
+    )
+    monkeypatch.setattr(
+        magma_adapter_module,
+        "_create_bge_reranker",
+        magma_adapter_module.BgeReranker,
+    )
+    adapter = MagmaMemoryAdapter(
+        RealMagmaBackend(tmp_path / "role-distribution-magma"),
+        IngestionStateStore(tmp_path / "role-distribution-state.json"),
+    )
+    assert adapter.ingest(segment).status == "completed"
+    policy = RecallPolicy(
+        top_k=5,
+        max_graph_depth=0,
+        max_nodes=20,
+        max_evidence_items=2,
+        max_chars=1000,
+    )
+
+    user_context = adapter.recall(
+        "What was the user's final notebook choice?",
+        policy,
+    )
+    assistant_context = adapter.recall(
+        "Which trail did Lumina recommend for the weekend hike?",
+        policy,
+    )
+
+    assert any(
+        item.text == user_target and item.provenance.source_role == "user"
+        for item in user_context.evidence
+    )
+    assert f"[USER]\n{user_target}" in user_context.rendered_text
+    assert any(
+        item.text == assistant_target
+        and item.provenance.source_role == "assistant"
+        for item in assistant_context.evidence
+    )
+    assert f"[LUMINA]\n{assistant_target}" in assistant_context.rendered_text
+    assert len(user_context.evidence) <= policy.max_evidence_items
+    assert len(assistant_context.evidence) <= policy.max_evidence_items
+    assert all(not hasattr(item, "score") for item in (
+        *user_context.evidence,
+        *assistant_context.evidence,
+    ))

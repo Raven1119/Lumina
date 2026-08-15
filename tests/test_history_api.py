@@ -26,7 +26,7 @@ class _HistoryModel:
 
 
 class _HistoryMemory:
-    ingestion_version = "dream-v1"
+    ingestion_version = "grounded-span-v2"
 
     def __init__(self) -> None:
         self.recall_calls = 0

@@ -21,7 +21,6 @@ from scripts.recall_e2e_test import (
     SANDBOX_MARKER,
     SANDBOX_MARKER_CONTENT,
     SandboxSafetyError,
-    SOURCE_TIMEZONE,
     cleanup_test_sandbox,
     reset_test_sandbox,
     run_acceptance,
@@ -35,8 +34,65 @@ IS_ISOLATED_ENV = (
 )
 
 
+class _DeterministicBgeScorer:
+    _TARGET_TERMS = {
+        "我准备睡觉了。": ("准备睡觉", "早点睡"),
+        "我明天有什么安排？": ("没有实验室例会",),
+        "打印机怎么样了？": ("打印机", "坏了"),
+        "我现在最终选择什么？": ("Beta",),
+        "我一开始考虑的是什么？": ("Alpha",),
+        "小林下周去哪？": ("小林", "上海"),
+        "下周三项目评审安排在哪个房间？": ("307", "海棠会议室"),
+        "服务端口是多少？": ("5433",),
+        "上线后检查什么？": ("健康状态",),
+        "我下个月有什么计划？": ("可能", "下个月", "上海"),
+    }
+
+    def __init__(self, state):
+        self._state = state
+
+    def score(self, query, candidate_texts):
+        self._state["score_calls"] += 1
+        terms = self._TARGET_TERMS.get(query, ())
+        return tuple(
+            float(sum(term in text for term in terms))
+            for text in candidate_texts
+        )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def fake_e2e_bge_factory():
+    state = {
+        "factory_calls": 0,
+        "score_calls": 0,
+        "real_constructor_calls": 0,
+    }
+    patcher = pytest.MonkeyPatch()
+    real_bge_class = recall_e2e.magma_adapter_module.BgeReranker
+
+    def forbid_real_constructor(*args, **kwargs):
+        del args, kwargs
+        state["real_constructor_calls"] += 1
+        raise AssertionError("real BGE must not load in ordinary pytest")
+
+    def create_fake_scorer():
+        state["factory_calls"] += 1
+        return _DeterministicBgeScorer(state)
+
+    patcher.setattr(real_bge_class, "__init__", forbid_real_constructor)
+    patcher.setattr(
+        recall_e2e.magma_adapter_module,
+        "_create_bge_reranker",
+        create_fake_scorer,
+    )
+    try:
+        yield state
+    finally:
+        patcher.undo()
+
+
 @pytest.fixture(scope="module")
-def kept_acceptance(tmp_path_factory):
+def kept_acceptance(tmp_path_factory, fake_e2e_bge_factory):
     if not IS_ISOLATED_ENV:
         pytest.skip("real recall E2E runs in Conversation_Memory/.venv")
     sandbox = tmp_path_factory.mktemp("recall-e2e-kept") / "sandbox"
@@ -235,6 +291,7 @@ def test_real_magma_graph_and_vectors_are_persisted(kept_acceptance):
         "behavior_change",
         "temporal",
         "entity",
+        "assistant_self_memory",
         "zh_temporal",
         "zh_previous_week",
         "zh_next_week",
@@ -246,11 +303,96 @@ def test_real_recall_query_checks_pass(kept_acceptance, check):
     assert report["recall"]["checks"][check] is True
 
 
-def test_real_recall_summary_is_nine_of_nine(kept_acceptance):
+def test_real_recall_summary_is_ten_of_ten(kept_acceptance):
     report, _ = kept_acceptance
-    assert report["recall"]["queries"] == 9
-    assert report["recall"]["passed"] == 9
+    assert report["recall"]["queries"] == 10
+    assert report["recall"]["passed"] == 10
     assert report["recall"]["failed"] == 0
+
+
+def test_real_magma_grounded_bge_report_has_production_policy_gate(
+    kept_acceptance,
+    fake_e2e_bge_factory,
+):
+    report, _ = kept_acceptance
+    scoring = report['grounded_bge_acceptance']
+    assert scoring['post_rerank_scoring'] == 'hindsight'
+    assert scoring['hindsight_commit'] == (
+        'f1c825d88471d069aec0480446d071c589ab10bd'
+    )
+    assert scoring['final_min_score'] is None
+    assert scoring['recency'] == 'linear_365_day_floor_0_1'
+    assert scoring['recency_alpha'] == 0.2
+    assert scoring['temporal_signal'] == 'neutral_0_5'
+    assert scoring['temporal_alpha'] == 0.2
+    assert scoring['proof_signal'] == 'neutral_0_5'
+    assert scoring['proof_count_alpha'] == 0.1
+    acceptance = report["grounded_bge_acceptance"]
+
+    assert acceptance["result"] == "PASS"
+    assert acceptance["model"] == "BAAI/bge-reranker-v2-m3"
+    assert acceptance["revision"] == (
+        "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+    )
+    assert acceptance["queries"] == 11
+    assert acceptance["top1"] == sum(
+        row["top1"] for row in acceptance["rows"]
+    )
+    assert acceptance["top_k"] == 10
+    assert acceptance["max_graph_depth"] == 1
+    assert acceptance["max_nodes"] == 20
+    assert acceptance["score_floor"] is None
+    assert acceptance["max_evidence_items"] == 3
+    assert acceptance["depth0_positive_complete"] == 11
+    assert acceptance["depth1_positive_complete"] == 11
+    assert 0 <= acceptance["no_answer_empty_depth0"] <= 6
+    assert 0 <= acceptance["no_answer_empty_depth1"] <= 6
+    assert 0 <= acceptance["near_miss_empty_depth0"] <= 3
+    assert 0 <= acceptance["near_miss_empty_depth1"] <= 3
+    assert acceptance["xiaolin"] is True
+    assert acceptance["meeting_role_evidence"] is True
+    assert acceptance["meeting_roles"] == ["assistant", "user"]
+    assert acceptance["assistant_self_memory"] is True
+    assert acceptance["lazy_load"] is True
+    assert acceptance["instance_reuse"] is True
+    assert acceptance["factory_calls"] == 1
+    assert acceptance["public_score_exposure"] == "none"
+    assert len(acceptance["rows"]) == 11
+    assert len(acceptance["graphiti_rows"]) == 20
+    assert all(
+        0 < row["candidate_count"] <= 20
+        for row in acceptance["rows"]
+    )
+    assert all(
+        row["depth1_complete"]
+        for row in acceptance["graphiti_rows"]
+        if row["kind"] == "positive"
+    )
+    assert all(
+        0 <= row["depth0_candidate_count"] <= 10
+        and 0 <= row["depth1_candidate_count"] <= 20
+        for row in acceptance["graphiti_rows"]
+    )
+    assert all(
+        row["top2_rendered_chars"] > 0 for row in acceptance["rows"]
+    )
+    assert all(
+        row["top2_token_estimate"] > 0 for row in acceptance["rows"]
+    )
+    assert all(
+        "score" not in row and "text" not in row
+        for row in acceptance["rows"]
+    )
+    assert acceptance["median_magma_ms"] >= 0
+    assert acceptance["median_bge_ms"] >= 0
+    assert acceptance["median_total_ms"] >= 0
+    assert acceptance["median_recall_latency_depth0"] >= 0
+    assert acceptance["median_recall_latency_depth1"] >= 0
+    assert acceptance["median_bge_latency_depth0"] >= 0
+    assert acceptance["median_bge_latency_depth1"] >= 0
+    assert fake_e2e_bge_factory["factory_calls"] >= 3
+    assert fake_e2e_bge_factory["score_calls"] > 0
+    assert fake_e2e_bge_factory["real_constructor_calls"] == 0
 
 
 def test_real_provenance_and_temporal_mapping_pass(kept_acceptance):
@@ -295,7 +437,12 @@ def test_kept_report_contains_no_paths_raw_dialogue_or_node_uuids(kept_acceptanc
     assert str(sandbox) not in serialized
     assert str(ROOT) not in serialized
     assert all(turn.text not in serialized for turn in FIXED_TURNS)
+    assert all(
+        text not in serialized
+        for text in recall_e2e._grounded_bge_private_texts()
+    )
     assert "traceback" not in serialized.lower()
+    assert "logit" not in serialized.lower()
     assert "openai_api_key" not in serialized.lower()
     assert report["leak_checks"]["passed"] is True
 
@@ -340,7 +487,7 @@ def test_chat_recall_does_not_trigger_dream_or_pending_ingestion(
     monkeypatch,
 ):
     class SharedMemorySpy:
-        ingestion_version = "dream-v1"
+        ingestion_version = "grounded-span-v2"
 
         def __init__(self):
             self.recall_calls = []

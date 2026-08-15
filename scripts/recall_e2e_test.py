@@ -11,8 +11,10 @@ import re
 import shutil
 import sys
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from statistics import median
+from time import perf_counter
 from typing import Any, Callable, Iterable
 
 
@@ -21,10 +23,17 @@ CONVERSATION_MEMORY_ROOT = ROOT / "Conversation_Memory"
 if str(CONVERSATION_MEMORY_ROOT) not in sys.path:
     sys.path.insert(0, str(CONVERSATION_MEMORY_ROOT))
 
+import adapter.magma_adapter as magma_adapter_module  # noqa: E402
+from adapter._grounded_spans import build_grounded_spans  # noqa: E402
 from adapter.backend import RealMagmaBackend  # noqa: E402
 from adapter.interfaces import MemoryIngestor, MemoryRetriever  # noqa: E402
 from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.models import MemoryContext, RecallPolicy  # noqa: E402
+from adapter.models import (  # noqa: E402
+    ColdDraftSegment,
+    ColdDraftTurn,
+    MemoryContext,
+    RecallPolicy,
+)
 from core.cold_draft_store import ColdDraftStore  # noqa: E402
 from core.contracts import MemoryTurn  # noqa: E402
 from core.draft_store import JsonlDraftStore  # noqa: E402
@@ -36,11 +45,14 @@ from Dream.cold_draft_digest import (  # noqa: E402
 from Dream.models import DreamRunPolicy  # noqa: E402
 from Dream.runner import DreamRunner  # noqa: E402
 from ingestion.state_store import IngestionStateStore  # noqa: E402
+from recall.bge_reranker import BGE_MODEL, BGE_REVISION  # noqa: E402
+
+
 SANDBOX_MARKER = ".recall_e2e_sandbox"
 SANDBOX_MARKER_CONTENT = "lumina-recall-e2e-v1\n"
 DEFAULT_WORK_DIR = ROOT / "data" / "recall_e2e_test"
-INGESTION_VERSION = "recall-e2e-v1"
-_EVIDENCE_ID = re.compile(r"^[0-9a-f]{64}$")
+INGESTION_VERSION = "grounded-span-v2"
+_EVIDENCE_ID = re.compile(r"^grounded_span_v2:.+:\d+:\d+$")
 _UUID = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
     re.IGNORECASE,
@@ -158,6 +170,79 @@ class _FixedIngestorProvider:
         return self._ingestor
 
 
+class _TimedSwitchingBackend:
+    """Private E2E seam for one live adapter over isolated MAGMA stores."""
+
+    def __init__(self) -> None:
+        self._delegate: RealMagmaBackend | None = None
+        self.last_ms = 0.0
+        self.last_count = 0
+        self.last_candidates = ()
+
+    def switch(self, delegate: RealMagmaBackend) -> None:
+        self._delegate = delegate
+        self.last_ms = 0.0
+        self.last_count = 0
+        self.last_candidates = ()
+
+    def recall(self, query: str, policy: RecallPolicy):
+        delegate = self._require_delegate()
+        started = perf_counter()
+        try:
+            candidates = delegate.recall(query, policy)
+            self.last_count = len(candidates)
+            self.last_candidates = tuple(candidates)
+            return candidates
+        finally:
+            self.last_ms = (perf_counter() - started) * 1000.0
+
+    def _require_delegate(self) -> RealMagmaBackend:
+        if self._delegate is None:
+            raise RuntimeError("E2E backend delegate is not configured")
+        return self._delegate
+
+    def __getattr__(self, name: str):
+        return getattr(self._require_delegate(), name)
+
+
+class _TimedBgeReranker:
+    def __init__(self, delegate: Any) -> None:
+        self.delegate = delegate
+        self.calls = 0
+        self.last_ms = 0.0
+        self.last_scores = ()
+
+    def score(self, query: str, candidate_texts):
+        self.calls += 1
+        started = perf_counter()
+        try:
+            scores = tuple(self.delegate.score(query, candidate_texts))
+            self.last_scores = scores
+            return scores
+        finally:
+            self.last_ms = (perf_counter() - started) * 1000.0
+
+
+@contextlib.contextmanager
+def _capture_bge_runtime():
+    """Time the production-private lazy factory without adding public API."""
+
+    original_factory = magma_adapter_module._create_bge_reranker
+    state: dict[str, Any] = {"factory_calls": 0, "instance": None}
+
+    def timed_factory():
+        state["factory_calls"] += 1
+        instance = _TimedBgeReranker(original_factory())
+        state["instance"] = instance
+        return instance
+
+    magma_adapter_module._create_bge_reranker = timed_factory
+    try:
+        yield state
+    finally:
+        magma_adapter_module._create_bge_reranker = original_factory
+
+
 def _fake_rolling_summarizer(
     old_summary: str | None,
     moved_turns: list[MemoryTurn],
@@ -254,7 +339,7 @@ def _base_report(keep_data: bool) -> dict[str, Any]:
         },
         "dream": {"attempted": 0, "failed": 0, "second_attempted": 0},
         "magma": {"events": 0, "vectors": 0, "persisted": False},
-        "recall": {"queries": 9, "passed": 0, "failed": 0, "checks": {}},
+        "recall": {"queries": 10, "passed": 0, "failed": 0, "checks": {}},
         "provenance": {
             "passed": False,
             "temporal_normalization_passed": False,
@@ -266,6 +351,50 @@ def _base_report(keep_data: bool) -> dict[str, Any]:
             "max_chars": False,
         },
         "restart_recall": {"passed": False},
+        "grounded_bge_acceptance": {
+            "result": "FAIL",
+            "model": BGE_MODEL,
+            "revision": BGE_REVISION,
+            "queries": 11,
+            "top_k": 10,
+            "max_graph_depth": 1,
+            "max_nodes": 20,
+            "score_floor": None,
+            "max_evidence_items": 3,
+            "depth0_positive_complete": 0,
+            "depth1_positive_complete": 0,
+            "no_answer_empty_depth0": 0,
+            "no_answer_empty_depth1": 0,
+            "near_miss_empty_depth0": 0,
+            "near_miss_empty_depth1": 0,
+            "graph_added_candidates": [],
+            "graph_added_required_evidence": [],
+            "xiaolin": False,
+            "meeting_roles": [],
+            "meeting_role_evidence": False,
+            "assistant_self_memory": False,
+            "median_recall_latency_depth0": 0.0,
+            "median_recall_latency_depth1": 0.0,
+            "median_bge_latency_depth0": 0.0,
+            "median_bge_latency_depth1": 0.0,
+            "median_candidate_count_depth0": 0.0,
+            "median_candidate_count_depth1": 0.0,
+            "graphiti_rows": [],
+            "top1": 0,
+            "top2_answer_complete": 0,
+            "top3_answer_complete": 0,
+            "lazy_load": False,
+            "instance_reuse": False,
+            "public_score_exposure": "none",
+            "factory_calls": 0,
+            "median_magma_ms": 0.0,
+            "median_bge_ms": 0.0,
+            "median_total_ms": 0.0,
+            "median_candidate_count": 0.0,
+            "median_top2_rendered_chars": 0.0,
+            "median_top2_token_estimate": 0.0,
+            "rows": [],
+        },
         "idempotency": {
             "passed": False,
             "node_count_stable": False,
@@ -366,6 +495,11 @@ def _validate_public_context(
         _require(provenance.segment_id in segment_ids, "provenance", "foreign_segment")
         _require(bool(provenance.conversation_id), "provenance", "conversation_id_missing")
         _require(bool(provenance.turn_id), "provenance", "turn_id_missing")
+        _require(
+            provenance.source_role in {"user", "assistant"},
+            "provenance",
+            "source_role_invalid",
+        )
         _require(provenance.ingestion_version == INGESTION_VERSION, "provenance", "ingestion_version_mismatch")
         _require(bool(provenance.source_timezone), "provenance", "source_timezone_missing")
         _require(provenance.timezone_source == "client", "provenance", "timezone_source_mismatch")
@@ -377,6 +511,19 @@ def _validate_public_context(
             source_time.tzinfo is not None and source_time.utcoffset() is not None,
             "provenance",
             "source_timestamp_not_aware",
+        )
+    for source_role, label in (
+        ("user", "[USER]"),
+        ("assistant", "[LUMINA]"),
+    ):
+        role_count = sum(
+            item.provenance.source_role == source_role
+            for item in context.evidence
+        )
+        _require(
+            context.rendered_text.count(label) >= role_count,
+            "provenance",
+            "model_visible_source_role_missing",
         )
 
     public = _public_context_text(context)
@@ -417,11 +564,224 @@ _QUERY_SPECS = (
     ("behavior_change", "What did the user change before repeating the experiment?", "changed the solvent"),
     ("temporal", "When was the membrane experiment completed?", "completed the membrane experiment yesterday"),
     ("entity", "What happened in the membrane experiment?", "membrane experiment"),
+    (
+        "assistant_self_memory",
+        "What did Lumina record about the experiment?",
+        "experiment was recorded as completed",
+    ),
     ("zh_temporal", "我什么时候完成了膜实验？", "我昨天完成了膜实验"),
     ("zh_previous_week", "上周一发生了什么？", "我上周一更换了溶剂"),
     ("zh_next_week", "我准备什么时候复查？", "下周一准备复查"),
 )
 _NEGATIVE_QUERY = "Which catalyst was purchased from Sigma-Aldrich?"
+
+
+def _grounded_bge_segment(
+    scenario_id: str,
+    turns: tuple[tuple[str, str], ...],
+    scenario_index: int,
+) -> ColdDraftSegment:
+    started_at = datetime(2026, 8, 1, 1, 0, tzinfo=UTC) + timedelta(
+        days=scenario_index,
+    )
+    source_turns = tuple(
+        ColdDraftTurn(
+            turn_id=f"{scenario_id}-turn-{index}",
+            role=role,
+            content=text,
+            timestamp=started_at + timedelta(minutes=index),
+            source_timezone=SOURCE_TIMEZONE,
+            timezone_source="client",
+        )
+        for index, (role, text) in enumerate(turns, start=1)
+    )
+    return ColdDraftSegment(
+        segment_id=f"grounded-bge-{scenario_id}",
+        conversation_id=f"grounded-bge-{scenario_id}",
+        state="pending_digest",
+        turns=source_turns,
+        created_at=started_at,
+        source_timezone=SOURCE_TIMEZONE,
+        schema_version="2",
+    )
+
+
+def _grounded_answer_complete(
+    text: str,
+    required_groups: tuple[tuple[str, ...], ...],
+    forbidden: tuple[str, ...] = (),
+) -> bool:
+    return (
+        all(any(option in text for option in group) for group in required_groups)
+        and not any(item in text for item in forbidden)
+    )
+
+
+_GROUNDED_BGE_SCENARIOS = (
+    (
+        "assistant_contamination_correction_negation",
+        (
+            ("user", "今天已经很晚了，我准备睡觉。"),
+            ("assistant", "早点睡吧，你明天还有实验室例会。"),
+            ("user", "我什么时候说过我明天有实验室例会？"),
+            ("assistant", "你没有说过，是我刚才自己推测的。"),
+            ("user", "我明天其实没有实验室例会。"),
+        ),
+        (
+            (
+                "sleep",
+                "我准备睡觉了。",
+                (("准备睡觉", "早点睡", "sleep", "rest early"),),
+                (),
+            ),
+            (
+                "tomorrow_correction",
+                "我明天有什么安排？",
+                (("没有实验室例会",),),
+                ("还有实验室例会",),
+            ),
+        ),
+    ),
+    (
+        "same_turn_sleep_printer",
+        (("user", "我今晚准备早点睡。另外实验室打印机坏了。"),),
+        (
+            (
+                "same_turn_sleep",
+                "我准备睡觉了。",
+                (("早点睡", "sleep early", "rest early"),),
+                (),
+            ),
+            (
+                "same_turn_printer",
+                "打印机怎么样了？",
+                (("打印机", "printer"), ("坏了", "broken", "broke")),
+                (),
+            ),
+        ),
+    ),
+    (
+        "state_update_control",
+        (
+            ("user", "我准备最终选择方案 Alpha。"),
+            ("assistant", "Alpha 看起来适合当前目标。"),
+            ("user", "我还需要比较成本和维护难度。"),
+            ("assistant", "可以继续评估两个方案。"),
+            ("user", "我改变决定了，最终选择方案 Beta。"),
+        ),
+        (
+            ("current_choice", "我现在最终选择什么？", (("Beta",),), ()),
+            ("historical_choice", "我一开始考虑的是什么？", (("Alpha",),), ()),
+        ),
+    ),
+    (
+        "xiaolin_shanghai_multiturn",
+        (
+            ("user", "我的朋友小林下周要出差。"),
+            ("assistant", "她去哪？"),
+            ("user", "去上海。"),
+        ),
+        (
+            (
+                "xiaolin_destination",
+                "小林下周去哪？",
+                (("小林", "Xiaolin"), ("上海", "Shanghai")),
+                (),
+            ),
+        ),
+    ),
+    (
+        "exact_room_307",
+        (
+            ("user", "下周三的项目评审安排在海棠会议室 307。"),
+            ("assistant", "好的，我会记住活动地点。"),
+            ("user", "到场后直接去会议室，不需要先到前台。"),
+        ),
+        (
+            (
+                "room_307",
+                "下周三项目评审安排在哪个房间？",
+                (("307",), ("海棠会议室", "Haitang")),
+                (),
+            ),
+        ),
+    ),
+    (
+        "port_and_unrelated_health",
+        (("user", "服务端口改成5433。上线后只检查健康状态。"),),
+        (
+            ("port_5433", "服务端口是多少？", (("5433",),), ()),
+            (
+                "health_status",
+                "上线后检查什么？",
+                (("健康状态", "health status", "health check"),),
+                (),
+            ),
+        ),
+    ),
+    (
+        "uncertainty",
+        (("user", "我可能下个月去上海。"),),
+        (
+            (
+                "uncertain_trip",
+                "我下个月有什么计划？",
+                (
+                    ("可能", "may", "might"),
+                    ("下个月", "next month"),
+                    ("上海", "Shanghai"),
+                ),
+                (),
+            ),
+        ),
+    ),
+)
+
+
+_GROUNDED_BGE_NEGATIVE_QUERIES = (
+    ("python_list_comprehension", "no_answer", "Explain Python list comprehension."),
+    ("derivative_x_squared", "no_answer", "What is the derivative of x^2?"),
+    (
+        "unrelated_translation",
+        "no_answer",
+        "Translate 'good morning' into French.",
+    ),
+    ("generic_chemistry", "no_answer", "What is the chemical formula of water?"),
+    ("generic_coding", "no_answer", "How do I reverse a list in Python?"),
+    ("casual_greeting", "no_answer", "Hello, how are you?"),
+    (
+        "sleep_vs_python_sleep",
+        "near_miss",
+        "Python 的 time.sleep() 函数怎么用？",
+    ),
+    (
+        "printer_vs_python_print",
+        "near_miss",
+        "如何用 Python print 打印列表？",
+    ),
+    (
+        "shanghai_vs_coordinates",
+        "near_miss",
+        "上海的经纬度是多少？",
+    ),
+)
+
+
+def _grounded_bge_private_texts() -> tuple[str, ...]:
+    source_texts = tuple(
+        text
+        for _scenario_id, turns, _queries in _GROUNDED_BGE_SCENARIOS
+        for _role, text in turns
+    )
+    query_texts = tuple(
+        query
+        for _scenario_id, _turns, queries in _GROUNDED_BGE_SCENARIOS
+        for _query_id, query, _required, _forbidden in queries
+    )
+    negative_query_texts = tuple(
+        query for _query_id, _kind, query in _GROUNDED_BGE_NEGATIVE_QUERIES
+    )
+    return source_texts + query_texts + negative_query_texts
 
 
 def _run_query_suite(
@@ -481,15 +841,17 @@ def _run_query_suite(
 def _validate_temporal_metadata(
     backend: RealMagmaBackend,
 ) -> None:
-    attributes_by_turn = {
-        attributes.get("provenance", {}).get("turn_id"): attributes
-        for node in backend.trg.graph_db.nodes.values()
-        for attributes in [getattr(node, "attributes", {})]
-    }
-    first = attributes_by_turn.get(FIXED_TURNS[0].turn_id, {})
+    attributes_by_turn: dict[str, list[dict[str, Any]]] = {}
+    for node in backend.trg.graph_db.nodes.values():
+        attributes = getattr(node, "attributes", {})
+        turn_id = attributes.get("provenance", {}).get("turn_id")
+        if isinstance(turn_id, str):
+            attributes_by_turn.setdefault(turn_id, []).append(attributes)
+    first = attributes_by_turn.get(FIXED_TURNS[0].turn_id, [])
     first_mentions = {
         item.get("original_expression"): item
-        for item in first.get("temporal_mentions", [])
+        for attributes in first
+        for item in attributes.get("temporal_mentions", [])
         if isinstance(item, dict)
     }
     for expression, language in (("yesterday", "en"), ("昨天", "zh")):
@@ -507,15 +869,20 @@ def _validate_temporal_metadata(
         )
     _require(
         {"original": "昨天", "parsed": "2026-07-12T16:00:00Z"}
-        in first.get("dates_mentioned", []),
+        in [
+            item
+            for attributes in first
+            for item in attributes.get("dates_mentioned", [])
+        ],
         "temporal",
         "chinese_dates_mentioned_missing",
     )
 
-    schedule = attributes_by_turn.get(FIXED_TURNS[4].turn_id, {})
+    schedule = attributes_by_turn.get(FIXED_TURNS[4].turn_id, [])
     schedule_mentions = {
         item.get("original_expression"): item
-        for item in schedule.get("temporal_mentions", [])
+        for attributes in schedule
+        for item in attributes.get("temporal_mentions", [])
         if isinstance(item, dict)
     }
     expected_intervals = {
@@ -548,8 +915,776 @@ def _validate_report_safety(report: dict[str, Any], work_dir: Path) -> None:
         "faiss",
     ]
     forbidden.extend(turn.text.casefold() for turn in FIXED_TURNS)
+    forbidden.extend(text.casefold() for text in _grounded_bge_private_texts())
     _require(not any(value in lowered for value in forbidden), "report", "report_leak")
     _require(_UUID.search(serialized) is None, "report", "report_uuid_leak")
+
+
+def _run_grounded_bge_acceptance(
+    paths: SandboxPaths,
+    report: dict[str, Any],
+) -> None:
+    report['grounded_bge_acceptance'].update({
+        'post_rerank_scoring': 'hindsight',
+        'hindsight_commit': (
+            'f1c825d88471d069aec0480446d071c589ab10bd'
+        ),
+        'final_min_score': None,
+        'recency': 'linear_365_day_floor_0_1',
+        'recency_alpha': 0.2,
+        'temporal_signal': 'neutral_0_5',
+        'temporal_alpha': 0.2,
+        'proof_signal': 'neutral_0_5',
+        'proof_count_alpha': 0.1,
+        'reference_time': 'latest_candidate_source_timestamp',
+    })
+    acceptance_root = paths.root / "grounded_bge_acceptance"
+    state_store = IngestionStateStore(acceptance_root / "ingestion_state.json")
+    timed_backend = _TimedSwitchingBackend()
+    adapter = MagmaMemoryAdapter(
+        timed_backend,
+        state_store,
+        ingestion_version=INGESTION_VERSION,
+    )
+    rows: list[dict[str, Any]] = []
+    private_candidate_diagnostics: list[dict[str, Any]] = []
+    capacity_diagnostics: list[dict[str, Any]] = []
+    instance_ids: set[int] = set()
+    graphiti_rows: list[dict[str, Any]] = []
+    graph_added_candidates: set[str] = set()
+    graph_added_required_evidence: set[str] = set()
+    meeting_roles: set[str] = set()
+    xiaolin_passed = False
+    stability_cases = 0
+
+    class EarlyWallClock(datetime):
+        @classmethod
+        def now(cls, timezone):
+            return cls(1990, 1, 1, tzinfo=timezone)
+
+    class LateWallClock(datetime):
+        @classmethod
+        def now(cls, timezone):
+            return cls(2090, 1, 1, tzinfo=timezone)
+
+    with _capture_bge_runtime() as bge_runtime:
+        lazy_before_first_recall = (
+            bge_runtime["factory_calls"] == 0
+            and bge_runtime["instance"] is None
+        )
+
+        def run_graphiti_probe(
+            query: str,
+            policy: RecallPolicy,
+            *,
+            segment_id: str,
+        ) -> dict[str, Any]:
+            active_reranker = bge_runtime["instance"]
+            previous_calls = (
+                active_reranker.calls
+                if isinstance(active_reranker, _TimedBgeReranker)
+                else 0
+            )
+            if isinstance(active_reranker, _TimedBgeReranker):
+                active_reranker.last_ms = 0.0
+                active_reranker.last_scores = ()
+            started = perf_counter()
+            context = _silenced(adapter.recall, query, policy)
+            total_ms = (perf_counter() - started) * 1000.0
+            reranker = bge_runtime["instance"]
+            bge_ms = (
+                reranker.last_ms
+                if isinstance(reranker, _TimedBgeReranker)
+                and reranker.calls > previous_calls
+                else 0.0
+            )
+            if isinstance(reranker, _TimedBgeReranker):
+                instance_ids.add(id(reranker))
+            _validate_public_context(
+                context,
+                policy,
+                {segment_id},
+                paths.root,
+            )
+            _require(
+                0 <= timed_backend.last_count <= policy.max_nodes,
+                "grounded_bge",
+                "graphiti_candidate_count_out_of_bounds",
+            )
+            _require(
+                all(
+                    not hasattr(evidence, "score")
+                    for evidence in context.evidence
+                ),
+                "grounded_bge",
+                "public_bge_score_exposed",
+            )
+            return {
+                "context": context,
+                "candidates": tuple(timed_backend.last_candidates),
+                "candidate_count": timed_backend.last_count,
+                "magma_ms": timed_backend.last_ms,
+                "bge_ms": bge_ms,
+                "total_ms": total_ms,
+            }
+
+        def run_stability_probe(
+            query: str,
+            policy: RecallPolicy,
+            *,
+            segment_id: str,
+        ) -> dict[str, Any]:
+            nonlocal stability_cases
+            original_datetime = magma_adapter_module.datetime
+            try:
+                magma_adapter_module.datetime = EarlyWallClock
+                early = run_graphiti_probe(
+                    query,
+                    policy,
+                    segment_id=segment_id,
+                )
+                magma_adapter_module.datetime = LateWallClock
+                late = run_graphiti_probe(
+                    query,
+                    policy,
+                    segment_id=segment_id,
+                )
+            finally:
+                magma_adapter_module.datetime = original_datetime
+            _require(
+                early['context'] == late['context'],
+                'grounded_bge',
+                'wall_clock_shift_changed_top3',
+            )
+            stability_cases += 1
+            return early
+
+        depth0_policy = RecallPolicy(
+            top_k=10,
+            max_graph_depth=0,
+            max_nodes=20,
+            max_evidence_items=3,
+            max_chars=5000,
+        )
+        depth1_policy = replace(depth0_policy, max_graph_depth=1)
+        for scenario_index, (scenario_id, turns, queries) in enumerate(
+            _GROUNDED_BGE_SCENARIOS
+        ):
+            scenario_root = acceptance_root / scenario_id
+            try:
+                backend = _silenced(
+                    RealMagmaBackend,
+                    scenario_root / "magma",
+                )
+            except Exception as exc:
+                raise AcceptanceFailure(
+                    "grounded_bge",
+                    "scenario_magma_initialization_failed",
+                ) from exc
+            timed_backend.switch(backend)
+            segment = _grounded_bge_segment(
+                scenario_id,
+                turns,
+                scenario_index,
+            )
+            ingestion = _silenced(adapter.ingest, segment)
+            expected_units = build_grounded_spans(segment.turns)
+            _require(
+                ingestion.status == "completed"
+                and len(ingestion.memory_ids) == len(expected_units),
+                "grounded_bge",
+                "production_grounded_ingestion_failed",
+            )
+
+            for query_id, query, required_groups, forbidden in queries:
+                depth0 = run_graphiti_probe(
+                    query,
+                    depth0_policy,
+                    segment_id=segment.segment_id,
+                )
+                depth1 = run_stability_probe(
+                    query,
+                    depth1_policy,
+                    segment_id=segment.segment_id,
+                )
+                depth0_context = depth0["context"]
+                depth1_context = depth1["context"]
+                depth0_complete = _grounded_answer_complete(
+                    depth0_context.rendered_text,
+                    required_groups,
+                )
+                depth1_complete = _grounded_answer_complete(
+                    depth1_context.rendered_text,
+                    required_groups,
+                )
+                depth0_ids = {
+                    candidate.metadata.get("evidence_id")
+                    for candidate in depth0["candidates"]
+                    if isinstance(candidate.metadata.get("evidence_id"), str)
+                }
+                depth1_ids = {
+                    candidate.metadata.get("evidence_id")
+                    for candidate in depth1["candidates"]
+                    if isinstance(candidate.metadata.get("evidence_id"), str)
+                }
+                added_ids = depth1_ids - depth0_ids
+                if added_ids:
+                    graph_added_candidates.add(query_id)
+                if depth1_complete and not depth0_complete:
+                    graph_added_required_evidence.add(query_id)
+                if query_id == "tomorrow_correction":
+                    meeting_roles.update(
+                        item.provenance.source_role
+                        for item in depth1_context.evidence
+                    )
+                if query_id == "xiaolin_destination":
+                    matching_items = [
+                        item
+                        for item in depth1_context.evidence
+                        if any(
+                            any(option in item.text for option in group)
+                            for group in required_groups
+                        )
+                    ]
+                    xiaolin_passed = (
+                        depth1_complete
+                        and len({item.evidence_id for item in matching_items}) >= 2
+                        and all(
+                            item.provenance.source_role == "user"
+                            for item in matching_items
+                        )
+                    )
+                graphiti_rows.append(
+                    {
+                        "case_id": query_id,
+                        "kind": "positive",
+                        "depth0_complete": depth0_complete,
+                        "depth1_complete": depth1_complete,
+                        "depth0_empty": not depth0_context.evidence,
+                        "depth1_empty": not depth1_context.evidence,
+                        "depth0_candidate_count": depth0["candidate_count"],
+                        "depth1_candidate_count": depth1["candidate_count"],
+                        "depth0_bge_ms": round(depth0["bge_ms"], 3),
+                        "depth1_bge_ms": round(depth1["bge_ms"], 3),
+                        "depth0_total_ms": round(depth0["total_ms"], 3),
+                        "depth1_total_ms": round(depth1["total_ms"], 3),
+                    }
+                )
+                top2_policy = replace(
+                    depth1_policy,
+                    max_evidence_items=2,
+                )
+                started = perf_counter()
+                context_top2 = _silenced(
+                    adapter.recall,
+                    query,
+                    top2_policy,
+                )
+                total_ms = (perf_counter() - started) * 1000.0
+                reranker = bge_runtime["instance"]
+                _require(
+                    isinstance(reranker, _TimedBgeReranker),
+                    "grounded_bge",
+                    "bge_not_loaded",
+                )
+                instance_ids.add(id(reranker))
+                magma_ms = timed_backend.last_ms
+                bge_ms = reranker.last_ms
+                candidate_count = timed_backend.last_count
+                magma_candidates = tuple(timed_backend.last_candidates)
+                bge_scores = tuple(reranker.last_scores)
+
+                _validate_public_context(
+                    context_top2,
+                    top2_policy,
+                    {segment.segment_id},
+                    paths.root,
+                )
+                _require(
+                    0 < candidate_count <= top2_policy.max_nodes,
+                    "grounded_bge",
+                    "candidate_count_out_of_bounds",
+                )
+                _require(
+                    all(
+                        not hasattr(evidence, "score")
+                        for evidence in context_top2.evidence
+                    ),
+                    "grounded_bge",
+                    "public_bge_score_exposed",
+                )
+                private_rerankable = tuple(
+                    (index, candidate)
+                    for index, candidate in enumerate(magma_candidates)
+                    if isinstance(candidate.text, str) and candidate.text.strip()
+                )
+                _require(
+                    len(private_rerankable) == candidate_count
+                    and len(bge_scores) == candidate_count,
+                    'grounded_bge',
+                    'private_diagnostic_shape_mismatch',
+                )
+                ranked_candidates = tuple(
+                    candidate
+                    for (_original, candidate), _score in sorted(
+                        zip(private_rerankable, bge_scores, strict=True),
+                        key=lambda item: (-item[1], item[0][0]),
+                    )
+                )
+                magma_group_presence = tuple(
+                    any(
+                        any(option in candidate.text for option in group)
+                        for candidate in magma_candidates
+                    )
+                    for group in required_groups
+                )
+                required_group_bge_ranks = tuple(
+                    next(
+                        (
+                            rank
+                            for rank, candidate in enumerate(
+                                ranked_candidates,
+                                start=1,
+                            )
+                            if any(
+                                option in candidate.text
+                                for option in group
+                            )
+                        ),
+                        None,
+                    )
+                    for group in required_groups
+                )
+                private_candidate_diagnostics.append(
+                    {
+                        'query': query_id,
+                        'magma': tuple(
+                            {
+                                'text': candidate.text,
+                                'source_role': candidate.metadata.get(
+                                    'provenance',
+                                    {},
+                                ).get('source_role'),
+                                'oracle_required': any(
+                                    any(
+                                        option in candidate.text
+                                        for option in group
+                                    )
+                                    for group in required_groups
+                                ),
+                            }
+                            for candidate in magma_candidates
+                        ),
+                        'bge': tuple(
+                            {
+                                'text': candidate.text,
+                                'source_role': candidate.metadata.get(
+                                    'provenance',
+                                    {},
+                                ).get('source_role'),
+                                'oracle_required': any(
+                                    any(
+                                        option in candidate.text
+                                        for option in group
+                                    )
+                                    for group in required_groups
+                                ),
+                            }
+                            for candidate in ranked_candidates
+                        ),
+                    }
+                )
+                top1_text = (
+                    context_top2.evidence[0].text
+                    if context_top2.evidence
+                    else ""
+                )
+                top1_correct = _grounded_answer_complete(
+                    top1_text,
+                    required_groups,
+                    forbidden,
+                )
+                top2_complete = _grounded_answer_complete(
+                    context_top2.rendered_text,
+                    required_groups,
+                    forbidden,
+                )
+
+                contexts_by_count = {2: context_top2}
+                for evidence_count in (1, 3, 4, 5):
+                    diagnostic_policy = replace(
+                        top2_policy,
+                        max_evidence_items=evidence_count,
+                    )
+                    diagnostic_context = _silenced(
+                        adapter.recall,
+                        query,
+                        diagnostic_policy,
+                    )
+                    _validate_public_context(
+                        diagnostic_context,
+                        diagnostic_policy,
+                        {segment.segment_id},
+                        paths.root,
+                    )
+                    contexts_by_count[evidence_count] = diagnostic_context
+                complete_by_count = {
+                    evidence_count: _grounded_answer_complete(
+                        contexts_by_count[evidence_count].rendered_text,
+                        required_groups,
+                        forbidden,
+                    )
+                    for evidence_count in range(1, 6)
+                }
+                top3_complete = complete_by_count[3]
+                capacity_diagnostics.append(
+                    {
+                        'query': query_id,
+                        'required_group_bge_ranks': required_group_bge_ranks,
+                        'required_groups_present_in_magma': (
+                            magma_group_presence
+                        ),
+                        'answer_complete_by_evidence_count': complete_by_count,
+                        'evidence_count_by_bound': {
+                            count: len(context.evidence)
+                            for count, context in contexts_by_count.items()
+                        },
+                        'rendered_chars_by_bound': {
+                            count: len(context.rendered_text)
+                            for count, context in contexts_by_count.items()
+                        },
+                    }
+                )
+                rendered_chars = len(context_top2.rendered_text)
+                rows.append(
+                    {
+                        "scenario": scenario_id,
+                        "query": query_id,
+                        "top1": top1_correct,
+                        "top2_answer_complete": top2_complete,
+                        "top3_answer_complete": top3_complete,
+                        "candidate_count": candidate_count,
+                        "magma_ms": round(magma_ms, 3),
+                        "bge_ms": round(bge_ms, 3),
+                        "total_ms": round(total_ms, 3),
+                        "top2_rendered_chars": rendered_chars,
+                        "top2_token_estimate": (rendered_chars + 3) // 4,
+                    }
+                )
+
+        combined_turns = tuple(
+            turn
+            for _scenario_id, turns, _queries in _GROUNDED_BGE_SCENARIOS
+            for turn in turns
+        )
+        combined_segment = _grounded_bge_segment(
+            "combined_negative",
+            combined_turns,
+            len(_GROUNDED_BGE_SCENARIOS),
+        )
+        try:
+            combined_backend = _silenced(
+                RealMagmaBackend,
+                acceptance_root / "combined_negative" / "magma",
+            )
+        except Exception as exc:
+            raise AcceptanceFailure(
+                "grounded_bge",
+                "combined_magma_initialization_failed",
+            ) from exc
+        timed_backend.switch(combined_backend)
+        combined_ingestion = _silenced(adapter.ingest, combined_segment)
+        combined_units = build_grounded_spans(combined_segment.turns)
+        _require(
+            combined_ingestion.status == "completed"
+            and len(combined_ingestion.memory_ids) == len(combined_units),
+            "grounded_bge",
+            "combined_grounded_ingestion_failed",
+        )
+        for query_id, kind, query in _GROUNDED_BGE_NEGATIVE_QUERIES:
+            depth0 = run_graphiti_probe(
+                query,
+                depth0_policy,
+                segment_id=combined_segment.segment_id,
+            )
+            depth1 = run_stability_probe(
+                query,
+                depth1_policy,
+                segment_id=combined_segment.segment_id,
+            )
+            depth0_ids = {
+                candidate.metadata.get("evidence_id")
+                for candidate in depth0["candidates"]
+                if isinstance(candidate.metadata.get("evidence_id"), str)
+            }
+            depth1_ids = {
+                candidate.metadata.get("evidence_id")
+                for candidate in depth1["candidates"]
+                if isinstance(candidate.metadata.get("evidence_id"), str)
+            }
+            if depth1_ids - depth0_ids:
+                graph_added_candidates.add(query_id)
+            graphiti_rows.append(
+                {
+                    "case_id": query_id,
+                    "kind": kind,
+                    "depth0_complete": None,
+                    "depth1_complete": None,
+                    "depth0_empty": not depth0["context"].evidence,
+                    "depth1_empty": not depth1["context"].evidence,
+                    "depth0_candidate_count": depth0["candidate_count"],
+                    "depth1_candidate_count": depth1["candidate_count"],
+                    "depth0_bge_ms": round(depth0["bge_ms"], 3),
+                    "depth1_bge_ms": round(depth1["bge_ms"], 3),
+                    "depth0_total_ms": round(depth0["total_ms"], 3),
+                    "depth1_total_ms": round(depth1["total_ms"], 3),
+                }
+            )
+
+        factory_calls = int(bge_runtime["factory_calls"])
+        reranker = bge_runtime["instance"]
+        instance_reuse = (
+            factory_calls == 1
+            and len(instance_ids) == 1
+            and isinstance(reranker, _TimedBgeReranker)
+            and reranker.calls
+            == len(rows) * 8 + len(_GROUNDED_BGE_NEGATIVE_QUERIES) * 3
+        )
+
+    _require(len(rows) == 11, "grounded_bge", "query_count_mismatch")
+    top1 = sum(bool(row["top1"]) for row in rows)
+    top2 = sum(bool(row["top2_answer_complete"]) for row in rows)
+    top3 = sum(bool(row["top3_answer_complete"]) for row in rows)
+    _require(
+        stability_cases == 20,
+        'grounded_bge',
+        'stability_case_count_mismatch',
+    )
+    positive_graphiti_rows = [
+        row for row in graphiti_rows if row["kind"] == "positive"
+    ]
+    no_answer_rows = [
+        row for row in graphiti_rows if row["kind"] == "no_answer"
+    ]
+    near_miss_rows = [
+        row for row in graphiti_rows if row["kind"] == "near_miss"
+    ]
+    depth0_positive = sum(
+        bool(row["depth0_complete"]) for row in positive_graphiti_rows
+    )
+    depth1_positive = sum(
+        bool(row["depth1_complete"]) for row in positive_graphiti_rows
+    )
+    no_answer_empty_depth0 = sum(
+        bool(row["depth0_empty"]) for row in no_answer_rows
+    )
+    no_answer_empty_depth1 = sum(
+        bool(row["depth1_empty"]) for row in no_answer_rows
+    )
+    near_miss_empty_depth0 = sum(
+        bool(row["depth0_empty"]) for row in near_miss_rows
+    )
+    near_miss_empty_depth1 = sum(
+        bool(row["depth1_empty"]) for row in near_miss_rows
+    )
+    suite_complete_by_count = {
+        evidence_count: sum(
+            bool(item['answer_complete_by_evidence_count'][evidence_count])
+            for item in capacity_diagnostics
+        )
+        for evidence_count in range(1, 6)
+    }
+    minimum_global_evidence_count = next(
+        (
+            evidence_count
+            for evidence_count, complete in suite_complete_by_count.items()
+            if complete == len(rows)
+        ),
+        None,
+    )
+    xiaolin_diagnostic = next(
+        item
+        for item in capacity_diagnostics
+        if item['query'] == 'xiaolin_destination'
+    )
+    report["grounded_bge_acceptance"].update(
+        {
+            "depth0_positive_complete": depth0_positive,
+            "depth1_positive_complete": depth1_positive,
+            "no_answer_empty_depth0": no_answer_empty_depth0,
+            "no_answer_empty_depth1": no_answer_empty_depth1,
+            "near_miss_empty_depth0": near_miss_empty_depth0,
+            "near_miss_empty_depth1": near_miss_empty_depth1,
+            "graph_added_candidates": sorted(graph_added_candidates),
+            "graph_added_required_evidence": sorted(
+                graph_added_required_evidence
+            ),
+            "xiaolin": xiaolin_passed,
+            "meeting_roles": sorted(meeting_roles),
+            "meeting_role_evidence": meeting_roles == {"user", "assistant"},
+            "median_recall_latency_depth0": round(
+                median(row["depth0_total_ms"] for row in graphiti_rows),
+                3,
+            ),
+            "median_recall_latency_depth1": round(
+                median(row["depth1_total_ms"] for row in graphiti_rows),
+                3,
+            ),
+            "median_bge_latency_depth0": round(
+                median(row["depth0_bge_ms"] for row in graphiti_rows),
+                3,
+            ),
+            "median_bge_latency_depth1": round(
+                median(row["depth1_bge_ms"] for row in graphiti_rows),
+                3,
+            ),
+            "median_candidate_count_depth0": median(
+                row["depth0_candidate_count"] for row in graphiti_rows
+            ),
+            "median_candidate_count_depth1": median(
+                row["depth1_candidate_count"] for row in graphiti_rows
+            ),
+            "graphiti_rows": graphiti_rows,
+            "top1": top1,
+            "top2_answer_complete": top2,
+            "top3_answer_complete": top3,
+            "lazy_load": lazy_before_first_recall and factory_calls == 1,
+            "instance_reuse": instance_reuse,
+            "factory_calls": factory_calls,
+            "median_magma_ms": round(
+                median(row["magma_ms"] for row in rows),
+                3,
+            ),
+            "median_bge_ms": round(
+                median(row["bge_ms"] for row in rows),
+                3,
+            ),
+            "median_total_ms": round(
+                median(row["total_ms"] for row in rows),
+                3,
+            ),
+            "median_candidate_count": median(
+                row["candidate_count"] for row in rows
+            ),
+            "median_top2_rendered_chars": median(
+                row["top2_rendered_chars"] for row in rows
+            ),
+            "median_top2_token_estimate": median(
+                row["top2_token_estimate"] for row in rows
+            ),
+            "rows": rows,
+        }
+    )
+    report['grounded_bge_acceptance'][
+        'repeated_run_top3_identical'
+    ] = stability_cases == 20
+    report['grounded_bge_acceptance'][
+        'wall_clock_shift_top3_identical'
+    ] = stability_cases == 20
+    report['grounded_bge_acceptance']['capacity_diagnostics'] = json.loads(
+        json.dumps({
+        'suite_complete_by_evidence_count': suite_complete_by_count,
+        'minimum_global_evidence_count': minimum_global_evidence_count,
+        'xiaolin_required_user_span_bge_ranks': (
+            xiaolin_diagnostic['required_group_bge_ranks']
+        ),
+        'xiaolin_required_spans_present_in_magma': sum(
+            bool(value)
+            for value in xiaolin_diagnostic[
+                'required_groups_present_in_magma'
+            ]
+        ),
+        'median_evidence_count_by_bound': {
+            evidence_count: median(
+                item['evidence_count_by_bound'][evidence_count]
+                for item in capacity_diagnostics
+            )
+            for evidence_count in range(1, 6)
+        },
+        'max_evidence_count_by_bound': {
+            evidence_count: max(
+                item['evidence_count_by_bound'][evidence_count]
+                for item in capacity_diagnostics
+            )
+            for evidence_count in range(1, 6)
+        },
+        'median_rendered_chars_by_bound': {
+            evidence_count: median(
+                item['rendered_chars_by_bound'][evidence_count]
+                for item in capacity_diagnostics
+            )
+            for evidence_count in range(1, 6)
+        },
+        'max_rendered_chars_by_bound': {
+            evidence_count: max(
+                item['rendered_chars_by_bound'][evidence_count]
+                for item in capacity_diagnostics
+            )
+            for evidence_count in range(1, 6)
+        },
+        'approx_median_tokens_by_bound': {
+            evidence_count: median(
+                (
+                    item['rendered_chars_by_bound'][evidence_count] + 3
+                ) // 4
+                for item in capacity_diagnostics
+            )
+            for evidence_count in range(1, 6)
+        },
+        'approx_max_tokens_by_bound': {
+            evidence_count: max(
+                (
+                    item['rendered_chars_by_bound'][evidence_count] + 3
+                ) // 4
+                for item in capacity_diagnostics
+            )
+            for evidence_count in range(1, 6)
+        },
+            'rows': capacity_diagnostics,
+        })
+    )
+    _require(
+        len(private_candidate_diagnostics) == len(rows)
+        and all(
+            candidate['source_role'] in {'user', 'assistant'}
+            for item in private_candidate_diagnostics
+            for stage in ('magma', 'bge')
+            for candidate in item[stage]
+        ),
+        'grounded_bge',
+        'private_candidate_diagnostic_invalid',
+    )
+    _require(
+        depth1_positive == 11,
+        "grounded_bge",
+        "production_depth1_required_evidence_incomplete",
+    )
+    _require(
+        xiaolin_passed,
+        "grounded_bge",
+        "xiaolin_required_user_spans_incomplete",
+    )
+    _require(
+        meeting_roles == {"user", "assistant"},
+        "grounded_bge",
+        "meeting_role_evidence_incomplete",
+    )
+    _require(
+        report["grounded_bge_acceptance"]["assistant_self_memory"],
+        "grounded_bge",
+        "assistant_self_memory_incomplete",
+    )
+    _require(
+        lazy_before_first_recall and factory_calls == 1,
+        "grounded_bge",
+        "bge_not_lazy_loaded_once",
+    )
+    _require(
+        instance_reuse,
+        "grounded_bge",
+        "bge_instance_not_reused",
+    )
+    report["grounded_bge_acceptance"]["result"] = "PASS"
 
 
 def _verbose(enabled: bool, message: str) -> None:
@@ -726,6 +1861,7 @@ def _execute_pipeline(
         "production_timezone_mapping_mismatch",
     )
     segment_ids = {source_record["segment_id"]}
+    grounded_units = build_grounded_spans(converted.turns)
     report["cold_draft"].update(
         {
             "compacted": True,
@@ -808,27 +1944,57 @@ def _execute_pipeline(
     _verbose(verbose, "Dream completed and source consumed")
 
     node_count, vector_count = _memory_counts(backend)
-    _require(node_count == len(FIXED_TURNS), "magma", "magma_event_count_mismatch")
-    _require(vector_count == len(FIXED_TURNS), "magma", "magma_vector_count_mismatch")
-    event_provenance = {
-        attributes.get("provenance", {}).get("turn_id"): (
-            getattr(node, "timestamp", None).isoformat()
-            if getattr(node, "timestamp", None) is not None
-            else None,
-            attributes.get("provenance", {}).get("source_timestamp"),
-            attributes.get("provenance", {}).get("source_timezone"),
-            attributes.get("provenance", {}).get("timezone_source"),
-        )
+    _require(
+        node_count == len(grounded_units),
+        "magma",
+        "magma_event_count_mismatch",
+    )
+    _require(
+        vector_count == len(grounded_units),
+        "magma",
+        "magma_vector_count_mismatch",
+    )
+    events_by_evidence_id = {
+        attributes.get("evidence_id"): (node, attributes)
         for node in backend.trg.graph_db.nodes.values()
         for attributes in [getattr(node, "attributes", {})]
     }
-    for source_turn in FIXED_TURNS:
-        expected_timestamp = _draft_turn(source_turn).created_at.isoformat()
-        stored = event_provenance.get(source_turn.turn_id)
-        _require(stored is not None, "magma", "turn_event_provenance_missing")
-        _require(stored[0] == expected_timestamp, "magma", "magma_event_timestamp_mismatch")
-        _require(stored[1] == expected_timestamp, "magma", "turn_event_timestamp_mismatch")
-        _require(stored[2:] == (SOURCE_TIMEZONE, "client"), "magma", "turn_event_timezone_mismatch")
+    turns_by_id = {turn.turn_id: turn for turn in converted.turns}
+    for unit in grounded_units:
+        stored = events_by_evidence_id.get(unit.unit_id)
+        _require(stored is not None, "magma", "grounded_event_missing")
+        node, attributes = stored
+        source_turn = turns_by_id[unit.turn_id]
+        expected_timestamp = source_turn.timestamp.isoformat()
+        provenance = attributes.get("provenance", {})
+        _require(
+            getattr(node, "content_narrative", None) == unit.text
+            and source_turn.content[unit.start:unit.end] == unit.text,
+            "magma",
+            "grounded_event_source_mismatch",
+        )
+        _require(
+            attributes.get("source_start") == unit.start
+            and attributes.get("source_end") == unit.end
+            and attributes.get("role") == unit.source_role
+            and unit.source_role == source_turn.role,
+            "provenance",
+            "grounded_offsets_mismatch",
+        )
+        _require(
+            getattr(node, "timestamp", None).isoformat() == expected_timestamp,
+            "magma",
+            "magma_event_timestamp_mismatch",
+        )
+        _require(
+            provenance.get("turn_id") == unit.turn_id
+            and provenance.get("source_role") == unit.source_role
+            and provenance.get("source_timestamp") == expected_timestamp
+            and provenance.get("source_timezone") == SOURCE_TIMEZONE
+            and provenance.get("timezone_source") == "client",
+            "provenance",
+            "grounded_event_provenance_mismatch",
+        )
     report["magma"].update(
         {"events": node_count, "vectors": vector_count, "persisted": True}
     )
@@ -849,6 +2015,7 @@ def _execute_pipeline(
     )
     expected_recall_provenance = {
         turn.turn_id: (
+            turn.role,
             turn.timestamp.isoformat(),
             turn.source_timezone,
             turn.timezone_source,
@@ -861,6 +2028,7 @@ def _execute_pipeline(
             _require(expected is not None, "provenance", "recall_turn_id_unknown")
             _require(
                 (
+                    evidence.provenance.source_role,
                     evidence.provenance.source_timestamp,
                     evidence.provenance.source_timezone,
                     evidence.provenance.timezone_source,
@@ -870,13 +2038,13 @@ def _execute_pipeline(
                 "recall_turn_provenance_mismatch",
             )
     report["recall"].update(
-        {"passed": 9, "failed": 0, "checks": checks}
+        {"passed": 10, "failed": 0, "checks": checks}
     )
     _validate_temporal_metadata(backend)
     report["provenance"].update(
         {"passed": True, "temporal_normalization_passed": True}
     )
-    _verbose(verbose, "nine-query recall suite passed")
+    _verbose(verbose, "ten-query recall suite passed")
 
     top_one_policy = RecallPolicy(
         top_k=1,
@@ -977,6 +2145,7 @@ def _execute_pipeline(
     _verbose(verbose, "second Dream run remained idempotent")
 
     del runner, adapter, backend
+    del contexts, top_one, max_two, max_chars, repeated_context
     gc.collect()
     try:
         restarted_backend = _silenced(RealMagmaBackend, paths.magma)
@@ -1024,6 +2193,40 @@ def _execute_pipeline(
     report["restart_recall"]["passed"] = True
     report["leak_checks"]["passed"] = True
     _verbose(verbose, "persisted recall restart passed")
+
+    assistant_query = next(
+        item for item in _QUERY_SPECS if item[0] == "assistant_self_memory"
+    )
+    graphiti_policy = RecallPolicy(
+        top_k=10,
+        max_graph_depth=1,
+        max_nodes=20,
+        max_evidence_items=3,
+        max_chars=5000,
+        final_min_score=None,
+    )
+    assistant_context = _silenced(
+        restarted_adapter.recall,
+        assistant_query[1],
+        graphiti_policy,
+    )
+    _validate_public_context(
+        assistant_context,
+        graphiti_policy,
+        segment_ids,
+        paths.root,
+    )
+    report["grounded_bge_acceptance"]["assistant_self_memory"] = any(
+        assistant_query[2].casefold() in item.text.casefold()
+        and item.provenance.source_role == "assistant"
+        for item in assistant_context.evidence
+    )
+
+    del restarted_adapter, restarted_backend, restarted_contexts
+    del restarted_checks, assistant_context
+    gc.collect()
+    _silenced(_run_grounded_bge_acceptance, paths, report)
+    _verbose(verbose, "grounded production Recall acceptance passed")
 
 
 def run_acceptance(
@@ -1096,6 +2299,11 @@ def _print_summary(report: dict[str, Any], keep_data: bool) -> None:
         print(
             "Idempotency: "
             f"{'PASS' if report['idempotency']['passed'] else 'FAIL'}"
+        )
+        print(
+            "Production depth-1 evidence: "
+            f"{report['grounded_bge_acceptance']['depth1_positive_complete']}/"
+            f"{report['grounded_bge_acceptance']['queries']} complete"
         )
     else:
         failure = report.get("failures", [{}])[0]

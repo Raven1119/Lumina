@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from itertools import islice
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 _STOP_WORDS = {
     "the",
@@ -47,6 +47,7 @@ _PROVENANCE_FIELDS = (
     "segment_id",
     "conversation_id",
     "turn_id",
+    "source_role",
     "source_timestamp",
     "source_timezone",
     "ingestion_version",
@@ -63,11 +64,6 @@ def _is_projectable_event(
     *,
     event_node_type: type[Any],
     node_type: Any,
-    temporal_window: tuple[datetime, datetime] | None,
-    timestamp_in_window: Callable[
-        [Any, tuple[datetime, datetime] | None],
-        bool,
-    ],
 ) -> bool:
     """Return whether a MAGMA node can safely become Lumina evidence."""
     try:
@@ -88,7 +84,6 @@ def _is_projectable_event(
             or not isinstance(timestamp, datetime)
             or timestamp.tzinfo is None
             or timestamp.utcoffset() is None
-            or not timestamp_in_window(timestamp, temporal_window)
             or not isinstance(metadata, dict)
         ):
             return False
@@ -104,6 +99,7 @@ def _is_projectable_event(
                 and bool(provenance[field].strip())
                 for field in _PROVENANCE_FIELDS
             )
+            or provenance.get("source_role") not in {"user", "assistant"}
             or provenance.get(
                 "timezone_source",
                 "legacy_segment_fallback",
@@ -190,11 +186,6 @@ def _rank_lexical_events(
     max_nodes: int,
     event_node_type: type[Any],
     node_type: Any,
-    temporal_window: tuple[datetime, datetime] | None,
-    timestamp_in_window: Callable[
-        [Any, tuple[datetime, datetime] | None],
-        bool,
-    ],
 ) -> list[Any]:
     """Return at most 40 ranked events after at most ``max_nodes`` graph reads."""
     ranked: list[tuple[int, tuple[str, str], Any]] = []
@@ -204,8 +195,6 @@ def _rank_lexical_events(
                 node,
                 event_node_type=event_node_type,
                 node_type=node_type,
-                temporal_window=temporal_window,
-                timestamp_in_window=timestamp_in_window,
             ):
                 continue
             score = _lexical_score(query, node.content_narrative)

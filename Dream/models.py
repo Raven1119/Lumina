@@ -14,7 +14,7 @@ _DIGEST_STATUSES = {"consumed", "skipped", "failed"}
 class DreamRunPolicy:
     max_segments: int = 10
     stop_on_error: bool = False
-    ingestion_version: str = "dream-v1"
+    ingestion_version: str = "grounded-span-v2"
 
     def __post_init__(self) -> None:
         if (

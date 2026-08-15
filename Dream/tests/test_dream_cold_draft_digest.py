@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import BackendCandidate, IngestionResult
+from adapter.models import IngestionResult
 from core.cold_draft_store import ColdDraftStore
 from core.contracts import MemoryTurn
 from core.main import create_app
@@ -22,7 +22,12 @@ from Dream.cold_draft_digest import (
     ColdDraftSegmentConverter,
 )
 from Dream.models import DreamRunPolicy
-from Dream.runner import DreamRunner, RealMemoryIngestorProvider, main
+from Dream.runner import (
+    DreamRunner,
+    RealMemoryIngestorProvider,
+    build_default_runner,
+    main,
+)
 from ingestion.state_store import IngestionStateStore
 
 
@@ -169,6 +174,10 @@ def test_no_pending_segments_returns_empty_success_report():
     assert report.attempted == report.failed == report.consumed == 0
     assert report.results == ()
     assert owner.list_limits == [3]
+
+
+def test_default_policy_uses_grounded_production_version():
+    assert DreamRunPolicy().ingestion_version == "grounded-span-v2"
 
 
 def test_real_owner_reads_production_record_ingests_and_consumes(tmp_path):
@@ -420,7 +429,7 @@ def test_converter_handles_mixed_transition_segment_per_turn():
     assert segment.turns[1].timezone_source == "configured_default"
 
 
-def test_v2_dream_uses_distinct_turn_times_and_recall_provenance(tmp_path):
+def test_v2_dream_preserves_both_source_times_and_roles(tmp_path):
     store = ColdDraftStore(tmp_path / "cold.jsonl")
     turns = [
         MemoryTurn(
@@ -463,6 +472,13 @@ def test_v2_dream_uses_distinct_turn_times_and_recall_provenance(tmp_path):
     assert [event["metadata"]["provenance"]["turn_id"] for event in events] == [
         "v2-user",
         "v2-assistant",
+    ]
+    assert [
+        event["metadata"]["provenance"]["source_role"]
+        for event in events
+    ] == [
+        "user",
+        "assistant",
     ]
     assert all(
         event["metadata"]["provenance"]["timezone_source"] == "client"
@@ -520,16 +536,38 @@ def test_failure_report_does_not_leak_exception_path_secret_or_content():
         assert forbidden not in rendered
 
 
-def test_unconfirmed_completion_does_not_consume():
-    class BrokenIngestor:
+def test_completed_zero_output_is_valid_and_consumes():
+    class ZeroOutputIngestor:
         def ingest(self, segment):
             return IngestionResult(segment.segment_id, "v1", "completed")
 
+    owner = FakeOwner([make_record("zero-output")])
+    result = ColdDraftDigestionTask(
+        owner,
+        StaticProvider(ZeroOutputIngestor()),
+    ).digest(owner.records[0], "v1")
+    assert result.status == "consumed"
+    assert result.error_code is None
+    assert owner.records[0]["state"] == "consumed"
+
+
+def test_invalid_memory_ids_do_not_consume():
+    class BrokenIngestor:
+        def ingest(self, segment):
+            return IngestionResult(
+                segment.segment_id,
+                "v1",
+                "completed",
+                ("",),
+            )
+
     owner = FakeOwner([make_record("not-durable")])
-    result = ColdDraftDigestionTask(owner, StaticProvider(BrokenIngestor())).digest(owner.records[0], "v1")
+    result = ColdDraftDigestionTask(
+        owner,
+        StaticProvider(BrokenIngestor()),
+    ).digest(owner.records[0], "v1")
     assert result.error_code == "memory_completion_unconfirmed"
     assert owner.records[0]["state"] == "pending_digest"
-
 
 class AdapterFakeBackend:
     def __init__(self):
@@ -555,6 +593,43 @@ class AdapterFakeBackend:
     def recall(self, query, policy):
         return []
 
+
+def test_grounded_assistant_only_output_is_durable_and_consumed(tmp_path):
+    store = ColdDraftStore(tmp_path / "cold.jsonl")
+    assistant = MemoryTurn(
+        turn_id="assistant-only",
+        role="assistant",
+        text="You still have a laboratory meeting tomorrow.",
+        created_at=datetime(2026, 8, 9, 2, 0, tzinfo=UTC),
+        source_timezone="Asia/Shanghai",
+        timezone_source="client",
+    )
+    store.append_segment(
+        [assistant.storage_turn()],
+        segment_id="assistant-only-segment",
+    )
+    backend = AdapterFakeBackend()
+    state_store = IngestionStateStore(tmp_path / "state.json")
+    adapter = MagmaMemoryAdapter(backend, state_store)
+    policy = DreamRunPolicy(max_segments=1)
+
+    report = DreamRunner(
+        store,
+        ColdDraftDigestionTask(store, StaticProvider(adapter)),
+    ).run_once(policy)
+
+    assert report.consumed == 1 and report.failed == 0
+    assert len(backend.events) == 1
+    event = next(iter(backend.events.values()))
+    assert event["text"] == assistant.text
+    assert event["metadata"]["role"] == "assistant"
+    assert event["metadata"]["provenance"]["source_role"] == "assistant"
+    assert store.list_pending() == []
+    state = state_store.read_all()[
+        f"assistant-only-segment:{policy.ingestion_version}"
+    ]
+    assert state["status"] == "completed"
+    assert len(state["unit_ids"]) == len(state["memory_ids"]) == 1
 
 class FailConsumeOwner:
     def __init__(self, delegate):
@@ -606,6 +681,56 @@ def test_manual_cli_empty_run_outputs_only_structured_report(tmp_path, monkeypat
     payload = json.loads(output)
     assert payload["attempted"] == 0
     assert str(tmp_path) not in output
+
+
+def test_default_dream_runner_requests_formation_output_budget(tmp_path, monkeypatch):
+    import Dream.runner as runner_module
+
+    captured = {}
+    model = SimpleNamespace(client_kind="model")
+
+    def build_model(**kwargs):
+        captured.update(kwargs)
+        return model
+
+    monkeypatch.setattr(runner_module, "build_model_client_from_env", build_model)
+    monkeypatch.setenv("LUMINA_DREAM_COLD_DRAFT_PATH", str(tmp_path / "cold.jsonl"))
+    monkeypatch.setenv("LUMINA_DREAM_INGESTION_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("LUMINA_DREAM_MAGMA_PERSIST_DIR", str(tmp_path / "magma"))
+
+    runner = build_default_runner()
+
+    assert isinstance(runner, DreamRunner)
+    assert captured == {
+        "model_name_override": "MiniMax-M3",
+        "max_tokens_override": 2000,
+    }
+
+
+def test_manual_dream_cli_requests_formation_output_budget(monkeypatch, capsys):
+    import Dream.runner as runner_module
+
+    captured = {}
+    model = SimpleNamespace(client_kind="model")
+    report = runner_module.DreamRunReport.from_results(())
+
+    def build_model(**kwargs):
+        captured.update(kwargs)
+        return model
+
+    monkeypatch.setattr(runner_module, "build_model_client_from_env", build_model)
+    monkeypatch.setattr(
+        runner_module,
+        "build_default_runner",
+        lambda injected: SimpleNamespace(run_once=lambda _policy: report),
+    )
+
+    assert main([]) == 0
+    assert json.loads(capsys.readouterr().out)["attempted"] == 0
+    assert captured == {
+        "model_name_override": "MiniMax-M3",
+        "max_tokens_override": 2000,
+    }
 
 
 def test_dream_runner_is_only_triggered_by_explicit_http_request(tmp_path):
@@ -678,8 +803,12 @@ def test_real_magma_manual_dream_ingestion_consumes_production_segment(tmp_path)
     )
     provider = RealMemoryIngestorProvider(tmp_path / "magma", tmp_path / "state.json")
     report = DreamRunner(store, ColdDraftDigestionTask(store, provider)).run_once(
-        DreamRunPolicy(max_segments=1, ingestion_version="dream-real-v1")
+        DreamRunPolicy(max_segments=1)
     )
     assert report.consumed == 1 and report.failed == 0
     assert store.list_pending() == []
-    assert IngestionStateStore(tmp_path / "state.json").read_all()["dream-real-magma:dream-real-v1"]["status"] == "completed"
+    state = IngestionStateStore(tmp_path / "state.json").read_all()[
+        "dream-real-magma:grounded-span-v2"
+    ]
+    assert state["status"] == "completed"
+    assert len(state["unit_ids"]) == len(state["memory_ids"]) == 2

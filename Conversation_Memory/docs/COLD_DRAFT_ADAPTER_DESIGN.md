@@ -45,18 +45,26 @@ FAISS never cross the facade.
 
 ## Ingestion conversion
 
-Every source turn becomes one MAGMA event. The original source text and source
-turn timestamp are retained. Metadata includes:
+Configured real-model Dream sends one bounded Cold segment to dedicated
+MiniMax-M3 Grounded Formation in non-thinking mode with `max_tokens=2000`.
+Accepted atomic `GroundedMemoryUnit` values pass the deterministic grounding
+validator, bounded semantic fallback, and value-only guard before checkpointing
+and MAGMA writes. Mock/legacy ingestion deterministically builds exact
+`GroundedSpanUnit` spans. Either path may produce `0..M` events.
 
-- stable `evidence_id`;
-- role and original text;
-- deterministic entity fallback;
-- normalized temporal references;
-- source provenance containing segment, conversation, turn, timestamp,
-  timezone, and ingestion version.
+For configured real-model Formation, event text is `GroundedMemoryUnit.text`,
+the public evidence ID is the stable grounded-unit ID, and private metadata
+retains subject/relation/value, every exact source ref and offset, Formation
+version, referenced time, and full source provenance.
 
-The adapter does not replace source timestamps with Dream time, session time, or
-`dia_id` offsets.
+For mock/legacy `GroundedSpanUnit` ingestion only, event text is exactly
+`source_turn.content[start:end]` and the evidence ID is
+`grounded_span_v2:{turn_id}:{start}:{end}`. Its metadata retains source role,
+turn ID, exact offsets, deterministic entity fallback, normalized temporal
+references, and full source provenance.
+
+Both paths inherit source-turn time; the adapter never substitutes Dream
+execution time.
 
 ## Temporal normalization
 
@@ -78,9 +86,10 @@ Durable ingestion key:
 (segment_id, ingestion_version)
 ```
 
-The adapter checkpoints pending/in-progress/completed state and the private
-memory IDs written so far. Stable evidence IDs allow retry to converge after
-partial graph/vector persistence.
+The adapter checkpoints pending/in-progress/completed state plus the ordered
+grounded unit-ID manifest and private memory IDs written so far. It stores no
+span text. Stable unit IDs allow retry to converge after partial graph/vector
+persistence, while a same-version manifest mismatch fails closed.
 
 Dream may consume the source segment only after the adapter returns a complete,
 validated durable result.
@@ -100,14 +109,8 @@ Current fields:
 | `max_evidence_items` | 5 | maximum public anchors + expansions |
 | `max_graph_depth` | 5 | graph depth; `0` is valid anchor-only |
 | `max_nodes` | 100 | bounded lexical/traversal candidate budget |
-| `intent` | `None` | caller-supplied `GENERAL/WHY/WHEN/ENTITY` |
-| `temporal_window` | `None` | aware UTC `[start,end)` hard filter |
-| `beam_width` | `None` | optional adaptive beam width |
-| `drop_threshold` | `None` | optional adaptive relative-drop threshold |
-
-All optional fields `None` preserves the fixed traversal path. Supplying
-`intent`, `beam_width`, or `drop_threshold` opts into adaptive traversal.
-Supplying only a temporal window does not enable adaptive traversal.
+| `final_min_score` | `None` | optional inclusive composed-score floor; Chat uses `0.144` |
+| `relation_surfaces` | `None` | explicit caller-supplied relation surfaces |
 
 ## Anchor identification
 
@@ -122,23 +125,10 @@ Lexical ranking scans at most `max_nodes` graph entries and only projects valid
 event nodes. Lexical failure safely falls back to dense-only.
 
 `top_k` limits anchors only. The final public evidence total is separately
-limited by `max_evidence_items`.
-
-The pinned upstream contains no generic production-ready temporal anchor rank
-source. `temporal_window` therefore remains a hard filter, not a custom temporal
-ranking algorithm.
-
-## Temporal hard filtering
-
-Lumina applies:
-
-```text
-start <= event_timestamp < end
-```
-
-in aware UTC to dense anchors, lexical candidates, and graph expansions.
-Missing, naive, or invalid event timestamps are skipped. Window-excluded events
-cannot re-enter through graph traversal.
+limited to `0..max_evidence_items`. Zero selected evidence is a successful
+Recall result with empty rendering and no safe error; `recall_unavailable`
+remains a distinct safe failure. This cardinality contract does not implement
+automatic relevance abstention.
 
 ## Fixed traversal
 
@@ -149,27 +139,6 @@ The default path uses the current MAGMA graph traversal under
 - Valid non-anchor event expansions may be projected afterward.
 - Entity and other internal nodes never become public evidence.
 - Expansions are deduplicated using stable IDs and bounded before rendering.
-
-## Adaptive traversal
-
-Caller opt-in adaptive traversal uses bounded relation-aware beam search.
-Current transition score is:
-
-```text
-0.6 * relation_weight + 0.4 * query/event cosine similarity
-```
-
-Current relation weights:
-
-- GENERAL/ENTITY: ENTITY `0.60`, SEMANTIC `0.30`, TEMPORAL `0.05`, CAUSAL `0.05`;
-- WHEN: TEMPORAL `0.70`, other relation types `0.10` each;
-- WHY: currently maps to GENERAL; no causal specialization.
-
-Defaults when adaptive is enabled without explicit values are beam width `10`
-and drop threshold `0.15`.
-
-Adaptive failure falls back to fixed traversal. If both fail, Recall returns a
-safe empty context with a stable error code.
 
 ## Evidence projection
 
@@ -192,21 +161,27 @@ SourceProvenance
 No graph path, relation metadata, score, embedding, MAGMA UUID, local path, or
 narrative context is returned.
 
+## Controlled relation compatibility
+
+When a caller supplies `relation_surfaces`, the small controlled resolver maps
+query surfaces and private GroundedMemoryUnit relation metadata to canonical
+IDs. A resolved mismatch rejects the candidate before BGE. A compatible match,
+an unresolved query, an unresolved memory relation, or absent metadata preserves
+existing behavior. Compound query surfaces remain independent. Normal Chat does
+not supply relation surfaces; this is a structured caller/future Mind seam, not
+a free-text query parser.
+
 ## Context Linearization
 
-- `intent=None`: preserve retrieval order and render plain evidence text for
-  compatibility.
-- Explicit intents: add normalized UTC timestamps.
-- `WHEN`: sort the selected evidence chronologically, then by evidence ID.
-- `GENERAL`, `ENTITY`, `WHY`: preserve retrieval order.
-- `WHY` does not synthesize causal explanations.
+- Preserve retrieval order and render plain role-labelled evidence text.
 - Rendering obeys `max_chars`; final-line truncation is allowed and reported.
 
 ## Chat injection boundary
 
-Recall is optional and disabled by default. When enabled, normal Chat receives
-only non-empty bounded `MemoryContext.rendered_text` as a temporary context
-block.
+Recall is enabled by source default and may be explicitly disabled with
+`LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false`. When enabled, normal Chat
+receives only non-empty bounded `MemoryContext.rendered_text` as a temporary
+context block.
 
 Recall does not:
 
@@ -219,8 +194,11 @@ Empty or failed Recall falls back to ordinary Chat.
 
 ## Current capability boundaries
 
-- No relevance threshold, LLM judge, cross-encoder, or reliable abstention.
-- No automatic intent/query classification or Recall scheduler.
+- Production uses the fixed BGE reranker and inclusive
+  `final_min_score=0.144`; neither constitutes a reliable semantic no-answer
+  contract.
+- No automatic intent/query classification, free-text relation parser, entity
+  resolver, or Recall scheduler.
 - No Evidence Organizer/Ledger, conflict/current-state resolver, fact
   supersession, or semantic deduplication.
 - Cross-turn reference is only partially supported through joint recall and
