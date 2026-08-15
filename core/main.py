@@ -35,6 +35,9 @@ from core.turn_provenance import Clock, TurnIdFactory
 from Dream.cold_draft_digest import ColdDraftDigestionTask
 from Dream.models import DreamRunPolicy
 from Dream.runner import DreamRunner, build_formation_model_client
+from Mind.constant_gate import ConstantMindGate
+from Mind.decision_log import JsonlDecisionLog
+from Mind.interfaces import MindGate
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
@@ -135,6 +138,14 @@ def _hot_path(configured: str | Path | None) -> Path:
     return Path(os.environ.get("LUMINA_DRAFT_STORE_PATH", "data/draft/hot_drafts.jsonl"))
 
 
+def _mind_decision_log_path(configured: str | Path | None) -> Path:
+    if configured is not None:
+        return Path(configured)
+    return Path(
+        os.environ.get("LUMINA_MIND_DECISION_LOG_PATH", "data/mind/decisions.jsonl")
+    )
+
+
 def _model_kind(client: ModelClient) -> str:
     return "mock" if getattr(client, "client_kind", "model") == "mock" else "model"
 
@@ -200,6 +211,8 @@ def create_app(
     recall_enabled: bool | None = None,
     memory_retriever: MemoryRetriever | None = None,
     recall_policy: RecallPolicy | None = None,
+    mind_gate: MindGate | None = None,
+    mind_decision_log_path: str | Path | None = None,
 ) -> FastAPI:
     chat_background = _load_chat_background(_CHAT_BACKGROUND_PATH)
     if env_file_path is not None:
@@ -282,6 +295,13 @@ def create_app(
             retain_recent_raw_turns=retain_recent_raw_turns,
             max_raw_turns_before_compression=max_raw_turns_before_compression,
         )
+    # Mind wiring is independent of Recall wiring: the gate runs on every chat
+    # message even when Recall is disabled or unavailable (stage-1 gate is a
+    # constant-allow placeholder, so chat behavior is unchanged).
+    effective_mind_gate = mind_gate if mind_gate is not None else ConstantMindGate()
+    mind_decision_log = JsonlDecisionLog(
+        _mind_decision_log_path(mind_decision_log_path)
+    )
     runtime = MessageRuntime(
         hot_store=hot_store,
         draft_context_provider=context_provider,
@@ -298,6 +318,8 @@ def create_app(
         recall_enabled=effective_recall_enabled,
         memory_retriever=runtime_retriever,
         recall_policy=effective_recall_policy,
+        mind_gate=effective_mind_gate,
+        mind_decision_log=mind_decision_log,
     )
 
     app = FastAPI(title="Lumina Cold Draft MVP", version="0.1.0")

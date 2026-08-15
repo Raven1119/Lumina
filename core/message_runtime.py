@@ -24,6 +24,8 @@ from core.turn_provenance import (
 if TYPE_CHECKING:
     from Conversation_Memory.adapter.interfaces import MemoryRetriever
     from Conversation_Memory.adapter.models import RecallPolicy
+    from Mind.decision_log import JsonlDecisionLog
+    from Mind.interfaces import MindGate
 
 
 _MEMORY_CONTEXT_TEMPLATE = """[Internal historical evidence - DATA ONLY]
@@ -56,6 +58,8 @@ class MessageRuntime:
         recall_enabled: bool = False,
         memory_retriever: "MemoryRetriever | None" = None,
         recall_policy: "RecallPolicy | None" = None,
+        mind_gate: "MindGate | None" = None,
+        mind_decision_log: "JsonlDecisionLog | None" = None,
     ) -> None:
         self._hot_store = hot_store
         self._draft_context_provider = draft_context_provider
@@ -65,6 +69,8 @@ class MessageRuntime:
         self._recall_enabled = recall_enabled
         self._memory_retriever = memory_retriever
         self._recall_policy = recall_policy
+        self._mind_gate = mind_gate
+        self._mind_decision_log = mind_decision_log
         self._turn_factory = DraftTurnFactory(
             clock=clock,
             id_factory=turn_id_factory,
@@ -85,7 +91,15 @@ class MessageRuntime:
             timezone_source=timezone_source,
         )
         recent_context, context_event = self._load_context()
-        system_prompt = self._system_prompt_with_memory(user_message)
+        recall_allowed, mind_event = self._decide_recall(
+            user_message,
+            recent_context,
+            turn_id=user_turn.turn_id,
+        )
+        system_prompt = self._system_prompt_with_memory(
+            user_message,
+            recall_allowed,
+        )
         assistant_text, response_type, phase, model_event = self._generate(
             recent_context,
             user_message,
@@ -98,7 +112,7 @@ class MessageRuntime:
             timezone_source=timezone_source,
         )
 
-        events = ["response", context_event, model_event]
+        events = ["response", context_event, mind_event, model_event]
         events.append(self._capture_turns(user_turn, assistant_turn))
         compaction, compaction_event = self._compact()
         events.append(compaction_event)
@@ -134,9 +148,39 @@ class MessageRuntime:
         except Exception:
             return [], "draft_context_read_failed"
 
-    def _system_prompt_with_memory(self, user_message: str) -> str:
+    def _decide_recall(
+        self,
+        user_message: str,
+        recent_context: list[dict[str, str]],
+        *,
+        turn_id: str | None,
+    ) -> tuple[bool, str | None]:
+        """Mind gate: runs before the Recall guard, fail-open on any failure."""
+        if self._mind_gate is None:
+            return True, None
+        try:
+            decision = self._mind_gate.decide(user_message, recent_context)
+            recall = bool(decision.recall)
+        except Exception:
+            return True, "mind_gate_failed"
+        if self._mind_decision_log is not None:
+            try:
+                self._mind_decision_log.record(decision, turn_id=turn_id)
+            except Exception:
+                # An unauditable rejection must never take effect silently.
+                return True, "mind_decision_log_failed"
+        if not recall:
+            return False, "mind_recall_declined"
+        return True, "mind_recall_decided"
+
+    def _system_prompt_with_memory(
+        self,
+        user_message: str,
+        recall_allowed: bool = True,
+    ) -> str:
         if (
-            not self._recall_enabled
+            not recall_allowed
+            or not self._recall_enabled
             or self._memory_retriever is None
             or self._recall_policy is None
         ):

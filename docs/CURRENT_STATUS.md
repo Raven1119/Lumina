@@ -67,6 +67,23 @@
 - BGE/backend scores, embeddings, graph objects, MAGMA IDs, paths, credentials,
   provider bodies, tracebacks, and raw Draft records are not injected.
 
+### Mind gate (stage 1)
+
+- every chat message passes a Mind gate before the Recall guard
+  (`User -> Mind -> Memory`);
+- the stage-1 gate is a constant-allow placeholder
+  (`MindDecision(recall=True)`), so chat behavior is unchanged;
+- Mind wiring is independent of Recall wiring: the gate still runs (and is
+  audited) when Recall is disabled or unavailable;
+- each decision is appended to an append-only JSONL audit log
+  (`LUMINA_MIND_DECISION_LOG_PATH`, default `data/mind/decisions.jsonl`),
+  recording `{turn_id, recall, decided_at}`;
+- decision failure and audit-log failure fail open as separate events
+  (`mind_gate_failed` / `mind_decision_log_failed`); an unauditable rejection
+  never takes effect silently;
+- a real LLM gate is stage 2 and requires the experiment-comparison path
+  before promotion (`docs/plan/MIND_DEFINITION_V1.md`).
+
 ### Validation and audit
 
 Latest reported local validation:
