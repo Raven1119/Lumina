@@ -1128,3 +1128,124 @@ def test_multi_turn_referenced_time_uses_the_unique_source_turn_timestamp(tmp_pa
     assert metadata["turn_id"] == "u2"
     assert metadata["provenance"]["turn_id"] == "u2"
     assert metadata["temporal_mentions"][0]["original_expression"] == "明天"
+
+
+def _unit_without_referenced_time(text, subject, relation, value, refs):
+    return {
+        "text": text,
+        "subject": subject,
+        "relation": relation,
+        "value": value,
+        "source_refs": [
+            {"turn_id": turn_id, "supporting_span": span}
+            for turn_id, span in refs
+        ],
+    }
+
+
+def test_missing_referenced_time_is_normalized_to_none_and_accepted():
+    source = "My access pass for AP-317 is TEAL-PASS-317 at 52.4 kilohertz."
+    model = FakeFormationModel([_unit_without_referenced_time(
+        source, "AP-317", "access pass", "TEAL-PASS-317",
+        [("u1", source)],
+    )])
+    units = form_grounded_memory_units(_segment(("u1", "user", source)), model)
+    assert model.calls == 1
+    assert len(units) == 1
+    assert units[0].referenced_time is None
+    assert (units[0].subject, units[0].relation, units[0].value) == (
+        "AP-317", "access pass", "TEAL-PASS-317",
+    )
+
+
+def test_chinese_self_introduction_survives_missing_referenced_time():
+    introduction = "我叫林岚，来自东海大学物理学院，现在大二"
+    span = "我叫林岚，来自东海大学物理学院"
+    model = FakeFormationModel([_unit_without_referenced_time(
+        "林岚 来自东海大学物理学院",
+        "林岚",
+        "来自",
+        "东海大学物理学院",
+        [("u2", span)],
+    )])
+    units = form_grounded_memory_units(
+        _segment(
+            ("u1", "user", "你好啊"),
+            ("a1", "assistant", "你好。"),
+            ("u2", "user", introduction),
+        ),
+        model,
+    )
+    assert model.calls == 1
+    assert len(units) == 1
+    assert units[0].referenced_time is None
+    assert (units[0].subject, units[0].value) == ("林岚", "东海大学物理学院")
+    assert units[0].source_refs[0].turn_id == "u2"
+
+
+def test_explicit_null_referenced_time_behavior_unchanged():
+    source = "My access pass for AP-317 is TEAL-PASS-317 at 52.4 kilohertz."
+    model = FakeFormationModel([_unit(
+        source, "AP-317", "access pass", "TEAL-PASS-317",
+        [("u1", source)],
+        None,
+    )])
+    units = form_grounded_memory_units(_segment(("u1", "user", source)), model)
+    assert model.calls == 1
+    assert len(units) == 1
+    assert units[0].referenced_time is None
+
+
+def test_missing_any_other_required_key_still_rejected():
+    source = "My access pass for AP-317 is TEAL-PASS-317 at 52.4 kilohertz."
+    for missing in ("text", "subject", "relation", "value", "source_refs"):
+        candidate = _unit(
+            source, "AP-317", "access pass", "TEAL-PASS-317",
+            [("u1", source)],
+        )
+        del candidate[missing]
+        model = FakeFormationModel([candidate])
+        units = form_grounded_memory_units(
+            _segment(("u1", "user", source)), model,
+        )
+        assert units == (), missing
+
+
+def test_extra_candidate_key_still_rejected():
+    source = "My access pass for AP-317 is TEAL-PASS-317 at 52.4 kilohertz."
+    candidate = _unit(
+        source, "AP-317", "access pass", "TEAL-PASS-317",
+        [("u1", source)],
+    )
+    candidate["confidence"] = 0.9
+    units = form_grounded_memory_units(
+        _segment(("u1", "user", source)), FakeFormationModel([candidate]),
+    )
+    assert units == ()
+
+
+def test_invalid_non_null_referenced_time_still_rejected():
+    source = "My access pass for AP-317 is TEAL-PASS-317 at 52.4 kilohertz."
+    for bad in (123, ["52.4 kilohertz"], "", "   "):
+        candidate = _unit(
+            source, "AP-317", "access pass", "TEAL-PASS-317",
+            [("u1", source)],
+        )
+        candidate["referenced_time"] = bad
+        units = form_grounded_memory_units(
+            _segment(("u1", "user", source)), FakeFormationModel([candidate]),
+        )
+        assert units == (), bad
+
+
+def test_ungrounded_referenced_time_value_still_rejected():
+    source = "My access pass for AP-317 is TEAL-PASS-317."
+    candidate = _unit(
+        source, "AP-317", "access pass", "TEAL-PASS-317",
+        [("u1", source)],
+        "下周",
+    )
+    units = form_grounded_memory_units(
+        _segment(("u1", "user", source)), FakeFormationModel([candidate]),
+    )
+    assert units == ()

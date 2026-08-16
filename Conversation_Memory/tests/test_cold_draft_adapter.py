@@ -80,7 +80,7 @@ class FakeBackend:
             self.fail_persist_once_at = None
             raise OSError("C:\\private\\graph.json")
 
-    def recall(self, query, policy):
+    def recall(self, query, policy, target_entity_ref=None):
         if self.fail_recall:
             raise RuntimeError("OPENAI_API_KEY=secret C:\\private traceback")
         result = []

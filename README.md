@@ -10,11 +10,14 @@ Production chat now includes bounded long-term memory Recall:
 
 ```text
 Browser -> FastAPI -> MessageRuntime
+-> Mind gate (LlmMindGate by default with a real model; constant in mock)
 -> source-default-on Recall
+   -> query target_entity_ref classification (CURRENT_USER -> E_001)
    -> MAGMA bounded candidates
+      (+ entity-conditioned FAISS subset list for entity queries)
    -> ControlledRelationResolver when the caller supplies relation surfaces
       (UNRESOLVED or absent metadata fails open)
-   -> BGE rerank
+   -> BGE rerank ([SAME_ENTITY] per-pair projection on equal entity refs)
    -> Hindsight post-rerank score
    -> final_min_score >= 0.144
    -> bounded MemoryContext
@@ -59,7 +62,12 @@ unavailable memory does not block normal conversation.
 - deterministic Hindsight-style recency scoring;
 - inclusive production `final_min_score=0.144`;
 - bounded top-3 / 5000-character historical evidence injection;
-- restart/idempotency/leak-safe Recall E2E coverage.
+- restart/idempotency/leak-safe Recall E2E coverage;
+- a Mind gate on every chat message before Recall (stage 2 `LlmMindGate`
+  promoted as the real-model default, `{recall: bool}`, fail-open, audited);
+- current-user entity binding: `CURRENT_USER` -> `E_001`, a graph-only
+  EntityNode with a single `REFERS_TO(role=subject)` edge, an
+  entity-conditioned candidate channel, and the `[SAME_ENTITY]` ranking cue.
 
 Recall is enabled by source default. It can be explicitly disabled before
 startup:
@@ -70,8 +78,10 @@ LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false
 
 ## Current Development Focus
 
-The current project goal is to **stabilize the adopted memory boundary before
-Mind development**.
+Mind stage 2 (the `LlmMindGate` recall gate) and the first generic Entity
+slice (`CURRENT_USER` -> `E_001`, EntityNode, entity-conditioned retrieval,
+`[SAME_ENTITY]`) are in production. Consolidation of the adopted memory
+boundary continues.
 
 On the authorization-aligned 36-case development subset, raw-turn Recall scored
 26/36 and Grounded Write scored 29/36. Both retained all 6 currently authorized

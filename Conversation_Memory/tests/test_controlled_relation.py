@@ -165,7 +165,7 @@ class _Backend:
     def __init__(self, candidates):
         self.candidates = candidates
 
-    def recall(self, _query, _policy):
+    def recall(self, _query, _policy, target_entity_ref=None):
         return list(self.candidates)
 
 

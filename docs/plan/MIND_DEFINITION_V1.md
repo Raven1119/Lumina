@@ -1,7 +1,11 @@
 # Mind 定义计划 V1
 
-> 状态：**阶段一已落地**（生成：Kimi；审批：GPT5.6Sol，由创造者转述结论）。
-> 阶段二（真实 LLM 门控）未授权，须另行审批与实验对照。
+> 状态：**阶段二已晋升**（阶段一落地 + 阶段二 LlmMindGate 生产晋升均完成；
+> 生成：Kimi；审批：GPT5.6Sol，由创造者转述结论）。
+> 生产默认门控为 `LlmMindGate`（`LUMINA_MIND_GATE_MODE=llm`），
+> `constant` 为一键回滚；晋升证据见
+> `docs/experiments/mind_stage2_promotion/RESULT.md`。
+> 后续阶段（Mind 新职责）未授权，须另行审批与实验对照。
 >
 > 本文档由一轮 grilling 烤问整理而成，定义 Lumina 的 Mind 器官。
 > 全部内容在审批通过前不构成实现授权。

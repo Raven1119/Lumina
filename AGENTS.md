@@ -9,9 +9,13 @@ Production chat path:
 
 ```text
 Browser -> FastAPI -> MessageRuntime
+-> Mind gate (stage 2: LlmMindGate by default with a real model;
+   ConstantMindGate in mock/constant mode)
 -> source-default-on bounded Recall
    -> MAGMA bounded candidates
-   -> fixed BGE reranker
+      (+ entity-conditioned FAISS subset list when the query carries a
+      target_entity_ref)
+   -> fixed BGE reranker ([SAME_ENTITY] per-pair projection on equal refs)
    -> Hindsight post-rerank score
    -> final_min_score >= 0.144
    -> bounded MemoryContext
@@ -37,8 +41,9 @@ Recall is already injected into production chat. It is enabled by source default
 and may be explicitly disabled with
 `LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false`.
 
-The current development goal is **Recall quality optimization**. Do not rebuild
-already working Chat, Draft, Dream, persistence, or memory injection behavior.
+The Memory MVP, the Mind Recall gate stage 2, and the generic Entity
+CURRENT_USER vertical slice are in production. Do not rebuild already working
+Chat, Draft, Dream, persistence, or memory injection behavior.
 
 Lumina's long-term form remains defined by `docs/NORTH_STAR.md`. The North Star
 is a design compass, not authorization to expand the current task.
@@ -67,7 +72,9 @@ Treat these as completed behavior unless a task identifies a verified defect:
 - Lumina-owned Recall DTOs and provenance projection;
 - source-default-on production Recall injection into the Answer Model system
   context;
-- bounded dense + lexical anchor retrieval with RRF fusion;
+- bounded dense + lexical anchor retrieval with RRF fusion, plus a bounded
+  entity-conditioned FAISS subset list when the query carries a
+  `target_entity_ref`;
 - fixed production graph traversal at `max_graph_depth=1`, `max_nodes=20`;
 - fixed `BAAI/bge-reranker-v2-m3` reranking;
 - deterministic Hindsight-style post-rerank scoring with wall-clock-independent
@@ -75,7 +82,12 @@ Treat these as completed behavior unless a task identifies a verified defect:
 - inclusive production `final_min_score=0.144`;
 - bounded top-3 / 5000-character `MemoryContext` rendering;
 - fail-soft empty/unavailable Recall behavior that does not block normal chat;
-- isolated real-MAGMA Recall E2E validation with restart/idempotency coverage.
+- isolated real-MAGMA Recall E2E validation with restart/idempotency coverage;
+- a Mind gate on every chat message before the Recall guard: stage 2
+  `LlmMindGate` (mind-gate-v2, MiniMax-M3 non-thinking, 8 output tokens,
+  temperature 0) is the real-model default; mock/explicit `constant` mode uses
+  `ConstantMindGate`; decisions are `{recall: bool}`, fail-open, and
+  append-only audited.
 
 Do not duplicate these capabilities or silently replace their boundaries.
 
@@ -87,11 +99,17 @@ The production Recall path is currently:
 query
 -> TRG keyword-enriched dense anchors
 -> bounded lexical anchors
--> dense + lexical RRF
+-> entity-conditioned FAISS subset channel when the query carries a
+   target_entity_ref (EntityNode REFERS_TO adjacency -> IDSelectorBatch subset
+   top-k; adds candidates only)
+-> dense + lexical (+ entity subset) RRF
 -> fixed graph BFS from fused anchors
 -> projectable bounded candidates
 -> fail-open ControlledRelationResolver gate when relation surfaces are supplied
 -> BGE rerank
+   (per-pair [SAME_ENTITY] scoring projection when query target and candidate
+   subject carry an equal subject_entity_ref; marker never enters
+   stored/evidence text; LUMINA_USER_SELF_BINDING_ENABLED=false rolls back)
 -> Hindsight recency adjustment
 -> final_score >= 0.144
 -> stable top-3
@@ -131,11 +149,15 @@ entity link types.
 Do not describe upstream MAGMA's probabilistic beam helper as its active query
 path. In the pinned source, that helper has no active caller.
 
-## 4. Current development objective: consolidate before Mind
+## 4. Current Development Stage
 
-The repository's current priority is to keep the adopted memory path narrow and
-truthful before Mind development. Durability, provenance, boundedness, safety,
-and fail-soft behavior remain non-negotiable.
+The Memory MVP, the Mind Recall gate stage 2 (`LlmMindGate` as the real-model
+production default), and the generic Entity CURRENT_USER vertical slice
+(`E_001`, graph-only EntityNode, entity-conditioned retrieval, `[SAME_ENTITY]`
+ranking cue) are in production. Any further new capability must first be
+validated by an independent experiment and only then promoted to production.
+Durability, provenance, boundedness, safety, and fail-soft behavior remain
+non-negotiable.
 
 The authorization-aligned 36-case development subset reports raw-turn Recall at
 26/36 and Grounded Write at 29/36, with both retaining all 6 currently

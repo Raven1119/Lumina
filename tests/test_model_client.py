@@ -181,6 +181,33 @@ def test_hot_draft_summarizer_does_not_receive_chat_background() -> None:
     }
 
 
+def test_hot_draft_summarizer_request_has_hard_output_budget() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "new summary"}]},
+        )
+
+    client = MiniMaxAnthropicModelClient(
+        api_key="test-value",
+        base_url="https://provider.invalid/anthropic",
+        model="test-model",
+        max_tokens=321,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.summarize_hot_draft(
+        "old summary",
+        [MemoryTurn(role="user", text="archived raw turn")],
+    )
+
+    body = captured["body"]
+    assert body["max_tokens"] == 321
+    assert body["temperature"] == 0.0
+
+
 def test_provider_transport_and_invalid_body_errors_are_sanitized() -> None:
     def fail_transport(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("raw provider detail")
@@ -209,3 +236,60 @@ def test_provider_transport_and_invalid_body_errors_are_sanitized() -> None:
     )
     with pytest.raises(ModelClientError, match="Provider response was invalid"):
         invalid.generate([], "hello", system_prompt="chat background")
+
+
+def test_minimax_generate_includes_temperature_only_when_configured() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "answer"}]},
+        )
+
+    client = MiniMaxAnthropicModelClient(
+        api_key="test-value",
+        base_url="https://provider.invalid/anthropic",
+        model="test-model",
+        temperature=0.0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client.generate([], "hi", system_prompt="background")
+    assert captured["body"]["temperature"] == 0.0
+
+    default_client = MiniMaxAnthropicModelClient(
+        api_key="test-value",
+        base_url="https://provider.invalid/anthropic",
+        model="test-model",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    default_client.generate([], "hi", system_prompt="background")
+    assert "temperature" not in captured["body"]
+
+
+def test_builder_temperature_override_passes_through(monkeypatch) -> None:
+    import core.model_client as model_client_module
+
+    captured = {}
+
+    def build_minimax(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        model_client_module,
+        "MiniMaxAnthropicModelClient",
+        build_minimax,
+    )
+    build_model_client_from_env(
+        {
+            "LUMINA_MODEL_MODE": "real",
+            "LUMINA_MODEL_PROVIDER": "minimax-anthropic",
+            "LUMINA_MODEL_API_KEY": "test-value",
+            "LUMINA_MODEL_BASE_URL": "https://provider.invalid/anthropic",
+            "LUMINA_MODEL_NAME": "test-model",
+        },
+        temperature_override=0.0,
+    )
+    assert captured["temperature"] == 0.0

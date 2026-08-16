@@ -17,7 +17,7 @@ class _CandidateBackend:
         self.candidates = list(candidates)
         self.recall_calls = []
 
-    def recall(self, query, policy):
+    def recall(self, query, policy, target_entity_ref=None):
         self.recall_calls.append((query, policy))
         return list(self.candidates)
 

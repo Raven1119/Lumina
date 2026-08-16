@@ -40,6 +40,11 @@
 - app Dream and memory adapter reuse the same owner/backend boundaries.
 - structured SRV is persisted as private MAGMA metadata; production Recall
   admission and ranking remain unchanged.
+- the Lumina-owned MAGMA backend enforces an EVENT-only temporal-link
+  boundary: non-event graph nodes never participate in temporal ordering,
+  while pinned upstream MAGMA remains unchanged
+  (`Conversation_Memory/adapter/backend.py`, regression:
+  `Conversation_Memory/tests/test_temporal_boundary.py`).
 
 ### Production Recall and Answer injection
 
@@ -47,7 +52,8 @@
 - `LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false` explicitly disables it;
 - current user text is the Recall query;
 - MAGMA TRG keyword-enriched dense anchors plus bounded lexical anchors;
-- deterministic two-list RRF fusion;
+- deterministic RRF fusion (dense + lexical, plus the entity-conditioned
+  subset list described below when the query carries a `target_entity_ref`);
 - fixed production graph traversal at `max_graph_depth=1`, `max_nodes=20`;
 - fail-open controlled relation compatibility when a structured caller supplies
   relation surfaces; normal Chat supplies none and keeps existing behavior;
@@ -67,12 +73,58 @@
 - BGE/backend scores, embeddings, graph objects, MAGMA IDs, paths, credentials,
   provider bodies, tracebacks, and raw Draft records are not injected.
 
-### Mind gate (stage 1)
+### Current-user entity binding (promoted)
+
+- validated GroundedMemoryUnit subjects are classified after the unchanged
+  Grounded Formation validator; detection first resolves the contextual
+  `CURRENT_USER` role, and when the grounded source establishes the subject is
+  the current user, the unit persists generic metadata
+  `subject_entity_ref="E_001"` (retrieval metadata only — it never authorizes
+  a fact);
+- recognized subject surfaces: first-person pronouns, self-naming binding,
+  assistant naming + user acceptance, segment-level self-name binding, and
+  Formation speaker-normalized `用户` / `user` / `the user` surfaces gated by
+  first-person evidence in cited user-role spans;
+- a current-user-bound event gets one graph-only EntityNode
+  (`entity:e_001`) and a single
+  `Event --ENTITY/REFERS_TO(role=subject)--> EntityNode` edge; find-or-create
+  is idempotent across ingestion retry, node/edge/metadata persist across
+  restart, and the EntityNode is never vector-indexed
+  (`Conversation_Memory/tests/test_entity_node_write_path.py`);
+- at Recall time a self-referential query is classified to
+  `target_entity_ref="E_001"` before candidate generation; MAGMA
+  anchor/lexical/traversal always use the original normalized query;
+- a query carrying a `target_entity_ref` additionally runs an
+  entity-conditioned candidate channel: the EntityNode's
+  `REFERS_TO(role=subject)` adjacency yields that entity's event IDs, FAISS
+  `IDSelectorBatch` subset search ranks a bounded top-k over only those
+  events, and the result joins RRF as a third list — it adds candidates only
+  and leaves BGE / Hindsight / admission untouched; a query without a
+  `target_entity_ref` takes the byte-identical pre-existing path
+  (`Conversation_Memory/tests/test_entity_conditioned_recall.py`);
+- the constant `[SAME_ENTITY] ` marker enters only the BGE scoring projection
+  of a (query, candidate) pair when both sides carry the same entity ref;
+  stored factual text and user-visible evidence never contain the marker;
+- BGE / Hindsight / `final_min_score=0.144` are unchanged;
+- `LUMINA_USER_SELF_BINDING_ENABLED=false` rolls back to pre-binding scoring
+  exactly; legacy memories without the field read as unbound;
+- evidence: `docs/experiments/user_self_production_wiring/RESULT.md`
+  (mini-shadow + fresh-session E2E gate) and
+  `docs/experiments/context_role_entityref/RESULT.md` (role/ref separation).
+
+### Mind gate (stage 2 promoted)
 
 - every chat message passes a Mind gate before the Recall guard
   (`User -> Mind -> Memory`);
-- the stage-1 gate is a constant-allow placeholder
-  (`MindDecision(recall=True)`), so chat behavior is unchanged;
+- the production default for real model configuration is the promoted
+  `LlmMindGate` (`mind-gate-v2`, MiniMax-M3 non-thinking, 8 output tokens,
+  temperature 0), validated by shadow + holdout + operational + regression
+  evidence (`docs/experiments/mind_stage2_promotion/RESULT.md`);
+- mock mode always uses the stage-1 `ConstantMindGate`
+  (`MindDecision(recall=True)`), regardless of mode setting;
+- `LUMINA_MIND_GATE_MODE=constant` rolls back to the stage-1 constant-allow
+  gate; gate-client construction failure also falls back to it, so chat
+  availability never depends on gate provider configuration;
 - Mind wiring is independent of Recall wiring: the gate still runs (and is
   audited) when Recall is disabled or unavailable;
 - each decision is appended to an append-only JSONL audit log
@@ -81,8 +133,9 @@
 - decision failure and audit-log failure fail open as separate events
   (`mind_gate_failed` / `mind_decision_log_failed`); an unauditable rejection
   never takes effect silently;
-- a real LLM gate is stage 2 and requires the experiment-comparison path
-  before promotion (`docs/plan/MIND_DEFINITION_V1.md`).
+- the gate contract remains `MindDecision {recall: bool}`; further Mind
+  responsibilities require separate approval
+  (`docs/plan/MIND_DEFINITION_V1.md`).
 
 ### Validation and audit
 
@@ -90,10 +143,12 @@ Latest reported local validation:
 
 ```text
 focused memory regressions: 134 passed, 5 skipped
-root tests:                 184 passed, 24 skipped
-Conversation_Memory tests: 163 passed, 5 skipped
+root tests:                 297 passed, 24 skipped
+Conversation_Memory tests: 167 passed
 Dream tests:                36 passed, 1 skipped
 real MAGMA Recall E2E:      PASS (10 / 10 queries)
+Mind production-seam controls: PASS (9 / 9)
+USER_SELF fresh-session E2E: PASS (promoted, docs/experiments/user_self_production_wiring/RESULT.md)
 production depth-1 required evidence: 11 / 11
 restart Recall:             PASS
 idempotency:                PASS
@@ -195,8 +250,12 @@ entity link types; it is not four physically independent graph stores.
 
 ## Current Development Goal
 
-The active priority is **repository consolidation before Mind development**.
-The adopted production memory path is stable. `ControlledRelationResolver`
+Mind stage 2 is promoted: `LlmMindGate` is the production default recall gate
+for real-model configuration (`docs/experiments/mind_stage2_promotion/`), and
+the first generic Entity slice is in production (`CURRENT_USER` → `E_001`,
+graph-only EntityNode, entity-conditioned retrieval, `[SAME_ENTITY]` ranking
+cue; `docs/experiments/entity_production_acceptance/RESULT.md`). The adopted
+production memory path is stable. `ControlledRelationResolver`
 remains a fail-open Memory-side capability for explicit structured callers;
 normal Chat provides no relation surfaces. No free-text query parser, entity
 resolver, assistant self-action authorization, or execution-provenance system

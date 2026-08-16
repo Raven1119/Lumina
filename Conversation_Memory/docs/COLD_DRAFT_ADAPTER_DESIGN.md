@@ -117,6 +117,9 @@ Current fields:
 ```text
 MiniLM dense ranking
 + bounded deterministic lexical ranking
++ entity-conditioned FAISS IDSelectorBatch subset ranking when the query
+  carries a target_entity_ref (bounded to that EntityNode's
+  REFERS_TO(role=subject) events; adds candidates only)
 -> RRF(k=60)
 -> stable fused top_k anchors
 ```

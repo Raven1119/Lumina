@@ -38,6 +38,7 @@ from Dream.runner import DreamRunner, build_formation_model_client
 from Mind.constant_gate import ConstantMindGate
 from Mind.decision_log import JsonlDecisionLog
 from Mind.interfaces import MindGate
+from Mind.llm_gate import LlmMindGate
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
@@ -157,6 +158,30 @@ def _recall_enabled(value: str | None) -> bool:
     if normalized in {"1", "true", "yes", "on"}:
         return True
     return False
+
+
+def _default_mind_gate(chat_model: ModelClient) -> MindGate:
+    # Mock mode is always the stage-1 constant gate (MIND_DEFINITION_V1 §2.4).
+    if _model_kind(chat_model) == "mock":
+        return ConstantMindGate()
+    mode = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
+    if mode == "constant":
+        return ConstantMindGate()
+    # Default: promoted stage-2 gate, exactly as validated in
+    # docs/experiments/mind_stage2_promotion/ (mind-gate-v2, non-thinking,
+    # 8 output tokens, temperature 0). Gate-client construction failure
+    # falls back to the constant gate so chat stays available.
+    try:
+        gate_client = build_model_client_from_env(
+            model_name_override="MiniMax-M3",
+            max_tokens_override=8,
+            temperature_override=0.0,
+        )
+    except Exception:
+        return ConstantMindGate()
+    if getattr(gate_client, "client_kind", None) != "model":
+        return ConstantMindGate()
+    return LlmMindGate(gate_client)
 
 
 def _load_chat_background(path: Path) -> str:
@@ -296,9 +321,12 @@ def create_app(
             max_raw_turns_before_compression=max_raw_turns_before_compression,
         )
     # Mind wiring is independent of Recall wiring: the gate runs on every chat
-    # message even when Recall is disabled or unavailable (stage-1 gate is a
-    # constant-allow placeholder, so chat behavior is unchanged).
-    effective_mind_gate = mind_gate if mind_gate is not None else ConstantMindGate()
+    # message even when Recall is disabled or unavailable. The default gate is
+    # selected by _default_mind_gate (real config -> promoted LlmMindGate,
+    # mock/constant mode/failure -> ConstantMindGate rollback).
+    effective_mind_gate = (
+        mind_gate if mind_gate is not None else _default_mind_gate(effective_model)
+    )
     mind_decision_log = JsonlDecisionLog(
         _mind_decision_log_path(mind_decision_log_path)
     )

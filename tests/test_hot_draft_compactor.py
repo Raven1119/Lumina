@@ -453,3 +453,55 @@ def test_unexpected_exception_after_start_restores_running(
     with pytest.raises(RuntimeError, match="unexpected internal failure"):
         compactor.maybe_compact()
     assert compactor.is_running is False
+
+
+class _ReplacingSummarizer:
+    """Bounded replacement summarizer: constant-size output, never appends."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(
+        self,
+        old_summary: str | None,
+        moved_turns: list[MemoryTurn],
+    ) -> str:
+        self.calls += 1
+        return f"bounded summary generation {self.calls}"
+
+
+def test_repeated_compaction_keeps_one_bounded_replacement_summary(
+    tmp_path: Path,
+) -> None:
+    summarizer = _ReplacingSummarizer()
+    compactor, hot, cold, _, _ = _build(tmp_path, summarizer=summarizer)
+
+    generations: list[str] = []
+    for round_index in range(3):
+        _populate(hot, 13, start=round_index * 13)
+        assert compactor.maybe_compact().status == "completed"
+        summary = hot.read_summary()
+        assert summary is not None
+        generations.append(summary.content)
+
+    summary = hot.read_summary()
+    assert summary is not None
+    assert summarizer.calls == 3
+    assert summary.generation == 3
+    assert summary.source_turn_count == 66
+    # Replacement, not accumulation: only the newest bounded summary remains.
+    assert summary.content == "bounded summary generation 3"
+    assert generations[0] not in summary.content
+    assert generations[1] not in summary.content
+    assert len(hot.list_all_raw()) == 12
+    assert len(cold.list_pending()) == 3
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "hot_drafts.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert sum(record.get("record_type") == "summary" for record in records) == 1
+    raw_file_text = (tmp_path / "hot_drafts.jsonl").read_text(encoding="utf-8")
+    assert "bounded summary generation 1" not in raw_file_text
+    assert "bounded summary generation 2" not in raw_file_text

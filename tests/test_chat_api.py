@@ -14,6 +14,8 @@ from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
 from ingestion.state_store import IngestionStateStore
 from core.main import create_app
 from core.model_client import MiniMaxAnthropicModelClient, MockModelClient
+from Mind.constant_gate import ConstantMindGate
+from Mind.llm_gate import LlmMindGate
 
 
 class _ContextModel:
@@ -88,7 +90,7 @@ class _SharedBackend:
     def persist(self):
         return None
 
-    def recall(self, query, policy):
+    def recall(self, query, policy, target_entity_ref=None):
         return [
             BackendCandidate(
                 event["text"],
@@ -114,6 +116,10 @@ def _app(tmp_path: Path, model=None, **kwargs):
         "memory_retriever",
         _RecordingRetriever(MemoryContext("")),
     )
+    # Pin the stage-1 gate: pre-existing tests assert Chat/Recall behavior,
+    # not Mind gate selection. Default gate selection is covered by the
+    # dedicated wiring tests below (they call create_app directly).
+    kwargs.setdefault("mind_gate", ConstantMindGate())
     return create_app(
         draft_store_path=tmp_path / "hot.jsonl",
         cold_draft_path=tmp_path / "cold.jsonl",
@@ -200,6 +206,167 @@ def test_default_app_separates_chat_and_formation_model_clients(
 
     assert app.state.message_runtime._model_client is chat_model
     assert captured_formation_models == [formation_model]
+
+
+def _wired_app(tmp_path: Path, model, **kwargs):
+    """create_app without a mind_gate override, for gate-selection tests."""
+    kwargs.setdefault("recall_enabled", False)
+    kwargs.setdefault(
+        "memory_retriever",
+        _RecordingRetriever(MemoryContext("")),
+    )
+    return create_app(
+        draft_store_path=tmp_path / "hot.jsonl",
+        cold_draft_path=tmp_path / "cold.jsonl",
+        compaction_state_path=tmp_path / "state.json",
+        model_client=model,
+        env_file_path=None,
+        **kwargs,
+    )
+
+
+def test_real_model_defaults_to_llm_mind_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("LUMINA_MIND_GATE_MODE", raising=False)
+    gate_model = _ContextModel()
+
+    def build_gate_client(*args, **kwargs):
+        assert not args
+        assert kwargs == {
+            "model_name_override": "MiniMax-M3",
+            "max_tokens_override": 8,
+            "temperature_override": 0.0,
+        }
+        return gate_model
+
+    monkeypatch.setattr(
+        main_module, "build_model_client_from_env", build_gate_client
+    )
+
+    app = _wired_app(tmp_path, _ContextModel())
+
+    gate = app.state.message_runtime._mind_gate
+    assert isinstance(gate, LlmMindGate)
+    assert gate.prompt_version == "mind-gate-v2"
+    assert gate._model_client is gate_model
+
+
+@pytest.mark.parametrize("mode", [None, "llm"])
+def test_mock_mode_keeps_constant_mind_gate(
+    tmp_path: Path,
+    monkeypatch,
+    mode: str | None,
+) -> None:
+    if mode is None:
+        monkeypatch.delenv("LUMINA_MIND_GATE_MODE", raising=False)
+    else:
+        monkeypatch.setenv("LUMINA_MIND_GATE_MODE", mode)
+
+    def forbidden_builder(*args, **kwargs):
+        raise AssertionError("gate client must not be built in mock mode")
+
+    monkeypatch.setattr(
+        main_module, "build_model_client_from_env", forbidden_builder
+    )
+
+    app = _wired_app(tmp_path, MockModelClient())
+
+    assert isinstance(app.state.message_runtime._mind_gate, ConstantMindGate)
+
+
+def test_constant_mode_rolls_back_to_stage1_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LUMINA_MIND_GATE_MODE", "constant")
+
+    def forbidden_builder(*args, **kwargs):
+        raise AssertionError("gate client must not be built in constant mode")
+
+    monkeypatch.setattr(
+        main_module, "build_model_client_from_env", forbidden_builder
+    )
+
+    app = _wired_app(tmp_path, _ContextModel())
+
+    assert isinstance(app.state.message_runtime._mind_gate, ConstantMindGate)
+
+
+@pytest.mark.parametrize("failure", ["raises", "returns_mock"])
+def test_llm_mode_without_real_gate_client_falls_back_to_constant(
+    tmp_path: Path,
+    monkeypatch,
+    failure: str,
+) -> None:
+    monkeypatch.setenv("LUMINA_MIND_GATE_MODE", "llm")
+    if failure == "raises":
+
+        def broken_builder(*args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+        builder = broken_builder
+    else:
+
+        def mock_builder(*args, **kwargs):
+            return MockModelClient()
+
+        builder = mock_builder
+    monkeypatch.setattr(main_module, "build_model_client_from_env", builder)
+
+    app = _wired_app(tmp_path, _ContextModel())
+
+    assert isinstance(app.state.message_runtime._mind_gate, ConstantMindGate)
+
+
+def test_default_llm_gate_serves_chat_with_single_recall_and_audit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("LUMINA_MIND_GATE_MODE", raising=False)
+
+    class _TrueGateModel:
+        client_kind = "model"
+
+        def generate(self, recent_context, user_message, *, system_prompt):
+            return "true"
+
+    monkeypatch.setattr(
+        main_module,
+        "build_model_client_from_env",
+        lambda *args, **kwargs: _TrueGateModel(),
+    )
+    model = _ContextModel()
+    retriever = _RecordingRetriever(
+        MemoryContext("hello", rendered_text="bounded memory")
+    )
+    app = _wired_app(
+        tmp_path,
+        model,
+        recall_enabled=True,
+        memory_retriever=retriever,
+        mind_decision_log_path=tmp_path / "decisions.jsonl",
+    )
+    assert isinstance(app.state.message_runtime._mind_gate, LlmMindGate)
+    client = TestClient(app)
+
+    first = client.post("/api/chat", json={"message": "one"})
+    second = client.post("/api/chat", json={"message": "two"})
+
+    assert first.status_code == second.status_code == 200
+    # Exactly one Recall per chat message, in message order; no duplicates.
+    assert [call[0] for call in retriever.calls] == ["one", "two"]
+    assert model.messages == ["one", "two"]
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "decisions.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(records) == 2
+    assert all(record["recall"] is True for record in records)
 
 
 def test_chat_background_loads_once_and_requires_restart(
@@ -722,6 +889,8 @@ def test_recall_is_on_by_default_when_environment_is_absent(
         model_client=_ContextModel(),
         env_file_path=None,
         memory_retriever=retriever,
+        # Recall default-on behavior, not Mind gate selection: pin stage-1.
+        mind_gate=ConstantMindGate(),
     )
 
     client = TestClient(app)

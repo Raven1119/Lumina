@@ -326,6 +326,36 @@ capability; it does not parse free-text queries.
 - **Adopted consequence:** memory evaluations use semantic evidence correctness,
   not strict answer formatting.
 
+### Mind-supplied relation surfaces (v3rel shadow)
+
+- **Hypothesis:** the single Mind gate call could additionally emit query
+  relation surfaces, letting the existing `ControlledRelationResolver` operate
+  in normal Chat.
+- **Experiment:** offline shadow (`docs/experiments/mind_relation_shadow/`):
+  `mind-gate-v3rel` (one call, JSON `{recall, relations}` with raw surface
+  text), 30-case labeled set in the 10-relation vocabulary domain, 3 runs,
+  vs v2 baseline and label-oracle, with real adapter+resolver downstream on
+  synthetic correct/distractor memory pairs.
+- **Result (2026-08-16):** protocol_valid 97.78% (2/90 empty provider
+  responses, both fail-open caught) missed the pre-registered 100% bar;
+  extraction accuracy was single_zh 25% / single_en 17.6% / compound 0%;
+  wrong-relation rejection 20.75% vs oracle 100%. Safety was clean:
+  unsafe_failure=0, zero recall-bit regression vs v2, zero correct-evidence
+  kills, OOV probes produced genuine resolver UNRESOLVED 11/12.
+- **Why the mechanism is not established:** the bottleneck is query-side
+  canonicalization — the model's free-text surfaces (raw canonical IDs,
+  subject-prefixed phrases, combined phrases) mostly miss the exact-match
+  alias table; oracle proves the resolver gate itself works once surfaces
+  match. Fail-open guarantees the worst case degrades to baseline.
+- **Architectural lesson:** a closed exact-match vocabulary does not absorb
+  free-text model output; either the prompt must constrain output to verbatim
+  aliases (moving canonicalization into prompt compliance) or the resolver
+  must grow normalization — both are separate future experiments.
+- **Adopted consequence:** none. Production keeps `relation_surfaces=None`
+  from normal Chat; the resolver remains a structured-caller seam. No
+  production wiring is suggested; the 10-relation industrial vocabulary does
+  not support production-scope claims.
+
 ## Retained regression evidence
 
 Two compact JSON fixtures remain because maintained Formation regressions load

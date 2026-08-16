@@ -19,11 +19,14 @@ ColdDraftSegment
 -> 0..M MAGMA events + graph/vector persistence
 
 query + RecallPolicy
+-> query target_entity_ref classification (CURRENT_USER -> E_001)
 -> dense + bounded lexical rankings
+-> entity-conditioned FAISS subset list when a target_entity_ref is present
+   (that EntityNode's REFERS_TO(role=subject) events; adds candidates only)
 -> RRF anchors
 -> fixed bounded traversal
 -> fail-open controlled relation compatibility for supplied relation surfaces
--> fixed BGE batch rerank
+-> fixed BGE batch rerank (per-pair [SAME_ENTITY] projection on equal refs)
 -> pinned Hindsight post-rerank score composition
 -> bounded MemoryEvidence / MemoryContext
 ```
@@ -65,6 +68,11 @@ private.
   negation, uncertainty, and exact details.
 - One accepted `GroundedMemoryUnit` becomes one MAGMA event. A source segment may produce
   `0..M` events, and a completed empty manifest is valid.
+- A validated unit whose subject is the current user additionally persists
+  generic retrieval metadata `subject_entity_ref="E_001"`, one graph-only
+  `entity:e_001` EntityNode, and a single `ENTITY/REFERS_TO(role=subject)`
+  edge; EntityNodes never enter the vector index, and a Lumina-owned backend
+  subclass keeps temporal links EVENT-only (pinned upstream is unmodified).
 - Cold remains immutable. Unit source refs preserve source turn identity, role,
   exact unambiguous span offsets, timestamp, and timezone.
 - Stable evidence IDs are derived from grounded-unit identity and ingestion

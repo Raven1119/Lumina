@@ -15,7 +15,12 @@ class MemoryBackend(Protocol):
     def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any]) -> str: ...
     def create_relationships(self, memory_ids: list[str]) -> None: ...
     def persist(self) -> None: ...
-    def recall(self, query: str, policy: RecallPolicy) -> list[BackendCandidate]: ...
+    def recall(
+        self,
+        query: str,
+        policy: RecallPolicy,
+        target_entity_ref: str | None = None,
+    ) -> list[BackendCandidate]: ...
 
 
 class UnavailableMemoryBackend:
@@ -37,7 +42,12 @@ class UnavailableMemoryBackend:
     def persist(self) -> None:
         self._raise()
 
-    def recall(self, query: str, policy: RecallPolicy) -> list[BackendCandidate]:
+    def recall(
+        self,
+        query: str,
+        policy: RecallPolicy,
+        target_entity_ref: str | None = None,
+    ) -> list[BackendCandidate]:
         self._raise()
 
 
@@ -58,11 +68,64 @@ class RealMagmaBackend:
         finally:
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
+
+        class _EventOnlyTemporalTrgMemory(TemporalResonanceGraphMemory):
+            """Lumina-owned boundary: temporal linking consumes EVENT nodes only.
+
+            Pinned upstream ``_create_temporal_links`` sorts every graph node
+            by timestamp, so a non-temporal entity node would steal an event's
+            temporal predecessor (shadow evidence:
+            ``docs/experiments/entity_temporal_boundary/``). With the current
+            all-EVENT production graph this override is behavior-identical to
+            upstream. The pinned upstream source stays unmodified.
+            """
+
+            def _create_temporal_links(self, event_node):
+                # Imported lazily so controlled test doubles that stub
+                # ``memory.graph_db`` with event-only symbols stay valid.
+                from memory.graph_db import Link, LinkSubType, LinkType
+
+                all_nodes = [
+                    node
+                    for node in self.graph_db.nodes.values()
+                    if node.node_type == NodeType.EVENT
+                ]
+                all_nodes.sort(
+                    key=lambda n: n.timestamp if n.timestamp else datetime.min
+                )
+                for i, node in enumerate(all_nodes):
+                    if node.node_id == event_node.node_id and i > 0:
+                        prev_node = all_nodes[i - 1]
+                        precedes_link = Link(
+                            source_node_id=prev_node.node_id,
+                            target_node_id=event_node.node_id,
+                            link_type=LinkType.TEMPORAL,
+                            properties={
+                                'sub_type': LinkSubType.PRECEDES.value,
+                                'time_delta': (event_node.timestamp - prev_node.timestamp).total_seconds()
+                            }
+                        )
+                        self.graph_db.add_link(precedes_link)
+
+                        succeeds_link = Link(
+                            source_node_id=event_node.node_id,
+                            target_node_id=prev_node.node_id,
+                            link_type=LinkType.TEMPORAL,
+                            properties={
+                                'sub_type': LinkSubType.SUCCEEDS.value,
+                                'time_delta': (event_node.timestamp - prev_node.timestamp).total_seconds()
+                            }
+                        )
+                        self.graph_db.add_link(succeeds_link)
+
+                        self.stats['links_created'] += 2
+                        break
+
         self._constraints_type = TraversalConstraints
         self._event_node_type = EventNode
         self._node_type = NodeType
         self.persist_dir = Path(persist_dir)
-        self.trg = TemporalResonanceGraphMemory(
+        self.trg = _EventOnlyTemporalTrgMemory(
             llm_backend=None,
             embedding_model="minilm",
             persist_dir=str(self.persist_dir),
@@ -94,13 +157,83 @@ class RealMagmaBackend:
                 if identity not in existing:
                     self.trg.graph_db.add_link(link)
                     existing.add(identity)
+        self._create_subject_entity_ref_links(memory_ids)
+
+    def _create_subject_entity_ref_links(self, memory_ids: list[str]) -> None:
+        """Find-or-create graph-only EntityNodes and canonical REFERS_TO edges.
+
+        For each event carrying a non-null ``subject_entity_ref`` (written by
+        the unchanged write-side classifier), ensure one EntityNode with
+        deterministic id ``entity:<ref>`` exists and add a single
+        ``Event --ENTITY/REFERS_TO(role=subject)--> EntityNode`` edge. The
+        EntityNode is created directly in the graph — never through
+        ``add_event`` — so it is not vector-indexed and, per the EVENT-only
+        temporal boundary, never joins the temporal chain. Both the node and
+        the edge are deduplicated, so ingestion retry converges without
+        duplicates. Shadow evidence:
+        ``docs/experiments/entity_composite_e2e/``,
+        ``docs/experiments/context_role_entityref/``.
+        """
+        # Imported lazily so controlled test doubles that stub
+        # ``memory.graph_db`` with event-only symbols stay valid.
+        from memory.graph_db import (
+            EventNode,
+            Link,
+            LinkSubType,
+            LinkType,
+            NodeType,
+        )
+
+        for memory_id in memory_ids:
+            node = self.trg.graph_db.get_node(memory_id)
+            if node is None:
+                continue
+            attributes = getattr(node, "attributes", None)
+            if not isinstance(attributes, dict):
+                continue
+            ref = attributes.get("subject_entity_ref")
+            if not isinstance(ref, str) or not ref.strip():
+                continue
+            ref = ref.strip()
+            entity_node_id = f"entity:{ref.casefold()}"
+            if self.trg.graph_db.get_node(entity_node_id) is None:
+                self.trg.graph_db.add_node(EventNode(
+                    node_id=entity_node_id,
+                    node_type=NodeType.ENTITY,
+                    content_narrative="",
+                    attributes={"entity_ref": ref},
+                    embedding_vector=None,
+                ))
+            already_linked = any(
+                link.source_node_id == memory_id
+                and link.target_node_id == entity_node_id
+                and link.link_type == LinkType.ENTITY
+                and link.properties.get("sub_type") == LinkSubType.REFERS_TO.value
+                and link.properties.get("role") == "subject"
+                for link in self.trg.graph_db.links.values()
+            )
+            if not already_linked:
+                self.trg.graph_db.add_link(Link(
+                    source_node_id=memory_id,
+                    target_node_id=entity_node_id,
+                    link_type=LinkType.ENTITY,
+                    properties={
+                        "sub_type": LinkSubType.REFERS_TO.value,
+                        "role": "subject",
+                    },
+                ))
 
     def persist(self) -> None:
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.trg.graph_db.save(str(self.persist_dir / "graph.json"))
         self.trg.vector_db.save(str(self.persist_dir / "vectors"))
 
-    def recall(self, query: str, policy: RecallPolicy) -> list[BackendCandidate]:
+    def recall(
+        self,
+        query: str,
+        policy: RecallPolicy,
+        target_entity_ref: str | None = None,
+    ) -> list[BackendCandidate]:
         context = _execute_fixed_recall(
             trg=self.trg,
             constraints_type=self._constraints_type,
@@ -108,6 +241,7 @@ class RealMagmaBackend:
             node_type=self._node_type,
             query=query,
             policy=policy,
+            target_entity_ref=target_entity_ref,
         )
         scores = context.metadata.get("search_scores", [])
 

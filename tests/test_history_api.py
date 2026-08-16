@@ -7,6 +7,7 @@ from Conversation_Memory.adapter.models import IngestionResult, MemoryContext
 from core.contracts import MemoryTurn
 from core.draft_store import HotDraftSummary
 from core.main import create_app
+from Mind.constant_gate import ConstantMindGate
 
 
 class _HistoryModel:
@@ -56,6 +57,9 @@ def _app(
     memory: _HistoryMemory | None = None,
     **kwargs,
 ):
+    # Pin the stage-1 gate: history tests assert Chat/Draft behavior, not
+    # Mind gate selection (which is covered in tests/test_chat_api.py).
+    kwargs.setdefault("mind_gate", ConstantMindGate())
     return create_app(
         draft_store_path=tmp_path / "hot.jsonl",
         cold_draft_path=tmp_path / "cold.jsonl",

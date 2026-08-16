@@ -83,6 +83,7 @@ class MiniMaxAnthropicModelClient:
         model: str,
         *,
         max_tokens: int = 1000,
+        temperature: float | None = None,
         timeout: float = 30.0,
         http_client: httpx.Client | None = None,
     ) -> None:
@@ -90,6 +91,7 @@ class MiniMaxAnthropicModelClient:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._max_tokens = max_tokens
+        self._temperature = temperature
         self._http_client = http_client or httpx.Client(timeout=timeout)
 
     def generate(
@@ -107,6 +109,8 @@ class MiniMaxAnthropicModelClient:
                 {"role": "user", "content": user_message},
             ],
         }
+        if self._temperature is not None:
+            body["temperature"] = self._temperature
         summary_blocks = [
             item.get("text")
             for item in recent_context
@@ -206,6 +210,7 @@ def build_model_client_from_env(
     *,
     model_name_override: str | None = None,
     max_tokens_override: int | None = None,
+    temperature_override: float | None = None,
 ) -> ModelClient:
     env = environ if environ is not None else os.environ
     if env.get("LUMINA_MODEL_MODE", "mock").strip().lower() != "real":
@@ -234,6 +239,8 @@ def build_model_client_from_env(
     }
     if max_tokens_override is not None:
         client_options["max_tokens"] = max_tokens_override
+    if temperature_override is not None:
+        client_options["temperature"] = temperature_override
     return MiniMaxAnthropicModelClient(
         **client_options,
     )

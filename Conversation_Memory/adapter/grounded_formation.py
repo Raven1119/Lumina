@@ -226,6 +226,11 @@ def _validate_candidate(
     semantic_equivalence: bool = False,
 ) -> GroundedMemoryUnit | None:
     expected = {"text", "subject", "relation", "value", "source_refs", "referenced_time"}
+    # Real MiniMax-M3 responses omit the nullable referenced_time key entirely
+    # (observed production zero-unit failure); explicit null has always been
+    # valid, so treat absent as None before the exact-key check.
+    if isinstance(candidate, dict) and "referenced_time" not in candidate:
+        candidate = {**candidate, "referenced_time": None}
     if not isinstance(candidate, dict) or set(candidate) != expected:
         return None
     values = [candidate[name] for name in ("text", "subject", "relation", "value")]

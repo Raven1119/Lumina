@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from math import isfinite
 from numbers import Real
@@ -36,10 +37,24 @@ from .models import (
     RecallPolicy,
     SourceProvenance,
 )
+from .user_self import (
+    candidate_entity_ref,
+    classify_subject_entity_ref,
+    classify_target_entity_ref,
+    entity_marked_text,
+)
 
 
 _GROUNDED_SPAN_INGESTION_VERSION = "grounded-span-v2"
 _RELATION_RESOLVER = ControlledRelationResolver()
+_USER_SELF_BINDING_ENV = "LUMINA_USER_SELF_BINDING_ENABLED"
+
+
+def _user_self_binding_enabled() -> bool:
+    raw = os.environ.get(_USER_SELF_BINDING_ENV)
+    if raw is None:
+        return True
+    return raw.strip().casefold() not in {"0", "false", "no", "off"}
 
 
 class MagmaMemoryAdapter:
@@ -136,7 +151,23 @@ class MagmaMemoryAdapter:
             return MemoryContext(query if isinstance(query, str) else "", safe_error_code="invalid_query")
         normalized_query = query.strip()
         try:
-            candidates = tuple(self.backend.recall(normalized_query, policy))
+            target_entity_ref = (
+                classify_target_entity_ref(normalized_query)
+                if _user_self_binding_enabled()
+                else None
+            )
+        except Exception:
+            target_entity_ref = None
+        try:
+            candidates = tuple(
+                self.backend.recall(normalized_query, policy)
+                if target_entity_ref is None
+                else self.backend.recall(
+                    normalized_query,
+                    policy,
+                    target_entity_ref=target_entity_ref,
+                )
+            )
         except Exception:
             return MemoryContext(normalized_query, safe_error_code="recall_unavailable")
 
@@ -165,11 +196,9 @@ class MagmaMemoryAdapter:
             reranker = self._get_bge_reranker()
             if reranker is None:
                 raise RuntimeError("BGE reranker is unavailable")
-            raw_scores = reranker.score(
-                normalized_query,
-                tuple(candidate.text for _, candidate in rerankable),
+            scores = _score_candidates(
+                reranker, normalized_query, target_entity_ref, rerankable,
             )
-            scores = _validate_reranker_scores(raw_scores, len(rerankable))
             source_timestamps = tuple(
                 _source_timestamp(candidate)
                 for _, candidate in rerankable
@@ -233,6 +262,54 @@ class MagmaMemoryAdapter:
 
 def _create_bge_reranker():
     return BgeReranker()
+
+
+def _score_candidates(
+    reranker,
+    normalized_query: str,
+    target_entity_ref: str | None,
+    rerankable,
+) -> tuple[float, ...]:
+    """Score candidates with the per-pair SAME_ENTITY scoring projection.
+
+    The entity marker enters a (query, candidate) pair only when both sides
+    carry the same non-null entity ref; every other pair is scored with the
+    byte-identical current texts. BGE scores pairs independently, so
+    splitting into two score calls does not change per-pair semantics.
+    """
+    marked_texts: list[str] = []
+    marked_positions: list[int] = []
+    plain_texts: list[str] = []
+    plain_positions: list[int] = []
+    for position, (_index, candidate) in enumerate(rerankable):
+        ref = candidate_entity_ref(candidate.metadata)
+        if target_entity_ref is not None and ref == target_entity_ref:
+            marked_positions.append(position)
+            marked_texts.append(entity_marked_text(ref, candidate.text))
+        else:
+            plain_positions.append(position)
+            plain_texts.append(candidate.text)
+    scores: list[float | None] = [None] * len(rerankable)
+    if marked_texts:
+        marked_scores = _validate_reranker_scores(
+            reranker.score(
+                entity_marked_text(target_entity_ref, normalized_query),
+                tuple(marked_texts),
+            ),
+            len(marked_texts),
+        )
+        for position, score in zip(marked_positions, marked_scores, strict=True):
+            scores[position] = score
+    if plain_texts:
+        plain_scores = _validate_reranker_scores(
+            reranker.score(normalized_query, tuple(plain_texts)),
+            len(plain_texts),
+        )
+        for position, score in zip(plain_positions, plain_scores, strict=True):
+            scores[position] = score
+    return tuple(
+        score for score in scores if score is not None
+    )
 
 
 def _relation_compatible(
@@ -668,6 +745,7 @@ def _formed_event_metadata(
         "subject": unit.subject,
         "relation": unit.relation,
         "value": unit.value,
+        "subject_entity_ref": classify_subject_entity_ref(unit, segment),
         "source_refs": refs,
         "formation_version": unit.formation_version,
         "referenced_time": unit.referenced_time,
