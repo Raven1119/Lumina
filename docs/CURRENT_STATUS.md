@@ -91,16 +91,65 @@
   is idempotent across ingestion retry, node/edge/metadata persist across
   restart, and the EntityNode is never vector-indexed
   (`Conversation_Memory/tests/test_entity_node_write_path.py`);
+- ordinary named subjects use deterministic write-side exact-surface binding:
+  one bounded persisted candidate with the same canonical surface is reused,
+  no match receives a stable new EntityRef, and duplicate-surface candidates
+  remain unbound rather than guessed; these bindings are checkpointed before
+  MAGMA writes and include the current-run overlay, without an LLM, fuzzy
+  matching, aliases, or query-side entity lookup;
+- grounded mention bindings (Production Slice 1): on a new formation segment,
+  each unique `(turn_id, supporting_span)` of validator-accepted units gets
+  one bounded entity-only extraction call through the same FormationModel
+  seam (span text only — never unit.text, never the Cold store), an
+  exact-span gate, and — only when a span backs more than one unit — one
+  subset-enforced selector call per unit; grounded surfaces are bound by
+  exact canonical-surface match against persisted candidates plus the
+  same-run overlay, with unbound mentions receiving a stable EntityRef seeded
+  from `(unit.id, surface)`, except that a mention surface equal to the same
+  unit's already-bound subject canonical surface reuses that unit's
+  `subject_entity_ref` directly (one explicit entity never gets two refs); the five-key records (`unit_id`, `entity_ref`,
+  `canonical_surface`, `turn_id`, `supporting_span`) are checkpointed before
+  any MAGMA write, reused with zero provider calls on retry/restart, carried
+  into event metadata as `mention_entity_refs` / `mention_entity_surfaces`
+  (consumed by the Slice 2 write path below); extraction/selector
+  failure after one bounded retry leaves the segment pending without a
+  checkpoint, and malformed persisted bindings fail as `state_corrupt`
+  (`Conversation_Memory/tests/test_entity_node_write_path.py`; shadow
+  evidence: `docs/experiments/grounded_mention_selection/RESULT.md`);
+- event-centric multi-entity REFERS_TO (Production Slice 2): at
+  `create_relationships` time, each event's `mention_entity_refs` adds one
+  generic role-less `Event --ENTITY/REFERS_TO--> EntityNode` edge per
+  mentioned ref — properties carry only `sub_type`, never a `role` key —
+  skipping a mention ref equal to the event's `subject_entity_ref` because
+  the role=subject edge already covers that pair; EntityNodes are
+  find-or-created graph-only exactly as in the subject path (never
+  vector-indexed, never on the temporal chain), node/edge dedup makes
+  ingestion retry and reload converge, and non-entity attribute values never
+  produce EntityNodes (`Conversation_Memory/tests/test_entity_node_write_path.py`;
+  shadow evidence: `docs/experiments/multi_entity_recall_gain/RESULT_CROWDED.md`);
 - at Recall time a self-referential query is classified to
   `target_entity_ref="E_001"` before candidate generation; MAGMA
   anchor/lexical/traversal always use the original normalized query;
+- when that classification finds no self reference, the adapter asks the
+  backend for a deterministic exact-surface lookup over persisted EntityNode
+  `canonical_surface` attributes (subject and mention EntityNodes alike):
+  exactly one distinct ref whose surface is contained in the query resolves
+  to that ref, while 0 hits or hits mapping to more than one distinct ref
+  (two Alexes) resolve None — no LLM, embedding, fuzzy, alias, or
+  coreference matching, and no general query entity parser;
+  `LUMINA_USER_SELF_BINDING_ENABLED=false` still disables the whole entity
+  channel, lookup included
+  (`Conversation_Memory/tests/test_entity_conditioned_recall.py`,
+  `tests/test_user_self_binding.py`);
 - a query carrying a `target_entity_ref` additionally runs an
-  entity-conditioned candidate channel: the EntityNode's
-  `REFERS_TO(role=subject)` adjacency yields that entity's event IDs, FAISS
+  entity-conditioned candidate channel: the EntityNode's full `REFERS_TO`
+  adjacency (role=subject and role-less mention edges) yields that entity's
+  event IDs, FAISS
   `IDSelectorBatch` subset search ranks a bounded top-k over only those
   events, and the result joins RRF as a third list — it adds candidates only
   and leaves BGE / Hindsight / admission untouched; a query without a
-  `target_entity_ref` takes the byte-identical pre-existing path
+  `target_entity_ref` takes the byte-identical pre-existing path, and
+  `list_entity_candidates` still projects role=subject edges only
   (`Conversation_Memory/tests/test_entity_conditioned_recall.py`);
 - the constant `[SAME_ENTITY] ` marker enters only the BGE scoring projection
   of a (query, candidate) pair when both sides carry the same entity ref;

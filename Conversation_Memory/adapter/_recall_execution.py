@@ -112,15 +112,18 @@ def _entity_subset_events(
     event_node_type: type[Any],
     node_type: Any,
 ) -> list[Any]:
-    """Entity-conditioned semantic channel (migration slice 3).
+    """Entity-conditioned semantic channel.
 
-    When the query resolved a target entity ref, rank only that entity's own
-    ``REFERS_TO(role=subject)`` events by the same enriched-query embedding
-    the dense path uses, via a FAISS ``IDSelectorBatch`` subset search, and
-    return them as a third RRF list. The subset only adds candidates; ranking
-    and admission are unchanged. No ref, no EntityNode, or any failure yields
-    an empty list and the two-list fusion is byte-identical to before.
-    Shadow evidence: ``docs/experiments/entity_conditioned_retrieval/``.
+    When the query resolved a target entity ref, rank that entity's
+    ``REFERS_TO`` events — both the ``role=subject`` edges and the role-less
+    generic mention edges written for ``mention_entity_refs`` — by the same
+    enriched-query embedding the dense path
+    uses, via a FAISS ``IDSelectorBatch`` subset search, and return them as a
+    third RRF list. The subset only adds candidates; ranking and admission
+    are unchanged. No ref, no EntityNode, or any failure yields an empty list
+    and the two-list fusion is byte-identical to before.
+    Shadow evidence: ``docs/experiments/entity_conditioned_retrieval/``,
+    ``docs/experiments/multi_entity_recall_gain/RESULT_CROWDED.md``.
     """
     if not target_entity_ref:
         return []
@@ -139,7 +142,6 @@ def _entity_subset_events(
         if link.link_type == LinkType.ENTITY
         and link.target_node_id == entity_node.node_id
         and link.properties.get("sub_type") == LinkSubType.REFERS_TO.value
-        and link.properties.get("role") == "subject"
     ]
     if not event_ids:
         return []

@@ -590,6 +590,9 @@ class AdapterFakeBackend:
     def persist(self):
         return None
 
+    def resolve_target_entity_ref(self, query):
+        return None
+
     def recall(self, query, policy):
         return []
 

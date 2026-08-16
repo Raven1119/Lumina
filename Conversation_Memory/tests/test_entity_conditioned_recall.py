@@ -44,10 +44,14 @@ _POLICY = RecallPolicy(
 _BASE_TS = datetime(2026, 8, 1, 8, 0, tzinfo=UTC)
 
 
-def _add_memory(backend, evidence_id, text, hours, ref=None):
+def _add_memory(backend, evidence_id, text, hours, ref=None, mention_refs=None,
+                mention_surfaces=None, surface=None):
     metadata = {
         "evidence_id": evidence_id,
         "subject_entity_ref": ref,
+        "subject_entity_surface": surface,
+        "mention_entity_refs": list(mention_refs or ()),
+        "mention_entity_surfaces": list(mention_surfaces or ()),
         "provenance": {
             "segment_id": f"segment-{evidence_id}",
             "conversation_id": "entity-recall-conversation",
@@ -190,3 +194,257 @@ def test_entity_channel_survives_restart(tmp_path, monkeypatch):
     context = _adapter(reloaded, tmp_path).recall("我是谁？", _POLICY)
     assert "我叫林岚。" in _evidence_texts(context)
     _assert_no_internal_leak(context)
+
+
+# --- Production Slice 2: the entity subset channel consumes ALL ENTITY /
+# REFERS_TO edges (subject + generic mention edges).
+# Shadow evidence: docs/experiments/multi_entity_recall_gain/RESULT_CROWDED.md.
+
+def _build_mention_corpus(tmp_path):
+    """Crowded corpus: the 导师 fact ev1 is squeezed out of the global fused
+    top-k, so only the generic mention edge ``ev1 -> entity:e_wang`` can
+    recover it for a 王老师-targeted query. Mirrors the crowded shadow corpus:
+    ev1 first, 32 semantic distractors in the middle, the rest last."""
+    backend = RealMagmaBackend(tmp_path / "magma")
+    ids = []
+    ids.append(_add_memory(
+        backend, "ev1", "小林的导师是王老师。", 0, ref="E_XIAOLIN",
+        surface="小林",
+        mention_refs=["E_XIAOLIN", "E_WANG"],
+        mention_surfaces=["小林", "王老师"],
+    ))
+    people = ["周明", "郑浩", "吴倩", "何勇", "高飞", "林涛", "罗欣", "梁雪"]
+    flavors = [
+        "的导师是李教授。", "的学生是张倩。", "推荐同事加入项目组。", "在东南大学任教。",
+    ]
+    hour = 1
+    index = 0
+    for name in people:
+        for flavor in flavors:
+            ids.append(_add_memory(
+                backend, f"ev-d{index}", f"{name}{flavor}", hour, ref=f"E_D{index}",
+                surface=name,
+            ))
+            hour += 1
+            index += 1
+    # ev2's subject is 小林 (surface present in text), NOT 王老师: without the
+    # generic mention edge, no subject REFERS_TO edge points at entity:e_wang,
+    # so the E_WANG subset channel stays empty and the recovery test is truly
+    # attributable to the mention edge.
+    ids.append(_add_memory(
+        backend, "ev2", "王老师推荐小林加入项目。", hour, ref="E_XIAOLIN",
+        surface="小林",
+        mention_refs=["E_WANG", "E_XIAOLIN"],
+        mention_surfaces=["王老师", "小林"],
+    ))
+    ids.append(_add_memory(
+        backend, "ev3", "小林今年23岁。", hour + 1, ref="E_XIAOLIN",
+        surface="小林",
+        mention_refs=["E_XIAOLIN"], mention_surfaces=["小林"],
+    ))
+    ids.append(_add_memory(
+        backend, "ev-linsu", "林素在南京大学读书。", hour + 2, ref="E_LINSU",
+        surface="林素",
+        mention_refs=["E_LINSU"], mention_surfaces=["林素"],
+    ))
+    ids.append(_add_memory(
+        backend, "ev-user", "我叫林岚。", hour + 3, ref="E_001",
+        surface="林岚",
+        mention_refs=["E_001"], mention_surfaces=["林岚"],
+    ))
+    backend.create_relationships(ids)
+    backend.persist()
+    return backend
+
+
+def test_subject_only_corpus_recall_byte_identical_without_generic_edges(
+    tmp_path, monkeypatch,
+):
+    """Legacy subject-only corpus: no generic edges exist, so dropping the
+    role filter changes nothing — candidates and evidence are the pinned
+    pre-Slice-2 baseline."""
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    backend = _build_corpus(tmp_path)
+    from memory.graph_db import LinkSubType, LinkType
+
+    generic_edges = [
+        link
+        for link in backend.trg.graph_db.links.values()
+        if link.link_type == LinkType.ENTITY
+        and link.properties.get("sub_type") == LinkSubType.REFERS_TO.value
+        and "role" not in link.properties
+    ]
+    assert generic_edges == []
+
+    context = _adapter(backend, tmp_path).recall("我是谁？", _POLICY)
+    assert [item.evidence_id for item in context.evidence] == [
+        "ev-u1", "ev-u2", "ev-d21",
+    ]
+    third_party = _adapter(backend, tmp_path).recall("小林是谁？", _POLICY)
+    assert [item.evidence_id for item in third_party.evidence] == ["ev-x1"]
+    absent = _adapter(backend, tmp_path).recall("我的银行卡号是多少？", _POLICY)
+    assert absent.evidence == ()
+
+
+def test_generic_mention_edge_recovers_crowded_event_via_target_ref(tmp_path):
+    """Query resolved to 王老师's ref: the crowded global path alone misses
+    ev1; the generic mention edge carries it into the E_WANG subset channel.
+
+    The public facade resolves only CURRENT_USER today, so this exercises the
+    existing backend-level ``target_entity_ref`` seam directly — the same seam
+    the validated shadow used (RESULT_CROWDED.md).
+    """
+    backend = _build_mention_corpus(tmp_path)
+    query = "王老师的学生是谁？"
+
+    global_only = backend.recall(query, _POLICY)
+    global_texts = [candidate.text for candidate in global_only]
+    # calibration: the corpus is crowded enough that the global path misses ev1
+    assert "小林的导师是王老师。" not in global_texts
+
+    targeted = backend.recall(query, _POLICY, target_entity_ref="E_WANG")
+    targeted_texts = [candidate.text for candidate in targeted]
+    assert "小林的导师是王老师。" in targeted_texts
+    # candidate bound and leakage hygiene at the backend seam
+    assert len(targeted) <= _POLICY.max_nodes
+    for candidate in targeted:
+        assert "entity:" not in candidate.text
+        assert "[SAME_ENTITY]" not in candidate.text
+
+
+def test_current_user_self_query_unchanged_with_generic_edges_in_graph(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    backend = _build_mention_corpus(tmp_path)
+    context = _adapter(backend, tmp_path).recall("我是谁？", _POLICY)
+    assert "我叫林岚。" in _evidence_texts(context)
+    _assert_no_internal_leak(context)
+    negative = _adapter(backend, tmp_path).recall("我的银行卡号是多少？", _POLICY)
+    assert negative.evidence == ()
+    _assert_no_internal_leak(negative)
+
+
+def test_mention_corpus_bounds_and_no_internal_leak(tmp_path, monkeypatch):
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    backend = _build_mention_corpus(tmp_path)
+    for query in ("王老师的学生是谁？", "小林的导师是谁？", "我是谁？"):
+        context = _adapter(backend, tmp_path).recall(query, _POLICY)
+        assert len(context.evidence) <= _POLICY.max_evidence_items
+        assert len(context.rendered_text) <= _POLICY.max_chars
+        for token in ("[SAME_ENTITY]", "E_WANG", "E_XIAOLIN", "entity:"):
+            assert token not in context.rendered_text
+
+
+# --- Production Slice 3: query-side ordinary entity exact lookup -----------
+#
+# The adapter facade first runs the unchanged CURRENT_USER classification;
+# only when it returns None does it ask the backend for a deterministic
+# exact-surface lookup over persisted EntityNode canonical_surfaces
+# (0 hits -> None, exactly one distinct ref -> that ref, >1 refs -> None).
+
+
+def test_adapter_auto_resolves_ordinary_entity_and_recovers_crowded_event(
+    tmp_path, monkeypatch,
+):
+    """Case 1: "王老师的学生是谁？" auto-resolves E_WANG through the facade —
+    no monkeypatching, no backend seam — and the generic mention edge
+    carries the crowded-out mentor event into evidence."""
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    backend = _build_mention_corpus(tmp_path)
+    query = "王老师的学生是谁？"
+    assert backend.resolve_target_entity_ref(query) == "E_WANG"
+    context = _adapter(backend, tmp_path).recall(query, _POLICY)
+    assert "小林的导师是王老师。" in _evidence_texts(context)
+    _assert_no_internal_leak(context)
+
+
+def test_adapter_auto_resolves_second_ordinary_entity(tmp_path, monkeypatch):
+    """Case 2: a second ordinary entity resolves by its own surface."""
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    backend = _build_mention_corpus(tmp_path)
+    query = "小林的导师是谁？"
+    assert backend.resolve_target_entity_ref(query) == "E_XIAOLIN"
+    context = _adapter(backend, tmp_path).recall(query, _POLICY)
+    assert "小林的导师是王老师。" in _evidence_texts(context)
+    _assert_no_internal_leak(context)
+
+
+def test_lookup_resolves_exact_surface_only_when_node_persisted(tmp_path):
+    """Case 3: Tlhey resolves once its EntityNode exists; without the node
+    the same query resolves to None."""
+    backend = RealMagmaBackend(tmp_path / "magma")
+    assert backend.resolve_target_entity_ref("Tlhey是谁？") is None
+    memory_id = _add_memory(
+        backend, "ev-tlhey", "Tlhey是项目组的新成员。", 0,
+        ref="E_TLHEY", surface="Tlhey",
+    )
+    backend.create_relationships([memory_id])
+    assert backend.resolve_target_entity_ref("Tlhey是谁？") == "E_TLHEY"
+
+
+def test_self_query_still_uses_current_user_ref_with_lookup_active(
+    tmp_path, monkeypatch,
+):
+    """Case 4: the lookup alone finds no surface in a self query, so the
+    E_001 hit below comes from the unchanged CURRENT_USER classification."""
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    backend = _build_mention_corpus(tmp_path)
+    assert backend.resolve_target_entity_ref("我是谁？") is None
+    context = _adapter(backend, tmp_path).recall("我是谁？", _POLICY)
+    assert "我叫林岚。" in _evidence_texts(context)
+    _assert_no_internal_leak(context)
+
+
+def test_shared_surface_across_two_refs_resolves_none(tmp_path):
+    """Case 5: two Alexes — one canonical_surface mapping to two distinct
+    refs must never guess; the lookup returns None."""
+    backend = RealMagmaBackend(tmp_path / "magma")
+    first = _add_memory(
+        backend, "ev-alex-a", "Alex在东南大学任教。", 0,
+        ref="E_ALEX_A", surface="Alex",
+    )
+    second = _add_memory(
+        backend, "ev-alex-b", "Alex加入了新项目。", 1,
+        ref="E_ALEX_B", surface="Alex",
+    )
+    backend.create_relationships([first, second])
+    assert backend.resolve_target_entity_ref("Alex是谁？") is None
+
+
+def test_unknown_entity_query_falls_back_to_legacy_global_path(
+    tmp_path, monkeypatch,
+):
+    """Case 6: an unknown entity resolves None, so the facade takes the
+    byte-identical legacy global path (proven against the flag-off path,
+    which is exactly the pre-lookup behavior for a non-self query)."""
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    backend = _build_mention_corpus(tmp_path)
+    query = "孙悟空是谁？"
+    assert backend.resolve_target_entity_ref(query) is None
+    with_lookup = _adapter(backend, tmp_path).recall(query, _POLICY)
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "false")
+    legacy = _adapter(backend, tmp_path).recall(query, _POLICY)
+    assert _evidence_texts(with_lookup) == _evidence_texts(legacy)
+    assert with_lookup.rendered_text == legacy.rendered_text
+
+
+def test_lookup_stable_across_persist_and_reload(tmp_path):
+    """Case 7: lookup results survive restart — same resolutions before and
+    after persist + reload."""
+    backend = RealMagmaBackend(tmp_path / "magma")
+    memory_id = _add_memory(
+        backend, "ev-tlhey", "Tlhey是项目组的新成员。", 0,
+        ref="E_TLHEY", surface="Tlhey",
+    )
+    alex = _add_memory(
+        backend, "ev-alex", "Alex在东南大学任教。", 1,
+        ref="E_ALEX", surface="Alex",
+    )
+    backend.create_relationships([memory_id, alex])
+    backend.persist()
+    reloaded = RealMagmaBackend(tmp_path / "magma")
+    for candidate in (backend, reloaded):
+        assert candidate.resolve_target_entity_ref("Tlhey是谁？") == "E_TLHEY"
+        assert candidate.resolve_target_entity_ref("Alex是谁？") == "E_ALEX"
+        assert candidate.resolve_target_entity_ref("孙悟空是谁？") is None

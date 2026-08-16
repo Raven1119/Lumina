@@ -29,8 +29,15 @@ class FakeFormationModel:
         self.calls = 0
 
     def generate(self, recent_context, user_message, *, system_prompt):
-        self.calls += 1
         assert recent_context == []
+        if system_prompt.startswith((
+            "Extract only entity mentions",
+            "Select from the Candidate mentions",
+        )):
+            # mention extraction/selection calls (Production Slice 1) are not
+            # counted as formation calls; answer with no mentions
+            return json.dumps({"entities": []}, ensure_ascii=False)
+        self.calls += 1
         assert "source-grounded atomic facts" in system_prompt
         assert "turns" in json.loads(user_message)
         return json.dumps({"units": self.units}, ensure_ascii=False)
@@ -44,8 +51,15 @@ class FakeSemanticFormationModel:
         self.semantic_payload = None
 
     def generate(self, recent_context, user_message, *, system_prompt):
-        self.calls += 1
         assert recent_context == []
+        if system_prompt.startswith((
+            "Extract only entity mentions",
+            "Select from the Candidate mentions",
+        )):
+            # mention extraction/selection calls (Production Slice 1) are not
+            # counted as formation calls; answer with no mentions
+            return json.dumps({"entities": []}, ensure_ascii=False)
+        self.calls += 1
         if self.calls == 1:
             assert "source-grounded atomic facts" in system_prompt
             return json.dumps({"units": self.units}, ensure_ascii=False)
@@ -364,6 +378,9 @@ def test_semantic_unit_checkpoint_retry_never_calls_model_again(tmp_path):
 
         def recall(self, *_args):
             return ()
+
+        def resolve_target_entity_ref(self, _query):
+            return None
 
     backend = FailOnceBackend()
     first = MagmaMemoryAdapter(
@@ -722,6 +739,9 @@ def test_formation_is_persisted_before_magma_and_retry_reuses_it(tmp_path):
         def recall(self, _query, _policy):
             return ()
 
+        def resolve_target_entity_ref(self, _query):
+            return None
+
     backend = FailOnceBackend()
     first = MagmaMemoryAdapter(
         backend,
@@ -794,6 +814,9 @@ def test_persist_failure_after_add_reuses_event_without_formation_retry(tmp_path
         def recall(self, _query, _policy):
             return ()
 
+        def resolve_target_entity_ref(self, _query):
+            return None
+
     backend = FailPersistOnceBackend()
     path = tmp_path / "state.json"
     first = MagmaMemoryAdapter(
@@ -856,6 +879,9 @@ def test_state_write_failure_after_event_is_idempotent_on_retry(tmp_path):
 
         def recall(self, _query, _policy):
             return ()
+
+        def resolve_target_entity_ref(self, _query):
+            return None
 
     class FailAfterEventStateStore(IngestionStateStore):
         def __init__(self, state_path):
@@ -1114,6 +1140,9 @@ def test_multi_turn_referenced_time_uses_the_unique_source_turn_timestamp(tmp_pa
 
         def recall(self, *_args):
             return ()
+
+        def resolve_target_entity_ref(self, _query):
+            return None
 
     backend = Backend()
     result = MagmaMemoryAdapter(

@@ -356,6 +356,49 @@ capability; it does not parse free-text queries.
   production wiring is suggested; the 10-relation industrial vocabulary does
   not support production-scope claims.
 
+### Entity wiring shadow (extraction → EntityRef → EntityNode → recall)
+
+- **Hypothesis:** the validated entity-only extraction + exact-span gate could
+  drive the full write-side wiring — deterministic EntityRef binding,
+  graph-only EntityNodes, REFERS_TO edges, persistence/reload, and
+  entity-conditioned recall — end to end on isolated state.
+- **Experiment:** TEMP shadow over an isolated `RealMagmaBackend` sandbox
+  (raw results consolidated here; harness removed): 5 synthetic cases with
+  real MiniMax-M3 extraction, one call per case, exact-surface EntityRef
+  binding (REUSE / stable CREATE / UNRESOLVED), subject/object role edges at
+  that design stage, then reload and entity-conditioned recall.
+- **Result (2026-08-16):** all 5 cases schema-valid; node/edge counts
+  identical before and after a retry replay (3 nodes / 7 edges → 3 / 7,
+  idempotent); zero wrong merges and zero wrong news; `23` and `PRJ-204`
+  correctly produced no entity. The known `Tlhey` extraction miss reproduced
+  (extraction failure, not a wiring failure).
+- **Adopted consequence:** the wiring seam was confirmed feasible; the
+  subject/object role-edge shape was later superseded by the generic
+  Event→Entity `REFERS_TO` design validated in
+  `docs/experiments/multi_entity_recall_gain/` and promoted in the
+  multi-entity production slices. The shadow itself was TEMP-only.
+
+### MAGMA C.1 structured event-metadata extraction shadow
+
+- **Hypothesis:** a MAGMA-paper-style C.1 extraction call (entities,
+  relationships, semantic facts, dates, topic, summary) could supply richer
+  structured metadata than current extraction.
+- **Experiment:** TEMP shadow with 5 frozen synthetic fixtures, real
+  MiniMax-M3 calls, per-item source-span grounding measurement; no Dream,
+  Cold, MAGMA, or checkpoint access.
+- **Result (2026-08-16): FAIL.** Entity recall 1.0 with zero spurious (vs
+  0.4167 baseline), but relationship/fact/topic/summary outputs were largely
+  paraphrases rather than source spans: exact source-span grounding 0.4762,
+  relationship grounding precision 0.1250, semantic-fact grounding precision
+  0.2000, field-level abstention precision 0.5333, and one unsupported
+  organizer inference.
+- **Why rejected:** the grounded-evidence contract requires every retained
+  structured item to be traceable to frozen source text; C.1-style free
+  generation cannot supply that per-item evidence trace.
+- **Adopted consequence:** none. Structured-metadata enrichment was not
+  pursued; the entity-only + exact-span gate direction (see
+  `docs/experiments/entity_mention_extraction/`) was the viable alternative.
+
 ## Retained regression evidence
 
 Two compact JSON fixtures remain because maintained Formation regressions load

@@ -6,7 +6,7 @@ from math import isfinite
 from numbers import Real
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Iterable
 
 from ingestion.entities import extract_entities
 from ingestion.state_store import IngestionStateStore
@@ -18,6 +18,15 @@ from recall.rendering import bound_evidence
 from ._grounded_spans import GroundedSpanUnit, build_grounded_spans
 from .backend import MemoryBackend
 from .controlled_relation import UNRESOLVED, ControlledRelationResolver
+from .entity_consolidation import (
+    EntityBinding,
+    EntityCandidate,
+    EntityConsolidationError,
+    MentionEntityBinding,
+    resolve_entity_binding,
+    resolve_mention_entity_binding,
+)
+from .entity_mentions import MentionExtractionError, ground_unit_mentions
 from .grounded_formation import (
     FORMATION_VERSION,
     FormationError,
@@ -38,6 +47,7 @@ from .models import (
     SourceProvenance,
 )
 from .user_self import (
+    CURRENT_USER_ENTITY_REF,
     candidate_entity_ref,
     classify_subject_entity_ref,
     classify_target_entity_ref,
@@ -48,6 +58,7 @@ from .user_self import (
 _GROUNDED_SPAN_INGESTION_VERSION = "grounded-span-v2"
 _RELATION_RESOLVER = ControlledRelationResolver()
 _USER_SELF_BINDING_ENV = "LUMINA_USER_SELF_BINDING_ENABLED"
+_ENTITY_CANDIDATE_LIMIT = 20
 
 
 def _user_self_binding_enabled() -> bool:
@@ -151,11 +162,16 @@ class MagmaMemoryAdapter:
             return MemoryContext(query if isinstance(query, str) else "", safe_error_code="invalid_query")
         normalized_query = query.strip()
         try:
-            target_entity_ref = (
-                classify_target_entity_ref(normalized_query)
-                if _user_self_binding_enabled()
-                else None
-            )
+            if _user_self_binding_enabled():
+                target_entity_ref = classify_target_entity_ref(normalized_query)
+                if target_entity_ref is None:
+                    # ordinary persisted entities: deterministic exact-surface
+                    # lookup, only when CURRENT_USER classification found none
+                    target_entity_ref = self.backend.resolve_target_entity_ref(
+                        normalized_query
+                    )
+            else:
+                target_entity_ref = None
         except Exception:
             target_entity_ref = None
         try:
@@ -393,7 +409,211 @@ def _candidate_snapshot_reference_time(
     if not observed:
         raise ValueError('candidate snapshot has no reference timestamp')
     return max(observed)
+def _state_entity_bindings(
+    state: dict[str, Any] | None,
+    units: tuple[GroundedMemoryUnit, ...],
+) -> dict[str, EntityBinding]:
+    if state is None or "entity_bindings" not in state:
+        return {}
+    raw_bindings = state["entity_bindings"]
+    if not isinstance(raw_bindings, list):
+        raise ValueError("state_corrupt")
+    unit_ids = {unit.id for unit in units}
+    bindings: dict[str, EntityBinding] = {}
+    for raw in raw_bindings:
+        if not isinstance(raw, dict) or set(raw) != {
+            "unit_id", "entity_ref", "canonical_surface",
+        }:
+            raise ValueError("state_corrupt")
+        try:
+            binding = EntityBinding(**raw)
+        except TypeError as error:
+            raise ValueError("state_corrupt") from error
+        if (
+            binding.unit_id not in unit_ids
+            or not binding.entity_ref.strip()
+            or not binding.canonical_surface.strip()
+            or binding.unit_id in bindings
+        ):
+            raise ValueError("state_corrupt")
+        bindings[binding.unit_id] = binding
+    return bindings
 
+
+def _state_mention_entity_bindings(
+    state: dict[str, Any] | None,
+    units: tuple[GroundedMemoryUnit, ...],
+) -> tuple[MentionEntityBinding, ...]:
+    if state is None or "mention_entity_bindings" not in state:
+        return ()
+    raw_bindings = state["mention_entity_bindings"]
+    if not isinstance(raw_bindings, list):
+        raise ValueError("state_corrupt")
+    refs_by_unit = {
+        unit.id: {(ref.turn_id, ref.supporting_span) for ref in unit.source_refs}
+        for unit in units
+    }
+    bindings: list[MentionEntityBinding] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for raw in raw_bindings:
+        if not isinstance(raw, dict) or set(raw) != {
+            "unit_id", "entity_ref", "canonical_surface",
+            "turn_id", "supporting_span",
+        }:
+            raise ValueError("state_corrupt")
+        try:
+            binding = MentionEntityBinding(**raw)
+        except TypeError as error:
+            raise ValueError("state_corrupt") from error
+        identity = (
+            binding.unit_id,
+            binding.canonical_surface,
+            binding.turn_id,
+            binding.supporting_span,
+        )
+        if (
+            binding.unit_id not in refs_by_unit
+            or (binding.turn_id, binding.supporting_span)
+            not in refs_by_unit[binding.unit_id]
+            or not binding.entity_ref.strip()
+            or not binding.canonical_surface.strip()
+            or binding.canonical_surface not in binding.supporting_span
+            or identity in seen
+        ):
+            raise ValueError("state_corrupt")
+        seen.add(identity)
+        bindings.append(binding)
+    return tuple(bindings)
+
+
+def _entity_candidates_with_overlay(
+    persisted: tuple[EntityCandidate, ...],
+    bindings: Iterable[EntityBinding | MentionEntityBinding],
+) -> tuple[EntityCandidate, ...]:
+    """Persisted entity candidates plus this run's not-yet-persisted bindings.
+
+    The current user's ref is excluded from both sources: it is bound by the
+    classifier, never by exact-surface matching.
+    """
+    candidates = {
+        candidate.entity_ref: candidate
+        for candidate in persisted
+        if candidate.entity_ref != CURRENT_USER_ENTITY_REF
+    }
+    for binding in bindings:
+        if binding.entity_ref != CURRENT_USER_ENTITY_REF:
+            candidates.setdefault(binding.entity_ref, EntityCandidate(
+                binding.entity_ref, binding.canonical_surface,
+            ))
+    return tuple(candidates[ref] for ref in sorted(candidates))
+
+
+def _resolve_subject_entity_binding(
+    segment: ColdDraftSegment,
+    unit: GroundedMemoryUnit,
+    candidates: tuple[EntityCandidate, ...],
+) -> EntityBinding | None:
+    """One unit's subject binding: current-user classifier first, then
+    deterministic exact-surface matching (ambiguity fails open)."""
+    current_user_ref = classify_subject_entity_ref(unit, segment)
+    if current_user_ref == CURRENT_USER_ENTITY_REF:
+        return EntityBinding(
+            unit.id, CURRENT_USER_ENTITY_REF, unit.subject.strip(),
+        )
+    return resolve_entity_binding(unit, candidates)
+
+
+def _subject_entity_bindings(
+    segment: ColdDraftSegment,
+    units: tuple[GroundedMemoryUnit, ...],
+    backend: MemoryBackend,
+) -> dict[str, EntityBinding]:
+    """Resolve every unit's subject binding once, before the first checkpoint."""
+    persisted_candidates = _backend_entity_candidates(backend)
+    bindings: dict[str, EntityBinding] = {}
+    for unit in units:
+        binding = _resolve_subject_entity_binding(
+            segment,
+            unit,
+            _entity_candidates_with_overlay(
+                persisted_candidates, bindings.values(),
+            ),
+        )
+        if binding is None:
+            continue
+        bindings[unit.id] = binding
+    return bindings
+
+
+def _grounded_mention_bindings(
+    segment: ColdDraftSegment,
+    units: tuple[GroundedMemoryUnit, ...],
+    *,
+    model: FormationModel,
+    backend: MemoryBackend,
+    subject_bindings: dict[str, EntityBinding],
+) -> tuple[MentionEntityBinding, ...]:
+    """Ground and bind mention surfaces for validated units of a new segment.
+
+    A mention surface equal to the same unit's bound subject canonical surface
+    reuses that subject EntityRef; every other mention keeps the deterministic
+    exact-surface binding (unique match REUSE, no match stable CREATE,
+    ambiguity fail-open per mention).
+    """
+    surfaces = ground_unit_mentions(segment, units, model)
+    if not surfaces:
+        return ()
+    persisted = _backend_entity_candidates(backend)
+    units_by_id = {unit.id: unit for unit in units}
+    bindings: list[MentionEntityBinding] = []
+    for surface in surfaces:
+        unit = units_by_id[surface.unit_id]
+        subject_binding = subject_bindings.get(unit.id)
+        if (
+            subject_binding is not None
+            and surface.surface == subject_binding.canonical_surface
+        ):
+            bindings.append(MentionEntityBinding(
+                unit_id=unit.id,
+                entity_ref=subject_binding.entity_ref,
+                canonical_surface=surface.surface,
+                turn_id=surface.turn_id,
+                supporting_span=surface.supporting_span,
+            ))
+            continue
+        binding = resolve_mention_entity_binding(
+            unit,
+            surface=surface.surface,
+            turn_id=surface.turn_id,
+            supporting_span=surface.supporting_span,
+            candidates=_entity_candidates_with_overlay(persisted, tuple(bindings)),
+        )
+        if binding is None:
+            continue
+        bindings.append(binding)
+    return tuple(bindings)
+
+
+def _backend_entity_candidates(backend: MemoryBackend) -> tuple[EntityCandidate, ...]:
+    method = getattr(backend, "list_entity_candidates", None)
+    if not callable(method):
+        return ()
+    try:
+        candidates = tuple(method(
+            limit=_ENTITY_CANDIDATE_LIMIT,
+        ))
+    except Exception as error:
+        raise EntityConsolidationError("entity_candidates_unavailable") from error
+    if not all(isinstance(candidate, EntityCandidate) for candidate in candidates):
+        raise EntityConsolidationError("entity_candidates_invalid")
+    return candidates
+
+
+def _ordered_entity_bindings(
+    units: tuple[GroundedMemoryUnit, ...],
+    bindings: dict[str, EntityBinding],
+) -> tuple[EntityBinding, ...]:
+    return tuple(bindings[unit.id] for unit in units if unit.id in bindings)
 
 
 def _ingest_grounded_formation(
@@ -434,6 +654,8 @@ def _ingest_grounded_formation(
             safe_error_code="state_corrupt",
         )
     semantic_unit_ids: set[str] = set()
+    entity_bindings: dict[str, EntityBinding] = {}
+    mention_bindings: tuple[MentionEntityBinding, ...] = ()
     if state is None:
         try:
             units = form_grounded_memory_units(
@@ -446,6 +668,25 @@ def _ingest_grounded_formation(
                 segment.segment_id, version, "failed", retryable=True,
                 safe_error_code=error.code,
             )
+        if units:
+            try:
+                entity_bindings = _subject_entity_bindings(
+                    segment, units, backend,
+                )
+                mention_bindings = _grounded_mention_bindings(
+                    segment, units, model=model, backend=backend,
+                    subject_bindings=entity_bindings,
+                )
+            except MentionExtractionError as error:
+                return IngestionResult(
+                    segment.segment_id, version, "failed", retryable=True,
+                    safe_error_code=error.code,
+                )
+            except EntityConsolidationError:
+                return IngestionResult(
+                    segment.segment_id, version, "failed", retryable=True,
+                    safe_error_code="entity_consolidation_failed",
+                )
         formed_units = serialize_grounded_memory_units(units)
         try:
             state_store.put(
@@ -458,6 +699,8 @@ def _ingest_grounded_formation(
                     formed_units=formed_units,
                     memory_ids=(),
                     semantic_unit_ids=semantic_unit_ids,
+                    entity_bindings=_ordered_entity_bindings(units, entity_bindings),
+                    mention_entity_bindings=mention_bindings,
                 ),
             )
         except Exception:
@@ -478,10 +721,51 @@ def _ingest_grounded_formation(
             )
         formed_units = serialize_grounded_memory_units(units)
         semantic_unit_ids.update(state.get("semantic_unit_ids", ()))
+        mention_bindings = _state_mention_entity_bindings(state, units)
         if state["status"] == "completed":
             return IngestionResult(
                 segment.segment_id, version, "completed",
                 tuple(state["memory_ids"]), already_ingested=True,
+            )
+    if units and state is not None:
+        try:
+            entity_bindings = _state_entity_bindings(state, units)
+            persisted_candidates = _backend_entity_candidates(backend)
+            checkpoint_status = state["status"]
+            checkpoint_memory_ids = state["memory_ids"]
+            for unit in units:
+                if unit.id in entity_bindings:
+                    continue
+                binding = _resolve_subject_entity_binding(
+                    segment,
+                    unit,
+                    _entity_candidates_with_overlay(
+                        persisted_candidates, entity_bindings.values(),
+                    ),
+                )
+                if binding is None:
+                    continue
+                entity_bindings[unit.id] = binding
+                state_store.put(
+                    key,
+                    _formed_state_record(
+                        segment.segment_id,
+                        ingestion_version=version,
+                        status=checkpoint_status,
+                        units=units,
+                        formed_units=formed_units,
+                        memory_ids=checkpoint_memory_ids,
+                        semantic_unit_ids=semantic_unit_ids,
+                        entity_bindings=_ordered_entity_bindings(
+                            units, entity_bindings,
+                        ),
+                        mention_entity_bindings=mention_bindings,
+                    ),
+                )
+        except (EntityConsolidationError, ValueError):
+            return IngestionResult(
+                segment.segment_id, version, "failed", retryable=True,
+                safe_error_code="entity_consolidation_failed",
             )
     if not units:
         try:
@@ -495,6 +779,7 @@ def _ingest_grounded_formation(
                     formed_units=formed_units,
                     memory_ids=(),
                     semantic_unit_ids=semantic_unit_ids,
+                    mention_entity_bindings=mention_bindings,
                 ),
             )
         except Exception:
@@ -504,6 +789,9 @@ def _ingest_grounded_formation(
             )
         return IngestionResult(segment.segment_id, version, "completed")
     memory_ids: list[str] = []
+    mention_bindings_by_unit: dict[str, list[MentionEntityBinding]] = {}
+    for binding in mention_bindings:
+        mention_bindings_by_unit.setdefault(binding.unit_id, []).append(binding)
     try:
         state_store.put(
             key,
@@ -515,6 +803,8 @@ def _ingest_grounded_formation(
                 formed_units=formed_units,
                 memory_ids=memory_ids,
                 semantic_unit_ids=semantic_unit_ids,
+                entity_bindings=_ordered_entity_bindings(units, entity_bindings),
+                mention_entity_bindings=mention_bindings,
             ),
         )
         for unit in units:
@@ -532,6 +822,10 @@ def _ingest_grounded_formation(
                         source_turn,
                         ingestion_version=version,
                         configured_entities=configured_entities,
+                        subject_entity_binding=entity_bindings.get(unit.id),
+                        mention_entity_bindings=tuple(
+                            mention_bindings_by_unit.get(unit.id, ())
+                        ),
                     ),
                 )
                 backend.persist()
@@ -546,6 +840,8 @@ def _ingest_grounded_formation(
                     formed_units=formed_units,
                     memory_ids=memory_ids,
                     semantic_unit_ids=semantic_unit_ids,
+                    entity_bindings=_ordered_entity_bindings(units, entity_bindings),
+                    mention_entity_bindings=mention_bindings,
                 ),
             )
         backend.create_relationships(memory_ids)
@@ -560,6 +856,8 @@ def _ingest_grounded_formation(
                 formed_units=formed_units,
                 memory_ids=memory_ids,
                 semantic_unit_ids=semantic_unit_ids,
+                entity_bindings=_ordered_entity_bindings(units, entity_bindings),
+                mention_entity_bindings=mention_bindings,
             ),
         )
         return IngestionResult(
@@ -577,6 +875,8 @@ def _ingest_grounded_formation(
                     formed_units=formed_units,
                     memory_ids=memory_ids,
                     semantic_unit_ids=semantic_unit_ids,
+                    entity_bindings=_ordered_entity_bindings(units, entity_bindings),
+                    mention_entity_bindings=mention_bindings,
                     safe_error_code="memory_write_failed",
                 ),
             )
@@ -601,7 +901,10 @@ def _formed_state_units(
     if (
         not required_fields.issubset(state)
         or not set(state).issubset(
-            required_fields | {"safe_error_code", "semantic_unit_ids"}
+            required_fields | {
+                "safe_error_code", "semantic_unit_ids", "entity_bindings",
+                "mention_entity_bindings",
+            }
         )
         or state.get("segment_id") != segment.segment_id
         or state.get("ingestion_version") != ingestion_version
@@ -643,6 +946,11 @@ def _formed_state_units(
         )
     ):
         return "state_corrupt", None
+    try:
+        _state_entity_bindings(state, units)
+        _state_mention_entity_bindings(state, units)
+    except ValueError:
+        return "state_corrupt", None
     return None, units
 
 
@@ -655,6 +963,8 @@ def _formed_state_record(
     formed_units: list[dict[str, Any]],
     memory_ids: tuple[str, ...] | list[str],
     semantic_unit_ids: set[str],
+    entity_bindings: tuple[EntityBinding, ...] | None = None,
+    mention_entity_bindings: tuple[MentionEntityBinding, ...] | None = None,
     safe_error_code: str | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
@@ -668,6 +978,26 @@ def _formed_state_record(
     }
     if safe_error_code is not None:
         record["safe_error_code"] = safe_error_code
+    if entity_bindings is not None:
+        record["entity_bindings"] = [
+            {
+                "unit_id": binding.unit_id,
+                "entity_ref": binding.entity_ref,
+                "canonical_surface": binding.canonical_surface,
+            }
+            for binding in entity_bindings
+        ]
+    if mention_entity_bindings is not None:
+        record["mention_entity_bindings"] = [
+            {
+                "unit_id": binding.unit_id,
+                "entity_ref": binding.entity_ref,
+                "canonical_surface": binding.canonical_surface,
+                "turn_id": binding.turn_id,
+                "supporting_span": binding.supporting_span,
+            }
+            for binding in mention_entity_bindings
+        ]
     return record
 
 
@@ -696,6 +1026,8 @@ def _formed_event_metadata(
     *,
     ingestion_version: str,
     configured_entities: tuple[str, ...],
+    subject_entity_binding: EntityBinding | None = None,
+    mention_entity_bindings: tuple[MentionEntityBinding, ...] = (),
 ) -> dict[str, Any]:
     turns = {turn.turn_id: turn for turn in segment.turns}
     refs = []
@@ -738,14 +1070,19 @@ def _formed_event_metadata(
         ingestion_version=ingestion_version,
         timezone_source=source_turn.timezone_source,
     )
-    return {
+    subject_entity_ref = (
+        subject_entity_binding.entity_ref
+        if subject_entity_binding is not None
+        else classify_subject_entity_ref(unit, segment)
+    )
+    metadata = {
         "evidence_id": unit.id,
         "grounded_memory_unit_id": unit.id,
         "grounded_memory_unit_text": unit.text,
         "subject": unit.subject,
         "relation": unit.relation,
         "value": unit.value,
-        "subject_entity_ref": classify_subject_entity_ref(unit, segment),
+        "subject_entity_ref": subject_entity_ref,
         "source_refs": refs,
         "formation_version": unit.formation_version,
         "referenced_time": unit.referenced_time,
@@ -764,6 +1101,19 @@ def _formed_event_metadata(
         ],
         "provenance": provenance.__dict__,
     }
+    if subject_entity_binding is not None:
+        metadata["subject_entity_surface"] = (
+            subject_entity_binding.canonical_surface
+        )
+    # Mention bindings are durable metadata here; create_relationships later
+    # projects them into generic role-less REFERS_TO edges.
+    metadata["mention_entity_refs"] = [
+        binding.entity_ref for binding in mention_entity_bindings
+    ]
+    metadata["mention_entity_surfaces"] = [
+        binding.canonical_surface for binding in mention_entity_bindings
+    ]
+    return metadata
 
 def _ingest_grounded_spans(
     segment: ColdDraftSegment,

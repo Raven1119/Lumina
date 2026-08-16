@@ -12,7 +12,8 @@ Production chat now includes bounded long-term memory Recall:
 Browser -> FastAPI -> MessageRuntime
 -> Mind gate (LlmMindGate by default with a real model; constant in mock)
 -> source-default-on Recall
-   -> query target_entity_ref classification (CURRENT_USER -> E_001)
+   -> query target_entity_ref classification (CURRENT_USER -> E_001, or
+      exact-surface lookup over persisted EntityNodes; 0/multi hit -> None)
    -> MAGMA bounded candidates
       (+ entity-conditioned FAISS subset list for entity queries)
    -> ControlledRelationResolver when the caller supplies relation surfaces
@@ -33,6 +34,7 @@ manual Dream
 -> MiniMax-M3 Grounded Formation (non-thinking, max_tokens=2000)
 -> deterministic grounding validation + bounded semantic fallback
 -> durable GroundedMemoryUnit checkpoint before MAGMA
+-> span-grounded entity mention extraction + durable mention-binding checkpoint
 -> Lumina Conversation Memory adapter
 -> unmodified upstream MAGMA
 -> Cold segment consumed
@@ -65,9 +67,14 @@ unavailable memory does not block normal conversation.
 - restart/idempotency/leak-safe Recall E2E coverage;
 - a Mind gate on every chat message before Recall (stage 2 `LlmMindGate`
   promoted as the real-model default, `{recall: bool}`, fail-open, audited);
-- current-user entity binding: `CURRENT_USER` -> `E_001`, a graph-only
-  EntityNode with a single `REFERS_TO(role=subject)` edge, an
-  entity-conditioned candidate channel, and the `[SAME_ENTITY]` ranking cue.
+- generic entity binding: `CURRENT_USER` -> `E_001` plus deterministic
+  exact-surface EntityRef binding for ordinary named subjects and grounded
+  mentions; graph-only non-temporal EntityNodes with one
+  `REFERS_TO(role=subject)` edge per event subject and generic role-less
+  `REFERS_TO` edges per additional mention; an entity-conditioned FAISS
+  subset candidate channel with exact-surface query-side ref lookup
+  (unique hit binds, 0 or multi misses fail open); and the `[SAME_ENTITY]`
+  ranking cue on equal refs.
 
 Recall is enabled by source default. It can be explicitly disabled before
 startup:
@@ -78,8 +85,10 @@ LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false
 
 ## Current Development Focus
 
-Mind stage 2 (the `LlmMindGate` recall gate) and the first generic Entity
-slice (`CURRENT_USER` -> `E_001`, EntityNode, entity-conditioned retrieval,
+Mind stage 2 (the `LlmMindGate` recall gate) and the generic Entity vertical
+slice (`CURRENT_USER` -> `E_001` plus ordinary persisted entities, graph-only
+non-temporal EntityNodes, subject and role-less mention `REFERS_TO` edges,
+entity-conditioned retrieval with exact-surface query-side ref lookup,
 `[SAME_ENTITY]`) are in production. Consolidation of the adopted memory
 boundary continues.
 

@@ -296,6 +296,13 @@ class FakeFormationModel:
 
     def generate(self, recent_context, user_message, *, system_prompt):
         assert recent_context == []
+        if system_prompt.startswith((
+            "Extract only entity mentions",
+            "Select from the Candidate mentions",
+        )):
+            # mention extraction/selection calls (Production Slice 1); this
+            # fake binds no mentions
+            return json.dumps({"entities": []}, ensure_ascii=False)
         return json.dumps({"units": self.units}, ensure_ascii=False)
 
 
@@ -323,6 +330,9 @@ class FakeBackend:
 
     def persist(self):
         pass
+
+    def resolve_target_entity_ref(self, query):
+        return None
 
     def recall(self, query, policy):
         return []
@@ -361,7 +371,7 @@ def test_formation_ingest_marks_user_self_subject(tmp_path):
     assert metadata["subject_entity_ref"] == CURRENT_USER_ENTITY_REF
 
 
-def test_formation_ingest_third_party_subject_ref_is_none(tmp_path):
+def test_formation_ingest_third_party_subject_gets_exact_surface_ref(tmp_path):
     model = FakeFormationModel([_unit_payload(
         "小林开了家公司。", "小林", "开了", "家公司",
         [("u1", "小林开了家公司。")],
@@ -376,7 +386,8 @@ def test_formation_ingest_third_party_subject_ref_is_none(tmp_path):
     result = adapter.ingest(_segment(("u1", "user", "我朋友小林开了家公司。")))
     assert result.status == "completed"
     metadata = backend.events[result.memory_ids[0]]["metadata"]
-    assert metadata["subject_entity_ref"] is None
+    assert metadata["subject_entity_ref"].startswith("E_")
+    assert metadata["subject_entity_surface"] == "小林"
 
 
 def test_grounded_span_ingest_has_no_entity_ref_field(tmp_path):
@@ -412,6 +423,8 @@ class _CandidateBackend:
         self.candidates = candidates
         self.recalled_queries = []
         self.recalled_target_refs = []
+        self.lookup_ref = None
+        self.lookup_queries = []
 
     def find_memory_id(self, evidence_id):
         return None
@@ -424,6 +437,10 @@ class _CandidateBackend:
 
     def persist(self):
         pass
+
+    def resolve_target_entity_ref(self, query):
+        self.lookup_queries.append(query)
+        return self.lookup_ref
 
     def recall(self, query, policy, target_entity_ref=None):
         self.recalled_queries.append(query)
@@ -586,4 +603,47 @@ def test_binding_disabled_passes_no_target_ref(monkeypatch, tmp_path):
         tmp_path,
     )
     adapter.recall("我是谁？", _RECALL_POLICY)
+    assert backend.recalled_target_refs == [None]
+
+
+# --- query-side ordinary entity exact lookup (backend seam) -----------------
+
+
+def test_self_query_short_circuits_backend_lookup(monkeypatch, tmp_path):
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    adapter, backend, _reranker = _recall_adapter(
+        [_candidate("林岚 来自东海大学物理学院", subject_entity_ref=CURRENT_USER_ENTITY_REF)],
+        monkeypatch,
+        tmp_path,
+    )
+    backend.lookup_ref = "E_WANG"
+    adapter.recall("我是谁？", _RECALL_POLICY)
+    # CURRENT_USER classification wins; the lookup is never consulted
+    assert backend.lookup_queries == []
+    assert backend.recalled_target_refs == [CURRENT_USER_ENTITY_REF]
+
+
+def test_non_self_query_defers_to_backend_lookup(monkeypatch, tmp_path):
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
+    adapter, backend, _reranker = _recall_adapter(
+        [_candidate("小林的导师是王老师。", subject_entity_ref="E_XIAOLIN")],
+        monkeypatch,
+        tmp_path,
+    )
+    backend.lookup_ref = "E_WANG"
+    adapter.recall("王老师的学生是谁？", _RECALL_POLICY)
+    assert backend.lookup_queries == ["王老师的学生是谁？"]
+    assert backend.recalled_target_refs == ["E_WANG"]
+
+
+def test_binding_disabled_never_consults_lookup(monkeypatch, tmp_path):
+    monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "false")
+    adapter, backend, _reranker = _recall_adapter(
+        [_candidate("小林的导师是王老师。", subject_entity_ref="E_XIAOLIN")],
+        monkeypatch,
+        tmp_path,
+    )
+    backend.lookup_ref = "E_WANG"
+    adapter.recall("王老师的学生是谁？", _RECALL_POLICY)
+    assert backend.lookup_queries == []
     assert backend.recalled_target_refs == [None]

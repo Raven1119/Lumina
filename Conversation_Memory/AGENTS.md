@@ -19,10 +19,13 @@ ColdDraftSegment
 -> 0..M MAGMA events + graph/vector persistence
 
 query + RecallPolicy
--> query target_entity_ref classification (CURRENT_USER -> E_001)
+-> query target_entity_ref classification (CURRENT_USER -> E_001, or
+   deterministic exact-surface lookup over persisted EntityNode
+   canonical_surface values: unique hit -> that ref, 0 or multi -> None)
 -> dense + bounded lexical rankings
 -> entity-conditioned FAISS subset list when a target_entity_ref is present
-   (that EntityNode's REFERS_TO(role=subject) events; adds candidates only)
+   (that EntityNode's REFERS_TO events — role=subject and role-less mention
+   edges alike; adds candidates only)
 -> RRF anchors
 -> fixed bounded traversal
 -> fail-open controlled relation compatibility for supplied relation surfaces
@@ -68,11 +71,20 @@ private.
   negation, uncertainty, and exact details.
 - One accepted `GroundedMemoryUnit` becomes one MAGMA event. A source segment may produce
   `0..M` events, and a completed empty manifest is valid.
-- A validated unit whose subject is the current user additionally persists
-  generic retrieval metadata `subject_entity_ref="E_001"`, one graph-only
-  `entity:e_001` EntityNode, and a single `ENTITY/REFERS_TO(role=subject)`
-  edge; EntityNodes never enter the vector index, and a Lumina-owned backend
-  subclass keeps temporal links EVENT-only (pinned upstream is unmodified).
+- A validated unit whose subject is the current user persists generic
+  retrieval metadata `subject_entity_ref="E_001"`; ordinary named subjects
+  use deterministic exact-surface EntityRef binding (unique match REUSE, no
+  match stable CREATE, ambiguity fail-open). Grounded entity mentions are
+  extracted once per unique `(turn_id, supporting_span)` from the source span
+  (never `unit.text`), exact-span gated, subset-selected per unit only when a
+  span backs multiple units, bound by the same exact-surface rule (a mention
+  equal to the unit's subject surface reuses the subject ref), and checkpointed
+  durably before any MAGMA write. At `create_relationships` time each event
+  gets one `ENTITY/REFERS_TO(role=subject)` edge for its subject ref plus one
+  generic role-less `ENTITY/REFERS_TO` edge per additional mention ref, into
+  graph-only `entity:<ref>` EntityNodes; EntityNodes never enter the vector
+  index, and a Lumina-owned backend subclass keeps temporal links EVENT-only
+  (pinned upstream is unmodified).
 - Cold remains immutable. Unit source refs preserve source turn identity, role,
   exact unambiguous span offsets, timestamp, and timezone.
 - Stable evidence IDs are derived from grounded-unit identity and ingestion
