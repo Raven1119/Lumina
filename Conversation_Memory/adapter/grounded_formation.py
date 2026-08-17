@@ -9,6 +9,7 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
+from .identity_coverage import self_identity_coverage_unit
 from .models import ColdDraftSegment
 
 
@@ -136,6 +137,15 @@ def form_grounded_memory_units(
                 accepted.setdefault(unit.id, unit)
                 if semantic_unit_ids is not None:
                     semantic_unit_ids.add(unit.id)
+    # Deterministic self-identity coverage guard: fills an omitted explicit
+    # self-identification with one strict-validated source-grounded unit.
+    # LLM-free; never enters semantic_unit_ids (checkpoint reuse revalidates
+    # it through the same strict path).
+    identity_unit = self_identity_coverage_unit(
+        segment, tuple(accepted.values()), validate=_validate_candidate,
+    )
+    if identity_unit is not None:
+        accepted.setdefault(identity_unit.id, identity_unit)
     turn_order = {turn.turn_id: index for index, turn in enumerate(segment.turns)}
     return tuple(sorted(
         accepted.values(),

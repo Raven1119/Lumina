@@ -28,6 +28,14 @@
 - deterministic validation plus the bounded semantic fallback and value-only
   guard rejects ungrounded details, ambiguous spans, epistemic inversion, and
   unauthorized assistant assertions;
+- a deterministic, LLM-free self-identity coverage guard runs inside Formation
+  after model-call validation: when an explicit user self-identification
+  (我叫X / 我的名字是X / 你可以叫我X) was omitted, exactly one source-grounded
+  identity unit (exact-span value) is constructed from the raw source,
+  admitted only through the unchanged strict validator, and never duplicates
+  an equivalent accepted unit (`Conversation_Memory/adapter/identity_coverage.py`;
+  shadow: `docs/experiments/identity_coverage_guard/`; regression:
+  `tests/test_identity_coverage.py`);
 - mock/legacy ingestion retains deterministic `grounded-span-v2` projection;
 - stable grounded unit IDs derived from canonical unit content, exact source
   refs, optional referenced time, and Formation version;

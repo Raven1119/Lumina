@@ -1206,10 +1206,17 @@ def test_chinese_self_introduction_survives_missing_referenced_time():
         model,
     )
     assert model.calls == 1
-    assert len(units) == 1
-    assert units[0].referenced_time is None
-    assert (units[0].subject, units[0].value) == ("林岚", "东海大学物理学院")
-    assert units[0].source_refs[0].turn_id == "u2"
+    # The identity coverage guard adds the omitted explicit
+    # self-identification ("我叫林岚") as a second strict-validated unit.
+    assert len(units) == 2
+    affiliation = next(unit for unit in units if unit.subject == "林岚")
+    assert affiliation.referenced_time is None
+    assert affiliation.value == "东海大学物理学院"
+    assert affiliation.source_refs[0].turn_id == "u2"
+    identity = next(unit for unit in units if unit.subject == "我")
+    assert (identity.relation, identity.value) == ("叫", "林岚")
+    assert identity.source_refs[0].turn_id == "u2"
+    assert identity.referenced_time is None
 
 
 def test_explicit_null_referenced_time_behavior_unchanged():

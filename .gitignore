@@ -75,3 +75,10 @@ docs/plan/MIND_RELATION_SHADOW.md
 docs/plan/MIND_STAGE2_SHADOW_EXPERIMENT.md
 docs/plan/USER_SELF_BINDING_SHADOW.md
 docs/plan/USER_SELF_PRODUCTION_WIRING.md
+docs/CURRENT_STATUS.md
+docs/experiments/formation_temperature_ab/RESULT.md
+docs/experiments/legacy_entity_backfill/RESULT.md
+docs/experiments/identity_coverage_guard/RESULT.md
+docs/experiments/identity_coverage_guard/results.json
+docs/experiments/formation_temperature_ab/results.json
+docs/experiments/legacy_entity_backfill/results.json

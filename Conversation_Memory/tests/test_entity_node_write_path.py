@@ -153,10 +153,15 @@ def test_current_user_unit_persists_e001_node_and_single_refers_to_edge(tmp_path
             [("u1", "我叫林岚，来自东海大学物理学院")],
         )],
     )
-    memory_id = result.memory_ids[0]
-
-    event = backend.trg.graph_db.get_node(memory_id)
-    assert event.attributes["subject_entity_ref"] == CURRENT_USER_ENTITY_REF
+    # The identity coverage guard adds the omitted explicit
+    # self-identification ("我叫林岚") as a second strict-validated unit;
+    # both events bind the same single current-user EntityNode.
+    assert len(result.memory_ids) == 2
+    events = [backend.trg.graph_db.get_node(mid) for mid in result.memory_ids]
+    assert all(
+        event.attributes["subject_entity_ref"] == CURRENT_USER_ENTITY_REF
+        for event in events
+    )
     assert CURRENT_USER_ENTITY_REF == "E_001"
 
     entity_nodes = _entity_nodes(backend)
@@ -167,10 +172,13 @@ def test_current_user_unit_persists_e001_node_and_single_refers_to_edge(tmp_path
     assert _ENTITY_NODE_ID not in backend.trg.vector_db.id_to_index
 
     refers_to = _refers_to_links(backend)
-    assert [
+    assert sorted(
         (link.source_node_id, link.target_node_id, link.properties.get("role"))
         for link in refers_to
-    ] == [(memory_id, _ENTITY_NODE_ID, "subject")]
+    ) == sorted(
+        (memory_id, _ENTITY_NODE_ID, "subject")
+        for memory_id in result.memory_ids
+    )
     # single canonical edge only: no reverse MENTIONED_IN edge
     from memory.graph_db import LinkSubType, LinkType
 
@@ -199,9 +207,12 @@ def test_entity_write_idempotent_across_retry_and_reload(tmp_path):
     reloaded = RealMagmaBackend(tmp_path / "magma")
     entity_nodes = _entity_nodes(reloaded)
     assert [node.node_id for node in entity_nodes] == [_ENTITY_NODE_ID]
-    assert len(_refers_to_links(reloaded)) == 1
-    event = reloaded.trg.graph_db.get_node(result.memory_ids[0])
-    assert event.attributes["subject_entity_ref"] == CURRENT_USER_ENTITY_REF
+    # two current-user events (affiliation + guard-added identity unit), one
+    # canonical subject edge each
+    assert len(_refers_to_links(reloaded)) == 2
+    for memory_id in result.memory_ids:
+        event = reloaded.trg.graph_db.get_node(memory_id)
+        assert event.attributes["subject_entity_ref"] == CURRENT_USER_ENTITY_REF
 
 
 def test_second_current_user_event_reuses_node_and_temporal_chain_stays_pure(
@@ -660,32 +671,70 @@ def test_current_user_mention_reuses_e001_without_a_second_user_ref(tmp_path):
             [("u1", span)],
         )],
         span_mentions={span: ["林岚", "东海大学物理学院"]},
+        selector_choices={
+            # The identity coverage guard adds the omitted explicit
+            # self-identification ("我叫林岚") as a second strict-validated
+            # unit citing the same span, so mentions are subset-selected per
+            # unit: affiliation keeps both, the identity fact keeps the name.
+            "Fact subject: 林岚": ["林岚", "东海大学物理学院"],
+            "Fact subject: 我": ["林岚"],
+        },
     )
     backend, state_store, adapter = _ingest_with_model(tmp_path, segment, model)
     result = adapter.ingest(segment)
 
     assert result.status == "completed"
+    assert len(result.memory_ids) == 2
     bindings = _mention_state(state_store, segment.segment_id)
-    assert len(bindings) == 2
-    by_surface = {record["canonical_surface"]: record["entity_ref"] for record in bindings}
-    assert by_surface["林岚"] == CURRENT_USER_ENTITY_REF
-    assert by_surface["东海大学物理学院"].startswith("E_")
-    assert by_surface["东海大学物理学院"] != CURRENT_USER_ENTITY_REF
+    assert len(bindings) == 3
+    pairs = {(record["canonical_surface"], record["entity_ref"]) for record in bindings}
+    # the affiliation unit's user-name mention still reuses the subject's
+    # current-user ref
+    assert ("林岚", CURRENT_USER_ENTITY_REF) in pairs
+    school_ref = next(
+        ref for surface, ref in pairs if surface == "东海大学物理学院"
+    )
+    assert school_ref.startswith("E_") and school_ref != CURRENT_USER_ENTITY_REF
+    # the guard identity unit's name mention binds as an ordinary named
+    # entity under the existing generic mention rule (the user still has
+    # exactly one current-user ref: E_001)
+    name_refs = {ref for surface, ref in pairs if surface == "林岚"}
+    name_refs.discard(CURRENT_USER_ENTITY_REF)
+    assert len(name_refs) == 1
+    name_ref = name_refs.pop()
+    assert name_ref.startswith("E_") and name_ref != school_ref
 
-    event = backend.trg.graph_db.get_node(result.memory_ids[0])
-    assert event.attributes["subject_entity_ref"] == CURRENT_USER_ENTITY_REF
-    assert set(event.attributes["mention_entity_refs"]) == set(by_surface.values())
-    # no second user entity ref anywhere: the user still has exactly one
-    # graph-only node and one subject edge; the non-user mention gets its
-    # own node plus one generic role-less REFERS_TO edge (Slice 2).
-    school_node_id = f"entity:{by_surface['东海大学物理学院'].casefold()}"
-    assert [node.node_id for node in _entity_nodes(backend)] == [
-        _ENTITY_NODE_ID, school_node_id,
-    ]
+    events = {
+        mid: backend.trg.graph_db.get_node(mid) for mid in result.memory_ids
+    }
+    assert all(
+        event.attributes["subject_entity_ref"] == CURRENT_USER_ENTITY_REF
+        for event in events.values()
+    )
+    affiliation = next(
+        event for event in events.values()
+        if event.attributes["subject"] == "林岚"
+    )
+    identity = next(
+        event for event in events.values() if event.attributes["subject"] == "我"
+    )
+    assert set(affiliation.attributes["mention_entity_refs"]) == {
+        CURRENT_USER_ENTITY_REF, school_ref,
+    }
+    assert set(identity.attributes["mention_entity_refs"]) == {name_ref}
+    # one graph-only current-user node; the school and the name mention each
+    # get their own ordinary node with one generic role-less REFERS_TO edge
+    school_node_id = f"entity:{school_ref.casefold()}"
+    name_node_id = f"entity:{name_ref.casefold()}"
+    assert {
+        node.node_id for node in _entity_nodes(backend)
+    } == {_ENTITY_NODE_ID, school_node_id, name_node_id}
     links = _refers_to_links(backend)
-    assert len(links) == 2
+    assert len(links) == 4
     generic = [link for link in links if "role" not in link.properties]
-    assert [link.target_node_id for link in generic] == [school_node_id]
+    assert {link.target_node_id for link in generic} == {
+        school_node_id, name_node_id,
+    }
 
 
 def test_subject_mention_reuses_subject_ref_while_other_mentions_bind_normally(tmp_path):
