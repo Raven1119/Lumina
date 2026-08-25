@@ -66,6 +66,13 @@ private.
 - Configured real-model manual Dream uses `grounded-formation-v1` with
   MiniMax-M3 in non-thinking mode and a Formation-only 2000-token output budget;
   the deterministic `grounded-span-v2` path remains for mock/legacy callers.
+- A deterministic, LLM-free self-name coverage guard runs inside Formation
+  after model-call validation: when an explicit user self-identification
+  (我叫X / 我的名字是X / 你可以叫我X) is missing from the accepted units,
+  exactly one source-grounded identity unit (exact-span value) is built from
+  the raw source and admitted only through the unchanged strict validator. It
+  never duplicates an equivalent accepted unit and never widens fact
+  authorization (`adapter/identity_coverage.py`).
 - Formation makes one call for a newly seen bounded segment, then validates
   atomic subject/relation/value units, exact source refs, role authorization,
   negation, uncertainty, and exact details.

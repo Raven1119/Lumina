@@ -456,6 +456,17 @@
   }
 
   chatForm.addEventListener("submit", handleSubmit);
+  // Enter sends; Shift+Enter inserts a newline. Ignore Enter while an IME
+  // composition (e.g. Chinese input) is in progress so it never mis-sends.
+  chatInput.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+    if (event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    handleSubmit(event);
+  });
   dreamButton.addEventListener("click", handleDream);
   updateControls();
   loadHistoryPage(true).then(function () {

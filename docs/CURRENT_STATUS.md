@@ -5,6 +5,9 @@
 ### Chat and Draft continuity
 
 - same-origin FastAPI browser chat with `/api/status` and `/api/chat`;
+- the browser chat input sends on `Enter`, inserts a newline on
+  `Shift+Enter`, and never sends during IME composition
+  (`edge/static/app.js`);
 - deterministic mock mode and explicit MiniMax Anthropic-compatible real-model
   mode;
 - safe provider fallback;
@@ -199,9 +202,8 @@
 Latest reported local validation:
 
 ```text
-focused memory regressions: 134 passed, 5 skipped
-root tests:                 297 passed, 24 skipped
-Conversation_Memory tests: 167 passed
+root tests:                 328 passed, 24 skipped
+Conversation_Memory tests: 163 passed, 45 skipped
 Dream tests:                36 passed, 1 skipped
 real MAGMA Recall E2E:      PASS (10 / 10 queries)
 Mind production-seam controls: PASS (9 / 9)
@@ -305,18 +307,28 @@ entity link types; it is not four physically independent graph stores.
   current global score floor;
 - Hot/Cold reads remain file scans rather than indexed stores.
 
-## Current Development Goal
+## Current Development Stage
 
-Mind stage 2 is promoted: `LlmMindGate` is the production default recall gate
-for real-model configuration (`docs/experiments/mind_stage2_promotion/`), and
-the first generic Entity slice is in production (`CURRENT_USER` → `E_001`,
-graph-only EntityNode, entity-conditioned retrieval, `[SAME_ENTITY]` ranking
-cue; `docs/experiments/entity_production_acceptance/RESULT.md`). The adopted
-production memory path is stable. `ControlledRelationResolver`
-remains a fail-open Memory-side capability for explicit structured callers;
-normal Chat provides no relation surfaces. No free-text query parser, entity
-resolver, assistant self-action authorization, or execution-provenance system
-is implied by this boundary.
+The Memory stage is complete and currently has no blocking todos. In
+production: the Memory MVP, Grounded Write, the Mind Recall gate stage 2
+(`LlmMindGate` as the real-model default;
+`docs/experiments/mind_stage2_promotion/`), the generic multi-entity Entity
+graph (`CURRENT_USER` → `E_001` plus ordinary persisted entities, graph-only
+EntityNodes, exact-surface query-side ref lookup, entity-conditioned
+retrieval, `[SAME_ENTITY]` ranking cue;
+`docs/experiments/entity_production_acceptance/RESULT.md`), and the self-name
+coverage guard (`Conversation_Memory/adapter/identity_coverage.py`;
+`tests/test_identity_coverage.py`).
+
+Execution V1 is frozen as isolated experimental history at tag
+`execution-organ-v1-final`; it was never connected to production Chat,
+Memory, Dream, or Mind. Execution V2 has not started, and no production
+Execution or ToolRuntime implementation exists on this baseline.
+
+`ControlledRelationResolver` remains a fail-open Memory-side capability for
+explicit structured callers; normal Chat provides no relation surfaces. No
+free-text query parser, entity resolver, assistant self-action authorization,
+or execution-provenance system is implied by this boundary.
 
 Rejected experiments and their quantitative consequences are consolidated in
 `docs/MEMORY_EXPERIMENT_HISTORY.md`.

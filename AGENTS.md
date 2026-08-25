@@ -30,7 +30,9 @@ manual Dream
 -> pending Cold Draft segments
 -> one bounded Grounded Formation call when a real model is configured
 -> deterministic source-grounding validation
+   (+ deterministic LLM-free self-name coverage guard)
 -> durable grounded-formation-v1 unit checkpoint
+-> span-grounded entity mention extraction + durable mention-binding checkpoint
 -> Lumina Conversation Memory adapter
 -> unmodified upstream MAGMA
 -> durable checkpoint
@@ -67,6 +69,13 @@ Treat these as completed behavior unless a task identifies a verified defect:
   Cold segment, validates atomic SRV units against exact source spans, applies
   the bounded semantic fallback and value-only guard, and checkpoints accepted
   units before MAGMA writes;
+- a deterministic, LLM-free self-name coverage guard inside Formation restores
+  an omitted explicit self-identification (我叫X / 我的名字是X / 你可以叫我X)
+  as exactly one source-grounded identity unit through the unchanged strict
+  validator — never duplicated, never widening fact authorization;
+- span-grounded entity mention extraction (one bounded call per unique
+  `(turn_id, supporting_span)`, exact-span gated) with durable mention-binding
+  checkpoints before MAGMA writes;
 - pinned, unmodified upstream MAGMA;
 - durable `(segment_id, ingestion_version)` checkpoints and retry convergence;
 - Lumina-owned Recall DTOs and provenance projection;
@@ -151,14 +160,19 @@ path. In the pinned source, that helper has no active caller.
 
 ## 4. Current Development Stage
 
-The Memory MVP, the Mind Recall gate stage 2 (`LlmMindGate` as the real-model
-production default), and the generic Entity vertical slice (`E_001`
+The Memory stage is complete and currently has no blocking todos: the Memory
+MVP, Grounded Write, the Mind Recall gate stage 2 (`LlmMindGate` as the
+real-model production default), the generic multi-entity Entity graph (`E_001`
 CURRENT_USER plus ordinary persisted entities: graph-only EntityNodes,
 subject and role-less mention `REFERS_TO` edges, entity-conditioned
 retrieval, exact-surface query-side ref lookup with a 0/1/many rule,
-`[SAME_ENTITY]` ranking cue) are in production. Any further new capability
-must first be validated by an independent experiment and only then promoted
-to production.
+`[SAME_ENTITY]` ranking cue), and the self-name coverage guard are in
+production.
+
+Execution V1 is frozen as isolated experimental history at tag
+`execution-organ-v1-final`; it was never connected to the production path.
+Execution V2 has not started. Any further Execution capability requires a
+separate approved task and independent validation before promotion.
 Durability, provenance, boundedness, safety, and fail-soft behavior remain
 non-negotiable.
 
@@ -354,7 +368,7 @@ Unless a task explicitly authorizes more:
 If the minimum correct experiment exceeds this budget, report the smallest
 extra surface required before coding further.
 
-## 10. Not authorized by the Recall-optimization goal alone
+## 10. Not authorized by the current stage alone
 
 Do not add or redesign:
 

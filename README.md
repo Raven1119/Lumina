@@ -33,6 +33,7 @@ manual Dream
 -> pending Cold Draft segments
 -> MiniMax-M3 Grounded Formation (non-thinking, max_tokens=2000)
 -> deterministic grounding validation + bounded semantic fallback
+   + self-name coverage guard
 -> durable GroundedMemoryUnit checkpoint before MAGMA
 -> span-grounded entity mention extraction + durable mention-binding checkpoint
 -> Lumina Conversation Memory adapter
@@ -45,7 +46,8 @@ unavailable memory does not block normal conversation.
 
 ## Current Capabilities
 
-- same-origin browser chat, `GET /api/status`, and `POST /api/chat`;
+- same-origin browser chat, `GET /api/status`, and `POST /api/chat` (`Enter`
+  sends, `Shift+Enter` inserts a newline, IME-composition Enter never sends);
 - mock mode plus explicit MiniMax Anthropic-compatible real-model mode;
 - safe provider fallback;
 - restart-persistent Hot Draft and Cold-first compaction;
@@ -55,6 +57,11 @@ unavailable memory does not block normal conversation.
 - dedicated MiniMax-M3, non-thinking Grounded Formation with a 2000-token
   output budget for configured real-model Dream;
 - deterministic `grounded-span-v2` projection for mock/legacy ingestion;
+- a deterministic, LLM-free self-name coverage guard inside Formation:
+  an omitted explicit self-identification (我叫X / 我的名字是X / 你可以叫我X)
+  is restored as exactly one source-grounded identity unit through the
+  unchanged strict validator, never duplicated and never widening fact
+  authorization;
 - pinned, unmodified upstream MAGMA;
 - durable idempotent memory checkpoints;
 - production Recall injection through Lumina-owned DTOs;
@@ -85,12 +92,17 @@ LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false
 
 ## Current Development Focus
 
-Mind stage 2 (the `LlmMindGate` recall gate) and the generic Entity vertical
-slice (`CURRENT_USER` -> `E_001` plus ordinary persisted entities, graph-only
-non-temporal EntityNodes, subject and role-less mention `REFERS_TO` edges,
-entity-conditioned retrieval with exact-surface query-side ref lookup,
-`[SAME_ENTITY]`) are in production. Consolidation of the adopted memory
-boundary continues.
+The Memory stage is complete and has no blocking todos. In production: the
+Memory MVP, Grounded Write, the Mind Recall gate stage 2 (`LlmMindGate` as the
+real-model default), the generic multi-entity Entity graph (`CURRENT_USER` ->
+`E_001` plus ordinary persisted entities, graph-only non-temporal EntityNodes,
+subject and role-less mention `REFERS_TO` edges, entity-conditioned retrieval
+with exact-surface query-side ref lookup, `[SAME_ENTITY]`), and the self-name
+coverage guard.
+
+Execution V1 is preserved as isolated experimental history at tag
+`execution-organ-v1-final`; it never changed the production chat or memory
+path. Execution V2 has not started and requires its own approved design task.
 
 On the authorization-aligned 36-case development subset, raw-turn Recall scored
 26/36 and Grounded Write scored 29/36. Both retained all 6 currently authorized
@@ -185,6 +197,7 @@ Recall E2E harness.
 - `docs/MEMORY_EXPERIMENT_HISTORY.md` consolidates rejected memory experiments
   and the evidence behind adopted boundaries.
 
-The current Recall-optimization goal does not authorize autonomous Dream,
+The completed Memory stage and frozen Execution V1 do not authorize autonomous Dream,
 schedulers/workers, new databases, generalized memory managers, ContextBuilder,
-ToolRuntime, or unrelated organ development.
+ToolRuntime, or unrelated organ development. New Execution work starts only
+from its own explicit task card.

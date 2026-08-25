@@ -43,8 +43,10 @@ manual Dream -> pending Cold Draft
              -> MiniMax-M3 Grounded Formation
                 (non-thinking, max_tokens=2000)
              -> grounding validator + bounded semantic fallback
-                + value-only guard
+                + value-only guard + self-name coverage guard
              -> durable GroundedMemoryUnit checkpoint before MAGMA
+             -> span-grounded entity mention extraction
+                + durable mention-binding checkpoint
              -> Conversation Memory adapter -> unmodified MAGMA
              -> consumed
 ```
@@ -53,12 +55,15 @@ Current production Recall is:
 
 ```text
 query
+-> target_entity_ref classification (CURRENT_USER -> E_001, or exact-surface
+   lookup over persisted EntityNodes; 0/multi hit -> None)
 -> keyword-enriched MAGMA dense anchors
 -> bounded lexical anchors
--> two-list RRF
+-> entity-conditioned FAISS subset list when a target_entity_ref is present
+-> RRF
 -> fixed depth-1 bounded graph BFS
 -> fail-open ControlledRelationResolver when relation surfaces are supplied
--> BGE rerank
+-> BGE rerank ([SAME_ENTITY] per-pair projection on equal refs)
 -> Hindsight recency adjustment
 -> final_score >= 0.144
 -> stable bounded top-3 MemoryContext
@@ -79,20 +84,20 @@ caller-supplied relation surfaces, but normal Chat supplies none. Assistant
 utterance alone is not verified fact/self-action provenance, and future
 self-action memory waits for Execution Trace or tool-result provenance.
 
-## Current Product Objective: Consolidate Before Mind
+## Current Product Objective: Preserve the parent baseline before Execution V2
 
-The immediate objective is to preserve the adopted memory implementation and
-make its caller seams explicit before Mind development.
+The Memory objective is met: the adopted loop is in production end to end,
+including Recall in chat, the Mind Recall gate stage 2, Grounded Write with the
+self-name coverage guard, and the generic multi-entity Entity graph.
 
-```text
-current Chat -> raw query, no relation metadata -> resolver fails open
-structured caller / future Mind -> explicit relation surfaces -> controlled
-relation compatibility
-```
+Execution V1 is frozen as isolated experimental evidence at tag
+`execution-organ-v1-final` and was never promoted into the production path.
+Execution V2 has not started; its design and implementation require a separate
+approved task.
 
-Do not bridge this seam with a free-text parser, entity resolver, ontology, or
-new LLM call under the consolidation objective. Future capabilities must be
-authorized as separate, evidence-backed tasks.
+The Memory-side boundary remains explicit: `ControlledRelationResolver` can
+use caller-supplied relation surfaces, but normal Chat supplies none. Future
+capabilities must preserve this seam unless separately authorized.
 
 ## Recall Optimization Principles
 
@@ -143,4 +148,5 @@ Later memory capabilities must extend, not bypass, these boundaries:
 
 Conversation Graph as a separate production system, PostgreSQL/Neo4j,
 autonomous Dream, schedulers, additional organs, and generalized memory
-management are not implied by the current Recall-optimization objective.
+management are not implied by the completed Memory stage or frozen Execution
+V1.

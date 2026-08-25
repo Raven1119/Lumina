@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import json
+import shutil
+import subprocess
 from threading import Event
 
 import httpx
@@ -491,6 +493,7 @@ def test_static_frontend_is_served_without_shadowing_api(tmp_path: Path) -> None
     assert "oldTop + (chatLog.scrollHeight - oldHeight)" in script.text
     assert "createMessageBubble(turn.content, turn.role)" in script.text
     assert 'chatLog.addEventListener("scroll", handleHistoryScroll)' in script.text
+    assert 'placeholder="Type a message and press Enter to send"' in index.text
     assert "payload.compaction.status" in script.text
     assert "compaction.archived_turns" in script.text
     assert 'compaction.status === "completed"' in script.text
@@ -531,6 +534,53 @@ def test_static_frontend_is_served_without_shadowing_api(tmp_path: Path) -> None
     assert client.post("/api/chat", json={"message": "hello"}).status_code == 200
     assert client.get("/docs").status_code == 200
     assert client.get("/openapi.json").status_code == 200
+
+
+def test_chat_input_keyboard_contract() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is unavailable for the browser keyboard contract")
+
+    app_js = (
+        Path(__file__).resolve().parents[1] / "edge" / "static" / "app.js"
+    ).read_text(encoding="utf-8")
+    prefix = 'chatInput.addEventListener("keydown", '
+    callback_start = app_js.index(prefix) + len(prefix)
+    callback_end = app_js.index("\n  });", callback_start) + len("\n  }")
+    callback = app_js[callback_start:callback_end]
+
+    probe = f"""
+const handler = ({callback});
+let submits = 0;
+function handleSubmit(event) {{
+  event.preventDefault();
+  submits += 1;
+}}
+function dispatch(event) {{
+  const before = submits;
+  let prevented = false;
+  event.preventDefault = () => {{ prevented = true; }};
+  handler(event);
+  return [submits - before, prevented];
+}}
+const actual = [
+  dispatch({{key: "Enter", shiftKey: false, isComposing: false, keyCode: 13}}),
+  dispatch({{key: "Enter", shiftKey: true, isComposing: false, keyCode: 13}}),
+  dispatch({{key: "Enter", shiftKey: false, isComposing: true, keyCode: 13}}),
+  dispatch({{key: "Enter", shiftKey: false, isComposing: false, keyCode: 229}}),
+  dispatch({{key: "a", shiftKey: false, isComposing: false, keyCode: 65}})
+];
+const expected = [[1, true], [0, false], [0, false], [0, false], [0, false]];
+if (JSON.stringify(actual) !== JSON.stringify(expected)) {{
+  throw new Error(JSON.stringify({{actual, expected}}));
+}}
+"""
+    subprocess.run(
+        [node, "-e", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_chat_rejects_empty_message(tmp_path: Path) -> None:
