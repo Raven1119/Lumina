@@ -394,6 +394,15 @@ Slice 8 - explicit Root suspension:
   execution/root identity and zero model calls. External events remain durable
   while suspended but never wake it. Only explicit `resume()` appends
   `ACTOR_RESUMED` and restores runnable State.
+- A durable `INTERRUPT_REQUESTED` that survives a process crash remains the
+  admission authority after reload. Recovery first settles the supported
+  interrupted Write against current reality and enters SUSPENDED; a second,
+  explicit `resume()` is required to continue. Unsupported or ambiguous
+  in-flight work remains unresolved and cannot sample or dispatch.
+- Model-result admission and `MODEL_DECISION` append are serialized with the
+  lifecycle gate. A frozen Tool/IPython action that was decided but never
+  started can continue after explicit resume; a started or settled action is
+  never replayed.
 - Settled actions are not replayed. A bounded multi-tool decision preserves its
   settled prefix, starts no later sibling while suspended, and continues only
   its never-started suffix after explicit resume.
@@ -441,7 +450,7 @@ Slice 3 regression evidence:
   explicitly truncated to the configured absolute character bound.
 - DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
   remain covered by regression tests.
-- Final explicit-suspension validation reports: `Execution_lab2` 93 passed / 6
+- Final explicit-suspension validation reports: `Execution_lab2` 96 passed / 6
   real-provider experiments skipped; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
   The six Execution skips are explicitly gated real DeepSeek experiments;

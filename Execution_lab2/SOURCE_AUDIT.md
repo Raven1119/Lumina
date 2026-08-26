@@ -333,7 +333,7 @@ The implementation directly borrows DSH's whole-response/distinct-identity/order
 - **SOURCE / COMMIT / VERSION / LICENSE:** [deepseek-ai/deepseek-harness at `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e), `dsh 0.1.1-rc.2`, MIT.
 - **SOURCE SYMBOL:** [`interruptedTurnClosers`, `TOOL_NOT_STARTED`, and `TOOL_OUTCOME_UNKNOWN`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/session/src/repair.ts), plus `SessionEvent.sourceEventSeqs` and fold-derived session surfaces.
 - **BORROWED SEMANTICS:** Interruption is represented by later canonical append-only events; derived state follows those facts, and a recorded start without a durable result must not be rewritten or guessed into success.
-- **LUMINA ADAPTATION:** Live interruption preserves the already-started event, appends the authoritative request, records the real outcome when the current action settles, and only then appends suspension. EventLog remains the history authority and `ExecutionState` remains its fold.
+- **LUMINA ADAPTATION:** Live interruption preserves the already-started event, appends the authoritative request, records the real outcome when the current action settles, and only then appends suspension. After process loss, an unmatched durable request remains the no-new-work authority: the supported Write is reconciled from current reality before suspension, while unsupported/ambiguous work stays unresolved. EventLog remains the history authority and `ExecutionState` remains its fold.
 - **NOT COPIED:** DSH session repair framework, synthetic generic ToolResult closers, turn/step ontology, plugin/session persistence ecosystem, scheduler, or parallel cancellation.
 
 ### Prime Agent - Host lifecycle and kernel interrupt
@@ -349,7 +349,7 @@ The implementation directly borrows DSH's whole-response/distinct-identity/order
 - **SOURCE / COMMIT / VERSION / LICENSE:** Temporal Server [`19a774302c613da9adc4436ab14278ccdca8e0a5`](https://github.com/temporalio/temporal/tree/19a774302c613da9adc4436ab14278ccdca8e0a5), Go SDK [`b7c242c6894df088a57a85b33d0586e908da8b93`](https://github.com/temporalio/sdk-go/tree/b7c242c6894df088a57a85b33d0586e908da8b93), and documentation [`6f46de944c41b1823331536a65356548b94578c7`](https://github.com/temporalio/documentation/tree/6f46de944c41b1823331536a65356548b94578c7), MIT.
 - **SOURCE SYMBOL:** `ActivityTaskCancelRequested`, `ActivityTaskCanceled`, Activity cancellation delivery/acceptance, and Event History replay.
 - **BORROWED SEMANTICS:** A durable cancellation request and a terminal cancellation/settlement outcome are different facts. A workflow may wait for cancellation acceptance; durable history, not an in-memory cancellation token, rebuilds lifecycle state.
-- **LUMINA ADAPTATION:** `INTERRUPT_REQUESTED` does not itself produce SUSPENDED. An actual settled Tool/IPython outcome is appended first when work is in flight; `ACTOR_SUSPENDED` is the durable state transition and checkpoint remains only a replay optimization.
+- **LUMINA ADAPTATION:** `INTERRUPT_REQUESTED` does not itself prove settlement or produce SUSPENDED. An actual settled Tool/IPython outcome is appended first when work is in flight; after a crash, the unmatched request is reconstructed from history and must settle or fail unresolved before `ACTOR_SUSPENDED`. That event is the durable state transition and checkpoint remains only a replay optimization.
 - **NOT COPIED:** Temporal Server/Worker architecture, Activities, cancellation scopes, heartbeats, retries, task queues, workflow-code replay, or distributed persistence.
 
 ### Slice 8 source conclusion
@@ -359,7 +359,9 @@ future work admission stops, in-flight reality settles or uses an already-safe
 primitive, and a later durable lifecycle fact establishes suspension. Lumina's
 three event names, one `suspended` state, local `threading.Condition`, causal
 validation through an interrupt event, and explicit-resume Context notice are
-small repository-specific engineering adaptations. **NO DIRECT SOURCE
+small repository-specific engineering adaptations. Serializing model-decision
+admission with that Host lifecycle gate and resuming only a frozen,
+never-started action suffix are also local engineering choices. **NO DIRECT SOURCE
 IMPLEMENTATION** provides this exact combination. No generic cancellation
 framework, scheduler, transaction manager, new Model Action, or additional
 lifecycle state was copied or invented.

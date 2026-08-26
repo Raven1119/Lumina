@@ -540,8 +540,6 @@ def _previous_sibling_is_settled(
     decision_event: ExecutionEvent,
     call_index: int,
 ) -> bool:
-    if call_index == 0:
-        return previous.event_id == decision_event.event_id
     by_id = {event.event_id: event for event in events}
 
     def cause(event: ExecutionEvent) -> ExecutionEvent | None:
@@ -561,6 +559,8 @@ def _previous_sibling_is_settled(
         previous = cause(previous)
         if previous is None:
             return False
+    if call_index == 0:
+        return previous.event_id == decision_event.event_id
     if previous.event_type not in _SIBLING_SETTLED_EVENT_TYPES:
         return False
     previous_start = cause(previous)
@@ -934,6 +934,7 @@ class EventLog:
                 "TOOL_FAILED",
                 "IPYTHON_EXECUTION_RESULT",
                 "IPYTHON_EXECUTION_FAILED",
+                "ACTION_RECONCILED",
             ):
                 interrupt_event = next(
                     (
@@ -1297,10 +1298,20 @@ class EventLog:
             ):
                 raise ValueError("IPython result must match its execution")
         elif event_type == "ACTION_RECONCILED":
-            request = previous.payload.get("request")
+            reconciliation_start = previous
+            if previous.event_type == "INTERRUPT_REQUESTED":
+                reconciliation_start = next(
+                    (
+                        event
+                        for event in self._events
+                        if previous.source_event_refs == (event.event_id,)
+                    ),
+                    previous,
+                )
+            request = reconciliation_start.payload.get("request")
             evidence = payload["evidence"]
             if (
-                previous.event_type != "TOOL_CALL_STARTED"
+                reconciliation_start.event_type != "TOOL_CALL_STARTED"
                 or not isinstance(request, WriteRequest)
                 or payload["status"] != "confirmed_applied"
                 or not isinstance(evidence, Mapping)
@@ -2258,7 +2269,10 @@ class RootAgentProcess:
         self._interrupt_requested = False
         self._active_phase: Literal["model", "tool", "ipython"] | None = None
         if self._event_log.events:
-            self._current_state()
+            restored_state = self._current_state()
+            self._interrupt_requested = (
+                restored_state.lifecycle_notice == "interrupt_requested"
+            )
             if self._event_log.events[-1].event_type not in (
                 "EXECUTION_STARTED",
                 "TOOL_RESULT",
@@ -2303,6 +2317,8 @@ class RootAgentProcess:
             raise ValueError("execution has not started")
         steps: list[ExecutionStep] = []
         state = self._current_state()
+        if state.status != "suspended" and self._interrupt_requested:
+            return self._settle_recovered_interrupt(steps)
         if state.status == "suspended":
             with self._lifecycle:
                 self._event_log.append(
@@ -2335,6 +2351,41 @@ class RootAgentProcess:
             return self._result(steps)
         self._resume_sibling_suffix(steps)
         return self._drive(steps)
+
+    def _settle_recovered_interrupt(
+        self, steps: list[ExecutionStep]
+    ) -> ExecutionResult:
+        events = self._event_log.events
+        interrupt_event = next(
+            event
+            for event in reversed(events)
+            if event.event_type == "INTERRUPT_REQUESTED"
+        )
+        if events[-1].event_id == interrupt_event.event_id:
+            interrupted_work = next(
+                (
+                    event
+                    for event in events
+                    if interrupt_event.source_event_refs == (event.event_id,)
+                ),
+                None,
+            )
+            if (
+                interrupted_work is not None
+                and interrupted_work.event_type == "TOOL_CALL_STARTED"
+            ):
+                self._reconcile_interrupted_call(interrupted_work)
+            elif (
+                interrupted_work is not None
+                and interrupted_work.event_type == "IPYTHON_EXECUTION_STARTED"
+            ):
+                raise ValueError(
+                    "interrupted IPython execution recovery is unsupported"
+                )
+        with self._lifecycle:
+            self._suspend_locked()
+            self._lifecycle.notify_all()
+        return self._result(steps)
 
     def interrupt(self) -> ExecutionResult:
         ipython_control = None
@@ -2373,12 +2424,18 @@ class RootAgentProcess:
                 self._checkpoint_path
             )
 
+    def _suspend_if_requested_locked(self) -> bool:
+        if not self._interrupt_requested:
+            return False
+        if self._current_state().status != "suspended":
+            self._suspend_locked()
+        self._lifecycle.notify_all()
+        return True
+
     def _settle_phase(self) -> bool:
         with self._lifecycle:
             self._active_phase = None
-            if self._interrupt_requested:
-                self._suspend_locked()
-                self._lifecycle.notify_all()
+            if self._suspend_if_requested_locked():
                 return True
             self._lifecycle.notify_all()
             return False
@@ -2433,10 +2490,17 @@ class RootAgentProcess:
         evidence = self._tools.inspect_write(request)
         if evidence is None:
             raise ValueError("interrupted write outcome is unresolved")
+        cause = self._event_log.events[-1]
+        source_refs = (
+            (cause.event_id,)
+            if cause.event_type == "INTERRUPT_REQUESTED"
+            and cause.source_event_refs == (call_event.event_id,)
+            else (call_event.event_id,)
+        )
         self._event_log.append(
             "ACTION_RECONCILED",
             {"status": "confirmed_applied", "evidence": evidence},
-            (call_event.event_id,),
+            source_refs,
         )
 
     def deliver_event(self, event_type: str, data: str = "") -> ExecutionResult:
@@ -2488,7 +2552,10 @@ class RootAgentProcess:
             if isinstance(frame, DecisionFrame)
             else ()
         )
-        if len(actions) <= 1:
+        if not actions or any(
+            not isinstance(action, (ToolCall, IPythonCode))
+            for action in actions
+        ):
             return
         starts = tuple(
             event
@@ -2499,7 +2566,7 @@ class RootAgentProcess:
         )
         if len(starts) >= len(actions):
             return
-        if any(isinstance(action, IPythonCode) for action in actions):
+        if starts and any(isinstance(action, IPythonCode) for action in actions):
             raise ValueError(
                 "partial IPython sibling recovery is unsupported"
             )
@@ -2533,7 +2600,8 @@ class RootAgentProcess:
             if isinstance(action, IPythonCode):
                 with self._lifecycle:
                     if self._interrupt_requested:
-                        self._suspend_locked()
+                        if self._current_state().status != "suspended":
+                            self._suspend_locked()
                         self._lifecycle.notify_all()
                         return True
                     execution_event = self._event_log.append(
@@ -2574,7 +2642,8 @@ class RootAgentProcess:
                 )
             with self._lifecycle:
                 if self._interrupt_requested:
-                    self._suspend_locked()
+                    if self._current_state().status != "suspended":
+                        self._suspend_locked()
                     self._lifecycle.notify_all()
                     return True
                 call_event = self._event_log.append(
@@ -2613,11 +2682,14 @@ class RootAgentProcess:
             if state.status == "suspended":
                 return self._result(steps)
             if state.decision_count >= self._max_decisions:
-                self._event_log.append(
-                    "EXECUTION_FAILED",
-                    {"failure": "decision_limit_reached"},
-                    (self._event_log.events[-1].event_id,),
-                )
+                with self._lifecycle:
+                    if self._suspend_if_requested_locked():
+                        return self._result(steps)
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {"failure": "decision_limit_reached"},
+                        (self._event_log.events[-1].event_id,),
+                    )
                 return self._finish(steps)
             decision = state.decision_count + 1
             source_refs = (self._event_log.events[-1].event_id,)
@@ -2629,14 +2701,10 @@ class RootAgentProcess:
                 self._event_log.events,
             )
             with self._lifecycle:
-                if self._interrupt_requested:
-                    self._suspend_locked()
-                    self._lifecycle.notify_all()
+                if self._suspend_if_requested_locked():
                     return self._result(steps)
                 self._active_phase = "model"
             raw_response = self._model.decide(request)
-            if self._settle_phase():
-                return self._result(steps)
             raw_response_snapshot = EventLog._freeze(raw_response)
             structured_action = _structured_action(raw_response)
             action_snapshot = EventLog._freeze(structured_action)
@@ -2680,73 +2748,97 @@ class RootAgentProcess:
                     else None
                 ),
             )
-            decision_event = self._event_log.append(
-                "MODEL_DECISION",
-                {"action": action_snapshot, "frame": frame},
-                source_refs,
-            )
-            if native_response is not None and native_response.failure is not None:
-                steps.append(ExecutionStep(decision, raw_response, None))
-                self._event_log.append(
-                    "EXECUTION_FAILED",
-                    {"failure": native_response.failure},
-                    (decision_event.event_id,),
+            with self._lifecycle:
+                if self._suspend_if_requested_locked():
+                    self._active_phase = None
+                    return self._result(steps)
+                decision_event = self._event_log.append(
+                    "MODEL_DECISION",
+                    {"action": action_snapshot, "frame": frame},
+                    source_refs,
                 )
+                self._active_phase = None
+                self._lifecycle.notify_all()
+            if native_response is not None and native_response.failure is not None:
+                with self._lifecycle:
+                    if self._suspend_if_requested_locked():
+                        return self._result(steps)
+                    steps.append(ExecutionStep(decision, raw_response, None))
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {"failure": native_response.failure},
+                        (decision_event.event_id,),
+                    )
                 return self._finish(steps)
             action = actions[0] if len(actions) == 1 else None
             if isinstance(action, ClaimComplete):
-                claim_event = self._event_log.append(
-                    "COMPLETION_CLAIMED",
-                    {"claim": action},
-                    (decision_event.event_id,),
-                )
-                state = self._current_state()
-                if state.completion_spec is None:
-                    raise ValueError("execution is missing its completion spec")
-                evidence = _verify_completion(
-                    state.completion_spec,
-                    self._tools.environment,
-                )
-                if evidence.matched:
-                    verified_event = self._event_log.append(
-                        "COMPLETION_VERIFIED",
-                        {"evidence": evidence},
+                with self._lifecycle:
+                    if self._suspend_if_requested_locked():
+                        return self._result(steps)
+                    claim_event = self._event_log.append(
+                        "COMPLETION_CLAIMED",
+                        {"claim": action},
+                        (decision_event.event_id,),
+                    )
+                    state = self._current_state()
+                    if state.completion_spec is None:
+                        raise ValueError(
+                            "execution is missing its completion spec"
+                        )
+                    evidence = _verify_completion(
+                        state.completion_spec,
+                        self._tools.environment,
+                    )
+                    if evidence.matched:
+                        verified_event = self._event_log.append(
+                            "COMPLETION_VERIFIED",
+                            {"evidence": evidence},
+                            (claim_event.event_id,),
+                        )
+                        steps.append(ExecutionStep(decision, action, None))
+                        self._event_log.append(
+                            "EXECUTION_COMPLETED",
+                            {"status": "verified"},
+                            (verified_event.event_id,),
+                        )
+                        return self._finish(steps)
+                    observation = CompletionObservation("rejected", evidence)
+                    self._event_log.append(
+                        "COMPLETION_REJECTED",
+                        {"observation": observation},
                         (claim_event.event_id,),
                     )
-                    steps.append(ExecutionStep(decision, action, None))
-                    self._event_log.append(
-                        "EXECUTION_COMPLETED",
-                        {"status": "verified"},
-                        (verified_event.event_id,),
-                    )
-                    return self._finish(steps)
-                observation = CompletionObservation("rejected", evidence)
-                self._event_log.append(
-                    "COMPLETION_REJECTED",
-                    {"observation": observation},
-                    (claim_event.event_id,),
-                )
-                steps.append(ExecutionStep(decision, action, observation))
+                    steps.append(ExecutionStep(decision, action, observation))
                 continue
             if isinstance(action, Wait):
-                steps.append(ExecutionStep(decision, action, None))
-                self._event_log.append(
-                    "ROOT_WAITING",
-                    {"condition": action},
-                    (decision_event.event_id,),
-                )
-                if self._checkpoint_path is not None:
-                    Checkpoint.capture(self._event_log.events).save(
-                        self._checkpoint_path
+                with self._lifecycle:
+                    if self._suspend_if_requested_locked():
+                        return self._result(steps)
+                    steps.append(ExecutionStep(decision, action, None))
+                    self._event_log.append(
+                        "ROOT_WAITING",
+                        {"condition": action},
+                        (decision_event.event_id,),
                     )
+                    if self._checkpoint_path is not None:
+                        Checkpoint.capture(self._event_log.events).save(
+                            self._checkpoint_path
+                        )
                 return self._result(steps)
             if not actions or len(provider_call_ids) != len(actions):
-                steps.append(ExecutionStep(decision, raw_response, None))
-                self._event_log.append(
-                    "EXECUTION_FAILED",
-                    {"failure": f"unknown_action:{type(raw_response).__name__}"},
-                    (decision_event.event_id,),
-                )
+                with self._lifecycle:
+                    if self._suspend_if_requested_locked():
+                        return self._result(steps)
+                    steps.append(ExecutionStep(decision, raw_response, None))
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {
+                            "failure": (
+                                f"unknown_action:{type(raw_response).__name__}"
+                            )
+                        },
+                        (decision_event.event_id,),
+                    )
                 return self._finish(steps)
             suspended = self._execute_actions(
                 decision,

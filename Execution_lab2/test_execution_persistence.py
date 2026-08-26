@@ -71,8 +71,54 @@ class _BlockingFirstToolHost(ToolHost):
         return super().execute(request)
 
 
+class _PauseBeforeFirstModelDecision(EventLog):
+    def __init__(self, path):
+        super().__init__(path)
+        self.decision_admission = threading.Event()
+        self.interrupt_recorded = threading.Event()
+        self.release_decision = threading.Event()
+        self._paused = False
+
+    def append(self, event_type, payload, source_event_refs=()):
+        paused_decision = event_type == 'MODEL_DECISION' and not self._paused
+        if paused_decision:
+            self._paused = True
+            self.decision_admission.set()
+            if not self.release_decision.wait(timeout=2):
+                raise TimeoutError('test did not release decision')
+        event = super().append(event_type, payload, source_event_refs)
+        if event_type == 'INTERRUPT_REQUESTED':
+            self.interrupt_recorded.set()
+        return event
+
+
+class _PauseBeforeNextModelAdmission(EventLog):
+    def __init__(self, path):
+        super().__init__(path)
+        self.admission_window = threading.Event()
+        self.release_runtime = threading.Event()
+        self._tool_settled = False
+        self._paused = False
+
+    @property
+    def events(self):
+        events = super().events
+        if self._tool_settled and not self._paused:
+            self._paused = True
+            self.admission_window.set()
+            if not self.release_runtime.wait(timeout=2):
+                raise TimeoutError('test did not release model admission')
+        return events
+
+    def append(self, event_type, payload, source_event_refs=()):
+        event = super().append(event_type, payload, source_event_refs)
+        if event_type == 'TOOL_RESULT':
+            self._tool_settled = True
+        return event
+
+
 def test_interrupt_between_decisions_stops_sampling_until_explicit_resume(tmp_path):
-    event_log = _PauseAfterFirstToolResult(tmp_path / "events.jsonl")
+    event_log = _PauseAfterFirstToolResult(tmp_path / 'events.jsonl')
     model = ScriptedModel(
         [
             ToolCall(WriteRequest("result.txt", "A")),
@@ -122,6 +168,88 @@ def test_interrupt_between_decisions_stops_sampling_until_explicit_resume(tmp_pa
     )
     assert resumed.source_event_refs == (run_result.events[-1].event_id,)
     assert json.loads(model.received_requests[1].context)["lifecycle"] == "resumed"
+
+
+def test_interrupt_in_pre_model_window_does_not_double_suspend(tmp_path):
+    event_log = _PauseBeforeNextModelAdmission(tmp_path / 'events.jsonl')
+    model = ScriptedModel(
+        [
+            ToolCall(WriteRequest('result.txt', 'A')),
+            ToolCall(WriteRequest('result.txt', 'B')),
+            ClaimComplete(),
+        ]
+    )
+    runtime = RootAgentProcess(
+        model=model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=3,
+        event_log=event_log,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run_future = pool.submit(
+            runtime.run,
+            'Write B',
+            FileContentEquals('result.txt', 'B'),
+        )
+        assert event_log.admission_window.wait(timeout=2)
+        interrupted = pool.submit(runtime.interrupt).result(timeout=2)
+        event_log.release_runtime.set()
+        run_result = run_future.result(timeout=2)
+
+    assert interrupted.status == run_result.status == 'suspended'
+    assert len(model.received_requests) == 1
+    assert (tmp_path / 'result.txt').read_text(encoding='utf-8') == 'A'
+    assert [event.event_type for event in run_result.events].count(
+        'ACTOR_SUSPENDED'
+    ) == 1
+
+    completed = runtime.resume()
+
+    assert completed.status == 'completed'
+    assert len(model.received_requests) == 3
+    assert (tmp_path / 'result.txt').read_text(encoding='utf-8') == 'B'
+
+
+def test_interrupt_is_atomic_with_model_decision_admission(tmp_path):
+    event_log = _PauseBeforeFirstModelDecision(tmp_path / 'events.jsonl')
+    host = _BlockingFirstToolHost(SharedEnvironment(tmp_path))
+    host.release.set()
+    model = ScriptedModel(
+        [ToolCall(WriteRequest('result.txt', 'done')), ClaimComplete()]
+    )
+    runtime = RootAgentProcess(
+        model=model,
+        tools=host,
+        max_decisions=2,
+        event_log=event_log,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run_future = pool.submit(
+            runtime.run,
+            'Write done',
+            FileContentEquals('result.txt', 'done'),
+        )
+        assert event_log.decision_admission.wait(timeout=2)
+        interrupt_future = pool.submit(runtime.interrupt)
+        interrupt_won_admission = event_log.interrupt_recorded.wait(timeout=0.1)
+        event_log.release_decision.set()
+        interrupted = interrupt_future.result(timeout=2)
+        run_result = run_future.result(timeout=2)
+
+    assert interrupted.status == run_result.status == 'suspended'
+    assert len(model.received_requests) == 1
+    assert len(host.requests) <= 1
+    if interrupt_won_admission:
+        assert host.requests == []
+    assert run_result.state == fold_execution_state(run_result.events)
+
+    completed = runtime.resume()
+
+    assert completed.status == 'completed'
+    assert host.requests == [WriteRequest('result.txt', 'done')]
+    assert (tmp_path / 'result.txt').read_text(encoding='utf-8') == 'done'
 
 
 def test_suspended_root_survives_restart_and_events_cannot_wake_it(tmp_path):
@@ -189,6 +317,69 @@ def test_suspended_root_survives_restart_and_events_cannot_wake_it(tmp_path):
     assert completed.status == "completed"
     assert len(restored_model.received_requests) == 2
     assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "B"
+
+
+def test_restart_finishes_durable_interrupt_request_before_explicit_resume(tmp_path):
+    log_path = tmp_path / 'events.jsonl'
+    write_calls = []
+
+    class CrashAfterCommittedWrite:
+        def __init__(self):
+            self._host = ToolHost(SharedEnvironment(tmp_path))
+
+        def execute(self, request):
+            write_calls.append(request)
+            result = self._host.execute(request)
+            assert result.ok
+            raise SystemExit('crash after committed write')
+
+    with pytest.raises(SystemExit, match='crash after committed write'):
+        RootAgentProcess(
+            model=ScriptedModel(
+                [ToolCall(WriteRequest('result.txt', 'committed'))]
+            ),
+            tools=CrashAfterCommittedWrite(),
+            max_decisions=2,
+            event_log=EventLog(log_path),
+        ).run(
+            'Keep the durable interrupt',
+            FileContentEquals('result.txt', 'committed'),
+        )
+
+    interrupted_log = EventLog.load(log_path)
+    started = interrupted_log.events[-1]
+    interrupted_log.append(
+        'INTERRUPT_REQUESTED',
+        {'status': 'requested'},
+        (started.event_id,),
+    )
+    restored_model = ScriptedModel([ClaimComplete()])
+    restored = RootAgentProcess(
+        model=restored_model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        event_log=EventLog.load(log_path),
+    )
+
+    settled_interrupt = restored.resume()
+
+    assert settled_interrupt.status == 'suspended'
+    assert restored_model.received_requests == []
+    assert write_calls == [WriteRequest('result.txt', 'committed')]
+    assert [event.event_type for event in settled_interrupt.events][-3:] == [
+        'INTERRUPT_REQUESTED',
+        'ACTION_RECONCILED',
+        'ACTOR_SUSPENDED',
+    ]
+    assert settled_interrupt.state == fold_execution_state(
+        settled_interrupt.events
+    )
+
+    completed = restored.resume()
+
+    assert completed.status == 'completed'
+    assert len(restored_model.received_requests) == 1
+    assert write_calls == [WriteRequest('result.txt', 'committed')]
 
 
 def test_interrupt_waits_for_in_flight_tool_then_restart_does_not_replay_it(tmp_path):
