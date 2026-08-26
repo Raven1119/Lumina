@@ -201,6 +201,50 @@ Slice 6 borrows the exact DeepSeek Chat Completions native-tool wire contract, D
 - **FAILURE-CONTINUATION EVIDENCE:** The previous three autonomous attempts remain `MODEL_BEHAVIOR / MECHANISM_NOT_EXERCISED`; they are not reinterpreted. A separate test-only protocol experiment mechanically seeded `call_test_failure_continuation: read(candidate.txt)`, passed it through the existing typed adapter and real `ToolHost`, obtained structured `not_found`, reconstructed the failed native `role=tool` result with the identical call id, and sent it to real `deepseek-v4-pro`. The provider accepted the continuation without HTTP/protocol error and returned one schema-valid native call, which the unchanged adapter parsed as `ReadRequest`. Completion was not exercised and no autonomous failure-first claim is made.
 - **PROMOTION DECISION:** Slice 6 is **PASS / DeepSeek native compatibility VALIDATED** for the exact fixed surface tested: deterministic offline protocol, autonomous canonical completion 3/3, programmatic live call-id continuity, mechanically exercised real failed ToolResult continuation, and credential/security checks. No prompt, Runtime semantic policy, ToolHost semantics, Action ontology, provider settings, or production adapter code changed.
 
+## Fresh Python Code Mode experiment audit (2026-08-26)
+
+The experiment was gated on one stricter invariant than upstream Code Mode:
+model-generated Python must be unable to access filesystem, process, or network
+authority except through typed bindings that re-enter Lumina's existing Runtime
+and `ToolHost`. Source review found useful orchestration semantics, but no
+existing Lumina execution substrate capable of enforcing that invariant. The
+experiment therefore stopped before a red test, implementation, credential
+loading, or live A/B run.
+
+### DeepSeek Harness (DSH) Code Mode
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [deepseek-ai/deepseek-harness at `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e), `dsh 0.1.1-rc.2`, MIT.
+- **SOURCE SYMBOL:** [`RUN_CODE_NAME` / `createRunCodeTool`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/tools/src/code-mode.ts), the [Code Mode registry contract](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/tools/README.md#code-mode), [`CodeRuntime.run` / `CodeRunRequest` / `CodeBindingNamespace`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/subsystems/code-runtime.md), and [`WorkerThreadCodeRuntime`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/code-runtime/code-runtime-worker-thread/README.md).
+- **DIRECT SOURCE FACT:** `createRunCodeTool` exposes one outer `run_code`, passes the program and one `tools` binding namespace to `runtime.run`, gives each inner call a deterministic child call id, and sends it through the registry's normal prepare/dispatch/finalize pipeline. Inner start/result events remain auditable while only bounded outer logs/return material are model-visible. Each worker run is fresh; the DSH README explicitly rejects persistent REPL state for this MVP because that state would not be reconstructable from the log.
+- **DIRECT SECURITY FACT:** DSH describes its shipped worker-thread backend as containment rather than a security boundary and as bash-equivalent. The program can reach Node capabilities; terminating the worker does not terminate OS processes it spawned. The abstract runtime's `isolation` label is explicitly diagnostic, not a security claim. At this pin only the TypeScript worker backend is published; a Python renderer does not itself provide a Python isolation backend.
+- **BORROWED SEMANTICS:** If Lumina later has a compliant substrate, present one outer transport, expose typed bindings inside the program, re-enter the existing Host execution path for every inner capability, preserve outer/inner causal identity, keep execution state fresh per call, and return only a bounded curated outer result to the model.
+- **LUMINA ADAPTATION:** **NONE IMPLEMENTED IN THIS EXPERIMENT.** Lumina's required authority boundary is stricter than DSH's shipped trust posture. The binding/dispatch shape is retained only as a source-backed candidate after an independently verified isolation substrate exists.
+- **NOT COPIED:** Tool registry, plugin system, SDK generator, TypeScript worker, concurrency scheduler, spill framework, generic CodeRuntime, or DSH's bash-equivalent trust posture.
+
+### Prime Agent persistent IPython comparison
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [PrimeIntellect-ai/prime-agent at `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/514633727bf26d74f39f3119c2b0e31a5ceb2a9d), `v0.8.1`, MIT.
+- **SOURCE SYMBOL:** [`AgentSession`](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/agent-session.ts), [`KernelManager`](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/kernel/index.ts), [`ipython` tool / namespace bootstrap](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/tools/ipython.ts), and [RLM runtime architecture](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/docs/rlm-runtime.md).
+- **DIRECT SOURCE FACT:** Prime gives an agent session a persistent IPython namespace while TypeScript Host components own provider access, kernel lifecycle, typed Host requests, child/session policy, and persistence. Its documented trust boundary says model-generated Python and shell magics execute with the worker's OS permissions; the kernel boundary is not a security sandbox.
+- **BORROWED SEMANTICS:** Python working state is not the authoritative provider/tool lifecycle. Host-owned capabilities and persistence remain outside the model's programmable control surface.
+- **LUMINA ADAPTATION:** Prime is recorded only as the explicitly deferred persistent-state comparison. It does not resolve the fresh Python isolation requirement and does not justify weakening `ToolHost` authority.
+- **NOT COPIED:** Persistent namespace, Jupyter kernel, ZeroMQ/control channel, kernel provisioning, namespace snapshot/revival, child agents, daemon, RLM, or provider/session framework.
+
+### OpenAI Codex Host boundary
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [openai/codex at `f5420174dafba153913a3e697f89002c338dfd7e`](https://github.com/openai/codex/tree/f5420174dafba153913a3e697f89002c338dfd7e), rolling `main`, Apache-2.0.
+- **SOURCE SYMBOL:** [`ToolRouter` dispatch/model-visible specs](https://github.com/openai/codex/blob/f5420174dafba153913a3e697f89002c338dfd7e/codex-rs/core/src/tools/router.rs), [`Prompt`](https://github.com/openai/codex/blob/f5420174dafba153913a3e697f89002c338dfd7e/codex-rs/core/src/client_common.rs), provider-native [`ResponseItem::FunctionCall`](https://github.com/openai/codex/blob/f5420174dafba153913a3e697f89002c338dfd7e/codex-rs/protocol/src/models.rs), and [`ExecCommandToolOutput::response_text`](https://github.com/openai/codex/blob/f5420174dafba153913a3e697f89002c338dfd7e/codex-rs/core/src/tools/context.rs).
+- **BORROWED SEMANTICS:** Keep actual request/tool visibility fixed at the model-decision boundary, execute selected capabilities in the Host, retain canonical Tool outcome separately from the bounded model-visible result, and correlate the call and result.
+- **LUMINA ADAPTATION:** Existing `DecisionFrame`, Runtime, `ToolHost`, EventLog, and bounded Context remain authoritative and unchanged. Any future `run_code` must call into those boundaries rather than becoming a new effect host.
+- **NOT COPIED:** Codex session/turn framework, tool router, sandbox policy, approvals, Responses protocol, parallel dispatch, MCP, compaction, or provider stack. Codex supplies no drop-in Python isolation backend for this experiment.
+
+### Local blocking fact and decision
+
+- `ToolHost` validates workspace paths only for its typed `ReadRequest` and `WriteRequest`. `ShellRequest` uses `subprocess.run(..., cwd=workspace)`; `cwd` is not an OS permission boundary.
+- Repository dependencies and Execution modules contain no container, AppContainer, restricted process, or other code-execution backend. A normal Python subprocess or same-process `exec` inherits enough Host authority to call `open`, `os.remove`, `subprocess`, or `Path.write_text` directly, bypassing `ToolHost`, its structured results, EventLog, and causal identity.
+- Removing builtins, filtering imports, or inspecting AST would be a custom Python jail/import system. Besides being an inadequate authority guarantee, that is explicitly outside this task.
+- **RESULT: BLOCKED.** The programmable-value hypothesis was not run, so it is neither promoted nor refuted. The minimum prerequisite is a pre-existing, independently verified OS/container isolation backend that denies direct filesystem/process/network authority and exposes only bounded IPC bindings. This task does not authorize building that backend.
+
 ## Source ambiguities and non-equivalences
 
 - **Direct source fact:** every positive upstream behavior above names a pinned symbol or official contract. **Inference** is marked explicitly for Prime's host-authority reading and Temporal's wake shorthand.
