@@ -60,6 +60,67 @@ def _plain(value):
     return value
 
 
+def _assistant_tool_call_evidence(message):
+    if (
+        not isinstance(message, Mapping)
+        or message.get("role") != "assistant"
+        or "content" not in message
+        or not isinstance(message["content"], (str, type(None)))
+    ):
+        return "malformed", None
+    calls = message.get("tool_calls")
+    if calls is None or calls == []:
+        return "mechanism_absent", None
+    if not isinstance(calls, list) or len(calls) != 1:
+        return "malformed", None
+    call = calls[0]
+    if not isinstance(call, Mapping):
+        return "malformed", None
+    function = call.get("function")
+    if (
+        not isinstance(call.get("id"), str)
+        or not call["id"]
+        or call.get("type") != "function"
+        or not isinstance(function, Mapping)
+        or not isinstance(function.get("name"), str)
+        or not function["name"]
+        or not isinstance(function.get("arguments"), str)
+    ):
+        return "malformed", None
+    return "observed", call
+
+
+def test_evidence_extractor_distinguishes_absent_from_malformed_tool_calls():
+    assert _assistant_tool_call_evidence(
+        {"role": "assistant", "content": "done"}
+    ) == ("mechanism_absent", None)
+    assert _assistant_tool_call_evidence(
+        {"role": "assistant", "content": None}
+    ) == ("mechanism_absent", None)
+    assert _assistant_tool_call_evidence(
+        {"content": "missing role"}
+    ) == ("malformed", None)
+    assert _assistant_tool_call_evidence(
+        {"role": "assistant"}
+    ) == ("malformed", None)
+    assert _assistant_tool_call_evidence(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call_incomplete"}],
+        }
+    ) == ("malformed", None)
+    assert _assistant_tool_call_evidence(
+        {"role": "assistant", "content": None, "tool_calls": [7]}
+    ) == ("malformed", None)
+    call = _tool_response("call_observed", "read", '{"path":"input.txt"}')[
+        "choices"
+    ][0]["message"]["tool_calls"][0]
+    assert _assistant_tool_call_evidence(
+        {"role": "assistant", "content": None, "tool_calls": [call]}
+    ) == ("observed", call)
+
+
 def test_native_read_call_maps_to_the_existing_typed_action():
     payloads = []
 
@@ -617,6 +678,192 @@ def test_real_deepseek_completes_canonical_task_three_of_three(tmp_path):
 
 
 @pytest.mark.skipif(not _RUN_REAL, reason=_REAL_REASON)
+def test_real_deepseek_preserves_each_canonical_tool_call_id(tmp_path):
+    (tmp_path / "input.txt").write_text("alpha", encoding="utf-8")
+
+    result = RootAgentProcess(
+        model=DeepSeekModel(),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=6,
+    ).run(
+        "Read input.txt and create output.txt containing its uppercase content.",
+        FileContentEquals("output.txt", "ALPHA"),
+    )
+
+    evidence = []
+    tool_steps = [
+        step
+        for step in result.steps
+        if isinstance(step.action, ToolCall)
+        and isinstance(step.observation, Observation)
+    ]
+    for step in tool_steps:
+        frame = result.decision_frames[step.decision - 1]
+        next_frame = result.decision_frames[step.decision]
+        response = _plain(frame.raw_provider_response)
+        assert isinstance(response, dict)
+        choices = response.get("choices")
+        assert isinstance(choices, list) and choices
+        message = choices[0].get("message")
+        status, provider_call = _assistant_tool_call_evidence(message)
+        assert status == "observed"
+
+        next_request = _plain(next_frame.provider_wire_request)
+        assert isinstance(next_request, dict)
+        messages = next_request.get("messages")
+        assert isinstance(messages, list) and len(messages) >= 2
+        assistant_status, continued_call = _assistant_tool_call_evidence(messages[-2])
+        assert assistant_status == "observed"
+        tool_message = messages[-1]
+        assert isinstance(tool_message, dict)
+
+        decision_event = next(
+            event
+            for event in result.events
+            if event.event_type == "MODEL_DECISION"
+            and event.payload["frame"].decision_id == frame.decision_id
+        )
+        call_event = next(
+            event
+            for event in result.events
+            if event.event_type == "TOOL_CALL_STARTED"
+            and event.source_event_refs == (decision_event.event_id,)
+        )
+        outcome_event = next(
+            event
+            for event in result.events
+            if event.event_type in {"TOOL_RESULT", "TOOL_FAILED"}
+            and event.source_event_refs == (call_event.event_id,)
+        )
+        call_id = provider_call["id"]
+        equal = (
+            call_id
+            == frame.provider_tool_call_id
+            == step.observation.provider_tool_call_id
+            == continued_call["id"]
+            == tool_message.get("tool_call_id")
+        )
+        assert equal
+        evidence.append(
+            {
+                "call_id": call_id,
+                "tool_name": provider_call["function"]["name"],
+                "decision_event_sequence": [
+                    decision_event.event_type,
+                    call_event.event_type,
+                    outcome_event.event_type,
+                    "MODEL_DECISION",
+                ],
+                "equality_result": equal,
+            }
+        )
+
+    assert result.status == "completed"
+    assert (tmp_path / "output.txt").read_text(encoding="utf-8") == "ALPHA"
+    assert len(evidence) == 2
+    assert result.state == fold_execution_state(result.events)
+    print("DEEPSEEK_REAL_CALL_ID_CONTINUITY=" + json.dumps(evidence, sort_keys=True))
+
+
+@pytest.mark.skipif(not _RUN_REAL, reason=_REAL_REASON)
+def test_real_deepseek_accepts_a_mechanically_seeded_failed_tool_result(tmp_path):
+    (tmp_path / "fallback.txt").write_text("fallback", encoding="utf-8")
+    seeded_call_id = "call_test_failure_continuation"
+    real_transport = DeepSeekModel._post
+    real_responses = []
+    request_count = 0
+
+    def seeded_then_real(payload):
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return _tool_response(
+                seeded_call_id,
+                "read",
+                json.dumps({"path": "candidate.txt"}),
+            )
+        response = real_transport(payload)
+        real_responses.append(response)
+        return response
+
+    result = RootAgentProcess(
+        model=DeepSeekModel(transport=seeded_then_real),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+    ).run(
+        "Try candidate.txt; if unavailable use fallback.txt and write its "
+        "content to output.txt.",
+        FileContentEquals("output.txt", "fallback"),
+    )
+
+    first_frame, continuation_frame = result.decision_frames
+    failure_event = next(
+        event for event in result.events if event.event_type == "TOOL_FAILED"
+    )
+    failure = failure_event.payload["observation"]
+    assert first_frame.resulting_action == ToolCall(ReadRequest("candidate.txt"))
+    assert first_frame.provider_tool_call_id == seeded_call_id
+    assert isinstance(failure, Observation)
+    assert failure.request == ReadRequest("candidate.txt")
+    assert failure.result.ok is False
+    assert failure.result.error_code == "not_found"
+    assert failure.provider_tool_call_id == seeded_call_id
+
+    continuation_request = _plain(continuation_frame.provider_wire_request)
+    assert isinstance(continuation_request, dict)
+    messages = continuation_request.get("messages")
+    assert isinstance(messages, list) and len(messages) >= 2
+    assistant_status, assistant_call = _assistant_tool_call_evidence(messages[-2])
+    assert assistant_status == "observed"
+    tool_message = messages[-1]
+    assert isinstance(tool_message, dict)
+    visible_failure = json.loads(tool_message["content"])
+    continuation_equal = (
+        assistant_call["id"]
+        == failure.provider_tool_call_id
+        == tool_message.get("tool_call_id")
+        == seeded_call_id
+    )
+    assert continuation_equal
+    assert tool_message.get("role") == "tool"
+    assert visible_failure["observation"]["result"]["ok"] is False
+
+    assert len(real_responses) == 1
+    response = real_responses[0]
+    assert isinstance(response, Mapping)
+    choices = response.get("choices")
+    assert isinstance(choices, list) and choices
+    message = choices[0].get("message")
+    response_status, response_call = _assistant_tool_call_evidence(message)
+    assert response_status in {"mechanism_absent", "observed"}
+    if response_status == "observed":
+        assert continuation_frame.provider_tool_call_id == response_call["id"]
+        assert continuation_frame.resulting_action is not None
+
+    next_action = continuation_frame.resulting_action
+    if isinstance(next_action, ToolCall):
+        next_action_name = type(next_action.request).__name__
+    else:
+        next_action_name = type(next_action).__name__ if next_action else None
+    summary = {
+        "initial_call_source": "mechanically_seeded_test_apparatus",
+        "call_id": seeded_call_id,
+        "tool_failure_source": "ToolHost",
+        "tool_failure_error_code": failure.result.error_code,
+        "provider_continuation_accepted": True,
+        "next_response_status": response_status,
+        "next_action": next_action_name,
+        "continuation_equality_result": continuation_equal,
+        "completion_exercised": result.status == "completed",
+        **_usage(result),
+    }
+    print(
+        "DEEPSEEK_REAL_MECHANICAL_FAILURE_CONTINUATION="
+        + json.dumps(summary, sort_keys=True)
+    )
+
+
+@pytest.mark.skipif(not _RUN_REAL, reason=_REAL_REASON)
 def test_real_deepseek_continues_after_a_failed_read(tmp_path):
     (tmp_path / "fallback.txt").write_text("fallback", encoding="utf-8")
     started = time.perf_counter()
@@ -656,10 +903,11 @@ def test_real_deepseek_continues_after_a_failed_read(tmp_path):
         if isinstance(continuation_request, dict)
         else []
     )
+    assistant_evidence, assistant_call = _assistant_tool_call_evidence(
+        continuation_messages[-2] if len(continuation_messages) >= 2 else None
+    )
     assistant_call_id = (
-        continuation_messages[-2]["tool_calls"][0]["id"]
-        if len(continuation_messages) >= 2
-        else None
+        assistant_call["id"] if assistant_evidence == "observed" else None
     )
     tool_message = continuation_messages[-1] if continuation_messages else {}
     visible_failure = (
@@ -674,6 +922,7 @@ def test_real_deepseek_continues_after_a_failed_read(tmp_path):
         "model_calls": len(result.decision_frames),
         "candidate_read_failures": len(candidate_failures),
         "continued_decisions": len(later_decision_events),
+        "continuation_evidence": assistant_evidence,
         "native_call_ids": [
             frame.provider_tool_call_id
             for frame in result.decision_frames
@@ -684,9 +933,10 @@ def test_real_deepseek_continues_after_a_failed_read(tmp_path):
     print("DEEPSEEK_REAL_FAILURE_CONTINUATION=" + json.dumps(summary, sort_keys=True))
 
     assert result.status == "completed"
-    assert failure_observation is not None
+    assert failure_observation is not None, assistant_evidence
     assert failure_observation.result.ok is False
     assert later_decision_events
+    assert assistant_evidence == "observed"
     assert assistant_call_id == failure_observation.provider_tool_call_id
     assert tool_message["role"] == "tool"
     assert tool_message["tool_call_id"] == failure_observation.provider_tool_call_id

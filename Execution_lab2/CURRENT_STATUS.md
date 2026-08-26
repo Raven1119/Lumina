@@ -125,24 +125,66 @@ was copied.
 
 Slice 6:
 
-- **A - adapter protocol:** 20 deterministic tests pass across native
+- **Local provider configuration:** the repository's existing
+  `core.env_loader.load_env_file()` loaded the ignored `.env.local` without a
+  new configuration seam. A secret-safe smoke confirmed a configured
+  `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL=deepseek-v4-pro`, and
+  `DEEPSEEK_BASE_URL=https://api.deepseek.com`; thinking and streaming remain
+  fixed in code as disabled/false. `.env.local` remains ignored and untracked.
+- **A - adapter protocol:** 21 deterministic tests pass across native
   read/write/shell/wait/claim mapping, invalid name/JSON/arguments, zero and
   multiple call rejection, provider failure, exact request settings, and
-  environment-only credential policy. Rejected decisions execute zero Tools.
+  environment-only credential policy. This includes a test-only evidence
+  extractor regression that distinguishes a legal assistant response with no
+  `tool_calls` as `mechanism_absent` from a malformed assistant message.
+  Rejected decisions execute zero Tools.
 - **B - native call/result continuity:** `call_123` is preserved in the typed
   decision, durable frame/Observation, next assistant tool call, and matching
   `role=tool.tool_call_id`. The second request contains a native tool-result
   message rather than prose pretending to be one.
-- **C - real canonical task:** **NOT VALIDATED.** The required three fresh
-  `deepseek-v4-pro` executions were explicitly invoked, but the current process
-  had no `DEEPSEEK_API_KEY`; the secret-safe gated experiments therefore
-  skipped all 3 runs. There is no claimed provider-request, Tool-call, timing,
-  token, or 3/3 success result.
-- **D - real Tool failure continuation:** **NOT VALIDATED** for the same missing
-  credential. The maintained gated experiment creates missing `candidate.txt`
-  plus present `fallback.txt` and will require a real structured failure,
-  later model decision, write, and verified completion when authorized.
-- **E - persistence:** a deterministic DeepSeek wire fixture performs WAIT,
+- **C - real canonical task:** **PASS, 3/3 verified.** Three fresh
+  `deepseek-v4-pro` executions, all with thinking/streaming disabled, each made
+  3 provider requests / 3 model decisions / 2 Tool calls and produced exact
+  `output.txt == "ALPHA"` followed by verified completion. Run 1 used 2,430
+  input / 145 output / 2,575 total tokens in 5.026 s; run 2 used 2,445 / 157 /
+  2,602 in 4.201 s; run 3 used 2,411 / 132 / 2,543 in 4.170 s. Aggregate:
+  9 requests, 9 decisions, 6 Tool calls, 7,286 input / 434 output / 7,720
+  total tokens, and 13.397 s measured model/Runtime wall time.
+- **C - real call-id continuity:** **PASS.** The first new canonical run exposed
+  an `APPARATUS` defect: the test treated EventLog's frozen tuple snapshot as
+  a mutable list. The task itself reached a native call, but no equality result
+  was accepted. After a test-only `_plain()` projection fix, one fresh
+  canonical evidence run completed and programmatically proved both Tool
+  chains. For `read`, provider id
+  `call_00_861ZQVWYNYRAvrUfs8y40455`; for `write`, provider id
+  `call_00_QmOWiXG3eEaJTuIp01su5753`. In each chain:
+  provider assistant id == `DecisionFrame.provider_tool_call_id` == structured
+  `Observation.provider_tool_call_id` == the next assistant call id ==
+  `role=tool.tool_call_id`. Both causal sequences were
+  `MODEL_DECISION -> TOOL_CALL_STARTED -> TOOL_RESULT -> MODEL_DECISION`.
+  Adapter private transcript state remains **NONE**.
+- **D - evidence extractor repair:** the previous autonomous experiment could
+  index a user-only continuation as though it were an assistant tool call and
+  raise `KeyError("tool_calls")`. The test-only extractor now returns
+  `mechanism_absent` for a legal assistant message without calls,
+  `malformed` for an invalid assistant shape, and `observed` only for one
+  non-empty call id. It never fabricates a call; its regression passes.
+- **E - mechanically exercised real failed ToolResult continuation:** **PASS.**
+  Test apparatus seeded the valid assistant call
+  `call_test_failure_continuation: read(candidate.txt)`; the existing
+  `DeepSeekModel` parser produced `ToolCall(ReadRequest("candidate.txt"))`;
+  the real `ToolHost` produced structured `not_found`; the next wire request
+  paired the same id in the assistant call and `role=tool.tool_call_id`.
+  `deepseek-v4-pro` accepted that request without HTTP/protocol error and
+  returned one schema-valid native call, parsed through the existing adapter as
+  a `ReadRequest`. The single real continuation used 905 input / 60 output /
+  965 total tokens. The experiment stopped at the two-decision protocol bound;
+  completion was intentionally not exercised.
+- **F - autonomous failure-first behavior:** the earlier three autonomous
+  attempts remain `MODEL_BEHAVIOR / MECHANISM_NOT_EXERCISED` and were not
+  rerun. The mechanical experiment does **not** claim DeepSeek autonomously
+  selected the initial failure-first strategy.
+- **G - persistence:** a deterministic DeepSeek wire fixture performs WAIT,
   destroys Runtime/model state, reloads the durable EventLog, wakes, and sends
   the original native call id on the next request. Completion succeeds with
   unchanged execution/root identity and full-fold equivalence. Adapter private
@@ -234,11 +276,11 @@ Slice 3 regression evidence:
   explicitly truncated to the configured absolute character bound.
 - DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
   remain covered by regression tests.
-- Final Slice 6 validation reports: `Execution_lab2` 63 passed / 2
+- Final Slice 6 validation reports: `Execution_lab2` 64 passed / 4
   real-provider experiments skipped; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
-  The only skips introduced by this Slice are the two explicitly gated real
-  DeepSeek experiment functions described above.
+  The four Execution skips are explicitly gated real DeepSeek experiments;
+  normal regression runs do not load local credentials or make provider calls.
 
 ## Known limits
 
@@ -250,9 +292,11 @@ Slice 3 regression evidence:
   goal judgment, Reviewer Agent, LLM verifier, registry, composite predicate,
   test runner, or second verifier type.
 - IPython: **NOT IMPLEMENTED**.
-- DeepSeek native provider adapter: **IMPLEMENTED**; real-model behavior and
-  the required canonical 3/3 promotion gate remain **NOT VALIDATED** because
-  no `DEEPSEEK_API_KEY` was available to the experiment process.
+- DeepSeek native provider adapter: **IMPLEMENTED AND VALIDATED** for this
+  Slice's fixed non-thinking, non-streaming, single-call surface. Autonomous
+  canonical completion is 3/3; a fresh canonical run programmatically verifies
+  live call-id continuity; and a mechanically seeded real ToolHost failure is
+  accepted by the provider as a correctly paired native continuation.
 - Child/recursion: **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe
   point, initial start, terminal event, or the exact confirmed-Write case
