@@ -75,32 +75,41 @@
   `read`, `write`, `shell`, `wait`, and `claim_complete` function schemas;
   IPython mode uses only `ipython`, `wait`, and `claim_complete`. Both use
   `thinking={"type":"disabled"}` and `stream=false`. There is no generic
-  provider registry, SDK session, retry, fallback, streaming, or multi-tool
-  execution path.
-- The adapter accepts exactly one native function call, validates its name,
-  JSON, and exact arguments, then maps it to the existing typed Action
-  vocabulary. Zero calls, unknown tools, malformed JSON/response/arguments,
-  and multiple calls become explicit protocol failures before any Tool runs.
-  Timeout, transport, missing-credential, and HTTP status failures are
-  explicit provider failures with no fallback.
-- The DeepSeek-issued `tool_call.id` is persisted in the typed native decision,
-  `DecisionFrame`, and structured `Observation`. The next provider request
-  uses the same id in both the prior assistant `tool_calls` item and the native
-  `role=tool` message. A fresh Runtime after WAIT reconstructs that
+  provider registry, SDK session, retry, fallback, streaming, parallel
+  execution, or scheduler.
+- The adapter accepts one native call or at most four ordinary sibling calls.
+  It parses the whole response and validates the count, every call shape,
+  unique non-empty call ids, every tool name, JSON, exact arguments, and the
+  control rule before any Host effect. Any batch containing `wait` or
+  `claim_complete` with count greater than one is rejected as a whole.
+- Valid ordinary siblings execute strictly in model order, one start/settle at
+  a time. A committed Tool failure remains an Observation and later siblings
+  still execute. There is no abort policy, rollback, transaction, dependency
+  inference, concurrency classifier, or rolling pool.
+- Every DeepSeek-issued `tool_call.id` is persisted with the ordered typed
+  native decision, `DecisionFrame`, individual started event, and structured
+  `Observation`. The next provider request retains the original assistant
+  `tool_calls` array and emits matching `role=tool` messages in model order.
+  A fresh Runtime after WAIT reconstructs that
   continuation from durable frames and bounded current facts; the adapter has
   no private message transcript.
 - `DecisionFrame` now retains the actual Lumina request, actual exposed Lumina
   contracts, secret-free provider-wire request, reasoning-free provider
-  response, typed Action, provider call id, and source refs. API credentials
+  response, one typed Action or ordered Action tuple, matching call id(s), and
+  source refs. API credentials
   are read only from `DEEPSEEK_API_KEY` inside the HTTP send boundary and are
   not part of provider payloads, frames, events, or test artifacts.
 - Native continuation applies one shared `model_visible_context_limit` to the
-  aggregate dynamic `user` plus `tool` message content. Both remain structured
+  aggregate dynamic `user` plus all `tool` message content. They remain structured
   JSON projections with explicit text truncation; fixed system text and the
   five fixed schemas contain no ToolResult/EventLog data. A 20,000-character
   canonical read at the minimum 768-character Runtime limit stays complete in
   EventLog while all dynamic native continuation content together remains at
   or below 768 characters.
+- Two 20,000-character sibling reads and separate four-sibling success and
+  four-sibling failure batches were verified to remain canonical and complete
+  while all ordered provider-visible results plus user context stayed within
+  the minimum 768-character aggregate bound.
 - Normal Tool results are rejected by EventLog if their observation call id
   differs from the causal provider decision. The same id also survives the
   committed-Write crash window: `ACTION_RECONCILED` derives its structured
@@ -110,6 +119,9 @@
   `ipykernel` for one live Root, fixes its initial cwd to the shared
   workspace, preserves Python namespace across decisions, and closes the
   kernel at terminal execution or explicit process close.
+- Multiple IPython calls in one valid response use that same live kernel in
+  strict order. The maintained acceptance test executes `x = 41` followed by
+  `print(x + 1)` and observes `42` from the second sibling.
 - Runtime records
   `MODEL_DECISION -> IPYTHON_EXECUTION_STARTED -> RESULT/FAILED` with the
   code SHA-256, provider call id, bounded output/error, truthful original
@@ -164,9 +176,9 @@ rejected architecture are recorded in `SOURCE_AUDIT.md`.
 
 | Source | Audited version | Borrowed semantic |
 | --- | --- | --- |
-| DeepSeek official API | live docs audited 2026-08-26; no source commit or stated docs license | Exact `deepseek-v4-pro` native Chat Completions tool-call/result protocol and explicit non-thinking mode. |
-| OpenAI Codex | IPython re-audit pin `d4998d611ad37de0aa9723b6fdd2d9a2f8ff4763`, Apache-2.0 | Host lifecycle, actual request/tool snapshot, and bounded model-visible results. |
-| DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Started-without-result is canonically UNKNOWN; verify external state before retry and append causal repair rather than mutating history. |
+| DeepSeek official API | live docs audited 2026-08-27; no source commit or stated docs license | Ordered `tool_calls[]`, exact per-call result correlation, fixed `deepseek-v4-pro` request shape, and explicit non-thinking mode. |
+| OpenAI Codex | sibling-call re-audit pin `bde9db1375667c50dcc0c2b52532a4e2672571c2`, Apache-2.0 | Preserve each call identity across Host dispatch and model-visible output; no synthetic batch id. |
+| DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Whole-response planning, distinct sibling identity, and model-ordered commit; parallel scheduling was not copied. Its UNKNOWN repair semantics remain the Write-reconciliation reference. |
 | Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | One persistent kernel per live session, worker-OS trust boundary, and Host-owned kernel lifecycle. |
 | Jupyter | `jupyter_client==8.9.1` / `ipykernel==7.3.0`, BSD-3-Clause | Mature kernel start, execute, IOPub result collection, interrupt, and shutdown. |
 | LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Agent completion claims require independent acceptance authority grounded in the current workspace; Lumina does not copy its LLM Auditor. |
@@ -202,13 +214,48 @@ Persistent IPython A/B:
   were 6 vs 4; input/output tokens 6,449/420 vs 3,445/344; wall time
   11.002 s vs 8.034 s; result characters 2,756 vs 1,226; maximum request
   characters 3,831 vs 3,085.
-- Both arms encountered the existing single-call adapter's
-  `model_protocol:multiple_tool_calls` boundary; IPython had zero Python
+- Both arms encountered the then-existing single-call adapter's
+  `model_protocol:multiple_tool_calls` boundary; the old result artifact
+  retained failure codes but not raw call arrays. IPython had zero Python
   runtime failures. All tested terminal kernels were closed. Full per-run
   evidence and metric definitions are in `IPYTHON_AB_RESULT.md`.
 - The promotion is bounded to this MVP control plane. It does not authorize
   sandbox claims, durable namespace, multiple kernels, automatic code replay,
   Child, RLM, recursion, or a benchmark framework.
+
+Bounded sequential sibling slice:
+
+- **Failure audit:** the historical A/B artifact names three
+  `multiple_tool_calls` failures (conditional Native run 3, conditional
+  IPython run 1, aggregation Native run 2) but did not persist their raw
+  arrays. Nine fresh unchanged baseline reproductions captured one exact
+  `ORDINARY_SIBLINGS` response: three `read` calls for `data-1.txt`,
+  `data-2.txt`, and `data-3.txt`, with distinct ids
+  `call_00_JpALCfWFEQRyKrhg969p0457`,
+  `call_01_lTOsmlUFnAsRIbeqPXdW5180`, and
+  `call_02_pqVNAG2nJho71DUYny353445`. It contained no control action and
+  failed only at the old adapter boundary.
+- **Mechanism:** one response now carries 1..4 ordinary siblings; complete
+  preflight precedes effects; controls remain single-only; execution and
+  result commit are strictly sequential; runtime Tool failure does not erase
+  later siblings; one frame preserves all actions, ids, raw response, and
+  order. A replacement Runtime resumes only the never-started ToolCall suffix
+  after a settled or confirmed-Write prefix; it does not replay that prefix.
+  Offline A-G tests cover ordinary reads, atomic invalid-third rejection,
+  success/failure/success, count bound, duplicate ids, both mixed-control
+  cases, shared-kernel sequential IPython, minimum-bound projection, and both
+  settled-prefix and reconciled-Write restart.
+- **Real DeepSeek:** six fresh executions reused the exact historical
+  aggregation prompt/fixture with no prompt change. All six were
+  completion-verified. Five emitted only single calls. One emitted two
+  ordinary `shell` siblings, `ls -la` and `cat data-*.txt`, with ids
+  `call_00_k8YrWDw3xGga52bnPLlm6868` and
+  `call_01_a0oHzhrnGccB3rfb25O04193`; started and settled order matched
+  provider order, the next decision was accepted, and completion verified.
+- **Result: PASS.** The observed real blocker crossed the new path. This does
+  not claim a success-rate improvement and does not authorize parallel tools,
+  mixed controls, a scheduler, transaction/rollback, Child, or recursion.
+  Exact evidence is in `MULTI_TOOL_RESULT.md`.
 
 Slice 6:
 
@@ -363,10 +410,10 @@ Slice 3 regression evidence:
   explicitly truncated to the configured absolute character bound.
 - DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
   remain covered by regression tests.
-- Final persistent-IPython validation reports: `Execution_lab2` 75 passed / 5
+- Final bounded-sibling validation reports: `Execution_lab2` 88 passed / 6
   real-provider experiments skipped; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
-  The five Execution skips are explicitly gated real DeepSeek experiments;
+  The six Execution skips are explicitly gated real DeepSeek experiments;
   normal regression runs do not load local credentials or make provider calls.
 
 ## Known limits
@@ -381,14 +428,20 @@ Slice 3 regression evidence:
 - Persistent IPython control plane: **IMPLEMENTED AND PROMOTED** for the
   bounded one-kernel-per-live-Root surface above.
 - DeepSeek native provider adapter: **IMPLEMENTED AND VALIDATED** for this
-  Slice's fixed non-thinking, non-streaming, single-call surface. Autonomous
-  canonical completion is 3/3; a fresh canonical run programmatically verifies
-  live call-id continuity; and a mechanically seeded real ToolHost failure is
-  accepted by the provider as a correctly paired native continuation.
+  fixed non-thinking, non-streaming surface with one call or at most four
+  strictly sequential ordinary siblings. Six fresh unchanged aggregation runs
+  completed 6/6; one real two-shell sibling response crossed the new path with
+  exact ids and verified completion. Existing canonical call-id and seeded
+  ToolHost-failure continuation evidence remains valid.
 - Child/recursion: **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe
   point, initial start, terminal event, or the exact confirmed-Write case
   above. Other unsettled tool calls remain unsupported/unresolved.
+- For a partially dispatched ordinary ToolCall sibling batch, restart
+  preserves the settled/reconciled prefix and executes only its never-started
+  suffix in original order. This is frozen-decision continuation, not retry,
+  scheduling, rollback, or transaction management. Partial IPython sibling
+  recovery remains unsupported because its live namespace is not durable.
 - JSONL and Checkpoint are local single-process files. There is no multi-writer
   coordination, database, checkpoint rotation, scheduler, background worker,
   generic event bus, generic verifier framework, or resource accounting.

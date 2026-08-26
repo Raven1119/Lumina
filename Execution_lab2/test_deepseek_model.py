@@ -52,6 +52,15 @@ def _tool_response(call_id, name, arguments):
     }
 
 
+def _tool_calls_response(*calls):
+    response = _tool_response(*calls[0])
+    response["choices"][0]["message"]["tool_calls"] = [
+        _tool_response(*call)["choices"][0]["message"]["tool_calls"][0]
+        for call in calls
+    ]
+    return response
+
+
 def _plain(value):
     if isinstance(value, Mapping):
         return {key: _plain(item) for key, item in value.items()}
@@ -179,6 +188,273 @@ def test_native_function_calls_map_to_existing_actions(name, arguments, expected
     assert decision.failure is None
 
 
+def test_two_ordinary_siblings_execute_in_model_order_and_continue_together(
+    tmp_path,
+):
+    (tmp_path / "a.txt").write_text("A", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("B", encoding="utf-8")
+    payloads = []
+    responses = iter(
+        [
+            _tool_calls_response(
+                ("call_a", "read", json.dumps({"path": "a.txt"})),
+                ("call_b", "read", json.dumps({"path": "b.txt"})),
+            ),
+            _tool_response("call_complete", "claim_complete", "{}"),
+        ]
+    )
+    execution_order = []
+
+    class RecordingTools(ToolHost):
+        def execute(self, request):
+            execution_order.append(request)
+            return super().execute(request)
+
+    result = RootAgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload) or next(responses)
+            )
+        ),
+        RecordingTools(SharedEnvironment(tmp_path)),
+        event_log=EventLog(tmp_path / "siblings.jsonl"),
+        max_decisions=2,
+    ).run(
+        "Read a.txt, then b.txt.",
+        FileContentEquals("b.txt", "B"),
+    )
+
+    assert result.status == "completed"
+    assert execution_order == [
+        ReadRequest("a.txt"),
+        ReadRequest("b.txt"),
+    ]
+    first_frame = result.decision_frames[0]
+    assert first_frame.resulting_action == (
+        ToolCall(ReadRequest("a.txt")),
+        ToolCall(ReadRequest("b.txt")),
+    )
+    assert first_frame.provider_tool_call_id == ("call_a", "call_b")
+    decision_event = result.events[1]
+    starts = [
+        event for event in result.events if event.event_type == "TOOL_CALL_STARTED"
+    ]
+    settled = [
+        event
+        for event in result.events
+        if event.event_type in ("TOOL_RESULT", "TOOL_FAILED")
+    ]
+    assert [event.source_event_refs for event in starts] == [
+        (decision_event.event_id,),
+        (decision_event.event_id,),
+    ]
+    assert [event.source_event_refs for event in settled] == [
+        (starts[0].event_id,),
+        (starts[1].event_id,),
+    ]
+    assert [
+        event.payload["observation"].provider_tool_call_id
+        for event in settled
+    ] == ["call_a", "call_b"]
+    assistant = payloads[1]["messages"][-3]
+    tool_results = payloads[1]["messages"][-2:]
+    assert [call["id"] for call in assistant["tool_calls"]] == [
+        "call_a",
+        "call_b",
+    ]
+    assert [message["tool_call_id"] for message in tool_results] == [
+        "call_a",
+        "call_b",
+    ]
+    reloaded = EventLog.load(tmp_path / "siblings.jsonl")
+    assert reloaded.events == result.events
+    assert fold_execution_state(reloaded.events) == result.state
+
+
+def test_next_sibling_cannot_start_before_previous_sibling_settles(tmp_path):
+    response = _tool_calls_response(
+        ("call_a", "read", json.dumps({"path": "a.txt"})),
+        ("call_b", "read", json.dumps({"path": "b.txt"})),
+    )
+    event_log = EventLog()
+
+    class CrashBeforeRead(ToolHost):
+        def execute(self, request):
+            raise RuntimeError("crash before first result")
+
+    process = RootAgentProcess(
+        DeepSeekModel(transport=lambda payload: response),
+        CrashBeforeRead(SharedEnvironment(tmp_path)),
+        event_log=event_log,
+        max_decisions=1,
+    )
+    with pytest.raises(RuntimeError, match="crash before first result"):
+        process.run("Read both files.", FileContentEquals("b.txt", "B"))
+
+    decision_event = event_log.events[1]
+    with pytest.raises(ValueError, match="previous sibling must settle"):
+        event_log.append(
+            "TOOL_CALL_STARTED",
+            {
+                "request": ReadRequest("b.txt"),
+                "provider_tool_call_id": "call_b",
+            },
+            (decision_event.event_id,),
+        )
+
+
+def test_sibling_start_rejects_an_unknown_decision_reference():
+    event_log = EventLog()
+    event_log.append(
+        "EXECUTION_STARTED",
+        {
+            "goal": "Read one file.",
+            "completion_spec": FileContentEquals("done.txt", "done"),
+        },
+    )
+
+    with pytest.raises(ValueError, match="must match its model decision"):
+        event_log.append(
+            "TOOL_CALL_STARTED",
+            {"request": ReadRequest("missing.txt")},
+            ("event-999999",),
+        )
+
+
+def test_restart_resumes_only_the_unstarted_sibling_suffix(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "a.txt").write_text("A", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("B", encoding="utf-8")
+    log_path = tmp_path / "execution.jsonl"
+    event_log = EventLog(log_path)
+    execution_order = []
+
+    class RecordingTools(ToolHost):
+        def execute(self, request):
+            execution_order.append(request)
+            return super().execute(request)
+
+    first_response = _tool_calls_response(
+        ("call_a", "read", json.dumps({"path": "a.txt"})),
+        ("call_b", "read", json.dumps({"path": "b.txt"})),
+    )
+    append = event_log.append
+
+    def crash_after_first_result(event_type, payload, source_event_refs=()):
+        event = append(event_type, payload, source_event_refs)
+        if event_type == "TOOL_RESULT":
+            raise SystemExit("crash after first sibling settled")
+        return event
+
+    monkeypatch.setattr(event_log, "append", crash_after_first_result)
+    with pytest.raises(SystemExit, match="first sibling settled"):
+        RootAgentProcess(
+            DeepSeekModel(transport=lambda payload: first_response),
+            RecordingTools(SharedEnvironment(tmp_path)),
+            event_log=event_log,
+            max_decisions=2,
+        ).run("Read both files.", FileContentEquals("b.txt", "B"))
+
+    before = fold_execution_state(EventLog.load(log_path).events)
+    payloads = []
+    resumed = RootAgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload)
+                or _tool_response("call_complete", "claim_complete", "{}")
+            )
+        ),
+        RecordingTools(SharedEnvironment(tmp_path)),
+        event_log=EventLog.load(log_path),
+        max_decisions=2,
+    ).resume()
+
+    assert resumed.status == "completed"
+    assert execution_order == [ReadRequest("a.txt"), ReadRequest("b.txt")]
+    assert resumed.state.execution_id == before.execution_id
+    assert resumed.state.root_actor_id == before.root_actor_id
+    assert resumed.state == fold_execution_state(resumed.events)
+    assert [
+        message["tool_call_id"]
+        for message in payloads[0]["messages"]
+        if message["role"] == "tool"
+    ] == ["call_a", "call_b"]
+
+
+def test_restart_reconciles_committed_write_then_resumes_sibling_suffix(
+    tmp_path,
+):
+    log_path = tmp_path / "execution.jsonl"
+    execution_order = []
+
+    class CrashAfterFirstWrite(ToolHost):
+        def execute(self, request):
+            execution_order.append(request)
+            result = super().execute(request)
+            raise SystemExit("crash after committed sibling write")
+
+    first_response = _tool_calls_response(
+        (
+            "call_a",
+            "write",
+            json.dumps({"path": "a.txt", "content": "A"}),
+        ),
+        (
+            "call_b",
+            "write",
+            json.dumps({"path": "b.txt", "content": "B"}),
+        ),
+    )
+    with pytest.raises(SystemExit, match="committed sibling write"):
+        RootAgentProcess(
+            DeepSeekModel(transport=lambda payload: first_response),
+            CrashAfterFirstWrite(SharedEnvironment(tmp_path)),
+            event_log=EventLog(log_path),
+            max_decisions=2,
+        ).run("Write both files.", FileContentEquals("b.txt", "B"))
+
+    before = fold_execution_state(EventLog.load(log_path).events)
+    payloads = []
+
+    class RecordingTools(ToolHost):
+        def execute(self, request):
+            execution_order.append(request)
+            return super().execute(request)
+
+    resumed = RootAgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload)
+                or _tool_response("call_complete", "claim_complete", "{}")
+            )
+        ),
+        RecordingTools(SharedEnvironment(tmp_path)),
+        event_log=EventLog.load(log_path),
+        max_decisions=2,
+    ).resume()
+
+    assert resumed.status == "completed"
+    assert execution_order == [
+        WriteRequest("a.txt", "A"),
+        WriteRequest("b.txt", "B"),
+    ]
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "A"
+    assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "B"
+    assert resumed.state.execution_id == before.execution_id
+    assert resumed.state.root_actor_id == before.root_actor_id
+    assert sum(
+        event.event_type == "ACTION_RECONCILED"
+        for event in resumed.events
+    ) == 1
+    assert [
+        message["tool_call_id"]
+        for message in payloads[0]["messages"]
+        if message["role"] == "tool"
+    ] == ["call_a", "call_b"]
+    assert resumed.state == fold_execution_state(resumed.events)
+
+
 @pytest.mark.parametrize(
     ("response", "expected_failure"),
     [
@@ -208,27 +484,6 @@ def test_native_function_calls_map_to_existing_actions(name, arguments, expected
             _tool_response("call_args", "read", json.dumps({"path": 7})),
             "model_protocol:invalid_arguments",
         ),
-        (
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                _tool_response("call_1", "read", '{"path":"a"}')[
-                                    "choices"
-                                ][0]["message"]["tool_calls"][0],
-                                _tool_response("call_2", "read", '{"path":"b"}')[
-                                    "choices"
-                                ][0]["message"]["tool_calls"][0],
-                            ],
-                        }
-                    }
-                ]
-            },
-            "model_protocol:multiple_tool_calls",
-        ),
     ],
 )
 def test_invalid_native_decisions_are_rejected_atomically(
@@ -241,6 +496,208 @@ def test_invalid_native_decisions_are_rejected_atomically(
     assert decision.action is None
     assert decision.provider_tool_call_id is None
     assert decision.failure == expected_failure
+
+
+def test_batch_preflight_rejects_an_invalid_third_call_before_writes(tmp_path):
+    executed = []
+
+    class RecordingTools(ToolHost):
+        def execute(self, request):
+            executed.append(request)
+            return super().execute(request)
+
+    response = _tool_calls_response(
+        (
+            "call_a",
+            "write",
+            json.dumps({"path": "a.txt", "content": "A"}),
+        ),
+        (
+            "call_b",
+            "write",
+            json.dumps({"path": "b.txt", "content": "B"}),
+        ),
+        ("call_invalid", "invalid_tool", "{}"),
+    )
+    result = RootAgentProcess(
+        DeepSeekModel(transport=lambda payload: response),
+        RecordingTools(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+    ).run(
+        "Write two files.",
+        FileContentEquals("b.txt", "B"),
+    )
+
+    assert result.status == "failed"
+    assert result.failure == "model_protocol:unknown_tool"
+    assert executed == []
+    assert not (tmp_path / "a.txt").exists()
+    assert not (tmp_path / "b.txt").exists()
+
+
+def test_over_bound_sibling_batch_is_rejected_before_any_effect(tmp_path):
+    executed = []
+
+    class RecordingTools(ToolHost):
+        def execute(self, request):
+            executed.append(request)
+            return super().execute(request)
+
+    response = _tool_calls_response(
+        *[
+            (f"call_{index}", "read", json.dumps({"path": f"{index}.txt"}))
+            for index in range(5)
+        ]
+    )
+    runtime = RootAgentProcess(
+        DeepSeekModel(transport=lambda payload: response),
+        RecordingTools(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+    )
+    result = runtime.run("Read the files.", FileContentEquals("done.txt", "done"))
+    assert result.status == "failed"
+    assert result.failure == "model_protocol:too_many_tool_calls"
+    assert executed == []
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_failure", "tool_mode"),
+    [
+        (
+            _tool_calls_response(
+                ("call_same", "read", json.dumps({"path": "a.txt"})),
+                ("call_same", "read", json.dumps({"path": "b.txt"})),
+            ),
+            "model_protocol:duplicate_tool_call_id",
+            "native",
+        ),
+        (
+            _tool_calls_response(
+                ("call_read", "read", json.dumps({"path": "a.txt"})),
+                ("call_complete", "claim_complete", "{}"),
+            ),
+            "model_protocol:mixed_control_tool_calls",
+            "native",
+        ),
+        (
+            _tool_calls_response(
+                ("call_python", "ipython", json.dumps({"code": "x = 1"})),
+                (
+                    "call_wait",
+                    "wait",
+                    json.dumps({"event_type": "CONTINUE"}),
+                ),
+            ),
+            "model_protocol:mixed_control_tool_calls",
+            "ipython",
+        ),
+    ],
+)
+def test_invalid_sibling_batch_is_rejected_before_any_effect(
+    tmp_path, response, expected_failure, tool_mode
+):
+    executed = []
+
+    class RecordingTools(ToolHost):
+        def execute(self, request):
+            executed.append(request)
+            return super().execute(request)
+
+    class RejectingIPython:
+        def execute(self, code):
+            raise AssertionError(f"unexpected IPython execution: {code}")
+
+        def close(self):
+            pass
+
+    result = RootAgentProcess(
+        DeepSeekModel(
+            tool_mode=tool_mode, transport=lambda payload: response
+        ),
+        RecordingTools(SharedEnvironment(tmp_path)),
+        ipython_control=RejectingIPython(),
+        max_decisions=1,
+    ).run("Handle calls.", FileContentEquals("done.txt", "done"))
+
+    assert result.status == "failed"
+    assert result.failure == expected_failure
+    assert executed == []
+
+
+def test_failed_sibling_is_committed_without_erasing_later_calls(tmp_path):
+    (tmp_path / "first.txt").write_text("FIRST", encoding="utf-8")
+    (tmp_path / "third.txt").write_text("THIRD", encoding="utf-8")
+    payloads = []
+    responses = iter(
+        [
+            _tool_calls_response(
+                (
+                    "call_first",
+                    "read",
+                    json.dumps({"path": "first.txt"}),
+                ),
+                (
+                    "call_missing",
+                    "read",
+                    json.dumps({"path": "missing.txt"}),
+                ),
+                (
+                    "call_third",
+                    "read",
+                    json.dumps({"path": "third.txt"}),
+                ),
+            ),
+            _tool_response("call_complete", "claim_complete", "{}"),
+        ]
+    )
+    result = RootAgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload) or next(responses)
+            )
+        ),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+    ).run(
+        "Read first.txt, missing.txt, and third.txt.",
+        FileContentEquals("third.txt", "THIRD"),
+    )
+
+    settled = [
+        event
+        for event in result.events
+        if event.event_type in ("TOOL_RESULT", "TOOL_FAILED")
+    ]
+    assert result.status == "completed"
+    assert [event.event_type for event in settled] == [
+        "TOOL_RESULT",
+        "TOOL_FAILED",
+        "TOOL_RESULT",
+    ]
+    assert [
+        event.payload["observation"].provider_tool_call_id
+        for event in settled
+    ] == ["call_first", "call_missing", "call_third"]
+    assert [step.observation.ok for step in result.steps[:3]] == [
+        True,
+        False,
+        True,
+    ]
+    assistant = payloads[1]["messages"][-4]
+    tool_results = payloads[1]["messages"][-3:]
+    assert [call["id"] for call in assistant["tool_calls"]] == [
+        "call_first",
+        "call_missing",
+        "call_third",
+    ]
+    assert [message["tool_call_id"] for message in tool_results] == [
+        "call_first",
+        "call_missing",
+        "call_third",
+    ]
+    assert json.loads(tool_results[1]["content"])["observation"]["result"][
+        "error_code"
+    ] == "not_found"
 
 
 def test_runtime_preserves_native_call_id_into_the_tool_result_continuation(
@@ -496,13 +953,23 @@ def test_native_tool_result_uses_the_bounded_projection_not_canonical_output(
 ):
     hidden_tail = "NATIVE_MODEL_MUST_NOT_SEE_THIS_TAIL"
     content = ("x" * 20_000) + hidden_tail
+    second_tail = "SECOND_RESULT_MUST_ALSO_BE_BOUNDED"
+    second_content = ("y" * 20_000) + second_tail
     (tmp_path / "large.txt").write_text(content, encoding="utf-8")
+    (tmp_path / "second.txt").write_text(second_content, encoding="utf-8")
     responses = iter(
         [
-            _tool_response(
-                "call_large",
-                "read",
-                json.dumps({"path": "large.txt"}),
+            _tool_calls_response(
+                (
+                    "call_large",
+                    "read",
+                    json.dumps({"path": "large.txt"}),
+                ),
+                (
+                    "call_second",
+                    "read",
+                    json.dumps({"path": "second.txt"}),
+                ),
             ),
             _tool_response("call_complete", "claim_complete", "{}"),
         ]
@@ -521,12 +988,16 @@ def test_native_tool_result_uses_the_bounded_projection_not_canonical_output(
         FileContentEquals("large.txt", content),
     )
 
-    canonical = next(
+    canonical = [
         event.payload["observation"].result
         for event in result.events
         if event.event_type == "TOOL_RESULT"
-    )
-    visible_tool_result = payloads[1]["messages"][-1]["content"]
+    ]
+    visible_tool_results = [
+        message["content"]
+        for message in payloads[1]["messages"]
+        if message["role"] == "tool"
+    ]
     dynamic_context_chars = sum(
         len(message["content"])
         for message in payloads[1]["messages"]
@@ -535,11 +1006,97 @@ def test_native_tool_result_uses_the_bounded_projection_not_canonical_output(
     )
 
     assert result.status == "completed"
-    assert canonical.output == content
-    assert canonical.truncated is False
-    assert hidden_tail not in visible_tool_result
-    assert '"truncated":true' in visible_tool_result
+    assert [result.output for result in canonical] == [content, second_content]
+    assert all(result.truncated is False for result in canonical)
+    assert hidden_tail not in "".join(visible_tool_results)
+    assert second_tail not in "".join(visible_tool_results)
+    assert all('"truncated":true' in item for item in visible_tool_results)
     assert dynamic_context_chars <= 768
+
+
+def test_four_siblings_fit_the_minimum_context_bound(tmp_path):
+    calls = []
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / f"{name}.txt").write_text(name.upper(), encoding="utf-8")
+        calls.append(
+            (
+                f"call_{name}",
+                "read",
+                json.dumps({"path": f"{name}.txt"}),
+            )
+        )
+    responses = iter(
+        [
+            _tool_calls_response(*calls),
+            _tool_response("call_complete", "claim_complete", "{}"),
+        ]
+    )
+    payloads = []
+    result = RootAgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload) or next(responses)
+            )
+        ),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        max_context_chars=768,
+    ).run("Read four files.", FileContentEquals("d.txt", "D"))
+
+    dynamic_chars = sum(
+        len(message["content"])
+        for message in payloads[1]["messages"]
+        if message["role"] in {"user", "tool"}
+    )
+    assert result.status == "completed"
+    assert sum(
+        event.event_type == "TOOL_CALL_STARTED"
+        for event in result.events
+    ) == 4
+    assert dynamic_chars <= 768
+
+
+def test_four_failed_siblings_fit_the_minimum_context_bound(tmp_path):
+    (tmp_path / "done.txt").write_text("done", encoding="utf-8")
+    calls = tuple(
+        (
+            f"call_{name}",
+            "read",
+            json.dumps({"path": f"missing-{name}.txt"}),
+        )
+        for name in ("a", "b", "c", "d")
+    )
+    responses = iter(
+        [
+            _tool_calls_response(*calls),
+            _tool_response("call_complete", "claim_complete", "{}"),
+        ]
+    )
+    payloads = []
+    result = RootAgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload) or next(responses)
+            )
+        ),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        max_context_chars=768,
+    ).run("Read four missing files.", FileContentEquals("done.txt", "done"))
+
+    dynamic_chars = sum(
+        len(message["content"])
+        for message in payloads[1]["messages"]
+        if message["role"] in {"user", "tool"}
+    )
+    assert result.status == "completed"
+    assert sum(event.event_type == "TOOL_FAILED" for event in result.events) == 4
+    assert [
+        message["tool_call_id"]
+        for message in payloads[1]["messages"]
+        if message["role"] == "tool"
+    ] == ["call_a", "call_b", "call_c", "call_d"]
+    assert dynamic_chars <= 768
 
 
 def test_production_adapter_requires_the_environment_key(monkeypatch):

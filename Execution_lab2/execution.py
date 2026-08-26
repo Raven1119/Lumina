@@ -82,10 +82,10 @@ Action: TypeAlias = ToolCall | IPythonCode | Wait | ClaimComplete
 
 @dataclass(frozen=True)
 class NativeModelDecision:
-    action: Action | None
+    action: Action | tuple[Action, ...] | None
     provider_wire_request: object
     raw_provider_response: object | None
-    provider_tool_call_id: str | None = None
+    provider_tool_call_id: str | tuple[str, ...] | None = None
     failure: str | None = None
 
 
@@ -93,12 +93,10 @@ class NativeModelDecision:
 class NativeToolContinuation:
     previous_model_context: str
     raw_provider_response: object
-    provider_tool_call_id: str
+    provider_tool_call_id: str | tuple[str, ...]
 
 
-def _structured_action(value: object) -> Action | None:
-    if isinstance(value, NativeModelDecision):
-        return None if value.failure is not None else _structured_action(value.action)
+def _single_structured_action(value: object) -> Action | None:
     if isinstance(value, ToolCall):
         return value
     if isinstance(value, IPythonCode):
@@ -108,6 +106,52 @@ def _structured_action(value: object) -> Action | None:
     if isinstance(value, ClaimComplete):
         return value
     return None
+
+
+def _structured_action(
+    value: object,
+) -> Action | tuple[Action, ...] | None:
+    if isinstance(value, NativeModelDecision):
+        if value.failure is not None:
+            return None
+        if isinstance(value.action, tuple):
+            actions = tuple(
+                _single_structured_action(item) for item in value.action
+            )
+            if not actions or any(action is None for action in actions):
+                return None
+            return actions
+        return _single_structured_action(value.action)
+    return _single_structured_action(value)
+
+
+def _action_sequence(value: object) -> tuple[Action, ...]:
+    if isinstance(value, tuple):
+        actions = tuple(_single_structured_action(item) for item in value)
+        if actions and all(action is not None for action in actions):
+            return actions
+        return ()
+    action = _structured_action(value)
+    if isinstance(action, tuple):
+        return action
+    return (action,) if action is not None else ()
+
+
+def _provider_call_ids(
+    value: object,
+    action_count: int,
+) -> tuple[str | None, ...]:
+    if isinstance(value, str) and value:
+        return (value,) if action_count == 1 else ()
+    if (
+        isinstance(value, tuple)
+        and len(value) == action_count
+        and all(isinstance(item, str) and item for item in value)
+    ):
+        return value
+    if value is None:
+        return (None,) * action_count
+    return ()
 
 
 @dataclass(frozen=True)
@@ -477,6 +521,39 @@ class ExecutionEvent:
     source_event_refs: tuple[str, ...]
 
 
+_SIBLING_SETTLED_EVENT_TYPES = (
+    "TOOL_RESULT",
+    "TOOL_FAILED",
+    "IPYTHON_EXECUTION_RESULT",
+    "IPYTHON_EXECUTION_FAILED",
+    "ACTION_RECONCILED",
+)
+
+
+def _previous_sibling_is_settled(
+    events: tuple[ExecutionEvent, ...],
+    previous: ExecutionEvent,
+    decision_event: ExecutionEvent,
+    call_index: int,
+) -> bool:
+    if call_index == 0:
+        return previous.event_id == decision_event.event_id
+    if previous.event_type not in _SIBLING_SETTLED_EVENT_TYPES:
+        return False
+    previous_start = next(
+        (
+            event
+            for event in events
+            if previous.source_event_refs == (event.event_id,)
+        ),
+        None,
+    )
+    return (
+        previous_start is not None
+        and previous_start.source_event_refs == (decision_event.event_id,)
+    )
+
+
 @dataclass(frozen=True)
 class DecisionFrame:
     decision_id: str
@@ -487,10 +564,10 @@ class DecisionFrame:
     actual_request: ModelRequest
     actual_tools_exposed: tuple[str, ...]
     raw_model_response: object
-    resulting_action: Action | None
+    resulting_action: Action | tuple[Action, ...] | None
     provider_wire_request: object | None = None
     raw_provider_response: object | None = None
-    provider_tool_call_id: str | None = None
+    provider_tool_call_id: str | tuple[str, ...] | None = None
 
 
 _SERIALIZABLE_TYPES = {
@@ -766,6 +843,17 @@ class EventLog:
         expected_schema = (
             start_schema if event_type == "EXECUTION_STARTED" else schemas[event_type]
         )
+        if (
+            event_type == "TOOL_CALL_STARTED"
+            and set(payload) == {"request", "provider_tool_call_id"}
+        ):
+            expected_schema = set(payload)
+        if (
+            event_type == "IPYTHON_EXECUTION_STARTED"
+            and set(payload)
+            == {"action", "code_sha256", "provider_tool_call_id"}
+        ):
+            expected_schema = set(payload)
         if set(payload) != expected_schema:
             raise ValueError(f"invalid payload for {event_type}")
         if self._events and self._events[-1].event_type in (
@@ -792,7 +880,18 @@ class EventLog:
             ):
                 raise ValueError("execution must start once with an uncaused goal")
             return
-        if not self._events or source_event_refs != (self._events[-1].event_id,):
+        started_event = event_type in (
+            "TOOL_CALL_STARTED",
+            "IPYTHON_EXECUTION_STARTED",
+        )
+        if (
+            not self._events
+            or (started_event and len(source_event_refs) != 1)
+            or (
+                not started_event
+                and source_event_refs != (self._events[-1].event_id,)
+            )
+        ):
             raise ValueError("event must cite the immediately preceding cause")
 
         previous = self._events[-1]
@@ -876,40 +975,169 @@ class EventLog:
             ):
                 raise ValueError("Root wakes only for its matching external event")
         elif event_type == "TOOL_CALL_STARTED":
-            frame = previous.payload.get("frame")
+            decision_event = next(
+                (
+                    event
+                    for event in self._events
+                    if event.event_id == source_event_refs[0]
+                ),
+                None,
+            )
+            frame = (
+                decision_event.payload.get("frame")
+                if decision_event is not None
+                and decision_event.event_type == "MODEL_DECISION"
+                else None
+            )
+            if not isinstance(frame, DecisionFrame):
+                raise ValueError("tool call must match its model decision")
             request = payload["request"]
+            actions = (
+                _action_sequence(frame.resulting_action)
+                if isinstance(frame, DecisionFrame)
+                else ()
+            )
+            call_index = sum(
+                event.event_type
+                in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
+                and event.source_event_refs == source_event_refs
+                for event in self._events
+            )
+            if not _previous_sibling_is_settled(
+                self.events,
+                previous,
+                decision_event,
+                call_index,
+            ):
+                raise ValueError(
+                    "previous sibling must settle before next sibling starts"
+                )
+            expected_action = (
+                actions[call_index] if call_index < len(actions) else None
+            )
+            call_ids = (
+                _provider_call_ids(frame.provider_tool_call_id, len(actions))
+                if isinstance(frame, DecisionFrame)
+                else ()
+            )
+            expected_call_id = (
+                call_ids[call_index] if call_index < len(call_ids) else None
+            )
             if (
-                previous.event_type != "MODEL_DECISION"
-                or not isinstance(frame, DecisionFrame)
-                or not isinstance(frame.resulting_action, ToolCall)
-                or frame.resulting_action.request != self._freeze(request)
+                not isinstance(expected_action, ToolCall)
+                or expected_action.request != self._freeze(request)
+                or (
+                    "provider_tool_call_id" in payload
+                    and payload["provider_tool_call_id"] != expected_call_id
+                )
             ):
                 raise ValueError("tool call must match its model decision")
         elif event_type == "IPYTHON_EXECUTION_STARTED":
-            frame = previous.payload.get("frame")
+            decision_event = next(
+                (
+                    event
+                    for event in self._events
+                    if event.event_id == source_event_refs[0]
+                ),
+                None,
+            )
+            frame = (
+                decision_event.payload.get("frame")
+                if decision_event is not None
+                and decision_event.event_type == "MODEL_DECISION"
+                else None
+            )
+            if not isinstance(frame, DecisionFrame):
+                raise ValueError("IPython execution must match its model decision")
             action = payload["action"]
+            actions = (
+                _action_sequence(frame.resulting_action)
+                if isinstance(frame, DecisionFrame)
+                else ()
+            )
+            call_index = sum(
+                event.event_type
+                in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
+                and event.source_event_refs == source_event_refs
+                for event in self._events
+            )
+            if not _previous_sibling_is_settled(
+                self.events,
+                previous,
+                decision_event,
+                call_index,
+            ):
+                raise ValueError(
+                    "previous sibling must settle before next sibling starts"
+                )
+            expected_action = (
+                actions[call_index] if call_index < len(actions) else None
+            )
+            call_ids = (
+                _provider_call_ids(frame.provider_tool_call_id, len(actions))
+                if isinstance(frame, DecisionFrame)
+                else ()
+            )
+            expected_call_id = (
+                call_ids[call_index] if call_index < len(call_ids) else None
+            )
             if (
-                previous.event_type != "MODEL_DECISION"
-                or not isinstance(frame, DecisionFrame)
-                or not isinstance(frame.resulting_action, IPythonCode)
+                not isinstance(expected_action, IPythonCode)
                 or not isinstance(action, IPythonCode)
-                or frame.resulting_action != self._freeze(action)
+                or expected_action != self._freeze(action)
                 or payload["code_sha256"] != _text_sha256(action.code)
+                or (
+                    "provider_tool_call_id" in payload
+                    and payload["provider_tool_call_id"] != expected_call_id
+                )
             ):
                 raise ValueError("IPython execution must match its model decision")
         elif event_type in ("TOOL_RESULT", "TOOL_FAILED"):
             observation = payload["observation"]
-            decision_event = self._events[-2] if len(self._events) >= 2 else None
+            decision_event = next(
+                (
+                    event
+                    for event in self._events
+                    if previous.source_event_refs == (event.event_id,)
+                ),
+                None,
+            )
             decision_frame = (
                 decision_event.payload.get("frame")
                 if decision_event is not None
                 and decision_event.event_type == "MODEL_DECISION"
                 else None
             )
-            expected_provider_tool_call_id = (
-                decision_frame.provider_tool_call_id
+            actions = (
+                _action_sequence(decision_frame.resulting_action)
                 if isinstance(decision_frame, DecisionFrame)
-                else None
+                else ()
+            )
+            call_ids = (
+                _provider_call_ids(
+                    decision_frame.provider_tool_call_id,
+                    len(actions),
+                )
+                if isinstance(decision_frame, DecisionFrame)
+                else ()
+            )
+            call_index = (
+                sum(
+                    event.event_type
+                    in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
+                    and event.source_event_refs == previous.source_event_refs
+                    for event in self._events
+                )
+                - 1
+            )
+            expected_provider_tool_call_id = (
+                previous.payload["provider_tool_call_id"]
+                if "provider_tool_call_id" in previous.payload
+                else (
+                    call_ids[call_index]
+                    if 0 <= call_index < len(call_ids)
+                    else None
+                )
             )
             if (
                 previous.event_type != "TOOL_CALL_STARTED"
@@ -926,17 +1154,50 @@ class EventLog:
             "IPYTHON_EXECUTION_FAILED",
         ):
             observation = payload["observation"]
-            decision_event = self._events[-2] if len(self._events) >= 2 else None
+            decision_event = next(
+                (
+                    event
+                    for event in self._events
+                    if previous.source_event_refs == (event.event_id,)
+                ),
+                None,
+            )
             decision_frame = (
                 decision_event.payload.get("frame")
                 if decision_event is not None
                 and decision_event.event_type == "MODEL_DECISION"
                 else None
             )
-            expected_provider_tool_call_id = (
-                decision_frame.provider_tool_call_id
+            actions = (
+                _action_sequence(decision_frame.resulting_action)
                 if isinstance(decision_frame, DecisionFrame)
-                else None
+                else ()
+            )
+            call_ids = (
+                _provider_call_ids(
+                    decision_frame.provider_tool_call_id,
+                    len(actions),
+                )
+                if isinstance(decision_frame, DecisionFrame)
+                else ()
+            )
+            call_index = (
+                sum(
+                    event.event_type
+                    in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
+                    and event.source_event_refs == previous.source_event_refs
+                    for event in self._events
+                )
+                - 1
+            )
+            expected_provider_tool_call_id = (
+                previous.payload["provider_tool_call_id"]
+                if "provider_tool_call_id" in previous.payload
+                else (
+                    call_ids[call_index]
+                    if 0 <= call_index < len(call_ids)
+                    else None
+                )
             )
             if (
                 previous.event_type != "IPYTHON_EXECUTION_STARTED"
@@ -1250,7 +1511,7 @@ class ExecutionState:
     failure: str | None = None
     waiting_for: str | None = None
     latest_external_event: ExternalEvent | None = None
-    last_provider_tool_call_id: str | None = None
+    last_provider_tool_call_id: str | tuple[str, ...] | None = None
 
 
 def fold_execution_state(
@@ -1319,6 +1580,24 @@ def fold_execution_state(
                 if isinstance(frame, DecisionFrame)
                 else None
             )
+        elif event.event_type == "TOOL_CALL_STARTED":
+            request = event.payload.get("request")
+            if not isinstance(request, (ReadRequest, WriteRequest, ShellRequest)):
+                raise ValueError("tool start events require a typed request")
+            values["last_action"] = ToolCall(request)
+            if "provider_tool_call_id" in event.payload:
+                values["last_provider_tool_call_id"] = event.payload[
+                    "provider_tool_call_id"
+                ]
+        elif event.event_type == "IPYTHON_EXECUTION_STARTED":
+            action = event.payload.get("action")
+            if not isinstance(action, IPythonCode):
+                raise ValueError("IPython start events require a typed action")
+            values["last_action"] = action
+            if "provider_tool_call_id" in event.payload:
+                values["last_provider_tool_call_id"] = event.payload[
+                    "provider_tool_call_id"
+                ]
         elif event.event_type in ("TOOL_RESULT", "TOOL_FAILED"):
             observation = event.payload.get("observation")
             if not isinstance(observation, Observation):
@@ -1572,6 +1851,11 @@ def _completion_spec_projection(
 
 
 def _action_projection(action: object | None) -> dict[str, object] | None:
+    if isinstance(action, tuple):
+        return {
+            "type": "sibling_actions",
+            "actions": [_action_projection(item) for item in action],
+        }
     if isinstance(action, ToolCall):
         tool = _request_projection(action.request)["tool"]
         return {"type": "tool_call", "tool": tool}
@@ -1635,7 +1919,36 @@ def _observation_projection(
     }
 
 
-def _bounded_context(state: ExecutionState, max_chars: int) -> str:
+def _sibling_observation_projection(
+    observation: Observation | IPythonObservation,
+) -> dict[str, object]:
+    result = observation.result
+    projection: dict[str, object] = {
+        "ok": result.ok,
+    }
+    if result.output:
+        projection["output"] = _text_projection(result.output)
+    if result.error_code is not None:
+        projection["error_code"] = result.error_code
+    if result.error is not None:
+        projection["error"] = _text_projection(result.error)
+    if isinstance(observation, Observation) and result.exit_code is not None:
+        projection["exit_code"] = result.exit_code
+    if result.truncated:
+        projection["canonical_truncated"] = True
+    if (
+        isinstance(observation, IPythonObservation)
+        and result.original_output_chars != len(result.output)
+    ):
+        projection["original_output_chars"] = result.original_output_chars
+    return {"result": projection}
+
+
+def _bounded_context(
+    state: ExecutionState,
+    max_chars: int,
+    sibling_observations: tuple[RuntimeObservation, ...] = (),
+) -> str:
     document: dict[str, object] = {
         "goal": _text_projection(state.goal),
         "completion_spec": (
@@ -1663,7 +1976,11 @@ def _bounded_context(state: ExecutionState, max_chars: int) -> str:
                 _text_projection(state.failure) if state.failure is not None else None
             ),
         },
-        "observation": _observation_projection(state.latest_observation),
+        "observation": (
+            None
+            if sibling_observations
+            else _observation_projection(state.latest_observation)
+        ),
         "incoming_event": (
             {
                 "event_type": _text_projection(
@@ -1675,6 +1992,13 @@ def _bounded_context(state: ExecutionState, max_chars: int) -> str:
             else None
         ),
     }
+    if sibling_observations:
+        document.clear()
+        document["observations"] = [
+            _sibling_observation_projection(observation)
+            for observation in sibling_observations
+            if isinstance(observation, (Observation, IPythonObservation))
+        ]
 
     def render() -> str:
         return json.dumps(document, ensure_ascii=False, separators=(",", ":"))
@@ -1706,6 +2030,23 @@ def _bounded_context(state: ExecutionState, max_chars: int) -> str:
     return context
 
 
+def _sibling_observations_after(
+    events: tuple[ExecutionEvent, ...],
+    decision_index: int,
+) -> tuple[Observation | IPythonObservation, ...]:
+    observations = []
+    for event_index in range(decision_index + 1, len(events)):
+        event = events[event_index]
+        observation = event.payload.get("observation")
+        if event.event_type == "ACTION_RECONCILED":
+            observation = fold_execution_state(
+                events[: event_index + 1]
+            ).latest_observation
+        if isinstance(observation, (Observation, IPythonObservation)):
+            observations.append(observation)
+    return tuple(observations)
+
+
 def _build_model_request(
     state: ExecutionState,
     source_event_refs: tuple[str, ...],
@@ -1714,16 +2055,39 @@ def _build_model_request(
     events: tuple[ExecutionEvent, ...] = (),
 ) -> ModelRequest:
     continuation = None
-    for event in reversed(events):
+    sibling_observations: tuple[RuntimeObservation, ...] = ()
+    for event_index in range(len(events) - 1, -1, -1):
+        event = events[event_index]
         if event.event_type != "MODEL_DECISION":
             continue
         frame = event.payload.get("frame")
+        call_ids = (
+            _provider_call_ids(
+                frame.provider_tool_call_id,
+                len(_action_sequence(frame.resulting_action)),
+            )
+            if isinstance(frame, DecisionFrame)
+            else ()
+        )
         if (
             isinstance(frame, DecisionFrame)
-            and isinstance(frame.provider_tool_call_id, str)
-            and frame.provider_tool_call_id
+            and call_ids
+            and all(call_id is not None for call_id in call_ids)
             and frame.raw_provider_response is not None
         ):
+            if len(call_ids) > 1:
+                observations = _sibling_observations_after(
+                    events,
+                    event_index,
+                )
+                if tuple(
+                    observation.provider_tool_call_id
+                    for observation in observations
+                ) != call_ids:
+                    raise ValueError(
+                        "native sibling results do not match their model order"
+                    )
+                sibling_observations = observations
             continuation = NativeToolContinuation(
                 frame.actual_request.context,
                 frame.raw_provider_response,
@@ -1731,7 +2095,11 @@ def _build_model_request(
             )
         break
     return ModelRequest(
-        context=_bounded_context(state, max_context_chars),
+        context=_bounded_context(
+            state,
+            max_context_chars,
+            sibling_observations,
+        ),
         available_tools=available_tools,
         source_event_refs=source_event_refs,
         native_tool_continuation=continuation,
@@ -1819,6 +2187,7 @@ class RootAgentProcess:
     def resume(self) -> ExecutionResult:
         if not self._event_log.events:
             raise ValueError("execution has not started")
+        steps: list[ExecutionStep] = []
         last_event = self._event_log.events[-1]
         if last_event.event_type == "IPYTHON_EXECUTION_STARTED":
             raise ValueError("interrupted IPython execution recovery is unsupported")
@@ -1839,8 +2208,9 @@ class RootAgentProcess:
                 )
                 return self._drive()
         if state.status != "running":
-            return self._result([])
-        return self._drive()
+            return self._result(steps)
+        self._resume_sibling_suffix(steps)
+        return self._drive(steps)
 
     def _reconcile_interrupted_call(self, call_event: ExecutionEvent) -> None:
         request = call_event.payload.get("request")
@@ -1884,8 +2254,129 @@ class RootAgentProcess:
         )
         return self._drive()
 
-    def _drive(self) -> ExecutionResult:
-        steps: list[ExecutionStep] = []
+    def _resume_sibling_suffix(self, steps: list[ExecutionStep]) -> None:
+        events = self._event_log.events
+        decision_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.event_type == "MODEL_DECISION"
+            ),
+            None,
+        )
+        frame = (
+            decision_event.payload.get("frame")
+            if decision_event is not None
+            else None
+        )
+        actions = (
+            _action_sequence(frame.resulting_action)
+            if isinstance(frame, DecisionFrame)
+            else ()
+        )
+        if len(actions) <= 1:
+            return
+        starts = tuple(
+            event
+            for event in events
+            if event.event_type
+            in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
+            and event.source_event_refs == (decision_event.event_id,)
+        )
+        if len(starts) >= len(actions):
+            return
+        if any(isinstance(action, IPythonCode) for action in actions):
+            raise ValueError(
+                "partial IPython sibling recovery is unsupported"
+            )
+        call_ids = _provider_call_ids(
+            frame.provider_tool_call_id,
+            len(actions),
+        )
+        if len(call_ids) != len(actions):
+            raise ValueError("sibling call identity is incomplete")
+        self._execute_actions(
+            self._current_state().decision_count,
+            decision_event,
+            actions[len(starts) :],
+            call_ids[len(starts) :],
+            steps,
+        )
+
+    def _execute_actions(
+        self,
+        decision: int,
+        decision_event: ExecutionEvent,
+        actions: tuple[Action, ...],
+        provider_call_ids: tuple[str | None, ...],
+        steps: list[ExecutionStep],
+    ) -> None:
+        for action, provider_call_id in zip(
+            actions,
+            provider_call_ids,
+            strict=True,
+        ):
+            if isinstance(action, IPythonCode):
+                execution_event = self._event_log.append(
+                    "IPYTHON_EXECUTION_STARTED",
+                    {
+                        "action": action,
+                        "code_sha256": _text_sha256(action.code),
+                        "provider_tool_call_id": provider_call_id,
+                    },
+                    (decision_event.event_id,),
+                )
+                if self._ipython_control is None:
+                    self._ipython_control = PersistentIPython(
+                        self._tools.environment.workspace
+                    )
+                ipython_result = self._ipython_control.execute(action.code)
+                observation = IPythonObservation(
+                    ipython_result,
+                    provider_call_id,
+                )
+                self._event_log.append(
+                    (
+                        "IPYTHON_EXECUTION_RESULT"
+                        if ipython_result.ok
+                        else "IPYTHON_EXECUTION_FAILED"
+                    ),
+                    {"observation": observation},
+                    (execution_event.event_id,),
+                )
+                steps.append(ExecutionStep(decision, action, observation))
+                continue
+            if not isinstance(action, ToolCall):
+                raise ValueError(
+                    "sibling batches may contain only ordinary actions"
+                )
+            call_event = self._event_log.append(
+                "TOOL_CALL_STARTED",
+                {
+                    "request": action.request,
+                    "provider_tool_call_id": provider_call_id,
+                },
+                (decision_event.event_id,),
+            )
+            result = self._tools.execute(action.request)
+            observation = Observation(
+                action.request,
+                result,
+                provider_call_id,
+            )
+            self._event_log.append(
+                "TOOL_RESULT" if result.ok else "TOOL_FAILED",
+                {"observation": observation},
+                (call_event.event_id,),
+            )
+            steps.append(ExecutionStep(decision, action, observation))
+
+    def _drive(
+        self,
+        steps: list[ExecutionStep] | None = None,
+    ) -> ExecutionResult:
+        if steps is None:
+            steps = []
         while True:
             state = self._current_state()
             if state.decision_count >= self._max_decisions:
@@ -1906,12 +2397,21 @@ class RootAgentProcess:
             )
             raw_response = self._model.decide(request)
             raw_response_snapshot = EventLog._freeze(raw_response)
-            action = _structured_action(raw_response)
-            action_snapshot = EventLog._freeze(action)
+            structured_action = _structured_action(raw_response)
+            action_snapshot = EventLog._freeze(structured_action)
+            actions = _action_sequence(action_snapshot)
             native_response = (
                 raw_response_snapshot
                 if isinstance(raw_response_snapshot, NativeModelDecision)
                 else None
+            )
+            provider_call_ids = (
+                _provider_call_ids(
+                    native_response.provider_tool_call_id,
+                    len(actions),
+                )
+                if native_response is not None
+                else (None,) * len(actions)
             )
             frame = DecisionFrame(
                 decision_id=f"decision-{decision:06d}",
@@ -1952,6 +2452,7 @@ class RootAgentProcess:
                     (decision_event.event_id,),
                 )
                 return self._finish(steps)
+            action = actions[0] if len(actions) == 1 else None
             if isinstance(action, ClaimComplete):
                 claim_event = self._event_log.append(
                     "COMPLETION_CLAIMED",
@@ -1998,40 +2499,7 @@ class RootAgentProcess:
                         self._checkpoint_path
                     )
                 return self._result(steps)
-            if isinstance(action, IPythonCode):
-                execution_event = self._event_log.append(
-                    "IPYTHON_EXECUTION_STARTED",
-                    {
-                        "action": action,
-                        "code_sha256": _text_sha256(action.code),
-                    },
-                    (decision_event.event_id,),
-                )
-                if self._ipython_control is None:
-                    self._ipython_control = PersistentIPython(
-                        self._tools.environment.workspace
-                    )
-                ipython_result = self._ipython_control.execute(action.code)
-                observation = IPythonObservation(
-                    ipython_result,
-                    (
-                        native_response.provider_tool_call_id
-                        if native_response is not None
-                        else None
-                    ),
-                )
-                self._event_log.append(
-                    (
-                        "IPYTHON_EXECUTION_RESULT"
-                        if ipython_result.ok
-                        else "IPYTHON_EXECUTION_FAILED"
-                    ),
-                    {"observation": observation},
-                    (execution_event.event_id,),
-                )
-                steps.append(ExecutionStep(decision, action, observation))
-                continue
-            if action is None:
+            if not actions or len(provider_call_ids) != len(actions):
                 steps.append(ExecutionStep(decision, raw_response, None))
                 self._event_log.append(
                     "EXECUTION_FAILED",
@@ -2039,27 +2507,13 @@ class RootAgentProcess:
                     (decision_event.event_id,),
                 )
                 return self._finish(steps)
-            call_event = self._event_log.append(
-                "TOOL_CALL_STARTED",
-                {"request": action.request},
-                (decision_event.event_id,),
+            self._execute_actions(
+                decision,
+                decision_event,
+                actions,
+                provider_call_ids,
+                steps,
             )
-            result = self._tools.execute(action.request)
-            observation = Observation(
-                action.request,
-                result,
-                (
-                    native_response.provider_tool_call_id
-                    if native_response is not None
-                    else None
-                ),
-            )
-            self._event_log.append(
-                "TOOL_RESULT" if result.ok else "TOOL_FAILED",
-                {"observation": observation},
-                (call_event.event_id,),
-            )
-            steps.append(ExecutionStep(decision, action, observation))
 
     def close(self) -> None:
         if self._ipython_control is not None:

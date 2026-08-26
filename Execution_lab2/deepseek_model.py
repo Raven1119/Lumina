@@ -25,6 +25,7 @@ from Execution_lab2.execution import (
 MODEL = "deepseek-v4-pro"
 _ENDPOINT = "https://api.deepseek.com/chat/completions"
 _TIMEOUT_SECONDS = 60.0
+_MAX_TOOL_CALLS_PER_DECISION = 4
 
 _NATIVE_TOOLS = [
     {
@@ -154,9 +155,18 @@ class DeepSeekModel:
         if continuation is None:
             messages.append({"role": "user", "content": request.context})
         else:
-            previous_context, outcome_content = self._bounded_continuation(
-                continuation.previous_model_context,
-                self._outcome_content(request.context),
+            call_ids = (
+                (continuation.provider_tool_call_id,)
+                if isinstance(continuation.provider_tool_call_id, str)
+                else continuation.provider_tool_call_id
+            )
+            outcome_contents = self._outcome_contents(request.context)
+            previous_context, outcome_contents = self._bounded_continuation(
+                self._sibling_previous_context(
+                    continuation.previous_model_context,
+                    len(outcome_contents),
+                ),
+                outcome_contents,
                 request.model_visible_context_limit,
             )
             messages.extend(
@@ -167,13 +177,20 @@ class DeepSeekModel:
                     },
                     self._assistant_message(
                         continuation.raw_provider_response,
-                        continuation.provider_tool_call_id,
+                        call_ids,
                     ),
-                    {
-                        "role": "tool",
-                        "tool_call_id": continuation.provider_tool_call_id,
-                        "content": outcome_content,
-                    },
+                    *(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": outcome_content,
+                        }
+                        for call_id, outcome_content in zip(
+                            call_ids,
+                            outcome_contents,
+                            strict=True,
+                        )
+                    ),
                 ]
             )
         payload: dict[str, object] = {
@@ -221,42 +238,59 @@ class DeepSeekModel:
             return self._failure(payload, response, "malformed_response")
         if not tool_calls:
             return self._failure(payload, response, "no_tool_call")
-        if len(tool_calls) > 1:
-            return self._failure(payload, response, "multiple_tool_calls")
-        call = tool_calls[0]
-        if not isinstance(call, Mapping):
-            return self._failure(payload, response, "malformed_response")
-        call_id = call.get("id")
-        function = call.get("function")
-        if (
-            call.get("type") != "function"
-            or not isinstance(call_id, str)
-            or not call_id
-            or not isinstance(function, Mapping)
-            or not isinstance(function.get("name"), str)
-            or not isinstance(function.get("arguments"), str)
-        ):
-            return self._failure(payload, response, "malformed_response")
-        name = function["name"]
+        if len(tool_calls) > _MAX_TOOL_CALLS_PER_DECISION:
+            return self._failure(payload, response, "too_many_tool_calls")
+        parsed_calls = []
+        seen_call_ids = set()
+        for call in tool_calls:
+            if not isinstance(call, Mapping):
+                return self._failure(payload, response, "malformed_response")
+            call_id = call.get("id")
+            function = call.get("function")
+            if (
+                call.get("type") != "function"
+                or not isinstance(call_id, str)
+                or not call_id
+                or not isinstance(function, Mapping)
+                or not isinstance(function.get("name"), str)
+                or not isinstance(function.get("arguments"), str)
+            ):
+                return self._failure(payload, response, "malformed_response")
+            if call_id in seen_call_ids:
+                return self._failure(payload, response, "duplicate_tool_call_id")
+            seen_call_ids.add(call_id)
+            parsed_calls.append((call_id, function))
         allowed_names = (
             {"read", "write", "shell", "wait", "claim_complete"}
             if self._tool_mode == "native"
             else {"ipython", "wait", "claim_complete"}
         )
-        if name not in allowed_names:
-            return self._failure(payload, response, "unknown_tool")
-        try:
-            arguments = json.loads(function["arguments"])
-        except json.JSONDecodeError:
-            return self._failure(payload, response, "invalid_json")
-        action = self._action(name, arguments)
-        if action is None:
-            return self._failure(payload, response, "invalid_arguments")
+        actions = []
+        call_ids = []
+        for call_id, function in parsed_calls:
+            name = function["name"]
+            if name not in allowed_names:
+                return self._failure(payload, response, "unknown_tool")
+            try:
+                arguments = json.loads(function["arguments"])
+            except json.JSONDecodeError:
+                return self._failure(payload, response, "invalid_json")
+            action = self._action(name, arguments)
+            if action is None:
+                return self._failure(payload, response, "invalid_arguments")
+            actions.append(action)
+            call_ids.append(call_id)
+        if len(actions) > 1 and any(
+            isinstance(action, (Wait, ClaimComplete)) for action in actions
+        ):
+            return self._failure(payload, response, "mixed_control_tool_calls")
         return NativeModelDecision(
-            action,
+            actions[0] if len(actions) == 1 else tuple(actions),
             payload,
             response,
-            provider_tool_call_id=call_id,
+            provider_tool_call_id=(
+                call_ids[0] if len(call_ids) == 1 else tuple(call_ids)
+            ),
         )
 
     @staticmethod
@@ -338,45 +372,81 @@ class DeepSeekModel:
         )
 
     @staticmethod
-    def _assistant_message(response: object, call_id: str) -> dict[str, object]:
+    def _assistant_message(
+        response: object,
+        call_ids: tuple[str, ...],
+    ) -> dict[str, object]:
         try:
             message = response["choices"][0]["message"]
             calls = message["tool_calls"]
         except (KeyError, IndexError, TypeError):
             raise ValueError("durable native continuation is malformed") from None
-        if not isinstance(calls, (list, tuple)) or len(calls) != 1:
+        if not isinstance(calls, (list, tuple)) or len(calls) != len(call_ids):
             raise ValueError("durable native continuation is malformed")
-        call = DeepSeekModel._without_reasoning(calls[0])
-        if not isinstance(call, dict) or call.get("id") != call_id:
+        clean_calls = tuple(
+            DeepSeekModel._without_reasoning(call) for call in calls
+        )
+        if any(
+            not isinstance(call, dict) or call.get("id") != call_id
+            for call, call_id in zip(clean_calls, call_ids, strict=True)
+        ):
             raise ValueError("durable native continuation call id changed")
         return {
             "role": "assistant",
             "content": message.get("content"),
-            "tool_calls": [call],
+            "tool_calls": list(clean_calls),
         }
 
     @staticmethod
-    def _outcome_content(context: str) -> str:
+    def _outcome_contents(context: str) -> tuple[str, ...]:
         document = json.loads(context)
-        if document.get("observation") is not None:
-            outcome = {"observation": document["observation"]}
+        if document.get("observations") is not None:
+            outcomes = tuple(
+                {"observation": observation}
+                for observation in document["observations"]
+            )
+        elif document.get("observation") is not None:
+            outcomes = ({"observation": document["observation"]},)
         elif document.get("incoming_event") is not None:
-            outcome = {"incoming_event": document["incoming_event"]}
+            outcomes = ({"incoming_event": document["incoming_event"]},)
         else:
-            outcome = {"context": document}
-        return json.dumps(outcome, ensure_ascii=False, separators=(",", ":"))
+            outcomes = ({"context": document},)
+        return tuple(
+            json.dumps(outcome, ensure_ascii=False, separators=(",", ":"))
+            for outcome in outcomes
+        )
+
+    @staticmethod
+    def _sibling_previous_context(context: str, outcome_count: int) -> str:
+        if outcome_count <= 1:
+            return context
+        document = json.loads(context)
+        compact = {
+            "goal": document.get("goal"),
+            "completion_spec": document.get("completion_spec"),
+        }
+        return json.dumps(
+            compact,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     @staticmethod
     def _bounded_continuation(
         previous_context: str,
-        outcome_content: str,
+        outcome_contents: tuple[str, ...],
         limit: int | None,
-    ) -> tuple[str, str]:
-        if limit is None or len(previous_context) + len(outcome_content) <= limit:
-            return previous_context, outcome_content
-        documents = [json.loads(previous_context), json.loads(outcome_content)]
+    ) -> tuple[str, tuple[str, ...]]:
+        if limit is None or len(previous_context) + sum(
+            map(len, outcome_contents)
+        ) <= limit:
+            return previous_context, outcome_contents
+        documents = [
+            json.loads(previous_context),
+            *(json.loads(outcome) for outcome in outcome_contents),
+        ]
 
-        def render() -> tuple[str, str]:
+        def render() -> tuple[str, ...]:
             return tuple(
                 json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                 for value in documents
@@ -407,7 +477,7 @@ class DeepSeekModel:
             field["text"] = text[: max(0, len(text) - overflow)]
             field["truncated"] = True
             rendered = render()
-        return rendered
+        return rendered[0], rendered[1:]
 
     @staticmethod
     def _without_reasoning(value: object) -> object:

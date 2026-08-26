@@ -73,6 +73,19 @@ def _tool_response(call_id, name, arguments):
     }
 
 
+def _tool_calls_response(*calls):
+    response = _tool_response(*calls[0])
+    response["choices"][0]["message"]["tool_calls"] = [
+        {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        }
+        for call_id, name, arguments in calls
+    ]
+    return response
+
+
 def _plain(value):
     if isinstance(value, Mapping):
         return {key: _plain(item) for key, item in value.items()}
@@ -475,6 +488,73 @@ def test_runtime_preserves_ipython_call_id_into_native_continuation(tmp_path):
     assert control.is_alive is False
 
 
+def test_ipython_siblings_share_one_kernel_and_return_in_model_order(tmp_path):
+    (tmp_path / "done.txt").write_text("done", encoding="utf-8")
+    responses = iter(
+        [
+            _tool_calls_response(
+                (
+                    "call_set",
+                    "ipython",
+                    json.dumps({"code": "shared_value = 41"}),
+                ),
+                (
+                    "call_use",
+                    "ipython",
+                    json.dumps({"code": "print(shared_value + 1)"}),
+                ),
+            ),
+            _tool_response("call_complete", "claim_complete", "{}"),
+        ]
+    )
+    payloads = []
+
+    def transport(payload):
+        payloads.append(payload)
+        return next(responses)
+
+    control = PersistentIPython(tmp_path)
+    result = RootAgentProcess(
+        DeepSeekModel(tool_mode="ipython", transport=transport),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        ipython_control=control,
+    ).run("Use one Python session.", FileContentEquals("done.txt", "done"))
+
+    settled = [
+        event
+        for event in result.events
+        if event.event_type == "IPYTHON_EXECUTION_RESULT"
+    ]
+    starts = [
+        event
+        for event in result.events
+        if event.event_type == "IPYTHON_EXECUTION_STARTED"
+    ]
+    frame = result.decision_frames[0]
+    assistant = payloads[1]["messages"][-3]
+    tool_results = payloads[1]["messages"][-2:]
+
+    assert result.status == "completed"
+    assert frame.provider_tool_call_id == ("call_set", "call_use")
+    assert all(isinstance(action, IPythonCode) for action in frame.resulting_action)
+    assert [event.source_event_refs for event in starts] == [
+        (result.events[1].event_id,),
+        (result.events[1].event_id,),
+    ]
+    assert settled[1].payload["observation"].result.output == "42\n"
+    assert [call["id"] for call in assistant["tool_calls"]] == [
+        "call_set",
+        "call_use",
+    ]
+    assert [message["tool_call_id"] for message in tool_results] == [
+        "call_set",
+        "call_use",
+    ]
+    assert result.state == fold_execution_state(result.events)
+    assert control.is_alive is False
+
+
 _RUN_REAL = (
     os.environ.get("RUN_DEEPSEEK_REAL_TESTS") == "1"
     and bool(os.environ.get("DEEPSEEK_API_KEY"))
@@ -507,6 +587,95 @@ def _aggregation_fixture(workspace):
         workspace / "answer.txt",
         "63",
     )
+
+
+@pytest.mark.skipif(
+    not _RUN_REAL,
+    reason="set RUN_DEEPSEEK_REAL_TESTS=1 and DEEPSEEK_API_KEY",
+)
+def test_real_deepseek_historical_multi_tool_blocker_three_runs(tmp_path):
+    summaries = []
+    for run_number in range(1, 4):
+        workspace = tmp_path / f"multi-tool-{run_number}"
+        workspace.mkdir()
+        goal, spec, expected_path, expected_content = _aggregation_fixture(
+            workspace
+        )
+        result = RootAgentProcess(
+            DeepSeekModel(),
+            ToolHost(SharedEnvironment(workspace)),
+            max_decisions=10,
+            max_context_chars=2_000,
+        ).run(goal, spec)
+        decision_events = [
+            event
+            for event in result.events
+            if event.event_type == "MODEL_DECISION"
+        ]
+        multi_decisions = []
+        for index, frame in enumerate(result.decision_frames):
+            response = frame.raw_provider_response
+            if not isinstance(response, Mapping):
+                continue
+            calls = response["choices"][0]["message"].get("tool_calls", [])
+            if len(calls) <= 1:
+                continue
+            call_ids = [call["id"] for call in calls]
+            decision_event = decision_events[index]
+            started_ids = [
+                event.payload["provider_tool_call_id"]
+                for event in result.events
+                if event.event_type
+                in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
+                and event.source_event_refs == (decision_event.event_id,)
+            ]
+            settled_ids = [
+                event.payload["observation"].provider_tool_call_id
+                for event in result.events
+                if event.event_type
+                in (
+                    "TOOL_RESULT",
+                    "TOOL_FAILED",
+                    "IPYTHON_EXECUTION_RESULT",
+                    "IPYTHON_EXECUTION_FAILED",
+                )
+                and event.payload["observation"].provider_tool_call_id
+                in call_ids
+            ]
+            assert started_ids == call_ids
+            assert settled_ids == call_ids
+            multi_decisions.append(
+                {
+                    "tool_count": len(calls),
+                    "call_ids": call_ids,
+                    "tools": [
+                        call["function"]["name"] for call in calls
+                    ],
+                    "arguments": [
+                        json.loads(call["function"]["arguments"])
+                        for call in calls
+                    ],
+                    "execution_order": started_ids,
+                }
+            )
+        summaries.append(
+            {
+                "run": run_number,
+                "multi_decisions": multi_decisions,
+                "status": result.status,
+                "failure": result.failure,
+                "completion_verified": (
+                    result.status == "completed"
+                    and expected_path.is_file()
+                    and expected_path.read_text(encoding="utf-8")
+                    == expected_content
+                ),
+            }
+        )
+        assert result.state == fold_execution_state(result.events)
+        assert result.failure != "model_protocol:multiple_tool_calls"
+
+    print("MULTI_TOOL_FRESH " + json.dumps(summaries, sort_keys=True))
 
 
 @pytest.mark.skipif(
