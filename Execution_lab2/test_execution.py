@@ -4,9 +4,10 @@ import sys
 import pytest
 
 from Execution_lab2.execution import (
-    Complete,
+    ClaimComplete,
     DecisionFrame,
     EventLog,
+    FileContentEquals,
     ModelRequest,
     ReadRequest,
     RootAgentProcess,
@@ -27,7 +28,7 @@ def test_root_completes_multistep_filesystem_task(tmp_path):
             ToolCall(ReadRequest("source.txt")),
             ToolCall(WriteRequest("output.txt", "ALPHA\n")),
             ToolCall(ReadRequest("output.txt")),
-            Complete("finished"),
+            ClaimComplete(),
         ]
     )
 
@@ -35,10 +36,13 @@ def test_root_completes_multistep_filesystem_task(tmp_path):
         model=model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=4,
-    ).run("Uppercase source.txt into output.txt and inspect it")
+    ).run(
+        "Uppercase source.txt into output.txt and inspect it",
+        FileContentEquals("output.txt", "ALPHA\n"),
+    )
 
     assert result.status == "completed"
-    assert result.output == "finished"
+    assert result.output == "verified"
     assert (tmp_path / "output.txt").read_text(encoding="utf-8") == "ALPHA\n"
     assert [step.observation.ok for step in result.steps[:-1]] == [True, True, True]
     assert result.steps[-1].observation is None
@@ -47,14 +51,14 @@ def test_root_completes_multistep_filesystem_task(tmp_path):
 
 def test_execution_state_is_an_exact_replay_of_an_append_only_event_log(tmp_path):
     model = ScriptedModel(
-        [ToolCall(WriteRequest("output.txt", "done\n")), Complete("finished")]
+        [ToolCall(WriteRequest("output.txt", "done\n")), ClaimComplete()]
     )
 
     result = RootAgentProcess(
         model=model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=2,
-    ).run("Create output.txt")
+    ).run("Create output.txt", FileContentEquals("output.txt", "done\n"))
 
     assert result.state == fold_execution_state(result.events)
     assert [event.sequence for event in result.events] == list(
@@ -66,13 +70,15 @@ def test_execution_state_is_an_exact_replay_of_an_append_only_event_log(tmp_path
         "TOOL_CALL_STARTED",
         "TOOL_RESULT",
         "MODEL_DECISION",
+        "COMPLETION_CLAIMED",
+        "COMPLETION_VERIFIED",
         "EXECUTION_COMPLETED",
     ]
     assert result.events[3].source_event_refs == (result.events[2].event_id,)
     assert result.state.status == "completed"
     assert result.state.goal == "Create output.txt"
     assert result.state.decision_count == 2
-    assert result.state.completion == "finished"
+    assert result.state.completion == "verified"
     with pytest.raises(TypeError):
         result.events[0].payload["goal"] = "changed"
 
@@ -82,7 +88,11 @@ def test_event_log_rejects_unknown_schema_and_invalid_causal_shapes():
         EventLog().append("UNKNOWN_EVENT", {})
 
     event_log = EventLog()
-    started = event_log.append("EXECUTION_STARTED", {"goal": "test"})
+    completion_spec = FileContentEquals("output.txt", "done")
+    started = event_log.append(
+        "EXECUTION_STARTED",
+        {"goal": "test", "completion_spec": completion_spec},
+    )
     with pytest.raises(ValueError):
         event_log.append(
             "TOOL_RESULT",
@@ -92,7 +102,7 @@ def test_event_log_rejects_unknown_schema_and_invalid_causal_shapes():
     with pytest.raises(ValueError):
         event_log.append(
             "EXECUTION_COMPLETED",
-            {"output": "not caused by a decision"},
+            {"status": "verified"},
             (started.event_id,),
         )
 
@@ -105,27 +115,27 @@ def test_event_log_rejects_unknown_schema_and_invalid_causal_shapes():
         source_event_refs=(started.event_id,),
         actual_request=request,
         actual_tools_exposed=(),
-        raw_model_response=Complete("done"),
-        resulting_action=Complete("different"),
+        raw_model_response=ClaimComplete(),
+        resulting_action=None,
     )
     with pytest.raises(ValueError):
         event_log.append(
             "MODEL_DECISION",
-            {"action": Complete("different"), "frame": inconsistent_frame},
+            {"action": None, "frame": inconsistent_frame},
             (started.event_id,),
         )
 
 
 def test_decision_frames_capture_the_exact_requests_and_capabilities(tmp_path):
     first_action = ToolCall(WriteRequest("output.txt", "done\n"))
-    second_action = Complete("finished")
+    second_action = ClaimComplete()
     model = ScriptedModel([first_action, second_action], identifier="fixture-model")
 
     result = RootAgentProcess(
         model=model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=2,
-    ).run("Create output.txt")
+    ).run("Create output.txt", FileContentEquals("output.txt", "done\n"))
 
     decision_events = [
         event for event in result.events if event.event_type == "MODEL_DECISION"
@@ -158,7 +168,10 @@ def test_mutable_unknown_model_response_is_snapshotted_before_logging(tmp_path):
         model=ScriptedModel([raw_response]),
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=1,
-    ).run("Reject a mutable unknown response")
+    ).run(
+        "Reject a mutable unknown response",
+        FileContentEquals("unused.txt", "unused"),
+    )
 
     snapshot = result.decision_frames[0].raw_model_response
     raw_response["message"]["parts"].append("changed later")
@@ -170,7 +183,13 @@ def test_mutable_unknown_model_response_is_snapshotted_before_logging(tmp_path):
 
     external_raw = {"message": {"parts": ["external"]}}
     event_log = EventLog()
-    started = event_log.append("EXECUTION_STARTED", {"goal": "external"})
+    started = event_log.append(
+        "EXECUTION_STARTED",
+        {
+            "goal": "external",
+            "completion_spec": FileContentEquals("unused.txt", "unused"),
+        },
+    )
     request = ModelRequest("{}", (), (started.event_id,))
     frame = DecisionFrame(
         decision_id="external-decision",
@@ -200,7 +219,10 @@ def test_mutable_unknown_model_response_is_snapshotted_before_logging(tmp_path):
         model=ScriptedModel([invalid_action]),
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=1,
-    ).run("Reject invalid mutable content")
+    ).run(
+        "Reject invalid mutable content",
+        FileContentEquals("unused.txt", "unused"),
+    )
     mutable_content.append("changed later")
 
     logged_action = invalid_result.events[1].payload["action"]
@@ -216,7 +238,7 @@ def test_state_derived_context_does_not_grow_with_the_full_event_history(tmp_pat
         return [
             ToolCall(WriteRequest(f"item-{number}.txt", f"value-{number}"))
             for number in range(interaction_count)
-        ] + [Complete("finished")]
+        ] + [ClaimComplete()]
 
     bounded_workspace = tmp_path / "bounded"
     baseline_workspace = tmp_path / "baseline"
@@ -229,7 +251,7 @@ def test_state_derived_context_does_not_grow_with_the_full_event_history(tmp_pat
         tools=ToolHost(SharedEnvironment(bounded_workspace)),
         max_decisions=interaction_count + 1,
         max_context_chars=900,
-    ).run(goal)
+    ).run(goal, FileContentEquals("item-23.txt", "value-23"))
 
     class FullHistoryModel:
         def __init__(self):
@@ -254,9 +276,9 @@ def test_state_derived_context_does_not_grow_with_the_full_event_history(tmp_pat
             }
         )
         action = baseline_model.decide(baseline_request)
-        if isinstance(action, Complete):
+        if isinstance(action, ClaimComplete):
             baseline_status = "completed"
-            baseline_output = action.output
+            baseline_output = "verified"
             break
         tool_result = baseline_tools.execute(action.request)
         observations.append(
@@ -290,7 +312,7 @@ def test_large_canonical_tool_result_is_truthful_but_model_projection_is_bounded
     large_output = ("x" * 20_000) + hidden_tail
     (tmp_path / "large.txt").write_text(large_output, encoding="utf-8")
     model = ScriptedModel(
-        [ToolCall(ReadRequest("large.txt")), Complete("inspected")]
+        [ToolCall(ReadRequest("large.txt")), ClaimComplete()]
     )
 
     result = RootAgentProcess(
@@ -298,7 +320,7 @@ def test_large_canonical_tool_result_is_truthful_but_model_projection_is_bounded
         tools=ToolHost(SharedEnvironment(tmp_path), max_output_chars=30_000),
         max_decisions=2,
         max_context_chars=900,
-    ).run("Inspect large.txt")
+    ).run("Inspect large.txt", FileContentEquals("large.txt", large_output))
 
     result_event = next(
         event for event in result.events if event.event_type == "TOOL_RESULT"
@@ -317,6 +339,7 @@ def test_large_canonical_tool_result_is_truthful_but_model_projection_is_bounded
 
 
 def test_minimum_context_budget_handles_a_large_shell_observation(tmp_path):
+    (tmp_path / "done.txt").write_text("done", encoding="utf-8")
     model = ScriptedModel(
         [
             ToolCall(
@@ -324,7 +347,7 @@ def test_minimum_context_budget_handles_a_large_shell_observation(tmp_path):
                     (sys.executable, "-c", "print('ok')", "x" * 1_000)
                 )
             ),
-            Complete("finished"),
+            ClaimComplete(),
         ]
     )
 
@@ -333,7 +356,7 @@ def test_minimum_context_budget_handles_a_large_shell_observation(tmp_path):
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=2,
         max_context_chars=768,
-    ).run("Run one command")
+    ).run("Run one command", FileContentEquals("done.txt", "done"))
 
     visible = json.loads(model.received_requests[1].context)
     assert result.status == "completed"
@@ -342,7 +365,7 @@ def test_minimum_context_budget_handles_a_large_shell_observation(tmp_path):
     assert visible["observation"]["request"]["original_arg_count"] == 4
     with pytest.raises(ValueError):
         RootAgentProcess(
-            model=ScriptedModel([Complete("unused")]),
+            model=ScriptedModel([ClaimComplete()]),
             tools=ToolHost(SharedEnvironment(tmp_path)),
             max_decisions=1,
             max_context_chars=767,
@@ -354,14 +377,17 @@ def test_missing_file_failure_flows_event_state_context_frame_then_model_action(
 ):
     alternative = ToolCall(WriteRequest("recovered.txt", "fallback\n"))
     model = ScriptedModel(
-        [ToolCall(ReadRequest("missing.txt")), alternative, Complete("recovered")]
+        [ToolCall(ReadRequest("missing.txt")), alternative, ClaimComplete()]
     )
 
     result = RootAgentProcess(
         model=model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=3,
-    ).run("Recover from a missing input")
+    ).run(
+        "Recover from a missing input",
+        FileContentEquals("recovered.txt", "fallback\n"),
+    )
 
     failed_event = next(
         event for event in result.events if event.event_type == "TOOL_FAILED"
@@ -392,7 +418,7 @@ def test_tool_failure_is_returned_to_the_model_for_recovery(tmp_path):
         [
             ToolCall(ReadRequest("missing.txt")),
             ToolCall(WriteRequest("recovered.txt", "fallback\n")),
-            Complete("recovered"),
+            ClaimComplete(),
         ]
     )
 
@@ -400,7 +426,10 @@ def test_tool_failure_is_returned_to_the_model_for_recovery(tmp_path):
         model=model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=3,
-    ).run("Recover from a missing input")
+    ).run(
+        "Recover from a missing input",
+        FileContentEquals("recovered.txt", "fallback\n"),
+    )
 
     failure = json.loads(model.received_requests[1].context)["observation"]
     assert failure is not None
@@ -437,7 +466,7 @@ def test_root_stops_at_the_hard_decision_bound(tmp_path):
         model=model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=3,
-    ).run("Never complete")
+    ).run("Never complete", FileContentEquals("count.txt", "done"))
 
     assert result.status == "failed"
     assert result.failure == "decision_limit_reached"
@@ -503,7 +532,10 @@ def test_unknown_action_and_tool_fail_explicitly(tmp_path):
         model=ScriptedModel([object()]),
         tools=tools,
         max_decisions=1,
-    ).run("Reject an unknown action")
+    ).run(
+        "Reject an unknown action",
+        FileContentEquals("unused.txt", "unused"),
+    )
 
     assert unknown_tool.ok is False
     assert unknown_tool.error_code == "unknown_tool"

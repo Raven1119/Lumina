@@ -7,8 +7,13 @@
 - Slice 1 behavior remains intact: typed tool requests, structured
   `ToolResult`, workspace-guarded read/write, explicit-argv bounded shell,
   failure-as-Observation, and a hard decision limit.
-- The Action contract is now `ToolCall | Wait | Complete`. The only Wait
+- The Action contract is now `ToolCall | Wait | ClaimComplete`. The only Wait
   condition is an exact, non-empty `event_type` string.
+- Execution creation requires one frozen caller-owned
+  `FileContentEquals(path, expected_content)`. That typed CompletionSpec is
+  persisted in `EXECUTION_STARTED`, reconstructed by the State fold, visible
+  through a bounded Context projection, and cannot be supplied or changed by
+  `ClaimComplete`.
 - `EventLog` can be in-memory or local append-only JSONL. A durable append is
   flushed and `fsync`ed before the event enters the authoritative in-memory
   sequence. `load()` rejects malformed records, schemas, causal links,
@@ -53,6 +58,16 @@
   explicit unresolved recovery error without appending success or sampling the
   Model. Dangling `ShellRequest` remains explicitly unsupported; no generic
   effect reconciliation or retry path was added.
+- A Root completion claim now appends `COMPLETION_CLAIMED`; it never terminates
+  Execution directly. Runtime mechanically reads the current Host workspace
+  against the execution-start `FileContentEquals` spec. Exact logical UTF-8
+  equality appends causal `COMPLETION_VERIFIED` and then
+  `EXECUTION_COMPLETED(status=verified)` without another Model call.
+- Missing, mismatched, unreadable, or workspace-invalid completion targets
+  append causal `COMPLETION_REJECTED` with typed evidence containing the spec
+  type/fingerprint, observed path, match result, and bounded reason. State
+  remains runnable and the next Root request receives a bounded rejection
+  Observation; Runtime does not repair the file.
 
 ## Source mapping
 
@@ -64,7 +79,7 @@ rejected architecture are recorded in `SOURCE_AUDIT.md`.
 | OpenAI Codex | `a9ed4f154a4fad64acf538d6418d3ed012aeab86`, Apache-2.0 | Durable identity is distinct from live session/turn/request state; reopen identity before new work. |
 | DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Started-without-result is canonically UNKNOWN; verify external state before retry and append causal repair rather than mutating history. |
 | Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | A live agent object is replaceable and Host-owned external state remains outside model working state (the authority conclusion is explicitly an inference). |
-| LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Resume and verify from durable records plus the current workspace reality, not a prior model stack or old completion claim. |
+| LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Agent completion claims require independent acceptance authority grounded in the current workspace; Lumina does not copy its LLM Auditor. |
 | Temporal Server / Go SDK | `19a774302c613da9adc4436ab14278ccdca8e0a5` / `b7c242c6894df088a57a85b33d0586e908da8b93`, MIT | Durable history does not make an external Activity exactly once; a crash before completion is recorded can retry the effect. |
 
 No upstream session/plugin ecosystem, Worker infrastructure, Manager ontology,
@@ -72,6 +87,32 @@ provider stack, IPython, Actor Directory, Child runtime, or generic event bus
 was copied.
 
 ## Experiment results
+
+Slice 5:
+
+- **A - false completion rejected:** an initial claim against mismatched file
+  content appends `COMPLETION_REJECTED`, leaves Execution runnable, and gives
+  Root a bounded structured Observation. Root then writes the caller-required
+  content, claims again, and reaches verified completion.
+- **B - true completion verified:** a pre-satisfied file requires exactly one
+  Model call and produces `CLAIMED -> VERIFIED -> COMPLETED`; no follow-up
+  Model call is made.
+- **C - Root cannot self-authorize:** `ClaimComplete` has no fields, rejects
+  attempted `expected_content` or `success` arguments, and cannot mutate the
+  frozen execution-start CompletionSpec.
+- **D - restart after rejection:** a durable rejected claim reconstructs the
+  same execution/root identities in non-completed runnable State. A fresh Root
+  sees the rejection Observation, fixes the file, and can complete.
+- **E - restart after verification:** a completed durable log reloads as
+  completed with zero new Model calls and zero Tool actions, even if the file
+  changes after terminal completion; verification is not rerun.
+- **F - event/state replay:** durable completion events reload exactly;
+  full-log fold equals restored State, and the immediate causal references are
+  `MODEL_DECISION -> COMPLETION_CLAIMED -> COMPLETION_VERIFIED ->
+  EXECUTION_COMPLETED`.
+- Separate experiments establish deterministic `missing`, `content_mismatch`,
+  and `unreadable` rejection outcomes without Tool execution or fabricated
+  success.
 
 Slice 4:
 
@@ -127,7 +168,7 @@ Slice 3 regression evidence:
   explicitly truncated to the configured absolute character bound.
 - DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
   remain covered by regression tests.
-- Validation: `Execution_lab2` 34 passed; root 328 passed / 24 skipped;
+- Validation: `Execution_lab2` 43 passed; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
 
 ## Known limits
@@ -135,6 +176,10 @@ Slice 3 regression evidence:
 - UNKNOWN side-effect crash reconciliation is implemented only for a dangling
   `WriteRequest` whose target can be read and exactly equals intended content.
   All ambiguous Writes and every other effect kind remain unresolved.
+- Completion verification supports only caller-declared
+  `FileContentEquals(path, expected_content)`. There is no natural-language
+  goal judgment, Reviewer Agent, LLM verifier, registry, composite predicate,
+  test runner, or second verifier type.
 - IPython: **NOT IMPLEMENTED**.
 - real provider: **NOT IMPLEMENTED**.
 - Child/recursion: **NOT IMPLEMENTED**.
@@ -143,7 +188,7 @@ Slice 3 regression evidence:
   above. Other unsettled tool calls remain unsupported/unresolved.
 - JSONL and Checkpoint are local single-process files. There is no multi-writer
   coordination, database, checkpoint rotation, scheduler, background worker,
-  generic event bus, completion verifier, or resource accounting.
+  generic event bus, generic verifier framework, or resource accounting.
 - Context is bounded in Python characters rather than provider tokens or UTF-8
   bytes. Shell isolation remains cwd-based rather than an OS sandbox.
 - Checkpoint recovery hashes the prefix and folds only the tail, but no

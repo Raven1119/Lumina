@@ -1,9 +1,12 @@
 import json
+from dataclasses import FrozenInstanceError, fields
 
 import pytest
 import execution as execution_module
 
 from execution import (
+    ClaimComplete,
+    FileContentEquals,
     EventLog,
     RootAgentProcess,
     ScriptedModel,
@@ -13,10 +16,281 @@ from execution import (
     Wait,
     WriteRequest,
     ShellRequest,
-    Complete,
     Checkpoint,
     fold_execution_state,
 )
+
+
+def test_false_completion_is_rejected_before_root_fixes_environment(tmp_path):
+    (tmp_path / "result.txt").write_text("wrong", encoding="utf-8")
+    model = ScriptedModel(
+        [
+            ClaimComplete(),
+            ToolCall(WriteRequest("result.txt", "correct")),
+            ClaimComplete(),
+        ]
+    )
+
+    result = RootAgentProcess(
+        model=model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=3,
+        max_context_chars=900,
+    ).run(
+        "Make result.txt correct",
+        FileContentEquals("result.txt", "correct"),
+    )
+
+    event_types = [event.event_type for event in result.events]
+    rejected = next(
+        event for event in result.events if event.event_type == "COMPLETION_REJECTED"
+    )
+    first_claim = result.events[rejected.sequence - 2]
+    verified = next(
+        event for event in result.events if event.event_type == "COMPLETION_VERIFIED"
+    )
+    second_claim = result.events[verified.sequence - 2]
+    completed = result.events[-1]
+    rejection_context = json.loads(model.received_requests[1].context)
+
+    assert result.status == "completed"
+    assert result.output == "verified"
+    assert event_types.count("COMPLETION_CLAIMED") == 2
+    assert first_claim.event_type == second_claim.event_type == "COMPLETION_CLAIMED"
+    assert rejected.source_event_refs == (first_claim.event_id,)
+    assert verified.source_event_refs == (second_claim.event_id,)
+    assert completed.event_type == "EXECUTION_COMPLETED"
+    assert completed.source_event_refs == (verified.event_id,)
+    assert rejection_context["observation"]["type"] == "completion_verification"
+    assert rejection_context["observation"]["status"] == "rejected"
+    assert rejection_context["observation"]["evidence"]["matched"] is False
+    assert (
+        rejection_context["observation"]["evidence"]["reason"]
+        == "content_mismatch"
+    )
+    assert model.received_requests[1].context_size_chars <= 900
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "correct"
+    assert result.state == fold_execution_state(result.events)
+
+
+def test_true_completion_is_verified_without_an_extra_model_call(tmp_path):
+    (tmp_path / "result.txt").write_text("correct", encoding="utf-8")
+    model = ScriptedModel([ClaimComplete()])
+
+    result = RootAgentProcess(
+        model=model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+    ).run(
+        "Accept an already-correct result",
+        FileContentEquals("result.txt", "correct"),
+    )
+
+    assert result.status == "completed"
+    assert len(model.received_requests) == 1
+    assert [event.event_type for event in result.events][-3:] == [
+        "COMPLETION_CLAIMED",
+        "COMPLETION_VERIFIED",
+        "EXECUTION_COMPLETED",
+    ]
+    evidence = result.events[-2].payload["evidence"]
+    assert evidence.spec_type == "file_content_equals"
+    assert evidence.observed_path == "result.txt"
+    assert evidence.matched is True
+    assert evidence.reason == "matched"
+
+
+def test_claim_complete_cannot_override_the_caller_owned_spec(tmp_path):
+    spec = FileContentEquals("result.txt", "caller-owned")
+    (tmp_path / "result.txt").write_text("caller-owned", encoding="utf-8")
+
+    assert fields(ClaimComplete) == ()
+    with pytest.raises(TypeError):
+        ClaimComplete(expected_content="model-owned")
+    with pytest.raises(TypeError):
+        ClaimComplete(success=True)
+    with pytest.raises(FrozenInstanceError):
+        spec.expected_content = "model-owned"
+
+    result = RootAgentProcess(
+        model=ScriptedModel([ClaimComplete()]),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+    ).run("Respect caller authority", spec)
+
+    assert result.status == "completed"
+    assert result.events[0].payload["completion_spec"] == spec
+    assert result.decision_frames[0].resulting_action == ClaimComplete()
+
+
+@pytest.mark.parametrize(
+    ("reality", "expected_reason"),
+    [
+        ("missing", "missing"),
+        ("mismatch", "content_mismatch"),
+        ("unreadable", "unreadable"),
+    ],
+)
+def test_unproven_completion_reality_is_rejected(
+    tmp_path, monkeypatch, reality, expected_reason
+):
+    target = tmp_path / "result.txt"
+    if reality == "mismatch":
+        target.write_text("wrong", encoding="utf-8")
+    elif reality == "unreadable":
+        target.mkdir()
+    log_path = tmp_path / "execution.jsonl"
+    event_log = EventLog(log_path)
+    durable_append = event_log.append
+
+    def crash_after_rejection(event_type, payload, source_event_refs=()):
+        event = durable_append(event_type, payload, source_event_refs)
+        if event_type == "COMPLETION_REJECTED":
+            raise SystemExit("stop after durable rejection")
+        return event
+
+    monkeypatch.setattr(event_log, "append", crash_after_rejection)
+    model = ScriptedModel([ClaimComplete()])
+    with pytest.raises(SystemExit, match="stop after durable rejection"):
+        RootAgentProcess(
+            model=model,
+            tools=ToolHost(SharedEnvironment(tmp_path)),
+            max_decisions=2,
+            event_log=event_log,
+        ).run(
+            "Reject unproven completion",
+            FileContentEquals("result.txt", "correct"),
+        )
+
+    rejected = EventLog.load(log_path).events[-1]
+    assert rejected.event_type == "COMPLETION_REJECTED"
+    assert rejected.payload["observation"].evidence.matched is False
+    assert rejected.payload["observation"].evidence.reason == expected_reason
+    assert len(model.received_requests) == 1
+
+
+def test_restart_after_completion_rejection_remains_runnable(tmp_path, monkeypatch):
+    (tmp_path / "result.txt").write_text("wrong", encoding="utf-8")
+    log_path = tmp_path / "execution.jsonl"
+    event_log = EventLog(log_path)
+    durable_append = event_log.append
+
+    def crash_after_rejection(event_type, payload, source_event_refs=()):
+        event = durable_append(event_type, payload, source_event_refs)
+        if event_type == "COMPLETION_REJECTED":
+            raise SystemExit("crash after rejection")
+        return event
+
+    monkeypatch.setattr(event_log, "append", crash_after_rejection)
+    with pytest.raises(SystemExit, match="crash after rejection"):
+        RootAgentProcess(
+            model=ScriptedModel([ClaimComplete()]),
+            tools=ToolHost(SharedEnvironment(tmp_path)),
+            max_decisions=3,
+            event_log=event_log,
+        ).run(
+            "Recover after rejection",
+            FileContentEquals("result.txt", "correct"),
+        )
+
+    rejected_log = EventLog.load(log_path)
+    rejected_state = fold_execution_state(rejected_log.events)
+    execution_id = rejected_state.execution_id
+    root_actor_id = rejected_state.root_actor_id
+    assert rejected_state.status == "running"
+    assert rejected_state.latest_observation.status == "rejected"
+
+    resumed_model = ScriptedModel(
+        [ToolCall(WriteRequest("result.txt", "correct")), ClaimComplete()]
+    )
+    resumed = RootAgentProcess(
+        model=resumed_model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=3,
+        event_log=rejected_log,
+    ).resume()
+
+    first_context = json.loads(resumed_model.received_requests[0].context)
+    assert resumed.status == "completed"
+    assert resumed.state.execution_id == execution_id
+    assert resumed.state.root_actor_id == root_actor_id
+    assert first_context["observation"]["status"] == "rejected"
+    assert resumed.state == fold_execution_state(resumed.events)
+
+
+def test_restart_after_verified_completion_does_no_work(tmp_path):
+    target = tmp_path / "result.txt"
+    target.write_text("correct", encoding="utf-8")
+    log_path = tmp_path / "execution.jsonl"
+    completed = RootAgentProcess(
+        model=ScriptedModel([ClaimComplete()]),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=EventLog(log_path),
+    ).run(
+        "Finish once",
+        FileContentEquals("result.txt", "correct"),
+    )
+    target.write_text("changed after completion", encoding="utf-8")
+    calls = []
+
+    class RecordingTools:
+        def __init__(self):
+            self._host = ToolHost(SharedEnvironment(tmp_path))
+
+        @property
+        def environment(self):
+            return self._host.environment
+
+        def execute(self, request):
+            calls.append(request)
+            return self._host.execute(request)
+
+    resumed_model = ScriptedModel([])
+    resumed = RootAgentProcess(
+        model=resumed_model,
+        tools=RecordingTools(),
+        max_decisions=1,
+        event_log=EventLog.load(log_path),
+    ).resume()
+
+    assert completed.status == resumed.status == "completed"
+    assert resumed.events == completed.events
+    assert resumed_model.received_requests == []
+    assert calls == []
+
+
+def test_completion_events_reload_with_exact_state_and_causal_refs(tmp_path):
+    (tmp_path / "result.txt").write_text("correct", encoding="utf-8")
+    log_path = tmp_path / "execution.jsonl"
+    completed = RootAgentProcess(
+        model=ScriptedModel([ClaimComplete()]),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=EventLog(log_path),
+    ).run(
+        "Replay completion",
+        FileContentEquals("result.txt", "correct"),
+    )
+
+    reloaded = EventLog.load(log_path)
+    restored = RootAgentProcess(
+        model=ScriptedModel([]),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=reloaded,
+    ).resume()
+    decision, claimed, verified, terminal = reloaded.events[-4:]
+
+    assert reloaded.events == completed.events
+    assert restored.state == fold_execution_state(reloaded.events)
+    assert restored.state == completed.state
+    assert claimed.event_type == "COMPLETION_CLAIMED"
+    assert claimed.source_event_refs == (decision.event_id,)
+    assert verified.event_type == "COMPLETION_VERIFIED"
+    assert verified.source_event_refs == (claimed.event_id,)
+    assert terminal.event_type == "EXECUTION_COMPLETED"
+    assert terminal.source_event_refs == (verified.event_id,)
 
 
 def test_jsonl_event_log_reloads_exact_events_and_state(tmp_path):
@@ -28,6 +302,7 @@ def test_jsonl_event_log_reloads_exact_events_and_state(tmp_path):
             "goal": "persist me",
             "execution_id": "execution-1",
             "root_actor_id": "root-1",
+            "completion_spec": FileContentEquals("unused.txt", "unused"),
         },
     )
     reloaded = EventLog.load(path)
@@ -47,7 +322,9 @@ def test_wait_persists_and_resume_does_not_sample_without_an_event(tmp_path):
         checkpoint_path=tmp_path / "checkpoint.json",
     )
 
-    waiting = runtime.run("wait durably")
+    waiting = runtime.run(
+        "wait durably", FileContentEquals("unused.txt", "unused")
+    )
     still_waiting = runtime.resume()
 
     assert waiting.status == still_waiting.status == "waiting"
@@ -65,7 +342,7 @@ def test_checkpoint_restore_equals_full_replay_and_missing_falls_back(tmp_path):
         max_decisions=3,
         event_log=EventLog(log_path),
         checkpoint_path=checkpoint_path,
-    ).run("restore me")
+    ).run("restore me", FileContentEquals("unused.txt", "unused"))
 
     reloaded_log = EventLog.load(log_path)
     restored = RootAgentProcess(
@@ -104,7 +381,7 @@ def test_valid_checkpoint_recovery_folds_only_the_durable_tail(
         max_decisions=2,
         event_log=EventLog(log_path),
         checkpoint_path=checkpoint_path,
-    ).run("use the checkpoint")
+    ).run("use the checkpoint", FileContentEquals("unused.txt", "unused"))
     reloaded_log = EventLog.load(log_path)
     real_fold = execution_module.fold_execution_state
     fold_calls = []
@@ -142,6 +419,7 @@ def test_checkpoint_capture_derives_its_snapshot_from_events(tmp_path):
             "goal": "derive checkpoint",
             "execution_id": "execution-1",
             "root_actor_id": "root-1",
+            "completion_spec": FileContentEquals("unused.txt", "unused"),
         },
     )
 
@@ -164,6 +442,10 @@ def test_full_restart_wake_resumes_after_settled_tool_without_replaying_it(tmp_p
             calls.append(request)
             return self._host.execute(request)
 
+        @property
+        def environment(self):
+            return self._host.environment
+
     before_restart = RootAgentProcess(
         model=ScriptedModel(
             [ToolCall(WriteRequest("a.txt", "A")), Wait("CONTINUE")]
@@ -172,12 +454,12 @@ def test_full_restart_wake_resumes_after_settled_tool_without_replaying_it(tmp_p
         max_decisions=5,
         event_log=EventLog(log_path),
         checkpoint_path=checkpoint_path,
-    ).run("survive restart")
+    ).run("survive restart", FileContentEquals("b.txt", "B"))
     execution_id = before_restart.state.execution_id
     root_actor_id = before_restart.state.root_actor_id
 
     after_restart_model = ScriptedModel(
-        [ToolCall(WriteRequest("b.txt", "B")), Complete("done")]
+        [ToolCall(WriteRequest("b.txt", "B")), ClaimComplete()]
     )
     after_restart = RootAgentProcess(
         model=after_restart_model,
@@ -208,7 +490,8 @@ def test_irrelevant_event_is_durable_but_does_not_wake_or_sample(tmp_path):
         event_log=EventLog(log_path),
         checkpoint_path=checkpoint_path,
     )
-    runtime.run("ignore noise")
+    (tmp_path / "awake.txt").write_text("awake", encoding="utf-8")
+    runtime.run("ignore noise", FileContentEquals("awake.txt", "awake"))
 
     still_waiting = runtime.deliver_event("NOISE", "keep this")
 
@@ -217,7 +500,7 @@ def test_irrelevant_event_is_durable_but_does_not_wake_or_sample(tmp_path):
     assert still_waiting.events[-1].event_type == "EXTERNAL_EVENT_RECEIVED"
     assert still_waiting.events[-1].payload["event"].event_type == "NOISE"
 
-    second_model = ScriptedModel([Complete("awake")])
+    second_model = ScriptedModel([ClaimComplete()])
     completed = RootAgentProcess(
         model=second_model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
@@ -249,7 +532,7 @@ def test_malformed_event_log_and_corrupt_checkpoint_fail_explicitly(tmp_path):
         max_decisions=2,
         event_log=EventLog(log_path),
         checkpoint_path=checkpoint_path,
-    ).run("detect corruption")
+    ).run("detect corruption", FileContentEquals("unused.txt", "unused"))
     checkpoint_path.write_text("{not json}\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="malformed checkpoint"):
@@ -278,6 +561,7 @@ def test_failed_durable_append_never_becomes_an_authoritative_event(
                 "goal": "do not accept",
                 "execution_id": "execution-1",
                 "root_actor_id": "root-1",
+                "completion_spec": FileContentEquals("unused.txt", "unused"),
             },
         )
 
@@ -309,13 +593,20 @@ def test_restart_reconciles_a_committed_write_without_executing_it_again(tmp_pat
             write_calls.append(request)
             return self._host.execute(request)
 
+        @property
+        def environment(self):
+            return self._host.environment
+
     with pytest.raises(SystemExit, match="crash after committed write"):
         RootAgentProcess(
             model=ScriptedModel([ToolCall(WriteRequest("committed.txt", "value"))]),
             tools=CrashAfterCommittedWrite(),
             max_decisions=3,
             event_log=EventLog(log_path),
-        ).run("reconcile a committed write")
+        ).run(
+            "reconcile a committed write",
+            FileContentEquals("committed.txt", "value"),
+        )
 
     before_restart = EventLog.load(log_path)
     started = before_restart.events[-1]
@@ -325,7 +616,7 @@ def test_restart_reconciles_a_committed_write_without_executing_it_again(tmp_pat
     assert started.payload["request"] == WriteRequest("committed.txt", "value")
 
     resumed = RootAgentProcess(
-        model=ScriptedModel([Complete("done")]),
+        model=ScriptedModel([ClaimComplete()]),
         tools=RecordingRecoveryTools(),
         max_decisions=3,
         event_log=EventLog.load(log_path),
@@ -362,10 +653,13 @@ def test_restart_leaves_an_ambiguous_write_unknown_without_replay(tmp_path):
             tools=CrashBeforeWrite(),
             max_decisions=2,
             event_log=EventLog(log_path),
-        ).run("leave a write unknown")
+        ).run(
+            "leave a write unknown",
+            FileContentEquals("unknown.txt", "value"),
+        )
     (tmp_path / "unknown.txt").write_text("different", encoding="utf-8")
 
-    resumed_model = ScriptedModel([Complete("must not run")])
+    resumed_model = ScriptedModel([ClaimComplete()])
     runtime = RootAgentProcess(
         model=resumed_model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
@@ -397,9 +691,12 @@ def test_restart_reports_dangling_shell_as_unsupported(tmp_path):
             tools=CrashingTools(),
             max_decisions=2,
             event_log=EventLog(log_path),
-        ).run("leave shell unresolved")
+        ).run(
+            "leave shell unresolved",
+            FileContentEquals("unused.txt", "unused"),
+        )
 
-    resumed_model = ScriptedModel([Complete("must not run")])
+    resumed_model = ScriptedModel([ClaimComplete()])
     runtime = RootAgentProcess(
         model=resumed_model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
@@ -427,7 +724,10 @@ def test_restart_finishes_wake_when_matching_event_was_already_durable(
         event_log=event_log,
         checkpoint_path=checkpoint_path,
     )
-    runtime.run("finish durable wake")
+    (tmp_path / "resumed.txt").write_text("resumed", encoding="utf-8")
+    runtime.run(
+        "finish durable wake", FileContentEquals("resumed.txt", "resumed")
+    )
     durable_append = event_log.append
 
     def crash_before_woken(event_type, payload, source_event_refs=()):
@@ -440,7 +740,7 @@ def test_restart_finishes_wake_when_matching_event_was_already_durable(
         runtime.deliver_event("CONTINUE")
     assert EventLog.load(log_path).events[-1].event_type == "EXTERNAL_EVENT_RECEIVED"
 
-    resumed_model = ScriptedModel([Complete("resumed")])
+    resumed_model = ScriptedModel([ClaimComplete()])
     resumed = RootAgentProcess(
         model=resumed_model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
@@ -451,7 +751,7 @@ def test_restart_finishes_wake_when_matching_event_was_already_durable(
 
     assert resumed.status == "completed"
     assert len(resumed_model.received_requests) == 1
-    assert resumed.events[-3].event_type == "ROOT_WOKEN"
+    assert any(event.event_type == "ROOT_WOKEN" for event in resumed.events)
 
 
 def test_wake_at_the_decision_bound_fails_without_an_extra_model_call(tmp_path):
@@ -462,7 +762,7 @@ def test_wake_at_the_decision_bound_fails_without_an_extra_model_call(tmp_path):
         max_decisions=1,
         event_log=EventLog(tmp_path / "execution.jsonl"),
     )
-    runtime.run("bounded wait")
+    runtime.run("bounded wait", FileContentEquals("unused.txt", "unused"))
 
     result = runtime.deliver_event("CONTINUE")
 
@@ -473,7 +773,8 @@ def test_wake_at_the_decision_bound_fails_without_an_extra_model_call(tmp_path):
 
 def test_long_typed_wait_condition_cannot_break_the_context_bound(tmp_path):
     event_type = "C" * 20_000
-    resumed_model = ScriptedModel([Wait(event_type), Complete("bounded")])
+    (tmp_path / "bounded.txt").write_text("bounded", encoding="utf-8")
+    resumed_model = ScriptedModel([Wait(event_type), ClaimComplete()])
     runtime = RootAgentProcess(
         model=resumed_model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
@@ -481,7 +782,10 @@ def test_long_typed_wait_condition_cannot_break_the_context_bound(tmp_path):
         max_context_chars=768,
         event_log=EventLog(tmp_path / "execution.jsonl"),
     )
-    runtime.run("bounded wait condition")
+    runtime.run(
+        "bounded wait condition",
+        FileContentEquals("bounded.txt", "bounded"),
+    )
 
     result = runtime.deliver_event(event_type)
 
@@ -497,7 +801,9 @@ def test_invalid_wait_condition_settles_as_an_explicit_failure(tmp_path):
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=1,
         event_log=EventLog(path),
-    ).run("reject invalid wait")
+    ).run(
+        "reject invalid wait", FileContentEquals("unused.txt", "unused")
+    )
 
     assert result.status == "failed"
     assert result.failure == "unknown_action:Wait"
@@ -513,7 +819,9 @@ def test_durable_codec_preserves_non_string_mapping_keys_exactly(tmp_path):
         tools=ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=1,
         event_log=EventLog(path),
-    ).run("preserve raw response")
+    ).run(
+        "preserve raw response", FileContentEquals("unused.txt", "unused")
+    )
 
     reloaded = EventLog.load(path)
 
@@ -532,6 +840,7 @@ def test_boolean_schema_metadata_is_rejected_instead_of_treated_as_integer(
             "goal": "typed metadata",
             "execution_id": "execution-1",
             "root_actor_id": "root-1",
+            "completion_spec": FileContentEquals("unused.txt", "unused"),
         },
     )
     event_record = json.loads(event_path.read_text(encoding="utf-8"))
@@ -548,7 +857,7 @@ def test_boolean_schema_metadata_is_rejected_instead_of_treated_as_integer(
         max_decisions=2,
         event_log=EventLog(log_path),
         checkpoint_path=checkpoint_path,
-    ).run("typed checkpoint")
+    ).run("typed checkpoint", FileContentEquals("unused.txt", "unused"))
     checkpoint_record = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     checkpoint_record["schema_version"] = True
     checkpoint_path.write_text(

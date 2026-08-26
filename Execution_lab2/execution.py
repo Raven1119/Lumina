@@ -31,6 +31,15 @@ ToolRequest: TypeAlias = ReadRequest | WriteRequest | ShellRequest
 
 
 @dataclass(frozen=True)
+class FileContentEquals:
+    path: str
+    expected_content: str
+
+
+CompletionSpec: TypeAlias = FileContentEquals
+
+
+@dataclass(frozen=True)
 class ToolResult:
     ok: bool
     output: str = ""
@@ -46,8 +55,8 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
-class Complete:
-    output: str
+class ClaimComplete:
+    pass
 
 
 @dataclass(frozen=True)
@@ -61,7 +70,7 @@ class ExternalEvent:
     data: str = ""
 
 
-Action: TypeAlias = ToolCall | Wait | Complete
+Action: TypeAlias = ToolCall | Wait | ClaimComplete
 
 
 def _structured_action(value: object) -> Action | None:
@@ -69,8 +78,8 @@ def _structured_action(value: object) -> Action | None:
         return value
     if isinstance(value, Wait):
         return value if isinstance(value.event_type, str) and value.event_type else None
-    if isinstance(value, Complete):
-        return value if isinstance(value.output, str) else None
+    if isinstance(value, ClaimComplete):
+        return value
     return None
 
 
@@ -84,12 +93,34 @@ class Observation:
         return self.result.ok
 
 
+@dataclass(frozen=True)
+class CompletionEvidence:
+    spec_type: Literal["file_content_equals"]
+    spec_fingerprint: str
+    observed_path: str
+    matched: bool
+    reason: Literal["matched", "missing", "content_mismatch", "unreadable"]
+
+
+@dataclass(frozen=True)
+class CompletionObservation:
+    status: Literal["rejected"]
+    evidence: CompletionEvidence
+
+    @property
+    def ok(self) -> bool:
+        return False
+
+
+RuntimeObservation: TypeAlias = Observation | CompletionObservation
+
+
 TOOL_CONTRACTS = (
     "read(path: str) -> ToolResult",
     "write(path: str, content: str) -> ToolResult",
     "shell(argv: tuple[str, ...]) -> ToolResult",
     "wait(event_type: str)",
-    "complete(output: str)",
+    "claim_complete()",
 )
 
 
@@ -134,6 +165,69 @@ def _write_content_sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _completion_spec_fingerprint(spec: CompletionSpec) -> str:
+    material = json.dumps(
+        {
+            "expected_content": spec.expected_content,
+            "path": spec.path,
+            "type": "file_content_equals",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _verify_completion(
+    spec: CompletionSpec, environment: SharedEnvironment
+) -> CompletionEvidence:
+    fingerprint = _completion_spec_fingerprint(spec)
+
+    def evidence(
+        matched: bool,
+        reason: Literal["matched", "missing", "content_mismatch", "unreadable"],
+    ) -> CompletionEvidence:
+        return CompletionEvidence(
+            "file_content_equals",
+            fingerprint,
+            spec.path,
+            matched,
+            reason,
+        )
+
+    relative_path = Path(spec.path)
+    if relative_path.is_absolute():
+        return evidence(False, "unreadable")
+    try:
+        path = (environment.workspace / relative_path).resolve()
+        path.relative_to(environment.workspace)
+        with path.open(encoding="utf-8") as source:
+            observed_content = source.read(len(spec.expected_content) + 1)
+    except FileNotFoundError:
+        return evidence(False, "missing")
+    except (OSError, RuntimeError, UnicodeError, ValueError):
+        return evidence(False, "unreadable")
+    if observed_content != spec.expected_content:
+        return evidence(False, "content_mismatch")
+    return evidence(True, "matched")
+
+
+def _evidence_matches_spec(
+    evidence: object, spec: object, *, matched: bool
+) -> bool:
+    return (
+        isinstance(evidence, CompletionEvidence)
+        and isinstance(spec, FileContentEquals)
+        and evidence.spec_type == "file_content_equals"
+        and evidence.spec_fingerprint == _completion_spec_fingerprint(spec)
+        and evidence.observed_path == spec.path
+        and evidence.matched is matched
+        and evidence.reason
+        in (("matched",) if matched else ("missing", "content_mismatch", "unreadable"))
+    )
+
+
 class ToolHost:
     def __init__(
         self,
@@ -149,6 +243,10 @@ class ToolHost:
         self._environment = environment
         self._shell_timeout_seconds = shell_timeout_seconds
         self._max_output_chars = max_output_chars
+
+    @property
+    def environment(self) -> SharedEnvironment:
+        return self._environment
 
     def execute(self, request: ToolRequest) -> ToolResult:
         try:
@@ -298,7 +396,7 @@ class ToolHost:
 class ExecutionStep:
     decision: int
     action: Action
-    observation: Observation | None
+    observation: RuntimeObservation | None
 
 
 EventType: TypeAlias = Literal[
@@ -308,6 +406,9 @@ EventType: TypeAlias = Literal[
     "TOOL_RESULT",
     "TOOL_FAILED",
     "ACTION_RECONCILED",
+    "COMPLETION_CLAIMED",
+    "COMPLETION_VERIFIED",
+    "COMPLETION_REJECTED",
     "ROOT_WAITING",
     "EXTERNAL_EVENT_RECEIVED",
     "ROOT_WOKEN",
@@ -344,12 +445,15 @@ _SERIALIZABLE_TYPES = {
         ReadRequest,
         WriteRequest,
         ShellRequest,
+        FileContentEquals,
         ToolResult,
         ToolCall,
         Wait,
         ExternalEvent,
-        Complete,
+        ClaimComplete,
         Observation,
+        CompletionEvidence,
+        CompletionObservation,
         ModelRequest,
         DecisionFrame,
     )
@@ -577,16 +681,24 @@ class EventLog:
             "TOOL_RESULT": {"observation"},
             "TOOL_FAILED": {"observation"},
             "ACTION_RECONCILED": {"status", "evidence"},
+            "COMPLETION_CLAIMED": {"claim"},
+            "COMPLETION_VERIFIED": {"evidence"},
+            "COMPLETION_REJECTED": {"observation"},
             "ROOT_WAITING": {"condition"},
             "EXTERNAL_EVENT_RECEIVED": {"event"},
             "ROOT_WOKEN": {"event"},
-            "EXECUTION_COMPLETED": {"output"},
+            "EXECUTION_COMPLETED": {"status"},
             "EXECUTION_FAILED": {"failure"},
         }
-        start_schema = {"goal", "execution_id", "root_actor_id"}
+        start_schema = {
+            "goal",
+            "execution_id",
+            "root_actor_id",
+            "completion_spec",
+        }
         if event_type == "EXECUTION_STARTED":
-            if self._path is None and set(payload) == {"goal"}:
-                start_schema = {"goal"}
+            if self._path is None and set(payload) == {"goal", "completion_spec"}:
+                start_schema = {"goal", "completion_spec"}
         elif event_type not in schemas:
             raise ValueError(f"unknown execution event type: {event_type}")
         expected_schema = (
@@ -604,6 +716,12 @@ class EventLog:
                 self._events
                 or source_event_refs
                 or not isinstance(payload["goal"], str)
+                or not isinstance(payload["completion_spec"], FileContentEquals)
+                or not isinstance(payload["completion_spec"].path, str)
+                or not payload["completion_spec"].path
+                or not isinstance(
+                    payload["completion_spec"].expected_content, str
+                )
                 or any(
                     not isinstance(payload[field], str) or not payload[field]
                     for field in ("execution_id", "root_actor_id")
@@ -628,6 +746,7 @@ class EventLog:
                     "TOOL_RESULT",
                     "TOOL_FAILED",
                     "ACTION_RECONCILED",
+                    "COMPLETION_REJECTED",
                     "ROOT_WOKEN",
                 )
                 or not isinstance(frame, DecisionFrame)
@@ -720,21 +839,57 @@ class EventLog:
                 raise ValueError(
                     "reconciliation must exactly confirm its interrupted Write"
                 )
-        elif event_type == "EXECUTION_COMPLETED":
+        elif event_type == "COMPLETION_CLAIMED":
             frame = previous.payload.get("frame")
+            claim = payload["claim"]
             if (
                 previous.event_type != "MODEL_DECISION"
                 or not isinstance(frame, DecisionFrame)
-                or not isinstance(frame.resulting_action, Complete)
-                or frame.resulting_action.output != payload["output"]
+                or not isinstance(frame.resulting_action, ClaimComplete)
+                or not isinstance(claim, ClaimComplete)
+                or frame.resulting_action != claim
             ):
-                raise ValueError("completion must match its model decision")
+                raise ValueError("completion claim must match its model decision")
+        elif event_type == "COMPLETION_VERIFIED":
+            if (
+                previous.event_type != "COMPLETION_CLAIMED"
+                or not _evidence_matches_spec(
+                    payload["evidence"],
+                    self._events[0].payload.get("completion_spec"),
+                    matched=True,
+                )
+            ):
+                raise ValueError(
+                    "completion verification must match the execution-start spec"
+                )
+        elif event_type == "COMPLETION_REJECTED":
+            observation = payload["observation"]
+            if (
+                previous.event_type != "COMPLETION_CLAIMED"
+                or not isinstance(observation, CompletionObservation)
+                or observation.status != "rejected"
+                or not _evidence_matches_spec(
+                    observation.evidence,
+                    self._events[0].payload.get("completion_spec"),
+                    matched=False,
+                )
+            ):
+                raise ValueError(
+                    "completion rejection must match the execution-start spec"
+                )
+        elif event_type == "EXECUTION_COMPLETED":
+            if (
+                previous.event_type != "COMPLETION_VERIFIED"
+                or payload["status"] != "verified"
+            ):
+                raise ValueError("completion requires verified environment evidence")
         elif event_type == "EXECUTION_FAILED":
             if not isinstance(payload["failure"], str) or previous.event_type not in (
                 "MODEL_DECISION",
                 "TOOL_RESULT",
                 "TOOL_FAILED",
                 "ACTION_RECONCILED",
+                "COMPLETION_REJECTED",
                 "ROOT_WOKEN",
             ):
                 raise ValueError("failure requires the latest execution cause")
@@ -766,6 +921,12 @@ class EventLog:
         if isinstance(value, ShellRequest):
             argv = cls._freeze(value.argv)
             return value if argv is value.argv else ShellRequest(argv)
+        if isinstance(value, FileContentEquals):
+            path = cls._freeze(value.path)
+            expected_content = cls._freeze(value.expected_content)
+            if path is value.path and expected_content is value.expected_content:
+                return value
+            return FileContentEquals(path, expected_content)
         if isinstance(value, ToolResult):
             fields = tuple(
                 cls._freeze(field)
@@ -806,15 +967,46 @@ class EventLog:
             if event_type is value.event_type and data is value.data:
                 return value
             return ExternalEvent(event_type, data)
-        if isinstance(value, Complete):
-            output = cls._freeze(value.output)
-            return value if output is value.output else Complete(output)
+        if isinstance(value, ClaimComplete):
+            return value
         if isinstance(value, Observation):
             request = cls._freeze(value.request)
             result = cls._freeze(value.result)
             if request is value.request and result is value.result:
                 return value
             return Observation(request, result)
+        if isinstance(value, CompletionEvidence):
+            values = tuple(
+                cls._freeze(item)
+                for item in (
+                    value.spec_type,
+                    value.spec_fingerprint,
+                    value.observed_path,
+                    value.matched,
+                    value.reason,
+                )
+            )
+            if all(
+                item is original
+                for item, original in zip(
+                    values,
+                    (
+                        value.spec_type,
+                        value.spec_fingerprint,
+                        value.observed_path,
+                        value.matched,
+                        value.reason,
+                    ),
+                )
+            ):
+                return value
+            return CompletionEvidence(*values)
+        if isinstance(value, CompletionObservation):
+            status = cls._freeze(value.status)
+            evidence = cls._freeze(value.evidence)
+            if status is value.status and evidence is value.evidence:
+                return value
+            return CompletionObservation(status, evidence)
         if isinstance(value, ModelRequest):
             context = cls._freeze(value.context)
             available_tools = cls._freeze(value.available_tools)
@@ -858,10 +1050,11 @@ class ExecutionState:
     version: int
     status: Literal["running", "waiting", "completed", "failed"]
     goal: str
+    completion_spec: CompletionSpec | None = None
     execution_id: str | None = None
     root_actor_id: str | None = None
     decision_count: int = 0
-    latest_observation: Observation | None = None
+    latest_observation: RuntimeObservation | None = None
     last_action: object | None = None
     last_result: ToolResult | None = None
     completion: str | None = None
@@ -895,6 +1088,7 @@ def fold_execution_state(
                 version=event.sequence,
                 status="running",
                 goal=event.payload["goal"],
+                completion_spec=event.payload.get("completion_spec"),
                 execution_id=event.payload.get("execution_id"),
                 root_actor_id=event.payload.get("root_actor_id"),
             )
@@ -913,6 +1107,7 @@ def fold_execution_state(
             "version": event.sequence,
             "status": state.status,
             "goal": state.goal,
+            "completion_spec": state.completion_spec,
             "execution_id": state.execution_id,
             "root_actor_id": state.root_actor_id,
             "decision_count": state.decision_count,
@@ -952,6 +1147,13 @@ def fold_execution_state(
             )
             values["latest_observation"] = Observation(action.request, result)
             values["last_result"] = result
+        elif event.event_type == "COMPLETION_REJECTED":
+            observation = event.payload.get("observation")
+            if not isinstance(observation, CompletionObservation):
+                raise ValueError(
+                    "completion rejection events require an observation"
+                )
+            values["latest_observation"] = observation
         elif event.event_type == "ROOT_WAITING":
             condition = event.payload.get("condition")
             if not isinstance(condition, Wait):
@@ -974,11 +1176,10 @@ def fold_execution_state(
             values["waiting_for"] = None
             values["latest_external_event"] = external_event
         elif event.event_type == "EXECUTION_COMPLETED":
-            output = event.payload.get("output")
-            if not isinstance(output, str):
-                raise ValueError("completion events require output")
+            if event.payload.get("status") != "verified":
+                raise ValueError("completion events require verified status")
             values["status"] = "completed"
-            values["completion"] = output
+            values["completion"] = "verified"
         elif event.event_type == "EXECUTION_FAILED":
             failure = event.payload.get("failure")
             if not isinstance(failure, str):
@@ -1150,24 +1351,45 @@ def _request_projection(request: ToolRequest) -> dict[str, object]:
     return {"tool": type(request).__name__}
 
 
+def _completion_spec_projection(
+    spec: CompletionSpec,
+) -> dict[str, object]:
+    return {
+        "type": "file_content_equals",
+        "path": _text_projection(spec.path),
+        "expected": _text_projection(spec.expected_content),
+    }
+
+
 def _action_projection(action: object | None) -> dict[str, object] | None:
     if isinstance(action, ToolCall):
         tool = _request_projection(action.request)["tool"]
         return {"type": "tool_call", "tool": tool}
     if isinstance(action, Wait):
         return {"type": "wait", "event_type": _text_projection(action.event_type)}
-    if isinstance(action, Complete):
-        return {"type": "complete", "output": _text_projection(action.output)}
+    if isinstance(action, ClaimComplete):
+        return {"type": "claim_complete"}
     if action is None:
         return None
     return {"type": type(action).__name__}
 
 
 def _observation_projection(
-    observation: Observation | None,
+    observation: RuntimeObservation | None,
 ) -> dict[str, object] | None:
     if observation is None:
         return None
+    if isinstance(observation, CompletionObservation):
+        evidence = observation.evidence
+        return {
+            "type": "completion_verification",
+            "status": observation.status,
+            "evidence": {
+                "observed_path": _text_projection(evidence.observed_path),
+                "matched": evidence.matched,
+                "reason": evidence.reason,
+            },
+        }
     result = observation.result
     return {
         "request": _request_projection(observation.request),
@@ -1187,6 +1409,11 @@ def _observation_projection(
 def _bounded_context(state: ExecutionState, max_chars: int) -> str:
     document: dict[str, object] = {
         "goal": _text_projection(state.goal),
+        "completion_spec": (
+            _completion_spec_projection(state.completion_spec)
+            if state.completion_spec is not None
+            else None
+        ),
         "state": {
             "version": state.version,
             "status": state.status,
@@ -1196,17 +1423,6 @@ def _bounded_context(state: ExecutionState, max_chars: int) -> str:
             "waiting_for": (
                 _text_projection(state.waiting_for)
                 if state.waiting_for is not None
-                else None
-            ),
-            "last_action": _action_projection(state.last_action),
-            "last_result": (
-                {
-                    "ok": state.last_result.ok,
-                    "error_code": state.last_result.error_code,
-                    "exit_code": state.last_result.exit_code,
-                    "canonical_truncated": state.last_result.truncated,
-                }
-                if state.last_result is not None
                 else None
             ),
             "completion": (
@@ -1315,6 +1531,7 @@ class RootAgentProcess:
                 "TOOL_FAILED",
                 "TOOL_CALL_STARTED",
                 "ACTION_RECONCILED",
+                "COMPLETION_REJECTED",
                 "ROOT_WAITING",
                 "EXTERNAL_EVENT_RECEIVED",
                 "ROOT_WOKEN",
@@ -1325,7 +1542,9 @@ class RootAgentProcess:
                     "unsettled action recovery is not implemented for this event tail"
                 )
 
-    def run(self, goal: str) -> ExecutionResult:
+    def run(
+        self, goal: str, completion_spec: CompletionSpec
+    ) -> ExecutionResult:
         if self._event_log.events:
             raise ValueError("execution has already started; use resume")
         self._event_log.append(
@@ -1334,6 +1553,7 @@ class RootAgentProcess:
                 "goal": goal,
                 "execution_id": f"execution-{uuid.uuid4().hex}",
                 "root_actor_id": f"root-{uuid.uuid4().hex}",
+                "completion_spec": completion_spec,
             },
         )
         return self._drive()
@@ -1440,14 +1660,40 @@ class RootAgentProcess:
                 {"action": action_snapshot, "frame": frame},
                 source_refs,
             )
-            if isinstance(action, Complete):
-                steps.append(ExecutionStep(decision, action, None))
-                self._event_log.append(
-                    "EXECUTION_COMPLETED",
-                    {"output": action.output},
+            if isinstance(action, ClaimComplete):
+                claim_event = self._event_log.append(
+                    "COMPLETION_CLAIMED",
+                    {"claim": action},
                     (decision_event.event_id,),
                 )
-                return self._result(steps)
+                state = self._current_state()
+                if state.completion_spec is None:
+                    raise ValueError("execution is missing its completion spec")
+                evidence = _verify_completion(
+                    state.completion_spec,
+                    self._tools.environment,
+                )
+                if evidence.matched:
+                    verified_event = self._event_log.append(
+                        "COMPLETION_VERIFIED",
+                        {"evidence": evidence},
+                        (claim_event.event_id,),
+                    )
+                    steps.append(ExecutionStep(decision, action, None))
+                    self._event_log.append(
+                        "EXECUTION_COMPLETED",
+                        {"status": "verified"},
+                        (verified_event.event_id,),
+                    )
+                    return self._result(steps)
+                observation = CompletionObservation("rejected", evidence)
+                self._event_log.append(
+                    "COMPLETION_REJECTED",
+                    {"observation": observation},
+                    (claim_event.event_id,),
+                )
+                steps.append(ExecutionStep(decision, action, observation))
+                continue
             if isinstance(action, Wait):
                 steps.append(ExecutionStep(decision, action, None))
                 self._event_log.append(
