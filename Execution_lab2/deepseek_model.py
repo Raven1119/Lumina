@@ -3,16 +3,20 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable, Mapping
+from typing import Literal
 
 import httpx
 
 from Execution_lab2.execution import (
     ClaimComplete,
+    IPYTHON_TOOL_CONTRACTS,
+    IPythonCode,
     ModelRequest,
     NativeModelDecision,
     ReadRequest,
     ShellRequest,
     ToolCall,
+    TOOL_CONTRACTS,
     Wait,
     WriteRequest,
 )
@@ -22,7 +26,7 @@ MODEL = "deepseek-v4-pro"
 _ENDPOINT = "https://api.deepseek.com/chat/completions"
 _TIMEOUT_SECONDS = 60.0
 
-_TOOLS = [
+_NATIVE_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -86,6 +90,23 @@ _TOOLS = [
     },
 ]
 
+_IPYTHON_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "ipython",
+            "description": "Execute Python in the persistent workspace kernel.",
+            "parameters": {
+                "type": "object",
+                "properties": {"code": {"type": "string"}},
+                "required": ["code"],
+            },
+        },
+    },
+    _NATIVE_TOOLS[3],
+    _NATIVE_TOOLS[4],
+]
+
 
 class _ProviderError(Exception):
     pass
@@ -97,18 +118,36 @@ class DeepSeekModel:
     def __init__(
         self,
         *,
+        tool_mode: Literal["native", "ipython"] = "native",
         transport: Callable[[dict[str, object]], object] | None = None,
     ) -> None:
+        if tool_mode not in ("native", "ipython"):
+            raise ValueError("tool_mode must be native or ipython")
+        self._tool_mode = tool_mode
         self._transport = transport or self._post
 
+    @property
+    def tool_contracts(self) -> tuple[str, ...]:
+        return (
+            TOOL_CONTRACTS
+            if self._tool_mode == "native"
+            else IPYTHON_TOOL_CONTRACTS
+        )
+
     def decide(self, request: ModelRequest) -> NativeModelDecision:
+        system_prompt = (
+            "Use the provided functions to act on the environment. "
+            "Claim completion only through claim_complete."
+        )
+        if self._tool_mode == "ipython":
+            system_prompt = (
+                "Use the persistent IPython environment to inspect and modify "
+                "the workspace. Use claim_complete when the task is finished."
+            )
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "Use the provided functions to act on the environment. "
-                    "Claim completion only through claim_complete."
-                ),
+                "content": system_prompt,
             }
         ]
         continuation = request.native_tool_continuation
@@ -140,7 +179,11 @@ class DeepSeekModel:
         payload: dict[str, object] = {
             "model": MODEL,
             "messages": messages,
-            "tools": _TOOLS,
+            "tools": (
+                _NATIVE_TOOLS
+                if self._tool_mode == "native"
+                else _IPYTHON_TOOLS
+            ),
             "thinking": {"type": "disabled"},
             "stream": False,
         }
@@ -195,7 +238,12 @@ class DeepSeekModel:
         ):
             return self._failure(payload, response, "malformed_response")
         name = function["name"]
-        if name not in {"read", "write", "shell", "wait", "claim_complete"}:
+        allowed_names = (
+            {"read", "write", "shell", "wait", "claim_complete"}
+            if self._tool_mode == "native"
+            else {"ipython", "wait", "claim_complete"}
+        )
+        if name not in allowed_names:
             return self._failure(payload, response, "unknown_tool")
         try:
             arguments = json.loads(function["arguments"])
@@ -239,6 +287,13 @@ class DeepSeekModel:
     def _action(name: str, arguments: object):
         if not isinstance(arguments, dict):
             return None
+        if (
+            name == "ipython"
+            and set(arguments) == {"code"}
+            and isinstance(arguments["code"], str)
+            and arguments["code"]
+        ):
+            return IPythonCode(arguments["code"])
         if (
             name == "read"
             and set(arguments) == {"path"}

@@ -2,4 +2,6 @@ fastapi==0.115.12
 uvicorn==0.34.2
 pydantic==2.11.1
 httpx==0.28.1
+jupyter_client==8.9.1
+ipykernel==7.3.0
 pytest==8.3.5

@@ -245,6 +245,49 @@ loading, or live A/B run.
 - Removing builtins, filtering imports, or inspecting AST would be a custom Python jail/import system. Besides being an inadequate authority guarantee, that is explicitly outside this task.
 - **RESULT: BLOCKED.** The programmable-value hypothesis was not run, so it is neither promoted nor refuted. The minimum prerequisite is a pre-existing, independently verified OS/container isolation backend that denies direct filesystem/process/network authority and exposes only bounded IPC bindings. This task does not authorize building that backend.
 
+## Persistent IPython control-plane re-audit (2026-08-26)
+
+This audit follows the task's explicit authority change: IPython and ToolHost
+have equal trusted local OS/workspace access. It supersedes the prior blocker
+only for this persistent-IPython experiment; it does not claim isolation.
+
+### Prime Agent - primary implementation reference
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [PrimeIntellect-ai/prime-agent at `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/514633727bf26d74f39f3119c2b0e31a5ceb2a9d), `v0.8.1`, MIT.
+- **SOURCE SYMBOL:** [`ipython` tool](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/tools/ipython.ts), [kernel directory / `KernelManager`](https://github.com/PrimeIntellect-ai/prime-agent/tree/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/kernel), [`AgentSession`](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/agent-session.ts), [RLM runtime](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/docs/rlm-runtime.md), and [RLM](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/docs/rlm.md).
+- **BORROWED SEMANTICS:** One live agent session owns one persistent IPython kernel; variables/imports/functions persist across model decisions; the Host owns kernel lifecycle and provider/session authority; Python runs with worker OS permissions and the kernel is not a security sandbox.
+- **LUMINA ADAPTATION:** One live `RootAgentProcess` lazily owns at most one `PersistentIPython`, whose initial cwd is the shared workspace. Runtime records only the outer code execution fact and keeps EventLog/State/completion authority outside the kernel. Terminal execution closes the kernel; restart restores durable Runtime facts but intentionally creates a fresh namespace.
+- **NOT COPIED:** Prime's TypeScript ZeroMQ implementation, RLM, Child/recursive agents, daemon workers, heartbeat, goal skills, session/artifact hierarchy, provider stack, namespace bootstrap, or kernel revival/snapshot logic.
+
+### DeepSeek Harness (DSH) - fresh-execution contrast
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [deepseek-ai/deepseek-harness at `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e), `dsh 0.1.1-rc.2`, MIT.
+- **SOURCE SYMBOL:** [`RUN_CODE_NAME` / `createRunCodeTool`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/tools/src/code-mode.ts), [`CodeRuntime.run` / `CodeRunRequest`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/subsystems/code-runtime.md), and [worker runtime contract](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/code-runtime/code-runtime-worker-thread/README.md).
+- **BORROWED SEMANTICS:** Fresh code execution is a distinct design from a persistent REPL, and model-visible outer output must remain bounded even when execution produces larger internal output.
+- **LUMINA ADAPTATION:** DSH is used as the contrast case only. This Slice deliberately tests a live persistent namespace and still records bounded outer observations.
+- **NOT COPIED:** DSH's fresh worker semantics, plugin/registry framework, binding namespace, inner tool-call dispatch, scheduler, spill system, SDK generator, or generic `CodeRuntime`. **NO DIRECT SOURCE IMPLEMENTATION:** DSH does not provide the persistent-kernel lifecycle implemented here.
+
+### OpenAI Codex - Host lifecycle and bounded evidence
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [openai/codex at `d4998d611ad37de0aa9723b6fdd2d9a2f8ff4763`](https://github.com/openai/codex/tree/d4998d611ad37de0aa9723b6fdd2d9a2f8ff4763), rolling `main`, Apache-2.0.
+- **SOURCE SYMBOL:** [`ToolRouter::model_visible_specs`](https://github.com/openai/codex/blob/d4998d611ad37de0aa9723b6fdd2d9a2f8ff4763/codex-rs/core/src/tools/router.rs), [`Prompt`](https://github.com/openai/codex/blob/d4998d611ad37de0aa9723b6fdd2d9a2f8ff4763/codex-rs/core/src/client_common.rs), provider-native [`ResponseItem::FunctionCall`](https://github.com/openai/codex/blob/d4998d611ad37de0aa9723b6fdd2d9a2f8ff4763/codex-rs/protocol/src/models.rs), and [`ExecCommandToolOutput::response_text`](https://github.com/openai/codex/blob/d4998d611ad37de0aa9723b6fdd2d9a2f8ff4763/codex-rs/core/src/tools/context.rs).
+- **BORROWED SEMANTICS:** The Host freezes the actual model request/tool view, correlates a returned call with Host execution, retains canonical execution facts, and gives the model a bounded result projection.
+- **LUMINA ADAPTATION:** `DecisionFrame` preserves the exact B-arm request, three exposed contracts, raw response, typed `IPythonCode`, and call id. Runtime appends bounded typed IPython result/failure events and folds them into State; the kernel is working state, not historical authority.
+- **NOT COPIED:** Codex session/turn framework, tool router, sandbox/approval policy, Responses stack, MCP, compaction, parallel dispatch, or shell execution implementation. **NO DIRECT SOURCE IMPLEMENTATION:** Codex supplies no drop-in persistent IPython lifecycle for this Slice.
+
+### Jupyter backend
+
+- **SOURCE / VERSION / LICENSE:** installed `jupyter_client==8.9.1` and `ipykernel==7.3.0`, BSD-3-Clause package metadata.
+- **SOURCE SYMBOL:** `jupyter_client.manager.start_new_kernel`, `KernelClient.execute`, IOPub `stream` / `display_data` / `execute_result` / `error` / `status` messages, `interrupt_kernel`, and `shutdown_kernel`.
+- **BORROWED SEMANTICS / LUMINA ADAPTATION:** Use the mature Jupyter protocol implementation to start one Python kernel in the workspace, execute code, collect bounded output until the matching request becomes idle, interrupt on timeout, and shut down. Lumina adds only its typed result, limits, event integration, and lifecycle boundary.
+- **NOT COPIED:** No ZeroMQ protocol, REPL parser, multi-kernel manager, notebook document model, server, gateway, or kernel persistence was reimplemented.
+
+### Slice decision
+
+- Mechanism tests prove namespace persistence, exact workspace cwd, direct read/transform/write followed by authoritative completion verification, bounded visible output with truthful original size, explicit Python failure returned to Root, timeout/code limits, fresh namespace after restart, full EventLog fold equivalence, and terminal shutdown.
+- The real A/B used two fixed tasks, two arms, and three fresh runs per arm. Conditional success was 2/3 for both arms while median provider calls fell 4 to 3 and visible result characters fell 884 to 435. Aggregation success rose 2/3 to 3/3 while median calls fell 6 to 4, input tokens 6,449 to 3,445, wall time 11.002 s to 8.034 s, and visible result characters 2,756 to 1,226. IPython produced zero Python runtime failures.
+- **RESULT: PROMOTE.** The task-card gate is satisfied without prompt or fixture tuning. The result is limited to this MVP surface and does not authorize security-sandbox claims, durable namespace, automatic replay, multiple kernels, Child, RLM, recursion, or any general code-runtime framework.
+
 ## Source ambiguities and non-equivalences
 
 - **Direct source fact:** every positive upstream behavior above names a pinned symbol or official contract. **Inference** is marked explicitly for Prime's host-authority reading and Temporal's wake shorthand.

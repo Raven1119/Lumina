@@ -10,6 +10,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Literal, Mapping, Protocol, TypeAlias
 
+from Execution_lab2.ipython_control import IPythonResult, PersistentIPython
+
 
 @dataclass(frozen=True)
 class ReadRequest:
@@ -55,6 +57,11 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class IPythonCode:
+    code: str
+
+
+@dataclass(frozen=True)
 class ClaimComplete:
     pass
 
@@ -70,7 +77,7 @@ class ExternalEvent:
     data: str = ""
 
 
-Action: TypeAlias = ToolCall | Wait | ClaimComplete
+Action: TypeAlias = ToolCall | IPythonCode | Wait | ClaimComplete
 
 
 @dataclass(frozen=True)
@@ -94,6 +101,8 @@ def _structured_action(value: object) -> Action | None:
         return None if value.failure is not None else _structured_action(value.action)
     if isinstance(value, ToolCall):
         return value
+    if isinstance(value, IPythonCode):
+        return value if isinstance(value.code, str) and value.code else None
     if isinstance(value, Wait):
         return value if isinstance(value.event_type, str) and value.event_type else None
     if isinstance(value, ClaimComplete):
@@ -131,13 +140,31 @@ class CompletionObservation:
         return False
 
 
-RuntimeObservation: TypeAlias = Observation | CompletionObservation
+@dataclass(frozen=True)
+class IPythonObservation:
+    result: IPythonResult
+    provider_tool_call_id: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.result.ok
+
+
+RuntimeObservation: TypeAlias = (
+    Observation | IPythonObservation | CompletionObservation
+)
 
 
 TOOL_CONTRACTS = (
     "read(path: str) -> ToolResult",
     "write(path: str, content: str) -> ToolResult",
     "shell(argv: tuple[str, ...]) -> ToolResult",
+    "wait(event_type: str)",
+    "claim_complete()",
+)
+
+IPYTHON_TOOL_CONTRACTS = (
+    "ipython(code: str)",
     "wait(event_type: str)",
     "claim_complete()",
 )
@@ -182,7 +209,7 @@ class SharedEnvironment:
             raise ValueError("workspace must be an existing directory")
 
 
-def _write_content_sha256(content: str) -> str:
+def _text_sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
@@ -402,8 +429,8 @@ class ToolHost:
         return MappingProxyType(
             {
                 "path": request.path,
-                "intended_content_sha256": _write_content_sha256(request.content),
-                "observed_content_sha256": _write_content_sha256(observed_content),
+                "intended_content_sha256": _text_sha256(request.content),
+                "observed_content_sha256": _text_sha256(observed_content),
                 "observed_chars": len(observed_content),
             }
         )
@@ -426,6 +453,9 @@ EventType: TypeAlias = Literal[
     "TOOL_CALL_STARTED",
     "TOOL_RESULT",
     "TOOL_FAILED",
+    "IPYTHON_EXECUTION_STARTED",
+    "IPYTHON_EXECUTION_RESULT",
+    "IPYTHON_EXECUTION_FAILED",
     "ACTION_RECONCILED",
     "COMPLETION_CLAIMED",
     "COMPLETION_VERIFIED",
@@ -472,10 +502,13 @@ _SERIALIZABLE_TYPES = {
         FileContentEquals,
         ToolResult,
         ToolCall,
+        IPythonCode,
+        IPythonResult,
         Wait,
         ExternalEvent,
         ClaimComplete,
         Observation,
+        IPythonObservation,
         CompletionEvidence,
         CompletionObservation,
         NativeModelDecision,
@@ -706,6 +739,9 @@ class EventLog:
             "TOOL_CALL_STARTED": {"request"},
             "TOOL_RESULT": {"observation"},
             "TOOL_FAILED": {"observation"},
+            "IPYTHON_EXECUTION_STARTED": {"action", "code_sha256"},
+            "IPYTHON_EXECUTION_RESULT": {"observation"},
+            "IPYTHON_EXECUTION_FAILED": {"observation"},
             "ACTION_RECONCILED": {"status", "evidence"},
             "COMPLETION_CLAIMED": {"claim"},
             "COMPLETION_VERIFIED": {"evidence"},
@@ -788,6 +824,8 @@ class EventLog:
                     "EXECUTION_STARTED",
                     "TOOL_RESULT",
                     "TOOL_FAILED",
+                    "IPYTHON_EXECUTION_RESULT",
+                    "IPYTHON_EXECUTION_FAILED",
                     "ACTION_RECONCILED",
                     "COMPLETION_REJECTED",
                     "ROOT_WOKEN",
@@ -847,6 +885,18 @@ class EventLog:
                 or frame.resulting_action.request != self._freeze(request)
             ):
                 raise ValueError("tool call must match its model decision")
+        elif event_type == "IPYTHON_EXECUTION_STARTED":
+            frame = previous.payload.get("frame")
+            action = payload["action"]
+            if (
+                previous.event_type != "MODEL_DECISION"
+                or not isinstance(frame, DecisionFrame)
+                or not isinstance(frame.resulting_action, IPythonCode)
+                or not isinstance(action, IPythonCode)
+                or frame.resulting_action != self._freeze(action)
+                or payload["code_sha256"] != _text_sha256(action.code)
+            ):
+                raise ValueError("IPython execution must match its model decision")
         elif event_type in ("TOOL_RESULT", "TOOL_FAILED"):
             observation = payload["observation"]
             decision_event = self._events[-2] if len(self._events) >= 2 else None
@@ -871,6 +921,32 @@ class EventLog:
                 != expected_provider_tool_call_id
             ):
                 raise ValueError("tool result must match its tool call and outcome")
+        elif event_type in (
+            "IPYTHON_EXECUTION_RESULT",
+            "IPYTHON_EXECUTION_FAILED",
+        ):
+            observation = payload["observation"]
+            decision_event = self._events[-2] if len(self._events) >= 2 else None
+            decision_frame = (
+                decision_event.payload.get("frame")
+                if decision_event is not None
+                and decision_event.event_type == "MODEL_DECISION"
+                else None
+            )
+            expected_provider_tool_call_id = (
+                decision_frame.provider_tool_call_id
+                if isinstance(decision_frame, DecisionFrame)
+                else None
+            )
+            if (
+                previous.event_type != "IPYTHON_EXECUTION_STARTED"
+                or not isinstance(observation, IPythonObservation)
+                or observation.result.ok
+                != (event_type == "IPYTHON_EXECUTION_RESULT")
+                or observation.provider_tool_call_id
+                != expected_provider_tool_call_id
+            ):
+                raise ValueError("IPython result must match its execution")
         elif event_type == "ACTION_RECONCILED":
             request = previous.payload.get("request")
             evidence = payload["evidence"]
@@ -888,7 +964,7 @@ class EventLog:
                 }
                 or evidence["path"] != request.path
                 or evidence["intended_content_sha256"]
-                != _write_content_sha256(request.content)
+                != _text_sha256(request.content)
                 or evidence["observed_content_sha256"]
                 != evidence["intended_content_sha256"]
                 or type(evidence["observed_chars"]) is not int
@@ -946,6 +1022,8 @@ class EventLog:
                 "MODEL_DECISION",
                 "TOOL_RESULT",
                 "TOOL_FAILED",
+                "IPYTHON_EXECUTION_RESULT",
+                "IPYTHON_EXECUTION_FAILED",
                 "ACTION_RECONCILED",
                 "COMPLETION_REJECTED",
                 "ROOT_WOKEN",
@@ -1016,6 +1094,9 @@ class EventLog:
         if isinstance(value, ToolCall):
             request = cls._freeze(value.request)
             return value if request is value.request else ToolCall(request)
+        if isinstance(value, IPythonCode):
+            code = cls._freeze(value.code)
+            return value if code is value.code else IPythonCode(code)
         if isinstance(value, Wait):
             event_type = cls._freeze(value.event_type)
             return value if event_type is value.event_type else Wait(event_type)
@@ -1038,6 +1119,20 @@ class EventLog:
             ):
                 return value
             return Observation(request, result, provider_tool_call_id)
+        if isinstance(value, IPythonResult):
+            return IPythonResult(
+                ok=cls._freeze(value.ok),
+                output=cls._freeze(value.output),
+                error_code=cls._freeze(value.error_code),
+                error=cls._freeze(value.error),
+                truncated=cls._freeze(value.truncated),
+                original_output_chars=cls._freeze(value.original_output_chars),
+            )
+        if isinstance(value, IPythonObservation):
+            return IPythonObservation(
+                result=cls._freeze(value.result),
+                provider_tool_call_id=cls._freeze(value.provider_tool_call_id),
+            )
         if isinstance(value, CompletionEvidence):
             values = tuple(
                 cls._freeze(item)
@@ -1150,7 +1245,7 @@ class ExecutionState:
     decision_count: int = 0
     latest_observation: RuntimeObservation | None = None
     last_action: object | None = None
-    last_result: ToolResult | None = None
+    last_result: ToolResult | IPythonResult | None = None
     completion: str | None = None
     failure: str | None = None
     waiting_for: str | None = None
@@ -1228,6 +1323,15 @@ def fold_execution_state(
             observation = event.payload.get("observation")
             if not isinstance(observation, Observation):
                 raise ValueError("tool result events require an observation")
+            values["latest_observation"] = observation
+            values["last_result"] = observation.result
+        elif event.event_type in (
+            "IPYTHON_EXECUTION_RESULT",
+            "IPYTHON_EXECUTION_FAILED",
+        ):
+            observation = event.payload.get("observation")
+            if not isinstance(observation, IPythonObservation):
+                raise ValueError("IPython result events require an observation")
             values["latest_observation"] = observation
             values["last_result"] = observation.result
         elif event.event_type == "ACTION_RECONCILED":
@@ -1471,6 +1575,8 @@ def _action_projection(action: object | None) -> dict[str, object] | None:
     if isinstance(action, ToolCall):
         tool = _request_projection(action.request)["tool"]
         return {"type": "tool_call", "tool": tool}
+    if isinstance(action, IPythonCode):
+        return {"type": "ipython", "code": _text_projection(action.code)}
     if isinstance(action, Wait):
         return {"type": "wait", "event_type": _text_projection(action.event_type)}
     if isinstance(action, ClaimComplete):
@@ -1494,6 +1600,23 @@ def _observation_projection(
                 "observed_path": _text_projection(evidence.observed_path),
                 "matched": evidence.matched,
                 "reason": evidence.reason,
+            },
+        }
+    if isinstance(observation, IPythonObservation):
+        result = observation.result
+        return {
+            "type": "ipython_execution",
+            "result": {
+                "ok": result.ok,
+                "output": _text_projection(result.output),
+                "error_code": result.error_code,
+                "error": (
+                    _text_projection(result.error)
+                    if result.error is not None
+                    else None
+                ),
+                "canonical_truncated": result.truncated,
+                "original_output_chars": result.original_output_chars,
             },
         }
     result = observation.result
@@ -1587,6 +1710,7 @@ def _build_model_request(
     state: ExecutionState,
     source_event_refs: tuple[str, ...],
     max_context_chars: int,
+    available_tools: tuple[str, ...],
     events: tuple[ExecutionEvent, ...] = (),
 ) -> ModelRequest:
     continuation = None
@@ -1608,7 +1732,7 @@ def _build_model_request(
         break
     return ModelRequest(
         context=_bounded_context(state, max_context_chars),
-        available_tools=TOOL_CONTRACTS,
+        available_tools=available_tools,
         source_event_refs=source_event_refs,
         native_tool_continuation=continuation,
         model_visible_context_limit=max_context_chars,
@@ -1636,6 +1760,7 @@ class RootAgentProcess:
         max_context_chars: int = 2_000,
         event_log: EventLog | None = None,
         checkpoint_path: str | Path | None = None,
+        ipython_control: PersistentIPython | None = None,
     ) -> None:
         if max_decisions < 1:
             raise ValueError("max_decisions must be positive")
@@ -1646,6 +1771,10 @@ class RootAgentProcess:
         self._max_decisions = max_decisions
         self._max_context_chars = max_context_chars
         self._event_log = event_log or EventLog()
+        self._available_tools = tuple(
+            getattr(model, "tool_contracts", TOOL_CONTRACTS)
+        )
+        self._ipython_control = ipython_control
         self._checkpoint_path = (
             Path(checkpoint_path) if checkpoint_path is not None else None
         )
@@ -1655,6 +1784,9 @@ class RootAgentProcess:
                 "EXECUTION_STARTED",
                 "TOOL_RESULT",
                 "TOOL_FAILED",
+                "IPYTHON_EXECUTION_STARTED",
+                "IPYTHON_EXECUTION_RESULT",
+                "IPYTHON_EXECUTION_FAILED",
                 "TOOL_CALL_STARTED",
                 "ACTION_RECONCILED",
                 "COMPLETION_REJECTED",
@@ -1688,6 +1820,8 @@ class RootAgentProcess:
         if not self._event_log.events:
             raise ValueError("execution has not started")
         last_event = self._event_log.events[-1]
+        if last_event.event_type == "IPYTHON_EXECUTION_STARTED":
+            raise ValueError("interrupted IPython execution recovery is unsupported")
         if last_event.event_type == "TOOL_CALL_STARTED":
             self._reconcile_interrupted_call(last_event)
         state = self._current_state()
@@ -1760,13 +1894,14 @@ class RootAgentProcess:
                     {"failure": "decision_limit_reached"},
                     (self._event_log.events[-1].event_id,),
                 )
-                return self._result(steps)
+                return self._finish(steps)
             decision = state.decision_count + 1
             source_refs = (self._event_log.events[-1].event_id,)
             request = _build_model_request(
                 state,
                 source_refs,
                 self._max_context_chars,
+                self._available_tools,
                 self._event_log.events,
             )
             raw_response = self._model.decide(request)
@@ -1816,7 +1951,7 @@ class RootAgentProcess:
                     {"failure": native_response.failure},
                     (decision_event.event_id,),
                 )
-                return self._result(steps)
+                return self._finish(steps)
             if isinstance(action, ClaimComplete):
                 claim_event = self._event_log.append(
                     "COMPLETION_CLAIMED",
@@ -1842,7 +1977,7 @@ class RootAgentProcess:
                         {"status": "verified"},
                         (verified_event.event_id,),
                     )
-                    return self._result(steps)
+                    return self._finish(steps)
                 observation = CompletionObservation("rejected", evidence)
                 self._event_log.append(
                     "COMPLETION_REJECTED",
@@ -1863,6 +1998,39 @@ class RootAgentProcess:
                         self._checkpoint_path
                     )
                 return self._result(steps)
+            if isinstance(action, IPythonCode):
+                execution_event = self._event_log.append(
+                    "IPYTHON_EXECUTION_STARTED",
+                    {
+                        "action": action,
+                        "code_sha256": _text_sha256(action.code),
+                    },
+                    (decision_event.event_id,),
+                )
+                if self._ipython_control is None:
+                    self._ipython_control = PersistentIPython(
+                        self._tools.environment.workspace
+                    )
+                ipython_result = self._ipython_control.execute(action.code)
+                observation = IPythonObservation(
+                    ipython_result,
+                    (
+                        native_response.provider_tool_call_id
+                        if native_response is not None
+                        else None
+                    ),
+                )
+                self._event_log.append(
+                    (
+                        "IPYTHON_EXECUTION_RESULT"
+                        if ipython_result.ok
+                        else "IPYTHON_EXECUTION_FAILED"
+                    ),
+                    {"observation": observation},
+                    (execution_event.event_id,),
+                )
+                steps.append(ExecutionStep(decision, action, observation))
+                continue
             if action is None:
                 steps.append(ExecutionStep(decision, raw_response, None))
                 self._event_log.append(
@@ -1870,7 +2038,7 @@ class RootAgentProcess:
                     {"failure": f"unknown_action:{type(raw_response).__name__}"},
                     (decision_event.event_id,),
                 )
-                return self._result(steps)
+                return self._finish(steps)
             call_event = self._event_log.append(
                 "TOOL_CALL_STARTED",
                 {"request": action.request},
@@ -1892,6 +2060,20 @@ class RootAgentProcess:
                 (call_event.event_id,),
             )
             steps.append(ExecutionStep(decision, action, observation))
+
+    def close(self) -> None:
+        if self._ipython_control is not None:
+            self._ipython_control.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _finish(self, steps: list[ExecutionStep]) -> ExecutionResult:
+        self.close()
+        return self._result(steps)
 
     def _current_state(self) -> ExecutionState:
         return restore_execution_state(

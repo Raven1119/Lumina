@@ -2,13 +2,15 @@
 
 ## Implemented
 
-- `execution.py` remains an isolated, standard-library-only lab module. No
+- `execution.py` remains an isolated lab module. Its one programmable
+  control-plane helper uses pinned `jupyter_client` and `ipykernel`; no
   production Chat, Memory, Dream, or Mind code is imported or changed.
 - Slice 1 behavior remains intact: typed tool requests, structured
   `ToolResult`, workspace-guarded read/write, explicit-argv bounded shell,
   failure-as-Observation, and a hard decision limit.
-- The Action contract is now `ToolCall | Wait | ClaimComplete`. The only Wait
-  condition is an exact, non-empty `event_type` string.
+- The Action contract is now
+  `ToolCall | IPythonCode | Wait | ClaimComplete`. The only Wait condition
+  is an exact, non-empty `event_type` string.
 - Execution creation requires one frozen caller-owned
   `FileContentEquals(path, expected_content)`. That typed CompletionSpec is
   persisted in `EXECUTION_STARTED`, reconstructed by the State fold, visible
@@ -69,9 +71,10 @@
   remains runnable and the next Root request receives a bounded rejection
   Observation; Runtime does not repair the file.
 - Slice 6 adds one fixed `DeepSeekModel` adapter for the official
-  `deepseek-v4-pro` Chat Completions endpoint. Every request uses native
-  `read`, `write`, `shell`, `wait`, and `claim_complete` function schemas,
-  `thinking={"type":"disabled"}`, and `stream=false`. There is no generic
+  `deepseek-v4-pro` Chat Completions endpoint. Native-mode requests use
+  `read`, `write`, `shell`, `wait`, and `claim_complete` function schemas;
+  IPython mode uses only `ipython`, `wait`, and `claim_complete`. Both use
+  `thinking={"type":"disabled"}` and `stream=false`. There is no generic
   provider registry, SDK session, retry, fallback, streaming, or multi-tool
   execution path.
 - The adapter accepts exactly one native function call, validates its name,
@@ -102,8 +105,33 @@
   differs from the causal provider decision. The same id also survives the
   committed-Write crash window: `ACTION_RECONCILED` derives its structured
   Observation with the original durable DeepSeek call id before continuation.
+- The promoted IPython arm exposes only `ipython(code)`, `wait`, and
+  `claim_complete`. A lazy `PersistentIPython` owns at most one
+  `ipykernel` for one live Root, fixes its initial cwd to the shared
+  workspace, preserves Python namespace across decisions, and closes the
+  kernel at terminal execution or explicit process close.
+- Runtime records
+  `MODEL_DECISION -> IPYTHON_EXECUTION_STARTED -> RESULT/FAILED` with the
+  code SHA-256, provider call id, bounded output/error, truthful original
+  output character count, and causal refs. It does not invent ToolHost events
+  for Python's internal filesystem or subprocess operations; current
+  filesystem reality plus Completion Verification remains acceptance
+  authority.
+- IPython code, execution time, and captured output have fixed bounds.
+  Generated Python intentionally has the worker OS permissions and is not a
+  sandbox. `DEEPSEEK_API_KEY` is removed from the kernel environment.
+- Runtime restart preserves durable Root/EventLog/State identity but not
+  Python namespace. A resumed Root lazily starts a fresh kernel. A crash tail
+  at `IPYTHON_EXECUTION_STARTED` is explicitly unresolved; code is not
+  replayed automatically and no kernel snapshot/dill path exists.
 
 ## Fresh Python Code Mode experiment gate
+
+This section is retained as historical evidence for the earlier, stricter
+typed-binding-only authority requirement. The current task explicitly
+superseded that requirement for persistent IPython by granting IPython and
+ToolHost equal trusted local OS/workspace authority. It does not retroactively
+turn fresh Code Mode into an isolation mechanism.
 
 - **Result: BLOCKED before implementation.** The task required generated
   Python to be unable to access filesystem, process, or network reality except
@@ -137,15 +165,16 @@ rejected architecture are recorded in `SOURCE_AUDIT.md`.
 | Source | Audited version | Borrowed semantic |
 | --- | --- | --- |
 | DeepSeek official API | live docs audited 2026-08-26; no source commit or stated docs license | Exact `deepseek-v4-pro` native Chat Completions tool-call/result protocol and explicit non-thinking mode. |
-| OpenAI Codex | Slice 6 pin `f5420174dafba153913a3e697f89002c338dfd7e`, Apache-2.0 | Provider-native call/output correlation plus capture of the actual request boundary. |
+| OpenAI Codex | IPython re-audit pin `d4998d611ad37de0aa9723b6fdd2d9a2f8ff4763`, Apache-2.0 | Host lifecycle, actual request/tool snapshot, and bounded model-visible results. |
 | DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Started-without-result is canonically UNKNOWN; verify external state before retry and append causal repair rather than mutating history. |
-| Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | A live agent object is replaceable and Host-owned external state remains outside model working state (the authority conclusion is explicitly an inference). |
+| Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | One persistent kernel per live session, worker-OS trust boundary, and Host-owned kernel lifecycle. |
+| Jupyter | `jupyter_client==8.9.1` / `ipykernel==7.3.0`, BSD-3-Clause | Mature kernel start, execute, IOPub result collection, interrupt, and shutdown. |
 | LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Agent completion claims require independent acceptance authority grounded in the current workspace; Lumina does not copy its LLM Auditor. |
 | Temporal Server / Go SDK | `19a774302c613da9adc4436ab14278ccdca8e0a5` / `b7c242c6894df088a57a85b33d0586e908da8b93`, MIT | Durable history does not make an external Activity exactly once; a crash before completion is recorded can retry the effect. |
 
 No upstream session/plugin ecosystem, Worker infrastructure, Manager ontology,
-provider stack, IPython, Actor Directory, Child runtime, or generic event bus
-was copied.
+provider stack, RLM, Actor Directory, Child runtime, or generic event bus was
+copied.
 
 ## Experiment results
 
@@ -157,8 +186,29 @@ Fresh Python Code Mode gate:
   context-exposure comparison, syntax/runtime failures, or live credentials
   were generated by this blocked experiment.
 - The programmable Code Mode value hypothesis remains unmeasured. Persistent
-  IPython should not be tested next unless the same authority prerequisite is
-  first satisfied by an approved task.
+  IPython was subsequently authorized under a different equal-local-authority
+  trust model; that later result does not change this historical isolation
+  finding.
+
+Persistent IPython A/B:
+
+- **Result: PROMOTE.** The frozen real experiment used two tasks, two arms,
+  three fresh runs per arm, the same `deepseek-v4-pro`, CompletionSpec,
+  workspaces, decision bound, and Context bound.
+- Conditional task: Native and IPython each verified 2/3. Median provider
+  calls were 4 vs 3; input tokens 3,436 vs 2,141; model-visible result
+  characters 884 vs 435; maximum request characters 3,016 vs 2,531.
+- Aggregation task: Native verified 2/3 and IPython 3/3. Median provider calls
+  were 6 vs 4; input/output tokens 6,449/420 vs 3,445/344; wall time
+  11.002 s vs 8.034 s; result characters 2,756 vs 1,226; maximum request
+  characters 3,831 vs 3,085.
+- Both arms encountered the existing single-call adapter's
+  `model_protocol:multiple_tool_calls` boundary; IPython had zero Python
+  runtime failures. All tested terminal kernels were closed. Full per-run
+  evidence and metric definitions are in `IPYTHON_AB_RESULT.md`.
+- The promotion is bounded to this MVP control plane. It does not authorize
+  sandbox claims, durable namespace, multiple kernels, automatic code replay,
+  Child, RLM, recursion, or a benchmark framework.
 
 Slice 6:
 
@@ -313,10 +363,10 @@ Slice 3 regression evidence:
   explicitly truncated to the configured absolute character bound.
 - DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
   remain covered by regression tests.
-- Final Slice 6 validation reports: `Execution_lab2` 64 passed / 4
+- Final persistent-IPython validation reports: `Execution_lab2` 75 passed / 5
   real-provider experiments skipped; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
-  The four Execution skips are explicitly gated real DeepSeek experiments;
+  The five Execution skips are explicitly gated real DeepSeek experiments;
   normal regression runs do not load local credentials or make provider calls.
 
 ## Known limits
@@ -328,7 +378,8 @@ Slice 3 regression evidence:
   `FileContentEquals(path, expected_content)`. There is no natural-language
   goal judgment, Reviewer Agent, LLM verifier, registry, composite predicate,
   test runner, or second verifier type.
-- IPython: **NOT IMPLEMENTED**.
+- Persistent IPython control plane: **IMPLEMENTED AND PROMOTED** for the
+  bounded one-kernel-per-live-Root surface above.
 - DeepSeek native provider adapter: **IMPLEMENTED AND VALIDATED** for this
   Slice's fixed non-thinking, non-streaming, single-call surface. Autonomous
   canonical completion is 3/3; a fresh canonical run programmatically verifies
@@ -343,10 +394,13 @@ Slice 3 regression evidence:
   generic event bus, generic verifier framework, or resource accounting.
 - Context is bounded in Python characters rather than provider tokens or UTF-8
   bytes. Shell isolation remains cwd-based rather than an OS sandbox.
-- Fresh Python Code Mode and persistent IPython remain **NOT IMPLEMENTED**.
-  Their required authority boundary cannot currently be guaranteed without a
-  new isolation substrate; a home-grown Python jail is not an accepted
-  substitute.
+- Fresh typed-binding-only Python Code Mode remains **NOT IMPLEMENTED** because
+  its stricter isolation boundary is unavailable. Persistent IPython is
+  implemented under the later explicit equal-local-authority decision and is
+  deliberately not described as a sandbox.
+- IPython namespace is live-process-only. It is discarded on Runtime
+  replacement, and an interrupted in-flight IPython execution remains
+  unresolved rather than being replayed.
 - Checkpoint recovery hashes the prefix and folds only the tail, but no
   replay-performance benchmark has been measured.
 
