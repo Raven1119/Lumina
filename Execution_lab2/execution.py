@@ -341,11 +341,17 @@ class EventLog:
         previous = self._events[-1]
         if event_type == "MODEL_DECISION":
             frame = payload["frame"]
+            raw_action = None
+            if isinstance(frame, DecisionFrame) and isinstance(
+                frame.raw_model_response, (ToolCall, Complete)
+            ):
+                raw_action = frame.raw_model_response
             if (
                 previous.event_type
                 not in ("EXECUTION_STARTED", "TOOL_RESULT", "TOOL_FAILED")
                 or not isinstance(frame, DecisionFrame)
                 or payload["action"] != frame.resulting_action
+                or raw_action != frame.resulting_action
                 or frame.state_version != previous.sequence
                 or frame.source_event_refs != source_event_refs
                 or frame.actual_request.source_event_refs != source_event_refs
@@ -750,6 +756,7 @@ class RootAgentProcess:
                 if isinstance(raw_response, (ToolCall, Complete))
                 else None
             )
+            action_snapshot = EventLog._freeze(action)
             frame = DecisionFrame(
                 decision_id=f"decision-{decision:06d}",
                 model_identifier=self._model.identifier,
@@ -759,11 +766,11 @@ class RootAgentProcess:
                 actual_request=request,
                 actual_tools_exposed=request.available_tools,
                 raw_model_response=raw_response_snapshot,
-                resulting_action=action,
+                resulting_action=action_snapshot,
             )
             decision_event = event_log.append(
                 "MODEL_DECISION",
-                {"action": action, "frame": frame},
+                {"action": action_snapshot, "frame": frame},
                 source_refs,
             )
             if isinstance(action, Complete):

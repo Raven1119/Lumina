@@ -101,12 +101,12 @@ def test_event_log_rejects_unknown_schema_and_invalid_causal_shapes():
         decision_id="inconsistent",
         model_identifier="fixture",
         goal="test",
-        state_version=999,
+        state_version=1,
         source_event_refs=(started.event_id,),
         actual_request=request,
         actual_tools_exposed=(),
         raw_model_response=Complete("done"),
-        resulting_action=Complete("done"),
+        resulting_action=Complete("different"),
     )
     with pytest.raises(ValueError):
         event_log.append(
@@ -181,11 +181,11 @@ def test_mutable_unknown_model_response_is_snapshotted_before_logging(tmp_path):
         actual_request=request,
         actual_tools_exposed=(),
         raw_model_response=external_raw,
-        resulting_action=Complete("done"),
+        resulting_action=None,
     )
     decision = event_log.append(
         "MODEL_DECISION",
-        {"action": Complete("done"), "frame": frame},
+        {"action": None, "frame": frame},
         (started.event_id,),
     )
     external_raw["message"]["parts"].append("changed later")
