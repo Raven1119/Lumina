@@ -68,6 +68,40 @@
   type/fingerprint, observed path, match result, and bounded reason. State
   remains runnable and the next Root request receives a bounded rejection
   Observation; Runtime does not repair the file.
+- Slice 6 adds one fixed `DeepSeekModel` adapter for the official
+  `deepseek-v4-pro` Chat Completions endpoint. Every request uses native
+  `read`, `write`, `shell`, `wait`, and `claim_complete` function schemas,
+  `thinking={"type":"disabled"}`, and `stream=false`. There is no generic
+  provider registry, SDK session, retry, fallback, streaming, or multi-tool
+  execution path.
+- The adapter accepts exactly one native function call, validates its name,
+  JSON, and exact arguments, then maps it to the existing typed Action
+  vocabulary. Zero calls, unknown tools, malformed JSON/response/arguments,
+  and multiple calls become explicit protocol failures before any Tool runs.
+  Timeout, transport, missing-credential, and HTTP status failures are
+  explicit provider failures with no fallback.
+- The DeepSeek-issued `tool_call.id` is persisted in the typed native decision,
+  `DecisionFrame`, and structured `Observation`. The next provider request
+  uses the same id in both the prior assistant `tool_calls` item and the native
+  `role=tool` message. A fresh Runtime after WAIT reconstructs that
+  continuation from durable frames and bounded current facts; the adapter has
+  no private message transcript.
+- `DecisionFrame` now retains the actual Lumina request, actual exposed Lumina
+  contracts, secret-free provider-wire request, reasoning-free provider
+  response, typed Action, provider call id, and source refs. API credentials
+  are read only from `DEEPSEEK_API_KEY` inside the HTTP send boundary and are
+  not part of provider payloads, frames, events, or test artifacts.
+- Native continuation applies one shared `model_visible_context_limit` to the
+  aggregate dynamic `user` plus `tool` message content. Both remain structured
+  JSON projections with explicit text truncation; fixed system text and the
+  five fixed schemas contain no ToolResult/EventLog data. A 20,000-character
+  canonical read at the minimum 768-character Runtime limit stays complete in
+  EventLog while all dynamic native continuation content together remains at
+  or below 768 characters.
+- Normal Tool results are rejected by EventLog if their observation call id
+  differs from the causal provider decision. The same id also survives the
+  committed-Write crash window: `ACTION_RECONCILED` derives its structured
+  Observation with the original durable DeepSeek call id before continuation.
 
 ## Source mapping
 
@@ -76,7 +110,8 @@ rejected architecture are recorded in `SOURCE_AUDIT.md`.
 
 | Source | Audited version | Borrowed semantic |
 | --- | --- | --- |
-| OpenAI Codex | `a9ed4f154a4fad64acf538d6418d3ed012aeab86`, Apache-2.0 | Durable identity is distinct from live session/turn/request state; reopen identity before new work. |
+| DeepSeek official API | live docs audited 2026-08-26; no source commit or stated docs license | Exact `deepseek-v4-pro` native Chat Completions tool-call/result protocol and explicit non-thinking mode. |
+| OpenAI Codex | Slice 6 pin `f5420174dafba153913a3e697f89002c338dfd7e`, Apache-2.0 | Provider-native call/output correlation plus capture of the actual request boundary. |
 | DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Started-without-result is canonically UNKNOWN; verify external state before retry and append causal repair rather than mutating history. |
 | Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | A live agent object is replaceable and Host-owned external state remains outside model working state (the authority conclusion is explicitly an inference). |
 | LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Agent completion claims require independent acceptance authority grounded in the current workspace; Lumina does not copy its LLM Auditor. |
@@ -87,6 +122,37 @@ provider stack, IPython, Actor Directory, Child runtime, or generic event bus
 was copied.
 
 ## Experiment results
+
+Slice 6:
+
+- **A - adapter protocol:** 20 deterministic tests pass across native
+  read/write/shell/wait/claim mapping, invalid name/JSON/arguments, zero and
+  multiple call rejection, provider failure, exact request settings, and
+  environment-only credential policy. Rejected decisions execute zero Tools.
+- **B - native call/result continuity:** `call_123` is preserved in the typed
+  decision, durable frame/Observation, next assistant tool call, and matching
+  `role=tool.tool_call_id`. The second request contains a native tool-result
+  message rather than prose pretending to be one.
+- **C - real canonical task:** **NOT VALIDATED.** The required three fresh
+  `deepseek-v4-pro` executions were explicitly invoked, but the current process
+  had no `DEEPSEEK_API_KEY`; the secret-safe gated experiments therefore
+  skipped all 3 runs. There is no claimed provider-request, Tool-call, timing,
+  token, or 3/3 success result.
+- **D - real Tool failure continuation:** **NOT VALIDATED** for the same missing
+  credential. The maintained gated experiment creates missing `candidate.txt`
+  plus present `fallback.txt` and will require a real structured failure,
+  later model decision, write, and verified completion when authorized.
+- **E - persistence:** a deterministic DeepSeek wire fixture performs WAIT,
+  destroys Runtime/model state, reloads the durable EventLog, wakes, and sends
+  the original native call id on the next request. Completion succeeds with
+  unchanged execution/root identity and full-fold equivalence. Adapter private
+  persistent state: **NONE**. A separate committed-Write crash fixture proves
+  reconciliation preserves the original provider call id in its Observation
+  and next native tool-result continuation; a mismatched durable result id is
+  rejected.
+- A separate large-result experiment proves canonical output remains complete
+  in the durable event while the native `role=tool` content obeys the absolute
+  model-context bound and excludes the hidden tail.
 
 Slice 5:
 
@@ -168,8 +234,11 @@ Slice 3 regression evidence:
   explicitly truncated to the configured absolute character bound.
 - DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
   remain covered by regression tests.
-- Validation: `Execution_lab2` 43 passed; root 328 passed / 24 skipped;
+- Final Slice 6 validation reports: `Execution_lab2` 63 passed / 2
+  real-provider experiments skipped; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
+  The only skips introduced by this Slice are the two explicitly gated real
+  DeepSeek experiment functions described above.
 
 ## Known limits
 
@@ -181,7 +250,9 @@ Slice 3 regression evidence:
   goal judgment, Reviewer Agent, LLM verifier, registry, composite predicate,
   test runner, or second verifier type.
 - IPython: **NOT IMPLEMENTED**.
-- real provider: **NOT IMPLEMENTED**.
+- DeepSeek native provider adapter: **IMPLEMENTED**; real-model behavior and
+  the required canonical 3/3 promotion gate remain **NOT VALIDATED** because
+  no `DEEPSEEK_API_KEY` was available to the experiment process.
 - Child/recursion: **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe
   point, initial start, terminal event, or the exact confirmed-Write case

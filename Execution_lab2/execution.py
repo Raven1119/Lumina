@@ -73,7 +73,25 @@ class ExternalEvent:
 Action: TypeAlias = ToolCall | Wait | ClaimComplete
 
 
+@dataclass(frozen=True)
+class NativeModelDecision:
+    action: Action | None
+    provider_wire_request: object
+    raw_provider_response: object | None
+    provider_tool_call_id: str | None = None
+    failure: str | None = None
+
+
+@dataclass(frozen=True)
+class NativeToolContinuation:
+    previous_model_context: str
+    raw_provider_response: object
+    provider_tool_call_id: str
+
+
 def _structured_action(value: object) -> Action | None:
+    if isinstance(value, NativeModelDecision):
+        return None if value.failure is not None else _structured_action(value.action)
     if isinstance(value, ToolCall):
         return value
     if isinstance(value, Wait):
@@ -87,6 +105,7 @@ def _structured_action(value: object) -> Action | None:
 class Observation:
     request: ToolRequest
     result: ToolResult
+    provider_tool_call_id: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -129,6 +148,8 @@ class ModelRequest:
     context: str
     available_tools: tuple[str, ...]
     source_event_refs: tuple[str, ...]
+    native_tool_continuation: NativeToolContinuation | None = None
+    model_visible_context_limit: int | None = None
 
     @property
     def context_size_chars(self) -> int:
@@ -437,6 +458,9 @@ class DecisionFrame:
     actual_tools_exposed: tuple[str, ...]
     raw_model_response: object
     resulting_action: Action | None
+    provider_wire_request: object | None = None
+    raw_provider_response: object | None = None
+    provider_tool_call_id: str | None = None
 
 
 _SERIALIZABLE_TYPES = {
@@ -454,6 +478,8 @@ _SERIALIZABLE_TYPES = {
         Observation,
         CompletionEvidence,
         CompletionObservation,
+        NativeModelDecision,
+        NativeToolContinuation,
         ModelRequest,
         DecisionFrame,
     )
@@ -737,8 +763,25 @@ class EventLog:
         if event_type == "MODEL_DECISION":
             frame = payload["frame"]
             raw_action = None
+            provider_fidelity = True
             if isinstance(frame, DecisionFrame):
                 raw_action = _structured_action(frame.raw_model_response)
+                if isinstance(frame.raw_model_response, NativeModelDecision):
+                    native = frame.raw_model_response
+                    provider_fidelity = (
+                        frame.provider_wire_request
+                        == native.provider_wire_request
+                        and frame.raw_provider_response
+                        == native.raw_provider_response
+                        and frame.provider_tool_call_id
+                        == native.provider_tool_call_id
+                    )
+                else:
+                    provider_fidelity = (
+                        frame.provider_wire_request is None
+                        and frame.raw_provider_response is None
+                        and frame.provider_tool_call_id is None
+                    )
             if (
                 previous.event_type
                 not in (
@@ -757,6 +800,7 @@ class EventLog:
                 or frame.actual_request.source_event_refs != source_event_refs
                 or frame.actual_tools_exposed != frame.actual_request.available_tools
                 or frame.goal != self._events[0].payload["goal"]
+                or not provider_fidelity
             ):
                 raise ValueError("model decision requires current execution state")
         elif event_type == "ROOT_WAITING":
@@ -805,12 +849,26 @@ class EventLog:
                 raise ValueError("tool call must match its model decision")
         elif event_type in ("TOOL_RESULT", "TOOL_FAILED"):
             observation = payload["observation"]
+            decision_event = self._events[-2] if len(self._events) >= 2 else None
+            decision_frame = (
+                decision_event.payload.get("frame")
+                if decision_event is not None
+                and decision_event.event_type == "MODEL_DECISION"
+                else None
+            )
+            expected_provider_tool_call_id = (
+                decision_frame.provider_tool_call_id
+                if isinstance(decision_frame, DecisionFrame)
+                else None
+            )
             if (
                 previous.event_type != "TOOL_CALL_STARTED"
                 or not isinstance(observation, Observation)
                 or self._freeze(observation.request)
                 != previous.payload.get("request")
                 or observation.result.ok != (event_type == "TOOL_RESULT")
+                or observation.provider_tool_call_id
+                != expected_provider_tool_call_id
             ):
                 raise ValueError("tool result must match its tool call and outcome")
         elif event_type == "ACTION_RECONCILED":
@@ -972,9 +1030,14 @@ class EventLog:
         if isinstance(value, Observation):
             request = cls._freeze(value.request)
             result = cls._freeze(value.result)
-            if request is value.request and result is value.result:
+            provider_tool_call_id = cls._freeze(value.provider_tool_call_id)
+            if (
+                request is value.request
+                and result is value.result
+                and provider_tool_call_id is value.provider_tool_call_id
+            ):
                 return value
-            return Observation(request, result)
+            return Observation(request, result, provider_tool_call_id)
         if isinstance(value, CompletionEvidence):
             values = tuple(
                 cls._freeze(item)
@@ -1007,17 +1070,45 @@ class EventLog:
             if status is value.status and evidence is value.evidence:
                 return value
             return CompletionObservation(status, evidence)
+        if isinstance(value, NativeModelDecision):
+            return NativeModelDecision(
+                action=cls._freeze(value.action),
+                provider_wire_request=cls._freeze(value.provider_wire_request),
+                raw_provider_response=cls._freeze(value.raw_provider_response),
+                provider_tool_call_id=cls._freeze(value.provider_tool_call_id),
+                failure=cls._freeze(value.failure),
+            )
+        if isinstance(value, NativeToolContinuation):
+            return NativeToolContinuation(
+                previous_model_context=cls._freeze(value.previous_model_context),
+                raw_provider_response=cls._freeze(value.raw_provider_response),
+                provider_tool_call_id=cls._freeze(value.provider_tool_call_id),
+            )
         if isinstance(value, ModelRequest):
             context = cls._freeze(value.context)
             available_tools = cls._freeze(value.available_tools)
             source_event_refs = cls._freeze(value.source_event_refs)
+            native_tool_continuation = cls._freeze(
+                value.native_tool_continuation
+            )
+            model_visible_context_limit = cls._freeze(
+                value.model_visible_context_limit
+            )
             if (
                 context is value.context
                 and available_tools is value.available_tools
                 and source_event_refs is value.source_event_refs
+                and native_tool_continuation is value.native_tool_continuation
+                and model_visible_context_limit is value.model_visible_context_limit
             ):
                 return value
-            return ModelRequest(context, available_tools, source_event_refs)
+            return ModelRequest(
+                context,
+                available_tools,
+                source_event_refs,
+                native_tool_continuation,
+                model_visible_context_limit,
+            )
         if isinstance(value, DecisionFrame):
             return DecisionFrame(
                 decision_id=cls._freeze(value.decision_id),
@@ -1029,6 +1120,9 @@ class EventLog:
                 actual_tools_exposed=cls._freeze(value.actual_tools_exposed),
                 raw_model_response=cls._freeze(value.raw_model_response),
                 resulting_action=cls._freeze(value.resulting_action),
+                provider_wire_request=cls._freeze(value.provider_wire_request),
+                raw_provider_response=cls._freeze(value.raw_provider_response),
+                provider_tool_call_id=cls._freeze(value.provider_tool_call_id),
             )
         if isinstance(
             value,
@@ -1061,6 +1155,7 @@ class ExecutionState:
     failure: str | None = None
     waiting_for: str | None = None
     latest_external_event: ExternalEvent | None = None
+    last_provider_tool_call_id: str | None = None
 
 
 def fold_execution_state(
@@ -1118,10 +1213,17 @@ def fold_execution_state(
             "failure": state.failure,
             "waiting_for": state.waiting_for,
             "latest_external_event": state.latest_external_event,
+            "last_provider_tool_call_id": state.last_provider_tool_call_id,
         }
         if event.event_type == "MODEL_DECISION":
             values["decision_count"] = state.decision_count + 1
             values["last_action"] = event.payload.get("action")
+            frame = event.payload.get("frame")
+            values["last_provider_tool_call_id"] = (
+                frame.provider_tool_call_id
+                if isinstance(frame, DecisionFrame)
+                else None
+            )
         elif event.event_type in ("TOOL_RESULT", "TOOL_FAILED"):
             observation = event.payload.get("observation")
             if not isinstance(observation, Observation):
@@ -1145,7 +1247,11 @@ def fold_execution_state(
                     f"{len(action.request.content)} characters"
                 ),
             )
-            values["latest_observation"] = Observation(action.request, result)
+            values["latest_observation"] = Observation(
+                action.request,
+                result,
+                state.last_provider_tool_call_id,
+            )
             values["last_result"] = result
         elif event.event_type == "COMPLETION_REJECTED":
             observation = event.payload.get("observation")
@@ -1481,11 +1587,31 @@ def _build_model_request(
     state: ExecutionState,
     source_event_refs: tuple[str, ...],
     max_context_chars: int,
+    events: tuple[ExecutionEvent, ...] = (),
 ) -> ModelRequest:
+    continuation = None
+    for event in reversed(events):
+        if event.event_type != "MODEL_DECISION":
+            continue
+        frame = event.payload.get("frame")
+        if (
+            isinstance(frame, DecisionFrame)
+            and isinstance(frame.provider_tool_call_id, str)
+            and frame.provider_tool_call_id
+            and frame.raw_provider_response is not None
+        ):
+            continuation = NativeToolContinuation(
+                frame.actual_request.context,
+                frame.raw_provider_response,
+                frame.provider_tool_call_id,
+            )
+        break
     return ModelRequest(
         context=_bounded_context(state, max_context_chars),
         available_tools=TOOL_CONTRACTS,
         source_event_refs=source_event_refs,
+        native_tool_continuation=continuation,
+        model_visible_context_limit=max_context_chars,
     )
 
 
@@ -1638,12 +1764,20 @@ class RootAgentProcess:
             decision = state.decision_count + 1
             source_refs = (self._event_log.events[-1].event_id,)
             request = _build_model_request(
-                state, source_refs, self._max_context_chars
+                state,
+                source_refs,
+                self._max_context_chars,
+                self._event_log.events,
             )
             raw_response = self._model.decide(request)
             raw_response_snapshot = EventLog._freeze(raw_response)
             action = _structured_action(raw_response)
             action_snapshot = EventLog._freeze(action)
+            native_response = (
+                raw_response_snapshot
+                if isinstance(raw_response_snapshot, NativeModelDecision)
+                else None
+            )
             frame = DecisionFrame(
                 decision_id=f"decision-{decision:06d}",
                 model_identifier=self._model.identifier,
@@ -1654,12 +1788,35 @@ class RootAgentProcess:
                 actual_tools_exposed=request.available_tools,
                 raw_model_response=raw_response_snapshot,
                 resulting_action=action_snapshot,
+                provider_wire_request=(
+                    native_response.provider_wire_request
+                    if native_response is not None
+                    else None
+                ),
+                raw_provider_response=(
+                    native_response.raw_provider_response
+                    if native_response is not None
+                    else None
+                ),
+                provider_tool_call_id=(
+                    native_response.provider_tool_call_id
+                    if native_response is not None
+                    else None
+                ),
             )
             decision_event = self._event_log.append(
                 "MODEL_DECISION",
                 {"action": action_snapshot, "frame": frame},
                 source_refs,
             )
+            if native_response is not None and native_response.failure is not None:
+                steps.append(ExecutionStep(decision, raw_response, None))
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": native_response.failure},
+                    (decision_event.event_id,),
+                )
+                return self._result(steps)
             if isinstance(action, ClaimComplete):
                 claim_event = self._event_log.append(
                     "COMPLETION_CLAIMED",
@@ -1720,7 +1877,15 @@ class RootAgentProcess:
                 (decision_event.event_id,),
             )
             result = self._tools.execute(action.request)
-            observation = Observation(action.request, result)
+            observation = Observation(
+                action.request,
+                result,
+                (
+                    native_response.provider_tool_call_id
+                    if native_response is not None
+                    else None
+                ),
+            )
             self._event_log.append(
                 "TOOL_RESULT" if result.ok else "TOOL_FAILED",
                 {"observation": observation},
