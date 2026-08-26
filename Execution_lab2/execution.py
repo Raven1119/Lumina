@@ -130,6 +130,10 @@ class SharedEnvironment:
             raise ValueError("workspace must be an existing directory")
 
 
+def _write_content_sha256(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 class ToolHost:
     def __init__(
         self,
@@ -257,6 +261,34 @@ class ToolHost:
                 truncated=truncated,
             )
 
+    def inspect_write(self, request: WriteRequest) -> Mapping[str, object] | None:
+        if (
+            not isinstance(request.path, str)
+            or not request.path
+            or not isinstance(request.content, str)
+        ):
+            return None
+        relative_path = Path(request.path)
+        if relative_path.is_absolute():
+            return None
+        try:
+            path = (self._environment.workspace / relative_path).resolve()
+            path.relative_to(self._environment.workspace)
+            with path.open(encoding="utf-8") as source:
+                observed_content = source.read(len(request.content) + 1)
+        except (OSError, RuntimeError, UnicodeError, ValueError):
+            return None
+        if observed_content != request.content:
+            return None
+        return MappingProxyType(
+            {
+                "path": request.path,
+                "intended_content_sha256": _write_content_sha256(request.content),
+                "observed_content_sha256": _write_content_sha256(observed_content),
+                "observed_chars": len(observed_content),
+            }
+        )
+
     def _bounded(self, text: str) -> tuple[str, bool]:
         truncated = len(text) > self._max_output_chars
         return text[: self._max_output_chars], truncated
@@ -275,6 +307,7 @@ EventType: TypeAlias = Literal[
     "TOOL_CALL_STARTED",
     "TOOL_RESULT",
     "TOOL_FAILED",
+    "ACTION_RECONCILED",
     "ROOT_WAITING",
     "EXTERNAL_EVENT_RECEIVED",
     "ROOT_WOKEN",
@@ -543,6 +576,7 @@ class EventLog:
             "TOOL_CALL_STARTED": {"request"},
             "TOOL_RESULT": {"observation"},
             "TOOL_FAILED": {"observation"},
+            "ACTION_RECONCILED": {"status", "evidence"},
             "ROOT_WAITING": {"condition"},
             "EXTERNAL_EVENT_RECEIVED": {"event"},
             "ROOT_WOKEN": {"event"},
@@ -593,6 +627,7 @@ class EventLog:
                     "EXECUTION_STARTED",
                     "TOOL_RESULT",
                     "TOOL_FAILED",
+                    "ACTION_RECONCILED",
                     "ROOT_WOKEN",
                 )
                 or not isinstance(frame, DecisionFrame)
@@ -659,6 +694,32 @@ class EventLog:
                 or observation.result.ok != (event_type == "TOOL_RESULT")
             ):
                 raise ValueError("tool result must match its tool call and outcome")
+        elif event_type == "ACTION_RECONCILED":
+            request = previous.payload.get("request")
+            evidence = payload["evidence"]
+            if (
+                previous.event_type != "TOOL_CALL_STARTED"
+                or not isinstance(request, WriteRequest)
+                or payload["status"] != "confirmed_applied"
+                or not isinstance(evidence, Mapping)
+                or set(evidence)
+                != {
+                    "path",
+                    "intended_content_sha256",
+                    "observed_content_sha256",
+                    "observed_chars",
+                }
+                or evidence["path"] != request.path
+                or evidence["intended_content_sha256"]
+                != _write_content_sha256(request.content)
+                or evidence["observed_content_sha256"]
+                != evidence["intended_content_sha256"]
+                or type(evidence["observed_chars"]) is not int
+                or evidence["observed_chars"] != len(request.content)
+            ):
+                raise ValueError(
+                    "reconciliation must exactly confirm its interrupted Write"
+                )
         elif event_type == "EXECUTION_COMPLETED":
             frame = previous.payload.get("frame")
             if (
@@ -673,6 +734,7 @@ class EventLog:
                 "MODEL_DECISION",
                 "TOOL_RESULT",
                 "TOOL_FAILED",
+                "ACTION_RECONCILED",
                 "ROOT_WOKEN",
             ):
                 raise ValueError("failure requires the latest execution cause")
@@ -871,6 +933,25 @@ def fold_execution_state(
                 raise ValueError("tool result events require an observation")
             values["latest_observation"] = observation
             values["last_result"] = observation.result
+        elif event.event_type == "ACTION_RECONCILED":
+            action = state.last_action
+            if (
+                event.payload.get("status") != "confirmed_applied"
+                or not isinstance(action, ToolCall)
+                or not isinstance(action.request, WriteRequest)
+            ):
+                raise ValueError(
+                    "reconciliation requires the interrupted Write action"
+                )
+            result = ToolResult(
+                ok=True,
+                output=(
+                    "confirmed previously applied write of "
+                    f"{len(action.request.content)} characters"
+                ),
+            )
+            values["latest_observation"] = Observation(action.request, result)
+            values["last_result"] = result
         elif event.event_type == "ROOT_WAITING":
             condition = event.payload.get("condition")
             if not isinstance(condition, Wait):
@@ -1232,6 +1313,8 @@ class RootAgentProcess:
                 "EXECUTION_STARTED",
                 "TOOL_RESULT",
                 "TOOL_FAILED",
+                "TOOL_CALL_STARTED",
+                "ACTION_RECONCILED",
                 "ROOT_WAITING",
                 "EXTERNAL_EVENT_RECEIVED",
                 "ROOT_WOKEN",
@@ -1258,6 +1341,9 @@ class RootAgentProcess:
     def resume(self) -> ExecutionResult:
         if not self._event_log.events:
             raise ValueError("execution has not started")
+        last_event = self._event_log.events[-1]
+        if last_event.event_type == "TOOL_CALL_STARTED":
+            self._reconcile_interrupted_call(last_event)
         state = self._current_state()
         last_event = self._event_log.events[-1]
         if state.status == "waiting" and last_event.event_type == "EXTERNAL_EVENT_RECEIVED":
@@ -1275,6 +1361,23 @@ class RootAgentProcess:
         if state.status != "running":
             return self._result([])
         return self._drive()
+
+    def _reconcile_interrupted_call(self, call_event: ExecutionEvent) -> None:
+        request = call_event.payload.get("request")
+        if isinstance(request, ShellRequest):
+            raise ValueError("interrupted ShellRequest recovery is unsupported")
+        if not isinstance(request, WriteRequest):
+            raise ValueError(
+                f"interrupted {type(request).__name__} recovery is unsupported"
+            )
+        evidence = self._tools.inspect_write(request)
+        if evidence is None:
+            raise ValueError("interrupted write outcome is unresolved")
+        self._event_log.append(
+            "ACTION_RECONCILED",
+            {"status": "confirmed_applied", "evidence": evidence},
+            (call_event.event_id,),
+        )
 
     def deliver_event(self, event_type: str, data: str = "") -> ExecutionResult:
         if not isinstance(event_type, str) or not event_type:

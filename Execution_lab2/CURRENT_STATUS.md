@@ -43,9 +43,16 @@
 - `DecisionFrame` still stores the exact `ModelRequest` object, exposed
   Action/tool contracts, raw response snapshot, structured Action, State
   version, and source refs for every new decision.
-- Recovery accepts only explicit safe tails. A log ending at
-  `TOOL_CALL_STARTED` or another unsettled decision boundary is rejected; no
-  UNKNOWN side-effect outcome is invented.
+- Recovery still accepts only explicit safe tails, with one narrow exception:
+  a dangling `TOOL_CALL_STARTED` carrying a `WriteRequest` is inspected
+  against the current Host filesystem. Exact logical-content equality appends
+  a causal `ACTION_RECONCILED` with `status=confirmed_applied`, path,
+  intended/observed SHA-256, and observed character count. The old call event
+  is not rewritten and the Write is not executed again.
+- Missing, unreadable, or different Write targets remain UNKNOWN and raise an
+  explicit unresolved recovery error without appending success or sampling the
+  Model. Dangling `ShellRequest` remains explicitly unsupported; no generic
+  effect reconciliation or retry path was added.
 
 ## Source mapping
 
@@ -55,16 +62,34 @@ rejected architecture are recorded in `SOURCE_AUDIT.md`.
 | Source | Audited version | Borrowed semantic |
 | --- | --- | --- |
 | OpenAI Codex | `a9ed4f154a4fad64acf538d6418d3ed012aeab86`, Apache-2.0 | Durable identity is distinct from live session/turn/request state; reopen identity before new work. |
-| DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Canonical sequenced events persist; model-visible state is derived; causal source refs remain explicit. |
-| Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | A live agent object is replaceable and host-owned lifecycle remains outside model working state. |
-| LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Resume from recorded facts and current reality, not a prior model stack. |
-| Temporal Server / Go SDK | `19a774302c613da9adc4436ab14278ccdca8e0a5` / `b7c242c6894df088a57a85b33d0586e908da8b93`, MIT | Durable event-driven wake and history replay without rerunning a committed result. |
+| DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Started-without-result is canonically UNKNOWN; verify external state before retry and append causal repair rather than mutating history. |
+| Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | A live agent object is replaceable and Host-owned external state remains outside model working state (the authority conclusion is explicitly an inference). |
+| LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Resume and verify from durable records plus the current workspace reality, not a prior model stack or old completion claim. |
+| Temporal Server / Go SDK | `19a774302c613da9adc4436ab14278ccdca8e0a5` / `b7c242c6894df088a57a85b33d0586e908da8b93`, MIT | Durable history does not make an external Activity exactly once; a crash before completion is recorded can retry the effect. |
 
 No upstream session/plugin ecosystem, Worker infrastructure, Manager ontology,
 provider stack, IPython, Actor Directory, Child runtime, or generic event bus
 was copied.
 
 ## Experiment results
+
+Slice 4:
+
+- **A - committed Write crash:** `TOOL_CALL_STARTED`, real filesystem write,
+  simulated process death before `TOOL_RESULT`, total Runtime replacement,
+  exact Host inspection, `ACTION_RECONCILED(confirmed_applied)`, and Complete
+  succeeds. The Write execution count remains exactly 1.
+- **B - replay and identity:** after recovered completion,
+  `fold(full durable EventLog) == restored ExecutionState`;
+  `execution_id` and `root_actor_id` remain unchanged across replacement.
+- **C - ambiguous reality:** a dangling Write whose current target contains
+  different content is not replayed and does not produce fabricated success;
+  recovery remains explicitly unresolved and the dangling call stays last.
+- **D - unsupported Shell:** a dangling `ShellRequest` reports unsupported,
+  appends no reconciliation event, executes no Shell on recovery, and samples
+  no Model.
+
+Slice 3 regression evidence:
 
 - **A — durable replay:** a Runtime-created JSONL reloads to an equal immutable
   Event tuple, and `fold(original) == fold(reloaded)`.
@@ -93,24 +118,29 @@ was copied.
   disposable projections, and Context is a separate bounded view.
 - Completed Action results are not replayed. Recovery resumes current State,
   not historical model decisions.
+- A confirmed interrupted Write advances State only through the appended
+  `ACTION_RECONCILED` fact. Exact current reality is evidence of the requested
+  postcondition, not an exactly-once execution guarantee.
 - WAITING performs zero polling, Model sampling, or Tool execution.
 - Event matching is exact typed equality and contains no semantic planning.
 - Canonical result values remain in events while model-visible projections are
   explicitly truncated to the configured absolute character bound.
 - DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
   remain covered by regression tests.
-- Validation: `Execution_lab2` 32 passed; root 328 passed / 24 skipped;
+- Validation: `Execution_lab2` 34 passed; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
 
 ## Known limits
 
-- UNKNOWN side-effect crash reconciliation: **NOT IMPLEMENTED**.
+- UNKNOWN side-effect crash reconciliation is implemented only for a dangling
+  `WriteRequest` whose target can be read and exactly equals intended content.
+  All ambiguous Writes and every other effect kind remain unresolved.
 - IPython: **NOT IMPLEMENTED**.
 - real provider: **NOT IMPLEMENTED**.
 - Child/recursion: **NOT IMPLEMENTED**.
-- Restart is supported only at a durable settled result, WAIT/external-event
-  safe point, initial start, or terminal event. An unsettled tool call is
-  rejected rather than reconciled.
+- Restart is supported at a durable settled result, WAIT/external-event safe
+  point, initial start, terminal event, or the exact confirmed-Write case
+  above. Other unsettled tool calls remain unsupported/unresolved.
 - JSONL and Checkpoint are local single-process files. There is no multi-writer
   coordination, database, checkpoint rotation, scheduler, background worker,
   generic event bus, completion verifier, or resource accounting.

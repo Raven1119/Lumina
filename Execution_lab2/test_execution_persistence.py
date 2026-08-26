@@ -12,6 +12,7 @@ from execution import (
     ToolCall,
     Wait,
     WriteRequest,
+    ShellRequest,
     Complete,
     Checkpoint,
     fold_execution_state,
@@ -283,31 +284,134 @@ def test_failed_durable_append_never_becomes_an_authoritative_event(
     assert log.events == ()
 
 
-def test_restart_rejects_an_unsettled_tool_call_without_unknown_reconciliation(
-    tmp_path,
-):
+def test_restart_reconciles_a_committed_write_without_executing_it_again(tmp_path):
+    log_path = tmp_path / "execution.jsonl"
+    write_calls = []
+
+    class CrashAfterCommittedWrite:
+        def __init__(self):
+            self._host = ToolHost(SharedEnvironment(tmp_path))
+
+        def execute(self, request):
+            write_calls.append(request)
+            result = self._host.execute(request)
+            assert result.ok
+            raise SystemExit("crash after committed write")
+
+    class RecordingRecoveryTools:
+        def __init__(self):
+            self._host = ToolHost(SharedEnvironment(tmp_path))
+
+        def inspect_write(self, request):
+            return self._host.inspect_write(request)
+
+        def execute(self, request):
+            write_calls.append(request)
+            return self._host.execute(request)
+
+    with pytest.raises(SystemExit, match="crash after committed write"):
+        RootAgentProcess(
+            model=ScriptedModel([ToolCall(WriteRequest("committed.txt", "value"))]),
+            tools=CrashAfterCommittedWrite(),
+            max_decisions=3,
+            event_log=EventLog(log_path),
+        ).run("reconcile a committed write")
+
+    before_restart = EventLog.load(log_path)
+    started = before_restart.events[-1]
+    execution_id = fold_execution_state(before_restart.events).execution_id
+    root_actor_id = fold_execution_state(before_restart.events).root_actor_id
+    assert started.event_type == "TOOL_CALL_STARTED"
+    assert started.payload["request"] == WriteRequest("committed.txt", "value")
+
+    resumed = RootAgentProcess(
+        model=ScriptedModel([Complete("done")]),
+        tools=RecordingRecoveryTools(),
+        max_decisions=3,
+        event_log=EventLog.load(log_path),
+    ).resume()
+
+    reconciled = next(
+        event for event in resumed.events if event.event_type == "ACTION_RECONCILED"
+    )
+    assert resumed.status == "completed"
+    assert resumed.state.execution_id == execution_id
+    assert resumed.state.root_actor_id == root_actor_id
+    assert resumed.state == fold_execution_state(resumed.events)
+    assert EventLog.load(log_path).events == resumed.events
+    assert write_calls == [WriteRequest("committed.txt", "value")]
+    assert (tmp_path / "committed.txt").read_text(encoding="utf-8") == "value"
+    assert reconciled.source_event_refs == (started.event_id,)
+    assert reconciled.payload["status"] == "confirmed_applied"
+    assert reconciled.payload["evidence"]["path"] == "committed.txt"
+    assert reconciled.payload["evidence"]["intended_content_sha256"] == (
+        reconciled.payload["evidence"]["observed_content_sha256"]
+    )
+
+
+def test_restart_leaves_an_ambiguous_write_unknown_without_replay(tmp_path):
+    log_path = tmp_path / "execution.jsonl"
+
+    class CrashBeforeWrite:
+        def execute(self, request):
+            raise SystemExit("crash before write")
+
+    with pytest.raises(SystemExit, match="crash before write"):
+        RootAgentProcess(
+            model=ScriptedModel([ToolCall(WriteRequest("unknown.txt", "value"))]),
+            tools=CrashBeforeWrite(),
+            max_decisions=2,
+            event_log=EventLog(log_path),
+        ).run("leave a write unknown")
+    (tmp_path / "unknown.txt").write_text("different", encoding="utf-8")
+
+    resumed_model = ScriptedModel([Complete("must not run")])
+    runtime = RootAgentProcess(
+        model=resumed_model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        event_log=EventLog.load(log_path),
+    )
+
+    with pytest.raises(ValueError, match="write outcome is unresolved"):
+        runtime.resume()
+
+    reloaded = EventLog.load(log_path)
+    assert reloaded.events[-1].event_type == "TOOL_CALL_STARTED"
+    assert (tmp_path / "unknown.txt").read_text(encoding="utf-8") == "different"
+    assert resumed_model.received_requests == []
+
+
+def test_restart_reports_dangling_shell_as_unsupported(tmp_path):
     log_path = tmp_path / "execution.jsonl"
 
     class CrashingTools:
         def execute(self, request):
-            raise SystemExit("simulated process death")
+            raise SystemExit("crash around shell")
 
-    with pytest.raises(SystemExit, match="simulated process death"):
+    with pytest.raises(SystemExit, match="crash around shell"):
         RootAgentProcess(
-            model=ScriptedModel([ToolCall(WriteRequest("unsafe.txt", "value"))]),
+            model=ScriptedModel(
+                [ToolCall(ShellRequest(("python", "-c", "print('side effect')")))]
+            ),
             tools=CrashingTools(),
             max_decisions=2,
             event_log=EventLog(log_path),
-        ).run("leave an unsettled call")
+        ).run("leave shell unresolved")
+
+    resumed_model = ScriptedModel([Complete("must not run")])
+    runtime = RootAgentProcess(
+        model=resumed_model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        event_log=EventLog.load(log_path),
+    )
+
+    with pytest.raises(ValueError, match="ShellRequest recovery is unsupported"):
+        runtime.resume()
 
     assert EventLog.load(log_path).events[-1].event_type == "TOOL_CALL_STARTED"
-    with pytest.raises(ValueError, match="unsettled action recovery is not implemented"):
-        RootAgentProcess(
-            model=ScriptedModel([]),
-            tools=ToolHost(SharedEnvironment(tmp_path)),
-            max_decisions=2,
-            event_log=EventLog.load(log_path),
-        )
+    assert resumed_model.received_requests == []
 
 
 def test_restart_finishes_wake_when_matching_event_was_already_durable(
