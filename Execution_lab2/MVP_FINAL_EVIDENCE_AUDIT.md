@@ -2,13 +2,26 @@
 
 ## 1. Audit scope
 
-This is a read-only evidence audit of `Execution_lab2` at:
+The original read-only evidence audit of `Execution_lab2` was performed at:
 
 ```text
 branch: Execution_lab2
 HEAD:   690501a0ebd262ed5c8130bd52a0e8fe0968603c
 date:   2026-08-27
 ```
+
+Condition 5 and the affected final verdict were re-audited after the one
+authorized final lifecycle slice:
+
+```text
+branch:              Execution_lab2
+implementation HEAD: 39121e1
+slice commits:        76b1e29, 39121e1
+date:                 2026-08-27
+```
+
+All other success-condition evidence and historical findings below remain
+unchanged.
 
 The normative design and implementation records examined were:
 
@@ -91,8 +104,8 @@ in ordinary regression runs.
 | 2 | Each top-level Action returns a structured Observation based on Host execution | `SUPPORTED_WITH_LIMITS` | Read/Write/Shell and IPython result/failure events feed the next bounded request; failed actions remain visible and the Root continues | `test_tool_failure_is_returned_to_the_model_for_recovery`; `test_ipython_failure_is_bounded_observation_and_root_can_continue`; sibling-failure tests; `f0beeed`, `6534a`, `690501a` | Effects performed *inside* Python are not separately typed or EventLogged; the outer IPython result and later environment evidence are authoritative | NO |
 | 3 | EventLog is append-only historical authority and ExecutionState is its fold | `SUPPORTED_WITH_LIMITS` | Full replay equality, causal-reference validation, durable append-before-authority, corruption rejection, and checkpoint-prefix validation are tested | `test_execution_state_is_an_exact_replay_of_an_append_only_event_log`; persistence replay/corruption/checkpoint tests; `e386cdd`, `71cbf35` | EventLog reconstructs Runtime facts, not ephemeral kernel variables or every internal Python side effect | NO |
 | 4 | State and Context are projections rather than an unbounded transcript | `SUPPORTED` | State is fold-derived; Context is rebuilt under an absolute character bound; four successful or failed siblings fit the minimum bound | `test_state_derived_context_does_not_grow_with_the_full_event_history`; large-result/minimum-bound/four-sibling tests; `e386cdd`, `7cdbd6f`, `690501a` | Canonical results can be larger than their model-visible bounded projections by design | NO |
-| 5 | Explicit interrupt stops future work, settles/cancels in-flight work, enters SUSPENDED, and explicitly resumes | `NOT_ESTABLISHED` | No `SUSPENDED` state, interrupt event/API, stop-new-actions boundary, in-flight settle/cancel transition, or suspended-resume test exists | Exact code/test search at `690501a`; `ExecutionState.status` is running/waiting/completed/failed; `RootAgentProcess` exposes run/resume/deliver_event only | WAIT -> Event -> Resume and crash -> restart -> resume are different semantics; IPython timeout interrupt is not lifecycle suspension | **YES** |
-| 6 | Checkpoint + EventLog + Environment restore settled execution after process loss | `SUPPORTED_WITH_LIMITS` | Checkpoint-tail replay equals full replay; identity survives; completed actions are not replayed; WAIT wake and committed Write recovery survive full Runtime replacement | checkpoint/restart/wake/non-replay/reconciliation tests; `71cbf35`, `9a1a72f`, `25ac10d`, `5957369` | Dangling Shell and in-flight IPython remain explicit unresolved/unsupported cases; explicit interrupt is separately missing under condition 5 | NO additional blocker |
+| 5 | Explicit interrupt stops future work, settles/cancels in-flight work, enters SUSPENDED, and explicitly resumes | `SUPPORTED` | Host-owned interrupt is serialized with every model/action admission boundary; ordinary Tool work truthfully settles, live IPython uses its existing interrupt primitive then records actual failure/timeout, and only a causal SUSPENDED event permits explicit resume | Six required lifecycle experiments plus admission/crash-window regressions; `76b1e29`, `39121e1` | Kernel interrupt is best-effort and may settle through the existing timeout; process-crash recovery of a dangling IPython cell remains explicitly unsupported rather than fabricated | NO |
+| 6 | Checkpoint + EventLog + Environment restore settled execution after process loss | `SUPPORTED_WITH_LIMITS` | Checkpoint-tail replay equals full replay; identity survives; completed actions are not replayed; WAIT wake and committed Write recovery survive full Runtime replacement | checkpoint/restart/wake/non-replay/reconciliation tests; `71cbf35`, `9a1a72f`, `25ac10d`, `5957369` | Dangling Shell and process-crashed IPython remain explicit unresolved/unsupported cases; no generic crash-consistency claim is made | NO |
 | 7 | Recovery does not require a Python instruction pointer | `SUPPORTED` | Restart reconstructs durable execution while deliberately starting a fresh IPython namespace | `test_restart_preserves_execution_but_starts_a_fresh_namespace`; `6534a00` | Live kernel variables are intentionally not durable | NO |
 | 8 | An uncertain side effect can remain UNKNOWN and undergo minimal reconciliation | `SUPPORTED_WITH_LIMITS` | A dangling Write is confirmed only when current logical file content exactly equals the intended content; a causal `ACTION_RECONCILED` event is appended and the Write is not repeated | committed/ambiguous Write and unsupported Shell restart tests; `25ac10d` | Equality proves the current postcondition, not causal authorship, exactly-once execution, or generic side-effect recovery | NO |
 | 9 | Completion authority is separated from the Root's claim and checked against reality | `SUPPORTED` | Caller-owned immutable `FileContentEquals` is read from the current filesystem; claimed -> verified/rejected -> completed events are causal and replayable | false/true completion, authority, restart, and event-replay tests; `5957369` | Only one deterministic verifier type exists, as required by the MVP slice | NO |
@@ -186,17 +199,34 @@ ACTIVE
 -> continue
 ```
 
-**Verdict:** `NOT_ESTABLISHED`.
+**Mechanism:** external `RootAgentProcess.interrupt()` appends
+`INTERRUPT_REQUESTED` and establishes one lifecycle admission gate shared by
+model sampling, Tool/IPython start, control decisions, and terminal failure.
+An ordinary in-flight Tool records its actual outcome before suspension. A
+live IPython phase receives the existing kernel interrupt request and still
+must produce an actual failure or timeout outcome. Only then does Runtime
+append `ACTOR_SUSPENDED`; only explicit `resume()` appends
+`ACTOR_RESUMED`.
 
-**Strongest evidence:** there is no suspended status, interrupt lifecycle
-event, public interrupt/suspend operation, in-flight settlement transition, or
-test. `PersistentIPython` calling `interrupt_kernel()` after a code timeout is
-local failure handling, not Root suspension.
+**Verdict:** `SUPPORTED`.
 
-**Known limitation:** existing WAIT -> Event -> Resume and crash -> restart ->
-resume paths establish two useful but non-equivalent forms of continuation.
+**Strongest evidence:** maintained experiments cover interrupt between
+decisions, durable suspended restart with stable execution/root identity,
+ordinary Event delivery that cannot wake the Root, completed-Tool no replay,
+in-flight ordinary Tool settlement, live IPython interrupt/actual-outcome
+settlement, frozen sibling suffix continuation, model-admission atomicity,
+pre-model interrupt atomicity, and crash after a durable interrupt request.
+Every restored State equals `fold(full EventLog)`; the final
+`Execution_lab2` suite reports 96 passed and 6 environment-gated real-provider
+tests skipped. Implementation commits are `76b1e29` and `39121e1`.
 
-**MVP completion blocked:** **YES**.
+**Known limitation:** this is one local Root lifecycle, not a generic
+cancellation framework. Jupyter interruption is best-effort and the maintained
+Windows path may settle through the existing bounded timeout. A process crash
+leaving only `IPYTHON_EXECUTION_STARTED` remains explicit unsupported
+recovery; no success or cancellation is fabricated.
+
+**MVP completion blocked:** NO.
 
 ### 4.6 Crash/restart recovery uses Checkpoint + EventLog + Environment
 
@@ -215,7 +245,7 @@ second execution.
 unresolved/unsupported recovery outcomes. No generic crash-consistency claim
 is justified.
 
-**MVP completion blocked:** NO additional blocker beyond explicit suspension.
+**MVP completion blocked:** NO.
 
 ### 4.7 Python instruction-pointer restoration is unnecessary
 
@@ -333,10 +363,12 @@ IPython experiment, which granted direct local OS/workspace authority.
 
 ### Event-sourced Runtime — `SUPPORTED_WITH_LIMITS`
 
-The implemented historical/state/context authority split is sound, but the
-explicit SUSPENDED lifecycle required by the frozen Runtime design is absent.
-The conceptual Runtime is also merged into `RootAgentProcess`, rather than
-being the named first-class module in the architecture document.
+The implemented historical/state/context authority split is sound. Explicit
+interrupt, settled/cancelled outcome evidence, SUSPENDED, and explicit resume
+are append-only events whose folded State survives restart; Checkpoint remains
+only a validated replay optimization. The conceptual Runtime is still merged
+into `RootAgentProcess`, rather than being the named first-class module in the
+architecture document, so the structural limit remains.
 
 ### Shared Environment — `SUPPORTED`
 
@@ -415,7 +447,10 @@ idempotency framework, or effect ontology was introduced.
 
 ## 7. Known limitations
 
-- Explicit interrupt/suspend/resume is absent; this is the only MVP blocker.
+- Live interrupt/suspend/resume is intentionally local and cooperative:
+  ordinary Tool work settles, and IPython uses the existing best-effort kernel
+  interrupt then waits for actual failure/timeout evidence. This is not
+  process-tree cancellation or generic effect safety.
 - A dangling Shell and an in-flight IPython action cannot be reconciled; both
   fail explicitly rather than retrying or guessing.
 - Write reconciliation proves only a current exact postcondition.
@@ -435,19 +470,11 @@ idempotency framework, or effect ontology was introduced.
 
 ## 8. MVP blockers
 
-Exactly one blocking gap was established:
-
-```text
-explicit interrupt requested
--> prevent future actions from starting
--> safely settle or cancel in-flight work
--> durably enter SUSPENDED
--> explicit resume
--> continue without replaying settled work
-```
-
-No current event, state, API, or experiment proves this lifecycle. WAIT and
-crash recovery must not be used as substitute evidence.
+No MVP blocker remains. The former explicit-interrupt gap is now established
+by Host-owned API, three causal lifecycle events, fold-derived SUSPENDED State,
+live Tool/IPython settlement evidence, suspended restart, ordinary-event
+no-wake, and explicit-resume/no-replay tests. WAIT and crash recovery remain
+distinct semantics rather than substitute evidence.
 
 ## 9. Non-blocking deferred capabilities
 
@@ -492,29 +519,20 @@ test-only dependency: pytest
 ## 10. Final verdict
 
 ```text
-MVP_NOT_YET_VALIDATED
+MVP_VALIDATED
 ```
 
-Ten of eleven success conditions are supported or supported with explicitly
-bounded limits. Condition 5 is `NOT_ESTABLISHED` and is mandatory in the frozen
-architecture. The architecture therefore cannot yet be frozen as a validated
-MVP.
-
-No evidence refutes the implemented mechanisms, and no second blocker was
-established. The direct-IPython authority design delta and the listed
-implementation debts should remain visible, but they do not justify expanding
-the final implementation slice.
+All eleven success conditions are supported or supported with explicitly
+bounded limits. Condition 5 is now `SUPPORTED`; no blocker remains. The
+direct-IPython authority design delta, effect-recovery limits, and listed
+implementation debts remain visible and do not weaken the frozen MVP claims
+beyond their recorded scope.
 
 ## 11. Recommended next action
 
-Implement and validate exactly one minimal final slice: the explicit Root
-interrupt lifecycle from ACTIVE through stop-new-actions and safe in-flight
-settlement/cancellation to durable SUSPENDED, followed by explicit resume with
-no replay of settled work.
-
-Do not combine that slice with Child, recursion, parallelism, generic
-cancellation frameworks, generalized effect recovery, provider changes, or
-any of the deferred capabilities above.
+Freeze the Execution MVP at the validated boundary. Do not enter Child,
+recursion, parallelism, generic cancellation, or another Execution stage
+without a separate approved research task.
 
 ## Validation record
 
@@ -523,13 +541,22 @@ Run from the repository root with the existing project virtual environment on
 
 ```text
 python -m pytest Execution_lab2 -q
-88 passed, 6 skipped
+96 passed, 6 skipped
 
 python -m pytest -q
 328 passed, 24 skipped, 2 upstream warnings
 
+python -m pytest Conversation_Memory/tests -q
+163 passed, 45 skipped, 7 upstream warnings
+
+python -m pytest Dream/tests -q
+36 passed, 1 skipped, 2 upstream warnings
+
 git diff --check
 PASS
+
+live ipykernel / secret scan / upstream MAGMA status
+0 / clean / clean
 ```
 
 The skipped tests are the existing environment-gated real-provider tests; no
