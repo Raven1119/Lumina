@@ -5,7 +5,9 @@ import pytest
 
 from Execution_lab2.execution import (
     Complete,
+    DecisionFrame,
     EventLog,
+    ModelRequest,
     ReadRequest,
     RootAgentProcess,
     ScriptedModel,
@@ -94,6 +96,25 @@ def test_event_log_rejects_unknown_schema_and_invalid_causal_shapes():
             (started.event_id,),
         )
 
+    request = ModelRequest("{}", (), (started.event_id,))
+    inconsistent_frame = DecisionFrame(
+        decision_id="inconsistent",
+        model_identifier="fixture",
+        goal="test",
+        state_version=999,
+        source_event_refs=(started.event_id,),
+        actual_request=request,
+        actual_tools_exposed=(),
+        raw_model_response=Complete("done"),
+        resulting_action=Complete("done"),
+    )
+    with pytest.raises(ValueError):
+        event_log.append(
+            "MODEL_DECISION",
+            {"action": Complete("different"), "frame": inconsistent_frame},
+            (started.event_id,),
+        )
+
 
 def test_decision_frames_capture_the_exact_requests_and_capabilities(tmp_path):
     first_action = ToolCall(WriteRequest("output.txt", "done\n"))
@@ -146,6 +167,45 @@ def test_mutable_unknown_model_response_is_snapshotted_before_logging(tmp_path):
     assert result.events[1].payload["frame"].raw_model_response == snapshot
     with pytest.raises(TypeError):
         snapshot["message"] = "changed"
+
+    external_raw = {"message": {"parts": ["external"]}}
+    event_log = EventLog()
+    started = event_log.append("EXECUTION_STARTED", {"goal": "external"})
+    request = ModelRequest("{}", (), (started.event_id,))
+    frame = DecisionFrame(
+        decision_id="external-decision",
+        model_identifier="external-model",
+        goal="external",
+        state_version=1,
+        source_event_refs=(started.event_id,),
+        actual_request=request,
+        actual_tools_exposed=(),
+        raw_model_response=external_raw,
+        resulting_action=Complete("done"),
+    )
+    decision = event_log.append(
+        "MODEL_DECISION",
+        {"action": Complete("done"), "frame": frame},
+        (started.event_id,),
+    )
+    external_raw["message"]["parts"].append("changed later")
+
+    assert decision.payload["frame"].raw_model_response["message"]["parts"] == (
+        "external",
+    )
+
+    mutable_content = []
+    invalid_action = ToolCall(WriteRequest("invalid.txt", mutable_content))
+    invalid_result = RootAgentProcess(
+        model=ScriptedModel([invalid_action]),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+    ).run("Reject invalid mutable content")
+    mutable_content.append("changed later")
+
+    logged_action = invalid_result.events[1].payload["action"]
+    assert logged_action.request.content == ()
+    assert invalid_result.decision_frames[0].resulting_action.request.content == ()
 
 
 def test_state_derived_context_does_not_grow_with_the_full_event_history(tmp_path):

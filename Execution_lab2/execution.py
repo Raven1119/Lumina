@@ -340,11 +340,18 @@ class EventLog:
 
         previous = self._events[-1]
         if event_type == "MODEL_DECISION":
-            if previous.event_type not in (
-                "EXECUTION_STARTED",
-                "TOOL_RESULT",
-                "TOOL_FAILED",
-            ) or not isinstance(payload["frame"], DecisionFrame):
+            frame = payload["frame"]
+            if (
+                previous.event_type
+                not in ("EXECUTION_STARTED", "TOOL_RESULT", "TOOL_FAILED")
+                or not isinstance(frame, DecisionFrame)
+                or payload["action"] != frame.resulting_action
+                or frame.state_version != previous.sequence
+                or frame.source_event_refs != source_event_refs
+                or frame.actual_request.source_event_refs != source_event_refs
+                or frame.actual_tools_exposed != frame.actual_request.available_tools
+                or frame.goal != self._events[0].payload["goal"]
+            ):
                 raise ValueError("model decision requires current execution state")
         elif event_type == "TOOL_CALL_STARTED":
             frame = previous.payload.get("frame")
@@ -353,7 +360,7 @@ class EventLog:
                 previous.event_type != "MODEL_DECISION"
                 or not isinstance(frame, DecisionFrame)
                 or not isinstance(frame.resulting_action, ToolCall)
-                or frame.resulting_action.request != request
+                or frame.resulting_action.request != self._freeze(request)
             ):
                 raise ValueError("tool call must match its model decision")
         elif event_type in ("TOOL_RESULT", "TOOL_FAILED"):
@@ -361,7 +368,8 @@ class EventLog:
             if (
                 previous.event_type != "TOOL_CALL_STARTED"
                 or not isinstance(observation, Observation)
-                or observation.request != previous.payload.get("request")
+                or self._freeze(observation.request)
+                != previous.payload.get("request")
                 or observation.result.ok != (event_type == "TOOL_RESULT")
             ):
                 raise ValueError("tool result must match its tool call and outcome")
@@ -389,9 +397,89 @@ class EventLog:
                 {key: cls._freeze(item) for key, item in value.items()}
             )
         if isinstance(value, (list, tuple)):
-            return tuple(cls._freeze(item) for item in value)
+            frozen = tuple(cls._freeze(item) for item in value)
+            if isinstance(value, tuple) and all(
+                item is original for item, original in zip(frozen, value)
+            ):
+                return value
+            return frozen
         if isinstance(value, set):
             return frozenset(cls._freeze(item) for item in value)
+        if isinstance(value, ReadRequest):
+            path = cls._freeze(value.path)
+            return value if path is value.path else ReadRequest(path)
+        if isinstance(value, WriteRequest):
+            path = cls._freeze(value.path)
+            content = cls._freeze(value.content)
+            if path is value.path and content is value.content:
+                return value
+            return WriteRequest(path, content)
+        if isinstance(value, ShellRequest):
+            argv = cls._freeze(value.argv)
+            return value if argv is value.argv else ShellRequest(argv)
+        if isinstance(value, ToolResult):
+            fields = tuple(
+                cls._freeze(field)
+                for field in (
+                    value.ok,
+                    value.output,
+                    value.error_code,
+                    value.error,
+                    value.exit_code,
+                    value.truncated,
+                )
+            )
+            if all(
+                field is original
+                for field, original in zip(
+                    fields,
+                    (
+                        value.ok,
+                        value.output,
+                        value.error_code,
+                        value.error,
+                        value.exit_code,
+                        value.truncated,
+                    ),
+                )
+            ):
+                return value
+            return ToolResult(*fields)
+        if isinstance(value, ToolCall):
+            request = cls._freeze(value.request)
+            return value if request is value.request else ToolCall(request)
+        if isinstance(value, Complete):
+            output = cls._freeze(value.output)
+            return value if output is value.output else Complete(output)
+        if isinstance(value, Observation):
+            request = cls._freeze(value.request)
+            result = cls._freeze(value.result)
+            if request is value.request and result is value.result:
+                return value
+            return Observation(request, result)
+        if isinstance(value, ModelRequest):
+            context = cls._freeze(value.context)
+            available_tools = cls._freeze(value.available_tools)
+            source_event_refs = cls._freeze(value.source_event_refs)
+            if (
+                context is value.context
+                and available_tools is value.available_tools
+                and source_event_refs is value.source_event_refs
+            ):
+                return value
+            return ModelRequest(context, available_tools, source_event_refs)
+        if isinstance(value, DecisionFrame):
+            return DecisionFrame(
+                decision_id=cls._freeze(value.decision_id),
+                model_identifier=cls._freeze(value.model_identifier),
+                goal=cls._freeze(value.goal),
+                state_version=cls._freeze(value.state_version),
+                source_event_refs=cls._freeze(value.source_event_refs),
+                actual_request=cls._freeze(value.actual_request),
+                actual_tools_exposed=cls._freeze(value.actual_tools_exposed),
+                raw_model_response=cls._freeze(value.raw_model_response),
+                resulting_action=cls._freeze(value.resulting_action),
+            )
         if isinstance(
             value,
             (
@@ -401,15 +489,6 @@ class EventLog:
                 float,
                 bool,
                 type(None),
-                ReadRequest,
-                WriteRequest,
-                ShellRequest,
-                ToolResult,
-                ToolCall,
-                Complete,
-                Observation,
-                ModelRequest,
-                DecisionFrame,
             ),
         ):
             return value
@@ -684,7 +763,7 @@ class RootAgentProcess:
             )
             decision_event = event_log.append(
                 "MODEL_DECISION",
-                {"action": raw_response_snapshot, "frame": frame},
+                {"action": action, "frame": frame},
                 source_refs,
             )
             if isinstance(action, Complete):
