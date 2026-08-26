@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias
+from types import MappingProxyType
+from typing import Iterable, Literal, Mapping, Protocol, TypeAlias
 
 
 @dataclass(frozen=True)
@@ -58,23 +60,44 @@ class Observation:
         return self.result.ok
 
 
+TOOL_CONTRACTS = (
+    "read(path: str) -> ToolResult",
+    "write(path: str, content: str) -> ToolResult",
+    "shell(argv: tuple[str, ...]) -> ToolResult",
+)
+
+
 @dataclass(frozen=True)
-class DecisionContext:
-    goal: str
-    observation: Observation | None
+class ModelRequest:
+    context: str
+    available_tools: tuple[str, ...]
+    source_event_refs: tuple[str, ...]
+
+    @property
+    def context_size_chars(self) -> int:
+        return len(self.context)
 
 
 class Model(Protocol):
-    def decide(self, context: DecisionContext) -> Action: ...
+    identifier: str
+
+    def decide(self, request: ModelRequest) -> object: ...
 
 
 class ScriptedModel:
-    def __init__(self, actions: list[Action]) -> None:
+    def __init__(
+        self, actions: list[object], *, identifier: str = "scripted-model"
+    ) -> None:
         self._actions = iter(actions)
-        self.seen_contexts: list[DecisionContext] = []
+        self.identifier = identifier
+        self.received_requests: list[ModelRequest] = []
 
-    def decide(self, context: DecisionContext) -> Action:
-        self.seen_contexts.append(context)
+    @property
+    def received_request(self) -> ModelRequest | None:
+        return self.received_requests[-1] if self.received_requests else None
+
+    def decide(self, request: ModelRequest) -> object:
+        self.received_requests.append(request)
         return next(self._actions)
 
 
@@ -224,39 +247,405 @@ class ExecutionStep:
     observation: Observation | None
 
 
+EventType: TypeAlias = Literal[
+    "EXECUTION_STARTED",
+    "MODEL_DECISION",
+    "TOOL_CALL_STARTED",
+    "TOOL_RESULT",
+    "TOOL_FAILED",
+    "EXECUTION_COMPLETED",
+    "EXECUTION_FAILED",
+]
+
+
+@dataclass(frozen=True)
+class ExecutionEvent:
+    event_id: str
+    sequence: int
+    event_type: EventType
+    payload: Mapping[str, object]
+    source_event_refs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DecisionFrame:
+    decision_id: str
+    model_identifier: str
+    goal: str
+    state_version: int
+    source_event_refs: tuple[str, ...]
+    actual_request: ModelRequest
+    actual_tools_exposed: tuple[str, ...]
+    raw_model_response: object
+    resulting_action: Action | None
+
+
+class EventLog:
+    def __init__(self) -> None:
+        self._events: list[ExecutionEvent] = []
+
+    @property
+    def events(self) -> tuple[ExecutionEvent, ...]:
+        return tuple(self._events)
+
+    def append(
+        self,
+        event_type: EventType,
+        payload: Mapping[str, object],
+        source_event_refs: tuple[str, ...] = (),
+    ) -> ExecutionEvent:
+        known_ids = {event.event_id for event in self._events}
+        if any(reference not in known_ids for reference in source_event_refs):
+            raise ValueError("source event references must already exist")
+        sequence = len(self._events) + 1
+        event = ExecutionEvent(
+            event_id=f"event-{sequence:06d}",
+            sequence=sequence,
+            event_type=event_type,
+            payload=MappingProxyType(
+                {key: self._freeze(value) for key, value in payload.items()}
+            ),
+            source_event_refs=tuple(source_event_refs),
+        )
+        self._events.append(event)
+        return event
+
+    @classmethod
+    def _freeze(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            return MappingProxyType(
+                {key: cls._freeze(item) for key, item in value.items()}
+            )
+        if isinstance(value, (list, tuple)):
+            return tuple(cls._freeze(item) for item in value)
+        if isinstance(value, set):
+            return frozenset(cls._freeze(item) for item in value)
+        return value
+
+
+@dataclass(frozen=True)
+class ExecutionState:
+    version: int
+    status: Literal["running", "completed", "failed"]
+    goal: str
+    decision_count: int = 0
+    latest_observation: Observation | None = None
+    last_action: object | None = None
+    last_result: ToolResult | None = None
+    completion: str | None = None
+    failure: str | None = None
+
+
+def fold_execution_state(events: Iterable[ExecutionEvent]) -> ExecutionState:
+    state: ExecutionState | None = None
+    seen_ids: set[str] = set()
+    for expected_sequence, event in enumerate(events, start=1):
+        if event.sequence != expected_sequence:
+            raise ValueError("event sequences must be contiguous and monotonic")
+        if event.event_id in seen_ids:
+            raise ValueError("event ids must be unique")
+        if any(reference not in seen_ids for reference in event.source_event_refs):
+            raise ValueError("source event references must point to the immutable past")
+        seen_ids.add(event.event_id)
+
+        if event.event_type == "EXECUTION_STARTED":
+            if state is not None or not isinstance(event.payload.get("goal"), str):
+                raise ValueError("execution must begin once with a goal")
+            state = ExecutionState(
+                version=event.sequence,
+                status="running",
+                goal=event.payload["goal"],
+            )
+            continue
+        if state is None:
+            raise ValueError("execution must begin with EXECUTION_STARTED")
+        if state.status != "running":
+            raise ValueError("terminal execution state cannot accept more events")
+
+        values = {
+            "version": event.sequence,
+            "status": state.status,
+            "goal": state.goal,
+            "decision_count": state.decision_count,
+            "latest_observation": state.latest_observation,
+            "last_action": state.last_action,
+            "last_result": state.last_result,
+            "completion": state.completion,
+            "failure": state.failure,
+        }
+        if event.event_type == "MODEL_DECISION":
+            values["decision_count"] = state.decision_count + 1
+            values["last_action"] = event.payload.get("action")
+        elif event.event_type in ("TOOL_RESULT", "TOOL_FAILED"):
+            observation = event.payload.get("observation")
+            if not isinstance(observation, Observation):
+                raise ValueError("tool result events require an observation")
+            values["latest_observation"] = observation
+            values["last_result"] = observation.result
+        elif event.event_type == "EXECUTION_COMPLETED":
+            output = event.payload.get("output")
+            if not isinstance(output, str):
+                raise ValueError("completion events require output")
+            values["status"] = "completed"
+            values["completion"] = output
+        elif event.event_type == "EXECUTION_FAILED":
+            failure = event.payload.get("failure")
+            if not isinstance(failure, str):
+                raise ValueError("failure events require a reason")
+            values["status"] = "failed"
+            values["failure"] = failure
+        state = ExecutionState(**values)
+    if state is None:
+        raise ValueError("event log cannot be empty")
+    return state
+
+
+def _text_projection(value: str, limit: int = 1_024) -> dict[str, object]:
+    return {
+        "text": value[:limit],
+        "truncated": len(value) > limit,
+        "original_chars": len(value),
+    }
+
+
+def _request_projection(request: ToolRequest) -> dict[str, object]:
+    if isinstance(request, ReadRequest):
+        return {"tool": "read", "path": _text_projection(request.path)}
+    if isinstance(request, WriteRequest):
+        return {
+            "tool": "write",
+            "path": _text_projection(request.path),
+            "content": _text_projection(request.content),
+        }
+    if isinstance(request, ShellRequest):
+        visible_argv = request.argv[:8]
+        return {
+            "tool": "shell",
+            "argv": [_text_projection(argument) for argument in visible_argv],
+            "argv_truncated": len(request.argv) > len(visible_argv),
+            "original_arg_count": len(request.argv),
+        }
+    return {"tool": type(request).__name__}
+
+
+def _action_projection(action: object | None) -> dict[str, object] | None:
+    if isinstance(action, ToolCall):
+        return {"type": "tool_call", "request": _request_projection(action.request)}
+    if isinstance(action, Complete):
+        return {"type": "complete", "output": _text_projection(action.output)}
+    if action is None:
+        return None
+    return {"type": type(action).__name__}
+
+
+def _observation_projection(
+    observation: Observation | None,
+) -> dict[str, object] | None:
+    if observation is None:
+        return None
+    result = observation.result
+    return {
+        "request": _request_projection(observation.request),
+        "result": {
+            "ok": result.ok,
+            "output": _text_projection(result.output),
+            "error_code": result.error_code,
+            "error": (
+                _text_projection(result.error) if result.error is not None else None
+            ),
+            "exit_code": result.exit_code,
+            "canonical_truncated": result.truncated,
+        },
+    }
+
+
+def _bounded_context(state: ExecutionState, max_chars: int) -> str:
+    document: dict[str, object] = {
+        "goal": _text_projection(state.goal),
+        "state": {
+            "version": state.version,
+            "status": state.status,
+            "decision_count": state.decision_count,
+            "last_action": _action_projection(state.last_action),
+            "last_result": (
+                {
+                    "ok": state.last_result.ok,
+                    "error_code": state.last_result.error_code,
+                    "exit_code": state.last_result.exit_code,
+                    "canonical_truncated": state.last_result.truncated,
+                }
+                if state.last_result is not None
+                else None
+            ),
+            "completion": (
+                _text_projection(state.completion)
+                if state.completion is not None
+                else None
+            ),
+            "failure": (
+                _text_projection(state.failure) if state.failure is not None else None
+            ),
+        },
+        "observation": _observation_projection(state.latest_observation),
+    }
+
+    def render() -> str:
+        return json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+
+    def text_fields(value: object) -> list[dict[str, object]]:
+        fields: list[dict[str, object]] = []
+        if isinstance(value, dict):
+            if set(("text", "truncated", "original_chars")) <= value.keys():
+                fields.append(value)
+            else:
+                for item in value.values():
+                    fields.extend(text_fields(item))
+        elif isinstance(value, list):
+            for item in value:
+                fields.extend(text_fields(item))
+        return fields
+
+    context = render()
+    fields = text_fields(document)
+    while len(context) > max_chars:
+        populated = [field for field in fields if field["text"]]
+        if not populated:
+            raise ValueError("max_context_chars is too small for context metadata")
+        field = max(populated, key=lambda item: len(str(item["text"])))
+        text = str(field["text"])
+        field["text"] = text[: max(0, len(text) - (len(context) - max_chars))]
+        field["truncated"] = True
+        context = render()
+    return context
+
+
+def _build_model_request(
+    state: ExecutionState,
+    source_event_refs: tuple[str, ...],
+    max_context_chars: int,
+) -> ModelRequest:
+    return ModelRequest(
+        context=_bounded_context(state, max_context_chars),
+        available_tools=TOOL_CONTRACTS,
+        source_event_refs=source_event_refs,
+    )
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     status: Literal["completed", "failed"]
     output: str | None
     failure: str | None
     steps: tuple[ExecutionStep, ...]
+    events: tuple[ExecutionEvent, ...]
+    state: ExecutionState
+    decision_frames: tuple[DecisionFrame, ...]
 
 
 class RootAgentProcess:
-    def __init__(self, model: Model, tools: ToolHost, max_decisions: int) -> None:
+    def __init__(
+        self,
+        model: Model,
+        tools: ToolHost,
+        max_decisions: int,
+        *,
+        max_context_chars: int = 2_000,
+    ) -> None:
         if max_decisions < 1:
             raise ValueError("max_decisions must be positive")
+        if max_context_chars < 512:
+            raise ValueError("max_context_chars must be at least 512")
         self._model = model
         self._tools = tools
         self._max_decisions = max_decisions
+        self._max_context_chars = max_context_chars
 
     def run(self, goal: str) -> ExecutionResult:
-        observation = None
+        event_log = EventLog()
+        event_log.append("EXECUTION_STARTED", {"goal": goal})
         steps: list[ExecutionStep] = []
         for decision in range(1, self._max_decisions + 1):
-            action = self._model.decide(DecisionContext(goal, observation))
+            state = fold_execution_state(event_log.events)
+            source_refs = (event_log.events[-1].event_id,)
+            request = _build_model_request(
+                state, source_refs, self._max_context_chars
+            )
+            raw_response = self._model.decide(request)
+            action = (
+                raw_response
+                if isinstance(raw_response, (ToolCall, Complete))
+                else None
+            )
+            frame = DecisionFrame(
+                decision_id=f"decision-{decision:06d}",
+                model_identifier=getattr(
+                    self._model, "identifier", type(self._model).__name__
+                ),
+                goal=goal,
+                state_version=state.version,
+                source_event_refs=source_refs,
+                actual_request=request,
+                actual_tools_exposed=request.available_tools,
+                raw_model_response=raw_response,
+                resulting_action=action,
+            )
+            decision_event = event_log.append(
+                "MODEL_DECISION",
+                {"action": raw_response, "frame": frame},
+                source_refs,
+            )
             if isinstance(action, Complete):
                 steps.append(ExecutionStep(decision, action, None))
-                return ExecutionResult("completed", action.output, None, tuple(steps))
-            if not isinstance(action, ToolCall):
-                steps.append(ExecutionStep(decision, action, None))
-                return ExecutionResult(
-                    "failed",
-                    None,
-                    f"unknown_action:{type(action).__name__}",
-                    tuple(steps),
+                event_log.append(
+                    "EXECUTION_COMPLETED",
+                    {"output": action.output},
+                    (decision_event.event_id,),
                 )
+                return self._result(event_log, steps)
+            if action is None:
+                steps.append(ExecutionStep(decision, raw_response, None))
+                event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": f"unknown_action:{type(raw_response).__name__}"},
+                    (decision_event.event_id,),
+                )
+                return self._result(event_log, steps)
+            call_event = event_log.append(
+                "TOOL_CALL_STARTED",
+                {"request": action.request},
+                (decision_event.event_id,),
+            )
             result = self._tools.execute(action.request)
             observation = Observation(action.request, result)
+            event_log.append(
+                "TOOL_RESULT" if result.ok else "TOOL_FAILED",
+                {"observation": observation},
+                (call_event.event_id,),
+            )
             steps.append(ExecutionStep(decision, action, observation))
-        return ExecutionResult("failed", None, "decision_limit_reached", tuple(steps))
+        event_log.append(
+            "EXECUTION_FAILED",
+            {"failure": "decision_limit_reached"},
+            (event_log.events[-1].event_id,),
+        )
+        return self._result(event_log, steps)
+
+    @staticmethod
+    def _result(
+        event_log: EventLog, steps: list[ExecutionStep]
+    ) -> ExecutionResult:
+        events = event_log.events
+        state = fold_execution_state(events)
+        return ExecutionResult(
+            status=state.status,
+            output=state.completion,
+            failure=state.failure,
+            steps=tuple(steps),
+            events=events,
+            state=state,
+            decision_frames=tuple(
+                event.payload["frame"]
+                for event in events
+                if event.event_type == "MODEL_DECISION"
+            ),
+        )
