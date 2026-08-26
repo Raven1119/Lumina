@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
@@ -507,6 +508,9 @@ EventType: TypeAlias = Literal[
     "ROOT_WAITING",
     "EXTERNAL_EVENT_RECEIVED",
     "ROOT_WOKEN",
+    "INTERRUPT_REQUESTED",
+    "ACTOR_SUSPENDED",
+    "ACTOR_RESUMED",
     "EXECUTION_COMPLETED",
     "EXECUTION_FAILED",
 ]
@@ -538,16 +542,33 @@ def _previous_sibling_is_settled(
 ) -> bool:
     if call_index == 0:
         return previous.event_id == decision_event.event_id
+    by_id = {event.event_id: event for event in events}
+
+    def cause(event: ExecutionEvent) -> ExecutionEvent | None:
+        if len(event.source_event_refs) != 1:
+            return None
+        return by_id.get(event.source_event_refs[0])
+
+    while previous.event_type in (
+        "ACTOR_RESUMED",
+        "ACTOR_SUSPENDED",
+        "EXTERNAL_EVENT_RECEIVED",
+    ):
+        previous = cause(previous)
+        if previous is None:
+            return False
+    if previous.event_type == "INTERRUPT_REQUESTED":
+        previous = cause(previous)
+        if previous is None:
+            return False
     if previous.event_type not in _SIBLING_SETTLED_EVENT_TYPES:
         return False
-    previous_start = next(
-        (
-            event
-            for event in events
-            if previous.source_event_refs == (event.event_id,)
-        ),
-        None,
-    )
+    previous_start = cause(previous)
+    if (
+        previous_start is not None
+        and previous_start.event_type == "INTERRUPT_REQUESTED"
+    ):
+        previous_start = cause(previous_start)
     return (
         previous_start is not None
         and previous_start.source_event_refs == (decision_event.event_id,)
@@ -691,6 +712,7 @@ class EventLog:
 
     def __init__(self, path: str | Path | None = None, *, _loading: bool = False) -> None:
         self._events: list[ExecutionEvent] = []
+        self._lock = threading.RLock()
         self._path = Path(path) if path is not None else None
         if self._path is not None:
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -699,7 +721,8 @@ class EventLog:
 
     @property
     def events(self) -> tuple[ExecutionEvent, ...]:
-        return tuple(self._events)
+        with self._lock:
+            return tuple(self._events)
 
     def append(
         self,
@@ -707,24 +730,25 @@ class EventLog:
         payload: Mapping[str, object],
         source_event_refs: tuple[str, ...] = (),
     ) -> ExecutionEvent:
-        self._validate_append(event_type, payload, source_event_refs)
-        known_ids = {event.event_id for event in self._events}
-        if any(reference not in known_ids for reference in source_event_refs):
-            raise ValueError("source event references must already exist")
-        sequence = len(self._events) + 1
-        event = ExecutionEvent(
-            event_id=f"event-{sequence:06d}",
-            sequence=sequence,
-            event_type=event_type,
-            payload=MappingProxyType(
-                {key: self._freeze(value) for key, value in payload.items()}
-            ),
-            source_event_refs=tuple(source_event_refs),
-        )
-        if self._path is not None:
-            self._persist(event)
-        self._events.append(event)
-        return event
+        with self._lock:
+            self._validate_append(event_type, payload, source_event_refs)
+            known_ids = {event.event_id for event in self._events}
+            if any(reference not in known_ids for reference in source_event_refs):
+                raise ValueError("source event references must already exist")
+            sequence = len(self._events) + 1
+            event = ExecutionEvent(
+                event_id=f"event-{sequence:06d}",
+                sequence=sequence,
+                event_type=event_type,
+                payload=MappingProxyType(
+                    {key: self._freeze(value) for key, value in payload.items()}
+                ),
+                source_event_refs=tuple(source_event_refs),
+            )
+            if self._path is not None:
+                self._persist(event)
+            self._events.append(event)
+            return event
 
     @classmethod
     def load(cls, path: str | Path) -> EventLog:
@@ -826,6 +850,9 @@ class EventLog:
             "ROOT_WAITING": {"condition"},
             "EXTERNAL_EVENT_RECEIVED": {"event"},
             "ROOT_WOKEN": {"event"},
+            "INTERRUPT_REQUESTED": {"status"},
+            "ACTOR_SUSPENDED": {"status"},
+            "ACTOR_RESUMED": {"status"},
             "EXECUTION_COMPLETED": {"status"},
             "EXECUTION_FAILED": {"failure"},
         }
@@ -895,7 +922,39 @@ class EventLog:
             raise ValueError("event must cite the immediately preceding cause")
 
         previous = self._events[-1]
-        if event_type == "MODEL_DECISION":
+        if event_type == "INTERRUPT_REQUESTED":
+            state = fold_execution_state(self.events)
+            if state.status != "running" or payload["status"] != "requested":
+                raise ValueError("only a running Root can be interrupted")
+        elif event_type == "ACTOR_SUSPENDED":
+            state = fold_execution_state(self.events)
+            interrupt_event = previous
+            if previous.event_type in (
+                "TOOL_RESULT",
+                "TOOL_FAILED",
+                "IPYTHON_EXECUTION_RESULT",
+                "IPYTHON_EXECUTION_FAILED",
+            ):
+                interrupt_event = next(
+                    (
+                        event
+                        for event in self._events
+                        if previous.source_event_refs == (event.event_id,)
+                    ),
+                    None,
+                )
+            if (
+                state.status != "running"
+                or interrupt_event is None
+                or interrupt_event.event_type != "INTERRUPT_REQUESTED"
+                or payload["status"] != "suspended"
+            ):
+                raise ValueError("suspension requires an interrupt request")
+        elif event_type == "ACTOR_RESUMED":
+            state = fold_execution_state(self.events)
+            if state.status != "suspended" or payload["status"] != "running":
+                raise ValueError("resume requires a suspended Root")
+        elif event_type == "MODEL_DECISION":
             frame = payload["frame"]
             raw_action = None
             provider_fidelity = True
@@ -928,6 +987,7 @@ class EventLog:
                     "ACTION_RECONCILED",
                     "COMPLETION_REJECTED",
                     "ROOT_WOKEN",
+                    "ACTOR_RESUMED",
                 )
                 or not isinstance(frame, DecisionFrame)
                 or payload["action"] != frame.resulting_action
@@ -956,13 +1016,13 @@ class EventLog:
             external_event = payload["event"]
             state = fold_execution_state(self.events)
             if (
-                state.status != "waiting"
+                state.status not in ("waiting", "suspended")
                 or not isinstance(external_event, ExternalEvent)
                 or not isinstance(external_event.event_type, str)
                 or not external_event.event_type
                 or not isinstance(external_event.data, str)
             ):
-                raise ValueError("external events require a waiting Root")
+                raise ValueError("external events require a waiting or suspended Root")
         elif event_type == "ROOT_WOKEN":
             external_event = payload["event"]
             state = fold_execution_state(self.events)
@@ -1094,11 +1154,22 @@ class EventLog:
                 raise ValueError("IPython execution must match its model decision")
         elif event_type in ("TOOL_RESULT", "TOOL_FAILED"):
             observation = payload["observation"]
+            tool_start = previous
+            if previous.event_type == "INTERRUPT_REQUESTED":
+                tool_start = next(
+                    (
+                        event
+                        for event in self._events
+                        if previous.source_event_refs == (event.event_id,)
+                    ),
+                    None,
+                )
             decision_event = next(
                 (
                     event
                     for event in self._events
-                    if previous.source_event_refs == (event.event_id,)
+                    if tool_start is not None
+                    and tool_start.source_event_refs == (event.event_id,)
                 ),
                 None,
             )
@@ -1125,14 +1196,16 @@ class EventLog:
                 sum(
                     event.event_type
                     in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
-                    and event.source_event_refs == previous.source_event_refs
+                    and tool_start is not None
+                    and event.source_event_refs == tool_start.source_event_refs
                     for event in self._events
                 )
                 - 1
             )
             expected_provider_tool_call_id = (
-                previous.payload["provider_tool_call_id"]
-                if "provider_tool_call_id" in previous.payload
+                tool_start.payload["provider_tool_call_id"]
+                if tool_start is not None
+                and "provider_tool_call_id" in tool_start.payload
                 else (
                     call_ids[call_index]
                     if 0 <= call_index < len(call_ids)
@@ -1140,10 +1213,11 @@ class EventLog:
                 )
             )
             if (
-                previous.event_type != "TOOL_CALL_STARTED"
+                tool_start is None
+                or tool_start.event_type != "TOOL_CALL_STARTED"
                 or not isinstance(observation, Observation)
                 or self._freeze(observation.request)
-                != previous.payload.get("request")
+                != tool_start.payload.get("request")
                 or observation.result.ok != (event_type == "TOOL_RESULT")
                 or observation.provider_tool_call_id
                 != expected_provider_tool_call_id
@@ -1154,11 +1228,22 @@ class EventLog:
             "IPYTHON_EXECUTION_FAILED",
         ):
             observation = payload["observation"]
+            ipython_start = previous
+            if previous.event_type == "INTERRUPT_REQUESTED":
+                ipython_start = next(
+                    (
+                        event
+                        for event in self._events
+                        if previous.source_event_refs == (event.event_id,)
+                    ),
+                    None,
+                )
             decision_event = next(
                 (
                     event
                     for event in self._events
-                    if previous.source_event_refs == (event.event_id,)
+                    if ipython_start is not None
+                    and ipython_start.source_event_refs == (event.event_id,)
                 ),
                 None,
             )
@@ -1185,14 +1270,16 @@ class EventLog:
                 sum(
                     event.event_type
                     in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
-                    and event.source_event_refs == previous.source_event_refs
+                    and ipython_start is not None
+                    and event.source_event_refs == ipython_start.source_event_refs
                     for event in self._events
                 )
                 - 1
             )
             expected_provider_tool_call_id = (
-                previous.payload["provider_tool_call_id"]
-                if "provider_tool_call_id" in previous.payload
+                ipython_start.payload["provider_tool_call_id"]
+                if ipython_start is not None
+                and "provider_tool_call_id" in ipython_start.payload
                 else (
                     call_ids[call_index]
                     if 0 <= call_index < len(call_ids)
@@ -1200,7 +1287,8 @@ class EventLog:
                 )
             )
             if (
-                previous.event_type != "IPYTHON_EXECUTION_STARTED"
+                ipython_start is None
+                or ipython_start.event_type != "IPYTHON_EXECUTION_STARTED"
                 or not isinstance(observation, IPythonObservation)
                 or observation.result.ok
                 != (event_type == "IPYTHON_EXECUTION_RESULT")
@@ -1498,7 +1586,7 @@ class EventLog:
 @dataclass(frozen=True)
 class ExecutionState:
     version: int
-    status: Literal["running", "waiting", "completed", "failed"]
+    status: Literal["running", "waiting", "suspended", "completed", "failed"]
     goal: str
     completion_spec: CompletionSpec | None = None
     execution_id: str | None = None
@@ -1512,6 +1600,7 @@ class ExecutionState:
     waiting_for: str | None = None
     latest_external_event: ExternalEvent | None = None
     last_provider_tool_call_id: str | tuple[str, ...] | None = None
+    lifecycle_notice: Literal["interrupt_requested", "suspended", "resumed"] | None = None
 
 
 def fold_execution_state(
@@ -1553,6 +1642,13 @@ def fold_execution_state(
             raise ValueError("waiting execution accepts only external wake events")
         if state.status == "running" and event.event_type in waiting_event_types:
             raise ValueError("running execution cannot receive a wait-only event")
+        if state.status == "suspended" and event.event_type not in (
+            "EXTERNAL_EVENT_RECEIVED",
+            "ACTOR_RESUMED",
+        ):
+            raise ValueError(
+                "suspended execution accepts only durable events or explicit resume"
+            )
 
         values = {
             "version": event.sequence,
@@ -1570,9 +1666,11 @@ def fold_execution_state(
             "waiting_for": state.waiting_for,
             "latest_external_event": state.latest_external_event,
             "last_provider_tool_call_id": state.last_provider_tool_call_id,
+            "lifecycle_notice": state.lifecycle_notice,
         }
         if event.event_type == "MODEL_DECISION":
             values["decision_count"] = state.decision_count + 1
+            values["lifecycle_notice"] = None
             values["last_action"] = event.payload.get("action")
             frame = event.payload.get("frame")
             values["last_provider_tool_call_id"] = (
@@ -1664,6 +1762,14 @@ def fold_execution_state(
             values["status"] = "running"
             values["waiting_for"] = None
             values["latest_external_event"] = external_event
+        elif event.event_type == "INTERRUPT_REQUESTED":
+            values["lifecycle_notice"] = "interrupt_requested"
+        elif event.event_type == "ACTOR_SUSPENDED":
+            values["status"] = "suspended"
+            values["lifecycle_notice"] = "suspended"
+        elif event.event_type == "ACTOR_RESUMED":
+            values["status"] = "running"
+            values["lifecycle_notice"] = "resumed"
         elif event.event_type == "EXECUTION_COMPLETED":
             if event.payload.get("status") != "verified":
                 raise ValueError("completion events require verified status")
@@ -1991,6 +2097,7 @@ def _bounded_context(
             if state.latest_external_event is not None
             else None
         ),
+        "lifecycle": state.lifecycle_notice,
     }
     if sibling_observations:
         document.clear()
@@ -1999,6 +2106,7 @@ def _bounded_context(
             for observation in sibling_observations
             if isinstance(observation, (Observation, IPythonObservation))
         ]
+        document["lifecycle"] = state.lifecycle_notice
 
     def render() -> str:
         return json.dumps(document, ensure_ascii=False, separators=(",", ":"))
@@ -2109,7 +2217,7 @@ def _build_model_request(
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    status: Literal["waiting", "completed", "failed"]
+    status: Literal["waiting", "suspended", "completed", "failed"]
     output: str | None
     failure: str | None
     steps: tuple[ExecutionStep, ...]
@@ -2146,6 +2254,9 @@ class RootAgentProcess:
         self._checkpoint_path = (
             Path(checkpoint_path) if checkpoint_path is not None else None
         )
+        self._lifecycle = threading.Condition(threading.RLock())
+        self._interrupt_requested = False
+        self._active_phase: Literal["model", "tool", "ipython"] | None = None
         if self._event_log.events:
             self._current_state()
             if self._event_log.events[-1].event_type not in (
@@ -2161,6 +2272,9 @@ class RootAgentProcess:
                 "ROOT_WAITING",
                 "EXTERNAL_EVENT_RECEIVED",
                 "ROOT_WOKEN",
+                "INTERRUPT_REQUESTED",
+                "ACTOR_SUSPENDED",
+                "ACTOR_RESUMED",
                 "EXECUTION_COMPLETED",
                 "EXECUTION_FAILED",
             ):
@@ -2188,6 +2302,16 @@ class RootAgentProcess:
         if not self._event_log.events:
             raise ValueError("execution has not started")
         steps: list[ExecutionStep] = []
+        state = self._current_state()
+        if state.status == "suspended":
+            with self._lifecycle:
+                self._event_log.append(
+                    "ACTOR_RESUMED",
+                    {"status": "running"},
+                    (self._event_log.events[-1].event_id,),
+                )
+                self._interrupt_requested = False
+                self._lifecycle.notify_all()
         last_event = self._event_log.events[-1]
         if last_event.event_type == "IPYTHON_EXECUTION_STARTED":
             raise ValueError("interrupted IPython execution recovery is unsupported")
@@ -2211,6 +2335,92 @@ class RootAgentProcess:
             return self._result(steps)
         self._resume_sibling_suffix(steps)
         return self._drive(steps)
+
+    def interrupt(self) -> ExecutionResult:
+        ipython_control = None
+        with self._lifecycle:
+            state = self._current_state()
+            if state.status != "running":
+                raise ValueError("only a running Root can be interrupted")
+            if self._interrupt_requested:
+                raise ValueError("interrupt is already requested")
+            self._interrupt_requested = True
+            self._event_log.append(
+                "INTERRUPT_REQUESTED",
+                {"status": "requested"},
+                (self._event_log.events[-1].event_id,),
+            )
+            if self._active_phase is None:
+                self._suspend_locked()
+            elif self._active_phase == "ipython":
+                ipython_control = self._ipython_control
+            self._lifecycle.notify_all()
+        if ipython_control is not None:
+            ipython_control.interrupt()
+        with self._lifecycle:
+            while self._current_state().status != "suspended":
+                self._lifecycle.wait()
+            return self._result([])
+
+    def _suspend_locked(self) -> None:
+        self._event_log.append(
+            "ACTOR_SUSPENDED",
+            {"status": "suspended"},
+            (self._event_log.events[-1].event_id,),
+        )
+        if self._checkpoint_path is not None:
+            Checkpoint.capture(self._event_log.events).save(
+                self._checkpoint_path
+            )
+
+    def _settle_phase(self) -> bool:
+        with self._lifecycle:
+            self._active_phase = None
+            if self._interrupt_requested:
+                self._suspend_locked()
+                self._lifecycle.notify_all()
+                return True
+            self._lifecycle.notify_all()
+            return False
+
+    def _append_action_outcome(
+        self,
+        event_type: Literal[
+            "TOOL_RESULT",
+            "TOOL_FAILED",
+            "IPYTHON_EXECUTION_RESULT",
+            "IPYTHON_EXECUTION_FAILED",
+        ],
+        observation: Observation | IPythonObservation,
+        start_event: ExecutionEvent,
+    ) -> None:
+        cause = self._event_log.events[-1]
+        source_refs = (
+            (cause.event_id,)
+            if cause.event_type == "INTERRUPT_REQUESTED"
+            and cause.source_event_refs == (start_event.event_id,)
+            else (start_event.event_id,)
+        )
+        try:
+            self._event_log.append(
+                event_type,
+                {"observation": observation},
+                source_refs,
+            )
+        except ValueError:
+            cause = self._event_log.events[-1]
+            if (
+                source_refs == (start_event.event_id,)
+                and cause.event_type == "INTERRUPT_REQUESTED"
+                and cause.source_event_refs == (start_event.event_id,)
+            ):
+                self._event_log.append(
+                    event_type,
+                    {"observation": observation},
+                    (cause.event_id,),
+                )
+                return
+            raise
 
     def _reconcile_interrupted_call(self, call_event: ExecutionEvent) -> None:
         request = call_event.payload.get("request")
@@ -2237,14 +2447,18 @@ class RootAgentProcess:
         if not self._event_log.events:
             raise ValueError("execution has not started")
         state = self._current_state()
-        if state.status != "waiting":
-            raise ValueError("external events can only be delivered to a waiting Root")
+        if state.status not in ("waiting", "suspended"):
+            raise ValueError(
+                "external events can only be delivered to a waiting or suspended Root"
+            )
         external_event = ExternalEvent(event_type, data)
         received = self._event_log.append(
             "EXTERNAL_EVENT_RECEIVED",
             {"event": external_event},
             (self._event_log.events[-1].event_id,),
         )
+        if state.status == "suspended":
+            return self._result([])
         if state.waiting_for != event_type:
             return self._result([])
         self._event_log.append(
@@ -2310,66 +2524,83 @@ class RootAgentProcess:
         actions: tuple[Action, ...],
         provider_call_ids: tuple[str | None, ...],
         steps: list[ExecutionStep],
-    ) -> None:
+    ) -> bool:
         for action, provider_call_id in zip(
             actions,
             provider_call_ids,
             strict=True,
         ):
             if isinstance(action, IPythonCode):
-                execution_event = self._event_log.append(
-                    "IPYTHON_EXECUTION_STARTED",
-                    {
-                        "action": action,
-                        "code_sha256": _text_sha256(action.code),
-                        "provider_tool_call_id": provider_call_id,
-                    },
-                    (decision_event.event_id,),
-                )
-                if self._ipython_control is None:
-                    self._ipython_control = PersistentIPython(
-                        self._tools.environment.workspace
+                with self._lifecycle:
+                    if self._interrupt_requested:
+                        self._suspend_locked()
+                        self._lifecycle.notify_all()
+                        return True
+                    execution_event = self._event_log.append(
+                        "IPYTHON_EXECUTION_STARTED",
+                        {
+                            "action": action,
+                            "code_sha256": _text_sha256(action.code),
+                            "provider_tool_call_id": provider_call_id,
+                        },
+                        (decision_event.event_id,),
                     )
+                    if self._ipython_control is None:
+                        self._ipython_control = PersistentIPython(
+                            self._tools.environment.workspace
+                        )
+                    self._active_phase = "ipython"
                 ipython_result = self._ipython_control.execute(action.code)
                 observation = IPythonObservation(
                     ipython_result,
                     provider_call_id,
                 )
-                self._event_log.append(
+                self._append_action_outcome(
                     (
                         "IPYTHON_EXECUTION_RESULT"
                         if ipython_result.ok
                         else "IPYTHON_EXECUTION_FAILED"
                     ),
-                    {"observation": observation},
-                    (execution_event.event_id,),
+                    observation,
+                    execution_event,
                 )
                 steps.append(ExecutionStep(decision, action, observation))
+                if self._settle_phase():
+                    return True
                 continue
             if not isinstance(action, ToolCall):
                 raise ValueError(
                     "sibling batches may contain only ordinary actions"
                 )
-            call_event = self._event_log.append(
-                "TOOL_CALL_STARTED",
-                {
-                    "request": action.request,
-                    "provider_tool_call_id": provider_call_id,
-                },
-                (decision_event.event_id,),
-            )
+            with self._lifecycle:
+                if self._interrupt_requested:
+                    self._suspend_locked()
+                    self._lifecycle.notify_all()
+                    return True
+                call_event = self._event_log.append(
+                    "TOOL_CALL_STARTED",
+                    {
+                        "request": action.request,
+                        "provider_tool_call_id": provider_call_id,
+                    },
+                    (decision_event.event_id,),
+                )
+                self._active_phase = "tool"
             result = self._tools.execute(action.request)
             observation = Observation(
                 action.request,
                 result,
                 provider_call_id,
             )
-            self._event_log.append(
+            self._append_action_outcome(
                 "TOOL_RESULT" if result.ok else "TOOL_FAILED",
-                {"observation": observation},
-                (call_event.event_id,),
+                observation,
+                call_event,
             )
             steps.append(ExecutionStep(decision, action, observation))
+            if self._settle_phase():
+                return True
+        return False
 
     def _drive(
         self,
@@ -2379,6 +2610,8 @@ class RootAgentProcess:
             steps = []
         while True:
             state = self._current_state()
+            if state.status == "suspended":
+                return self._result(steps)
             if state.decision_count >= self._max_decisions:
                 self._event_log.append(
                     "EXECUTION_FAILED",
@@ -2395,7 +2628,15 @@ class RootAgentProcess:
                 self._available_tools,
                 self._event_log.events,
             )
+            with self._lifecycle:
+                if self._interrupt_requested:
+                    self._suspend_locked()
+                    self._lifecycle.notify_all()
+                    return self._result(steps)
+                self._active_phase = "model"
             raw_response = self._model.decide(request)
+            if self._settle_phase():
+                return self._result(steps)
             raw_response_snapshot = EventLog._freeze(raw_response)
             structured_action = _structured_action(raw_response)
             action_snapshot = EventLog._freeze(structured_action)
@@ -2507,13 +2748,15 @@ class RootAgentProcess:
                     (decision_event.event_id,),
                 )
                 return self._finish(steps)
-            self._execute_actions(
+            suspended = self._execute_actions(
                 decision,
                 decision_event,
                 actions,
                 provider_call_ids,
                 steps,
             )
+            if suspended:
+                return self._result(steps)
 
     def close(self) -> None:
         if self._ipython_control is not None:

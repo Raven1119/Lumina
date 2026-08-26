@@ -318,6 +318,52 @@ only for this persistent-IPython experiment; it does not claim isolation.
 
 The implementation directly borrows DSH's whole-response/distinct-identity/ordered-commit semantics and DeepSeek/Codex call-result correlation. The fixed count of four, whole-batch schema preflight, single-only control rule, strictly sequential execution, and append-only Lumina event projection are the minimal task-specific adaptation. No direct source implements that exact combination, and no parallel classifier or scheduler was imported.
 
+## Slice 8 delta: explicit Root interrupt and suspension (2026-08-27)
+
+### OpenAI Codex - Host-owned active-turn interruption
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [openai/codex at `bde9db1375667c50dcc0c2b52532a4e2672571c2`](https://github.com/openai/codex/tree/bde9db1375667c50dcc0c2b52532a4e2672571c2), rolling `main`, Apache-2.0; the official [app-server interrupt contract](https://github.com/openai/codex/blob/bde9db1375667c50dcc0c2b52532a4e2672571c2/codex-rs/app-server/README.md) was re-audited 2026-08-27.
+- **SOURCE SYMBOL:** app-server `turn/interrupt`, `turn_interrupt_inner`, active-turn lifecycle, core task cancellation token / `Session::abort_all_tasks`, and terminal `turn/completed` status.
+- **BORROWED SEMANTICS:** Interrupt is a Host command against an active execution, not a steering sentence or a Model-selected tool. Requesting cancellation is distinct from observing the terminal interrupted outcome; callers wait for lifecycle completion. A turn interrupt also does not claim that unrelated background processes were stopped.
+- **LUMINA ADAPTATION:** `RootAgentProcess.interrupt()` first establishes a no-new-work gate, appends the request, uses only an existing safe primitive for a live IPython phase, waits for real Tool/IPython settlement, then appends `ACTOR_SUSPENDED`. The smaller local API has one Root and no turn/thread server.
+- **NOT COPIED:** Codex Thread/Turn framework, app-server protocol, task tree, cancellation-token graph, background-terminal manager, approvals, sandboxing, steering, or complete tool cancellation machinery.
+
+### DeepSeek Harness - canonical interrupted history
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [deepseek-ai/deepseek-harness at `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e), `dsh 0.1.1-rc.2`, MIT.
+- **SOURCE SYMBOL:** [`interruptedTurnClosers`, `TOOL_NOT_STARTED`, and `TOOL_OUTCOME_UNKNOWN`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/session/src/repair.ts), plus `SessionEvent.sourceEventSeqs` and fold-derived session surfaces.
+- **BORROWED SEMANTICS:** Interruption is represented by later canonical append-only events; derived state follows those facts, and a recorded start without a durable result must not be rewritten or guessed into success.
+- **LUMINA ADAPTATION:** Live interruption preserves the already-started event, appends the authoritative request, records the real outcome when the current action settles, and only then appends suspension. EventLog remains the history authority and `ExecutionState` remains its fold.
+- **NOT COPIED:** DSH session repair framework, synthetic generic ToolResult closers, turn/step ontology, plugin/session persistence ecosystem, scheduler, or parallel cancellation.
+
+### Prime Agent - Host lifecycle and kernel interrupt
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [PrimeIntellect-ai/prime-agent at `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/514633727bf26d74f39f3119c2b0e31a5ceb2a9d), `v0.8.1`, MIT.
+- **SOURCE SYMBOL:** [`AgentSession`](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/agent-session.ts), [`KernelManager`](https://github.com/PrimeIntellect-ai/prime-agent/tree/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/kernel), and the [`ipython` tool](https://github.com/PrimeIntellect-ai/prime-agent/blob/514633727bf26d74f39f3119c2b0e31a5ceb2a9d/packages/coding-agent/src/core/tools/ipython.ts).
+- **BORROWED SEMANTICS:** The Host owns live session/kernel lifecycle. A kernel interrupt is an available cancellation request, but working-session state is not durable truth and an interrupt request alone is not proof that every descendant effect stopped.
+- **LUMINA ADAPTATION:** The existing `PersistentIPython` gains one best-effort `interrupt()` method around Jupyter's primitive. Runtime still waits for the existing result/error/timeout path and records that actual outcome before suspension.
+- **NOT COPIED:** Prime daemon/session stop framework, force-abort timers, process-tree cancellation, kernel restart/revival, RLM, Child agents, worker hierarchy, or session persistence.
+
+### Temporal - cancellation request versus durable settlement
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** Temporal Server [`19a774302c613da9adc4436ab14278ccdca8e0a5`](https://github.com/temporalio/temporal/tree/19a774302c613da9adc4436ab14278ccdca8e0a5), Go SDK [`b7c242c6894df088a57a85b33d0586e908da8b93`](https://github.com/temporalio/sdk-go/tree/b7c242c6894df088a57a85b33d0586e908da8b93), and documentation [`6f46de944c41b1823331536a65356548b94578c7`](https://github.com/temporalio/documentation/tree/6f46de944c41b1823331536a65356548b94578c7), MIT.
+- **SOURCE SYMBOL:** `ActivityTaskCancelRequested`, `ActivityTaskCanceled`, Activity cancellation delivery/acceptance, and Event History replay.
+- **BORROWED SEMANTICS:** A durable cancellation request and a terminal cancellation/settlement outcome are different facts. A workflow may wait for cancellation acceptance; durable history, not an in-memory cancellation token, rebuilds lifecycle state.
+- **LUMINA ADAPTATION:** `INTERRUPT_REQUESTED` does not itself produce SUSPENDED. An actual settled Tool/IPython outcome is appended first when work is in flight; `ACTOR_SUSPENDED` is the durable state transition and checkpoint remains only a replay optimization.
+- **NOT COPIED:** Temporal Server/Worker architecture, Activities, cancellation scopes, heartbeats, retries, task queues, workflow-code replay, or distributed persistence.
+
+### Slice 8 source conclusion
+
+The borrowed mechanism is the common authority split: Host requests interrupt,
+future work admission stops, in-flight reality settles or uses an already-safe
+primitive, and a later durable lifecycle fact establishes suspension. Lumina's
+three event names, one `suspended` state, local `threading.Condition`, causal
+validation through an interrupt event, and explicit-resume Context notice are
+small repository-specific engineering adaptations. **NO DIRECT SOURCE
+IMPLEMENTATION** provides this exact combination. No generic cancellation
+framework, scheduler, transaction manager, new Model Action, or additional
+lifecycle state was copied or invented.
+
 ## Source ambiguities and non-equivalences
 
 - **Direct source fact:** every positive upstream behavior above names a pinned symbol or official contract. **Inference** is marked explicitly for Prime's host-authority reading and Temporal's wake shorthand.

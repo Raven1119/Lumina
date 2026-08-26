@@ -1,4 +1,6 @@
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, fields
 
 import pytest
@@ -19,6 +21,239 @@ from execution import (
     Checkpoint,
     fold_execution_state,
 )
+
+
+class _PauseAfterFirstToolResult(EventLog):
+    def __init__(self, path):
+        super().__init__(path)
+        self.tool_settled = threading.Event()
+        self.interrupt_recorded = threading.Event()
+        self.release_runtime = threading.Event()
+        self._paused = False
+
+    def append(self, event_type, payload, source_event_refs=()):
+        event = super().append(event_type, payload, source_event_refs)
+        if event_type == "INTERRUPT_REQUESTED":
+            self.interrupt_recorded.set()
+        if event_type == "TOOL_RESULT" and not self._paused:
+            self._paused = True
+            self.tool_settled.set()
+            if not self.release_runtime.wait(timeout=2):
+                raise TimeoutError("test did not release the settled action")
+        return event
+
+
+class _InterruptRecordingEventLog(EventLog):
+    def __init__(self, path):
+        super().__init__(path)
+        self.interrupt_recorded = threading.Event()
+
+    def append(self, event_type, payload, source_event_refs=()):
+        event = super().append(event_type, payload, source_event_refs)
+        if event_type == "INTERRUPT_REQUESTED":
+            self.interrupt_recorded.set()
+        return event
+
+
+class _BlockingFirstToolHost(ToolHost):
+    def __init__(self, environment):
+        super().__init__(environment)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            self.started.set()
+            if not self.release.wait(timeout=2):
+                raise TimeoutError("test did not release the in-flight Tool")
+        return super().execute(request)
+
+
+def test_interrupt_between_decisions_stops_sampling_until_explicit_resume(tmp_path):
+    event_log = _PauseAfterFirstToolResult(tmp_path / "events.jsonl")
+    model = ScriptedModel(
+        [
+            ToolCall(WriteRequest("result.txt", "A")),
+            ToolCall(WriteRequest("result.txt", "B")),
+            ClaimComplete(),
+        ]
+    )
+    runtime = RootAgentProcess(
+        model=model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=3,
+        event_log=event_log,
+        checkpoint_path=tmp_path / "checkpoint.json",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run_future = pool.submit(
+            runtime.run,
+            "Write B",
+            FileContentEquals("result.txt", "B"),
+        )
+        assert event_log.tool_settled.wait(timeout=2)
+        interrupt_future = pool.submit(runtime.interrupt)
+        assert event_log.interrupt_recorded.wait(timeout=2)
+        event_log.release_runtime.set()
+        interrupted = interrupt_future.result(timeout=2)
+        run_result = run_future.result(timeout=2)
+
+    assert interrupted.status == run_result.status == "suspended"
+    assert len(model.received_requests) == 1
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "A"
+    assert [event.event_type for event in run_result.events][-2:] == [
+        "INTERRUPT_REQUESTED",
+        "ACTOR_SUSPENDED",
+    ]
+    assert run_result.events[-1].source_event_refs == (
+        run_result.events[-2].event_id,
+    )
+
+    completed = runtime.resume()
+
+    assert completed.status == "completed"
+    assert len(model.received_requests) == 3
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "B"
+    resumed = next(
+        event for event in completed.events if event.event_type == "ACTOR_RESUMED"
+    )
+    assert resumed.source_event_refs == (run_result.events[-1].event_id,)
+    assert json.loads(model.received_requests[1].context)["lifecycle"] == "resumed"
+
+
+def test_suspended_root_survives_restart_and_events_cannot_wake_it(tmp_path):
+    log_path = tmp_path / "events.jsonl"
+    checkpoint_path = tmp_path / "checkpoint.json"
+    event_log = _PauseAfterFirstToolResult(log_path)
+    first_model = ScriptedModel(
+        [ToolCall(WriteRequest("result.txt", "A"))]
+    )
+    runtime = RootAgentProcess(
+        model=first_model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=3,
+        event_log=event_log,
+        checkpoint_path=checkpoint_path,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run_future = pool.submit(
+            runtime.run,
+            "Write B",
+            FileContentEquals("result.txt", "B"),
+        )
+        assert event_log.tool_settled.wait(timeout=2)
+        interrupt_future = pool.submit(runtime.interrupt)
+        assert event_log.interrupt_recorded.wait(timeout=2)
+        event_log.release_runtime.set()
+        suspended = interrupt_future.result(timeout=2)
+        assert run_future.result(timeout=2).status == "suspended"
+
+    execution_id = suspended.state.execution_id
+    root_actor_id = suspended.state.root_actor_id
+    del runtime
+
+    restored_model = ScriptedModel(
+        [
+            ToolCall(WriteRequest("result.txt", "B")),
+            ClaimComplete(),
+        ]
+    )
+    restored_log = EventLog.load(log_path)
+    restored = RootAgentProcess(
+        model=restored_model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=3,
+        event_log=restored_log,
+        checkpoint_path=checkpoint_path,
+    )
+
+    reloaded_state = fold_execution_state(restored_log.events)
+    assert reloaded_state.status == "suspended"
+    assert reloaded_state.execution_id == execution_id
+    assert reloaded_state.root_actor_id == root_actor_id
+    assert restored_model.received_requests == []
+
+    event_result = restored.deliver_event("continue", "ignored until resume")
+
+    assert event_result.status == "suspended"
+    assert event_result.events[-1].event_type == "EXTERNAL_EVENT_RECEIVED"
+    assert restored_model.received_requests == []
+    assert fold_execution_state(EventLog.load(log_path).events).status == "suspended"
+
+    completed = restored.resume()
+
+    assert completed.status == "completed"
+    assert len(restored_model.received_requests) == 2
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "B"
+
+
+def test_interrupt_waits_for_in_flight_tool_then_restart_does_not_replay_it(tmp_path):
+    log_path = tmp_path / "events.jsonl"
+    event_log = _InterruptRecordingEventLog(log_path)
+    host = _BlockingFirstToolHost(SharedEnvironment(tmp_path))
+    first_model = ScriptedModel(
+        [ToolCall(WriteRequest("result.txt", "A"))]
+    )
+    runtime = RootAgentProcess(
+        model=first_model,
+        tools=host,
+        max_decisions=3,
+        event_log=event_log,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run_future = pool.submit(
+            runtime.run,
+            "Write B",
+            FileContentEquals("result.txt", "B"),
+        )
+        assert host.started.wait(timeout=2)
+        interrupt_future = pool.submit(runtime.interrupt)
+        assert event_log.interrupt_recorded.wait(timeout=2)
+        assert len(first_model.received_requests) == 1
+        host.release.set()
+        suspended = interrupt_future.result(timeout=2)
+        assert run_future.result(timeout=2).status == "suspended"
+
+    assert suspended.status == "suspended"
+    assert [event.event_type for event in suspended.events][-4:] == [
+        "TOOL_CALL_STARTED",
+        "INTERRUPT_REQUESTED",
+        "TOOL_RESULT",
+        "ACTOR_SUSPENDED",
+    ]
+    assert suspended.events[-2].source_event_refs == (
+        suspended.events[-3].event_id,
+    )
+    assert suspended.events[-1].source_event_refs == (
+        suspended.events[-2].event_id,
+    )
+    del runtime
+
+    restored_model = ScriptedModel(
+        [
+            ToolCall(WriteRequest("result.txt", "B")),
+            ClaimComplete(),
+        ]
+    )
+    restored = RootAgentProcess(
+        model=restored_model,
+        tools=host,
+        max_decisions=3,
+        event_log=EventLog.load(log_path),
+    )
+
+    completed = restored.resume()
+
+    assert completed.status == "completed"
+    assert host.requests == [
+        WriteRequest("result.txt", "A"),
+        WriteRequest("result.txt", "B"),
+    ]
 
 
 def test_false_completion_is_rejected_before_root_fixes_environment(tmp_path):

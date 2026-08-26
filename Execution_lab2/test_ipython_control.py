@@ -1,8 +1,10 @@
 import gc
 import json
 import os
+import threading
 import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -48,6 +50,87 @@ class _RetryableShutdownManager:
 
     def cleanup_resources(self):
         self.cleanup_calls += 1
+
+
+class _InterruptRecordingEventLog(EventLog):
+    def __init__(self, path):
+        super().__init__(path)
+        self.execution_started = threading.Event()
+        self.interrupt_recorded = threading.Event()
+
+    def append(self, event_type, payload, source_event_refs=()):
+        event = super().append(event_type, payload, source_event_refs)
+        if event_type == "IPYTHON_EXECUTION_STARTED":
+            self.execution_started.set()
+        if event_type == "INTERRUPT_REQUESTED":
+            self.interrupt_recorded.set()
+        return event
+
+
+class _InterruptCountingIPython(PersistentIPython):
+    def __init__(self, workspace):
+        super().__init__(workspace, execution_timeout_seconds=2)
+        self.interrupt_calls = 0
+
+    def interrupt(self):
+        self.interrupt_calls += 1
+        return super().interrupt()
+
+
+def test_in_flight_ipython_interrupt_records_actual_failure_then_suspends(tmp_path):
+    event_log = _InterruptRecordingEventLog(tmp_path / "events.jsonl")
+    control = _InterruptCountingIPython(tmp_path)
+    model = _IPythonScriptedModel(
+        [
+            IPythonCode(
+                "from pathlib import Path; "
+                "Path('ipython-started.txt').write_text('started'); "
+                "import time; time.sleep(10); print('late success')"
+            )
+        ]
+    )
+    runtime = RootAgentProcess(
+        model=model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        event_log=event_log,
+        ipython_control=control,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run_future = pool.submit(
+            runtime.run,
+            "Interrupt Python",
+            FileContentEquals("unused.txt", "unused"),
+        )
+        assert event_log.execution_started.wait(timeout=2)
+        marker = tmp_path / "ipython-started.txt"
+        deadline = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.read_text(encoding="utf-8") == "started"
+        interrupt_future = pool.submit(runtime.interrupt)
+        assert event_log.interrupt_recorded.wait(timeout=2)
+        interrupted = interrupt_future.result(timeout=4)
+        run_result = run_future.result(timeout=4)
+
+    assert control.interrupt_calls == 1
+    assert interrupted.status == run_result.status == "suspended"
+    assert [event.event_type for event in run_result.events][-4:] == [
+        "IPYTHON_EXECUTION_STARTED",
+        "INTERRUPT_REQUESTED",
+        "IPYTHON_EXECUTION_FAILED",
+        "ACTOR_SUSPENDED",
+    ]
+    observation = run_result.events[-2].payload["observation"]
+    assert observation.result.ok is False
+    assert observation.result.error_code in ("execution_error", "timeout")
+    if observation.result.error_code == "execution_error":
+        assert "KeyboardInterrupt" in observation.result.error
+    else:
+        assert "exceeded 2" in observation.result.error
+    assert run_result.state == fold_execution_state(run_result.events)
+    runtime.close()
 
 
 def _tool_response(call_id, name, arguments):

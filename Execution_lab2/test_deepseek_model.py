@@ -1,7 +1,9 @@
 import json
 import os
+import threading
 import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -269,6 +271,87 @@ def test_two_ordinary_siblings_execute_in_model_order_and_continue_together(
     reloaded = EventLog.load(tmp_path / "siblings.jsonl")
     assert reloaded.events == result.events
     assert fold_execution_state(reloaded.events) == result.state
+
+
+def test_interrupt_stops_unstarted_sibling_until_explicit_resume(tmp_path):
+    responses = iter(
+        [
+            _tool_calls_response(
+                (
+                    "call_a",
+                    "write",
+                    json.dumps({"path": "a.txt", "content": "A"}),
+                ),
+                (
+                    "call_b",
+                    "write",
+                    json.dumps({"path": "b.txt", "content": "B"}),
+                ),
+            ),
+            _tool_response("call_complete", "claim_complete", "{}"),
+        ]
+    )
+    payloads = []
+
+    class BlockingFirstTools(ToolHost):
+        def __init__(self, environment):
+            super().__init__(environment)
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.requests = []
+
+        def execute(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                self.started.set()
+                if not self.release.wait(timeout=2):
+                    raise TimeoutError("test did not release first sibling")
+            return super().execute(request)
+
+    tools = BlockingFirstTools(SharedEnvironment(tmp_path))
+    event_log = EventLog(tmp_path / "siblings.jsonl")
+    runtime = RootAgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload) or next(responses)
+            )
+        ),
+        tools,
+        event_log=event_log,
+        max_decisions=2,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run_future = pool.submit(
+            runtime.run,
+            "Write both files",
+            FileContentEquals("b.txt", "B"),
+        )
+        assert tools.started.wait(timeout=2)
+        interrupt_future = pool.submit(runtime.interrupt)
+        deadline = time.monotonic() + 2
+        while (
+            "INTERRUPT_REQUESTED"
+            not in [event.event_type for event in event_log.events]
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        tools.release.set()
+        interrupted = interrupt_future.result(timeout=2)
+        assert run_future.result(timeout=2).status == "suspended"
+
+    assert interrupted.status == "suspended"
+    assert tools.requests == [WriteRequest("a.txt", "A")]
+    assert len(payloads) == 1
+
+    completed = runtime.resume()
+
+    assert completed.status == "completed"
+    assert tools.requests == [
+        WriteRequest("a.txt", "A"),
+        WriteRequest("b.txt", "B"),
+    ]
+    assert len(payloads) == 2
 
 
 def test_next_sibling_cannot_start_before_previous_sibling_settles(tmp_path):

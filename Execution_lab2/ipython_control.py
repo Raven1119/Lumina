@@ -82,6 +82,15 @@ class PersistentIPython:
                 truncated=truncated,
             )
 
+    def interrupt(self) -> bool:
+        if self._manager is None or not self.is_alive:
+            return False
+        try:
+            self._manager.interrupt_kernel()
+        except Exception:
+            return False
+        return True
+
     def close(self) -> None:
         if self._closed and not self.is_alive:
             return

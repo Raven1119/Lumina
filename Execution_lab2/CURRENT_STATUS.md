@@ -372,6 +372,37 @@ Slice 4:
   appends no reconciliation event, executes no Shell on recovery, and samples
   no Model.
 
+Slice 8 - explicit Root suspension:
+
+- `RootAgentProcess.interrupt()` is an external Host lifecycle command, not a
+  Model Action. The Action vocabulary and provider tool contracts are
+  unchanged.
+- The minimum durable lifecycle is
+  `INTERRUPT_REQUESTED -> settled/cancelled action evidence ->
+  ACTOR_SUSPENDED -> ACTOR_RESUMED`. `ExecutionState.status` now includes only
+  the one new `suspended` value.
+- An interrupt request prevents admission of another model sample, ToolHost
+  call, or IPython execution. With no in-flight work, Runtime checkpoints and
+  suspends immediately. With an ordinary Tool in flight, Runtime waits for its
+  real result/failure, records it, and then suspends.
+- For an in-flight IPython cell, Runtime calls the existing Jupyter kernel
+  interrupt primitive, but never treats that request as a successful cancel.
+  Suspension follows only after the cell produces an actual execution failure
+  or settles through the existing timeout. The maintained Windows experiment
+  observed the truthful timeout-settlement branch.
+- A suspended Root survives EventLog/checkpoint reload with unchanged
+  execution/root identity and zero model calls. External events remain durable
+  while suspended but never wake it. Only explicit `resume()` appends
+  `ACTOR_RESUMED` and restores runnable State.
+- Settled actions are not replayed. A bounded multi-tool decision preserves its
+  settled prefix, starts no later sibling while suspended, and continues only
+  its never-started suffix after explicit resume.
+- WAITING remains an Agent-selected typed condition; SUSPENDED remains an
+  external lifecycle state. The two transitions and wake rules are distinct.
+- Maintained experiments cover interrupt between decisions, suspended restart,
+  event delivery while suspended, no replay, ordinary Tool settlement,
+  IPython settlement, exact fold equivalence, and interrupted sibling suffix.
+
 Slice 3 regression evidence:
 
 - **A — durable replay:** a Runtime-created JSONL reloads to an equal immutable
@@ -410,7 +441,7 @@ Slice 3 regression evidence:
   explicitly truncated to the configured absolute character bound.
 - DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
   remain covered by regression tests.
-- Final bounded-sibling validation reports: `Execution_lab2` 88 passed / 6
+- Final explicit-suspension validation reports: `Execution_lab2` 93 passed / 6
   real-provider experiments skipped; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
   The six Execution skips are explicitly gated real DeepSeek experiments;
@@ -435,8 +466,9 @@ Slice 3 regression evidence:
   ToolHost-failure continuation evidence remains valid.
 - Child/recursion: **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe
-  point, initial start, terminal event, or the exact confirmed-Write case
-  above. Other unsettled tool calls remain unsupported/unresolved.
+  point, durable SUSPENDED state, initial start, terminal event, or the exact
+  confirmed-Write case above. Other unsettled tool calls remain
+  unsupported/unresolved.
 - For a partially dispatched ordinary ToolCall sibling batch, restart
   preserves the settled/reconciled prefix and executes only its never-started
   suffix in original order. This is frozen-decision continuation, not retry,
@@ -452,8 +484,10 @@ Slice 3 regression evidence:
   implemented under the later explicit equal-local-authority decision and is
   deliberately not described as a sandbox.
 - IPython namespace is live-process-only. It is discarded on Runtime
-  replacement, and an interrupted in-flight IPython execution remains
-  unresolved rather than being replayed.
+  replacement. A live external interrupt uses the existing kernel primitive
+  and waits for actual failure/timeout settlement before suspension; a process
+  crash leaving only `IPYTHON_EXECUTION_STARTED` remains unresolved and is not
+  replayed.
 - Checkpoint recovery hashes the prefix and folds only the tail, but no
   replay-performance benchmark has been measured.
 
