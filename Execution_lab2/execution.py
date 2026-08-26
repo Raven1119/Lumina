@@ -92,10 +92,6 @@ class ScriptedModel:
         self.identifier = identifier
         self.received_requests: list[ModelRequest] = []
 
-    @property
-    def received_request(self) -> ModelRequest | None:
-        return self.received_requests[-1] if self.received_requests else None
-
     def decide(self, request: ModelRequest) -> object:
         self.received_requests.append(request)
         return next(self._actions)
@@ -294,6 +290,7 @@ class EventLog:
         payload: Mapping[str, object],
         source_event_refs: tuple[str, ...] = (),
     ) -> ExecutionEvent:
+        self._validate_append(event_type, payload, source_event_refs)
         known_ids = {event.event_id for event in self._events}
         if any(reference not in known_ids for reference in source_event_refs):
             raise ValueError("source event references must already exist")
@@ -310,6 +307,81 @@ class EventLog:
         self._events.append(event)
         return event
 
+    def _validate_append(
+        self,
+        event_type: EventType,
+        payload: Mapping[str, object],
+        source_event_refs: tuple[str, ...],
+    ) -> None:
+        schemas = {
+            "EXECUTION_STARTED": {"goal"},
+            "MODEL_DECISION": {"action", "frame"},
+            "TOOL_CALL_STARTED": {"request"},
+            "TOOL_RESULT": {"observation"},
+            "TOOL_FAILED": {"observation"},
+            "EXECUTION_COMPLETED": {"output"},
+            "EXECUTION_FAILED": {"failure"},
+        }
+        if event_type not in schemas:
+            raise ValueError(f"unknown execution event type: {event_type}")
+        if set(payload) != schemas[event_type]:
+            raise ValueError(f"invalid payload for {event_type}")
+        if self._events and self._events[-1].event_type in (
+            "EXECUTION_COMPLETED",
+            "EXECUTION_FAILED",
+        ):
+            raise ValueError("terminal execution cannot accept more events")
+        if event_type == "EXECUTION_STARTED":
+            if self._events or source_event_refs or not isinstance(payload["goal"], str):
+                raise ValueError("execution must start once with an uncaused goal")
+            return
+        if not self._events or source_event_refs != (self._events[-1].event_id,):
+            raise ValueError("event must cite the immediately preceding cause")
+
+        previous = self._events[-1]
+        if event_type == "MODEL_DECISION":
+            if previous.event_type not in (
+                "EXECUTION_STARTED",
+                "TOOL_RESULT",
+                "TOOL_FAILED",
+            ) or not isinstance(payload["frame"], DecisionFrame):
+                raise ValueError("model decision requires current execution state")
+        elif event_type == "TOOL_CALL_STARTED":
+            frame = previous.payload.get("frame")
+            request = payload["request"]
+            if (
+                previous.event_type != "MODEL_DECISION"
+                or not isinstance(frame, DecisionFrame)
+                or not isinstance(frame.resulting_action, ToolCall)
+                or frame.resulting_action.request != request
+            ):
+                raise ValueError("tool call must match its model decision")
+        elif event_type in ("TOOL_RESULT", "TOOL_FAILED"):
+            observation = payload["observation"]
+            if (
+                previous.event_type != "TOOL_CALL_STARTED"
+                or not isinstance(observation, Observation)
+                or observation.request != previous.payload.get("request")
+                or observation.result.ok != (event_type == "TOOL_RESULT")
+            ):
+                raise ValueError("tool result must match its tool call and outcome")
+        elif event_type == "EXECUTION_COMPLETED":
+            frame = previous.payload.get("frame")
+            if (
+                previous.event_type != "MODEL_DECISION"
+                or not isinstance(frame, DecisionFrame)
+                or not isinstance(frame.resulting_action, Complete)
+                or frame.resulting_action.output != payload["output"]
+            ):
+                raise ValueError("completion must match its model decision")
+        elif event_type == "EXECUTION_FAILED":
+            if not isinstance(payload["failure"], str) or previous.event_type not in (
+                "MODEL_DECISION",
+                "TOOL_RESULT",
+                "TOOL_FAILED",
+            ):
+                raise ValueError("failure requires the latest execution cause")
+
     @classmethod
     def _freeze(cls, value: object) -> object:
         if isinstance(value, Mapping):
@@ -320,7 +392,28 @@ class EventLog:
             return tuple(cls._freeze(item) for item in value)
         if isinstance(value, set):
             return frozenset(cls._freeze(item) for item in value)
-        return value
+        if isinstance(
+            value,
+            (
+                str,
+                bytes,
+                int,
+                float,
+                bool,
+                type(None),
+                ReadRequest,
+                WriteRequest,
+                ShellRequest,
+                ToolResult,
+                ToolCall,
+                Complete,
+                Observation,
+                ModelRequest,
+                DecisionFrame,
+            ),
+        ):
+            return value
+        return repr(value)
 
 
 @dataclass(frozen=True)
@@ -418,11 +511,11 @@ def _request_projection(request: ToolRequest) -> dict[str, object]:
             "content": _text_projection(request.content),
         }
     if isinstance(request, ShellRequest):
-        visible_argv = request.argv[:8]
         return {
             "tool": "shell",
-            "argv": [_text_projection(argument) for argument in visible_argv],
-            "argv_truncated": len(request.argv) > len(visible_argv),
+            "argv": _text_projection(
+                json.dumps(request.argv, ensure_ascii=False, separators=(",", ":"))
+            ),
             "original_arg_count": len(request.argv),
         }
     return {"tool": type(request).__name__}
@@ -430,7 +523,8 @@ def _request_projection(request: ToolRequest) -> dict[str, object]:
 
 def _action_projection(action: object | None) -> dict[str, object] | None:
     if isinstance(action, ToolCall):
-        return {"type": "tool_call", "request": _request_projection(action.request)}
+        tool = _request_projection(action.request)["tool"]
+        return {"type": "tool_call", "tool": tool}
     if isinstance(action, Complete):
         return {"type": "complete", "output": _text_projection(action.output)}
     if action is None:
@@ -553,8 +647,8 @@ class RootAgentProcess:
     ) -> None:
         if max_decisions < 1:
             raise ValueError("max_decisions must be positive")
-        if max_context_chars < 512:
-            raise ValueError("max_context_chars must be at least 512")
+        if max_context_chars < 768:
+            raise ValueError("max_context_chars must be at least 768")
         self._model = model
         self._tools = tools
         self._max_decisions = max_decisions
@@ -571,6 +665,7 @@ class RootAgentProcess:
                 state, source_refs, self._max_context_chars
             )
             raw_response = self._model.decide(request)
+            raw_response_snapshot = EventLog._freeze(raw_response)
             action = (
                 raw_response
                 if isinstance(raw_response, (ToolCall, Complete))
@@ -578,20 +673,18 @@ class RootAgentProcess:
             )
             frame = DecisionFrame(
                 decision_id=f"decision-{decision:06d}",
-                model_identifier=getattr(
-                    self._model, "identifier", type(self._model).__name__
-                ),
+                model_identifier=self._model.identifier,
                 goal=goal,
                 state_version=state.version,
                 source_event_refs=source_refs,
                 actual_request=request,
                 actual_tools_exposed=request.available_tools,
-                raw_model_response=raw_response,
+                raw_model_response=raw_response_snapshot,
                 resulting_action=action,
             )
             decision_event = event_log.append(
                 "MODEL_DECISION",
-                {"action": raw_response, "frame": frame},
+                {"action": raw_response_snapshot, "frame": frame},
                 source_refs,
             )
             if isinstance(action, Complete):

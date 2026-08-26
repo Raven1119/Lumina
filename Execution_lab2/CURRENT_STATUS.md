@@ -11,20 +11,23 @@
   `MODEL_DECISION`, `TOOL_CALL_STARTED`, `TOOL_RESULT`, `TOOL_FAILED`,
   `EXECUTION_COMPLETED`, and `EXECUTION_FAILED`. Each immutable event has a
   deterministic id, monotonic sequence, payload, and past-only causal refs.
+  Append rejects unknown schemas, mismatched payloads, invalid lifecycle
+  transitions, and tool results that do not match the immediately cited call.
 - `ExecutionState` is produced only by `fold_execution_state(events)`. It holds
   current goal/status/version, decision count, latest Observation, last
   action/result, and completion/failure; it does not copy the event history.
 - Every model call receives one immutable `ModelRequest`: a JSON projection of
   Goal + current State + latest relevant Observation, plus the exact fixed tool
   contracts and source event refs. Context has an explicit character bound
-  (`2,000` by default, configurable down to `512`).
+  (`2,000` by default, configurable down to the validated `768`).
 - Text fields carry `truncated` and `original_chars`. Canonical `ToolResult`
   values remain in the EventLog while the request receives only the bounded
   projection.
 - Every sampling boundary emits a `DecisionFrame` containing decision/model
   identity, goal, pre-decision State version, source refs, the same actual
   request object passed to the model, actual exposed tools, raw response, and
-  parsed `ToolCall | Complete` (or `None` for an unknown response).
+  parsed `ToolCall | Complete` (or `None` for an unknown response). Mutable
+  raw responses are snapshotted into immutable values before logging.
 
 ## Source mapping
 
@@ -50,12 +53,12 @@ copied.
   tool results cite their tool-call event.
 - **B   bounded-context comparison:** over 24 tool interactions with the same
   completed task result, a test-only full-history serialization grows from
-  `212` to `4,894` characters. The State-derived Context is `250` characters
-  initially and stays between `827` and `833` after Observations appear, under
+  `212` to `4,774` characters. The State-derived Context is `250` characters
+  initially and stays between `682` and `686` after Observations appear, under
   the configured `900`-character bound.
 - **C   large result:** canonical EventLog output retains all `20,028`
   characters. The next actual model Context is exactly `900` characters and
-  exposes `252` output characters with `truncated=true` and
+  exposes `329` output characters with `truncated=true` and
   `original_chars=20028`; the hidden tail is absent.
 - **D   exact fidelity:** for every call,
   `ScriptedModel.received_requests[i] is DecisionFrame.actual_request`; model
@@ -77,7 +80,7 @@ copied.
   retaining the exact object passed to `Model.decide`, not by reconstruction.
 - Slice 1 completion/failure semantics and typed ToolHost boundaries are
   unchanged.
-- Validation: `Execution_lab2` 13 passed; root 328 passed / 24 skipped;
+- Validation: `Execution_lab2` 16 passed; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
 
 ## Known limits

@@ -5,6 +5,7 @@ import pytest
 
 from Execution_lab2.execution import (
     Complete,
+    EventLog,
     ReadRequest,
     RootAgentProcess,
     ScriptedModel,
@@ -74,6 +75,26 @@ def test_execution_state_is_an_exact_replay_of_an_append_only_event_log(tmp_path
         result.events[0].payload["goal"] = "changed"
 
 
+def test_event_log_rejects_unknown_schema_and_invalid_causal_shapes():
+    with pytest.raises(ValueError):
+        EventLog().append("UNKNOWN_EVENT", {})
+
+    event_log = EventLog()
+    started = event_log.append("EXECUTION_STARTED", {"goal": "test"})
+    with pytest.raises(ValueError):
+        event_log.append(
+            "TOOL_RESULT",
+            {"observation": "not an Observation"},
+            (started.event_id,),
+        )
+    with pytest.raises(ValueError):
+        event_log.append(
+            "EXECUTION_COMPLETED",
+            {"output": "not caused by a decision"},
+            (started.event_id,),
+        )
+
+
 def test_decision_frames_capture_the_exact_requests_and_capabilities(tmp_path):
     first_action = ToolCall(WriteRequest("output.txt", "done\n"))
     second_action = Complete("finished")
@@ -85,72 +106,117 @@ def test_decision_frames_capture_the_exact_requests_and_capabilities(tmp_path):
         max_decisions=2,
     ).run("Create output.txt")
 
-    assert model.received_requests == [
-        frame.actual_request for frame in result.decision_frames
+    decision_events = [
+        event for event in result.events if event.event_type == "MODEL_DECISION"
     ]
-    assert all(
-        request is frame.actual_request
-        for request, frame in zip(model.received_requests, result.decision_frames)
-    )
-    assert [frame.model_identifier for frame in result.decision_frames] == [
-        "fixture-model",
-        "fixture-model",
-    ]
+    assert len(model.received_requests) == len(result.decision_frames) == 2
+    assert len(decision_events) == 2
+    for request, frame, raw_response, decision_event in zip(
+        model.received_requests,
+        result.decision_frames,
+        (first_action, second_action),
+        decision_events,
+    ):
+        assert request is frame.actual_request
+        assert frame.model_identifier == "fixture-model"
+        assert frame.actual_tools_exposed == request.available_tools
+        assert frame.raw_model_response is raw_response
+        assert frame.resulting_action is raw_response
+        assert frame.source_event_refs == request.source_event_refs
+        assert decision_event.source_event_refs == frame.source_event_refs
+        assert decision_event.payload["frame"] is frame
     assert [frame.state_version for frame in result.decision_frames] == [1, 4]
     assert result.decision_frames[0].source_event_refs == (
         result.events[0].event_id,
     )
-    assert result.decision_frames[0].actual_tools_exposed == (
-        result.decision_frames[0].actual_request.available_tools
-    )
-    assert result.decision_frames[0].raw_model_response is first_action
-    assert result.decision_frames[0].resulting_action is first_action
-    decision_event = next(
-        event for event in result.events if event.event_type == "MODEL_DECISION"
-    )
-    assert decision_event.payload["frame"] is result.decision_frames[0]
+
+
+def test_mutable_unknown_model_response_is_snapshotted_before_logging(tmp_path):
+    raw_response = {"message": {"parts": ["unsupported"]}}
+    result = RootAgentProcess(
+        model=ScriptedModel([raw_response]),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+    ).run("Reject a mutable unknown response")
+
+    snapshot = result.decision_frames[0].raw_model_response
+    raw_response["message"]["parts"].append("changed later")
+
+    assert snapshot["message"]["parts"] == ("unsupported",)
+    assert result.events[1].payload["frame"].raw_model_response == snapshot
+    with pytest.raises(TypeError):
+        snapshot["message"] = "changed"
 
 
 def test_state_derived_context_does_not_grow_with_the_full_event_history(tmp_path):
     interaction_count = 24
     goal = "Write a sequence of small files and finish"
-    actions = [
-        ToolCall(WriteRequest(f"item-{number}.txt", f"value-{number}"))
-        for number in range(interaction_count)
-    ] + [Complete("finished")]
-    model = ScriptedModel(actions)
+
+    def actions():
+        return [
+            ToolCall(WriteRequest(f"item-{number}.txt", f"value-{number}"))
+            for number in range(interaction_count)
+        ] + [Complete("finished")]
+
+    bounded_workspace = tmp_path / "bounded"
+    baseline_workspace = tmp_path / "baseline"
+    bounded_workspace.mkdir()
+    baseline_workspace.mkdir()
+    model = ScriptedModel(actions())
 
     result = RootAgentProcess(
         model=model,
-        tools=ToolHost(SharedEnvironment(tmp_path)),
+        tools=ToolHost(SharedEnvironment(bounded_workspace)),
         max_decisions=interaction_count + 1,
         max_context_chars=900,
     ).run(goal)
 
-    full_history_sizes = []
+    class FullHistoryModel:
+        def __init__(self):
+            self._actions = iter(actions())
+            self.received_requests = []
+
+        def decide(self, request):
+            self.received_requests.append(request)
+            return next(self._actions)
+
+    baseline_model = FullHistoryModel()
+    baseline_tools = ToolHost(SharedEnvironment(baseline_workspace))
     observations = []
-    for frame in result.decision_frames:
-        full_history_sizes.append(
-            len(
-                json.dumps(
-                    {
-                        "goal": goal,
-                        "observations": observations,
-                        "tools": frame.actual_tools_exposed,
-                    }
-                )
+    baseline_status = "failed"
+    baseline_output = None
+    for _ in range(interaction_count + 1):
+        baseline_request = json.dumps(
+            {
+                "goal": goal,
+                "observations": observations,
+                "tools": result.decision_frames[0].actual_tools_exposed,
+            }
+        )
+        action = baseline_model.decide(baseline_request)
+        if isinstance(action, Complete):
+            baseline_status = "completed"
+            baseline_output = action.output
+            break
+        tool_result = baseline_tools.execute(action.request)
+        observations.append(
+            repr(
+                {
+                    "request": action.request,
+                    "result": tool_result,
+                }
             )
         )
-        if frame.resulting_action and isinstance(frame.resulting_action, ToolCall):
-            step = result.steps[len(observations)]
-            observations.append(repr(step.observation))
 
+    full_history_sizes = [len(request) for request in baseline_model.received_requests]
     bounded_sizes = [
         frame.actual_request.context_size_chars
         for frame in result.decision_frames
     ]
-    assert result.status == "completed"
-    assert result.output == "finished"
+    assert (baseline_status, baseline_output) == (result.status, result.output)
+    assert (baseline_workspace / "item-23.txt").read_text() == (
+        bounded_workspace / "item-23.txt"
+    ).read_text()
     assert full_history_sizes[-1] > full_history_sizes[1]
     assert bounded_sizes[-1] < full_history_sizes[-1]
     assert max(bounded_sizes) <= 900
@@ -188,6 +254,39 @@ def test_large_canonical_tool_result_is_truthful_but_model_projection_is_bounded
     assert visible_result["output"]["original_chars"] == len(large_output)
     assert len(visible_result["output"]["text"]) < len(large_output)
     assert hidden_tail not in visible_request.context
+
+
+def test_minimum_context_budget_handles_a_large_shell_observation(tmp_path):
+    model = ScriptedModel(
+        [
+            ToolCall(
+                ShellRequest(
+                    (sys.executable, "-c", "print('ok')", "x" * 1_000)
+                )
+            ),
+            Complete("finished"),
+        ]
+    )
+
+    result = RootAgentProcess(
+        model=model,
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        max_context_chars=768,
+    ).run("Run one command")
+
+    visible = json.loads(model.received_requests[1].context)
+    assert result.status == "completed"
+    assert model.received_requests[1].context_size_chars <= 768
+    assert visible["observation"]["request"]["argv"]["truncated"] is True
+    assert visible["observation"]["request"]["original_arg_count"] == 4
+    with pytest.raises(ValueError):
+        RootAgentProcess(
+            model=ScriptedModel([Complete("unused")]),
+            tools=ToolHost(SharedEnvironment(tmp_path)),
+            max_decisions=1,
+            max_context_chars=767,
+        )
 
 
 def test_missing_file_failure_flows_event_state_context_frame_then_model_action(
