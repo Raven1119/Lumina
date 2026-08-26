@@ -2,101 +2,121 @@
 
 ## Implemented
 
-- `execution.py` remains an isolated, standard-library-only lab module; no
+- `execution.py` remains an isolated, standard-library-only lab module. No
   production Chat, Memory, Dream, or Mind code is imported or changed.
-- Slice 1 behavior remains intact: typed `ToolCall | Complete`, structured
+- Slice 1 behavior remains intact: typed tool requests, structured
   `ToolResult`, workspace-guarded read/write, explicit-argv bounded shell,
   failure-as-Observation, and a hard decision limit.
-- `EventLog` appends the fixed Slice 1 facts `EXECUTION_STARTED`,
-  `MODEL_DECISION`, `TOOL_CALL_STARTED`, `TOOL_RESULT`, `TOOL_FAILED`,
-  `EXECUTION_COMPLETED`, and `EXECUTION_FAILED`. Each immutable event has a
-  deterministic id, monotonic sequence, payload, and past-only causal refs.
-  Append rejects unknown schemas, mismatched payloads, invalid lifecycle
-  transitions, and tool results that do not match the immediately cited call.
-- `ExecutionState` is produced only by `fold_execution_state(events)`. It holds
-  current goal/status/version, decision count, latest Observation, last
-  action/result, and completion/failure; it does not copy the event history.
-- Every model call receives one immutable `ModelRequest`: a JSON projection of
-  Goal + current State + latest relevant Observation, plus the exact fixed tool
-  contracts and source event refs. Context has an explicit character bound
-  (`2,000` by default, configurable down to the validated `768`).
-- Text fields carry `truncated` and `original_chars`. Canonical `ToolResult`
-  values remain in the EventLog while the request receives only the bounded
-  projection.
-- Every sampling boundary emits a `DecisionFrame` containing decision/model
-  identity, goal, pre-decision State version, source refs, the same actual
-  request object passed to the model, actual exposed tools, raw response, and
-  parsed `ToolCall | Complete` (or `None` for an unknown response). Mutable
-  raw responses are snapshotted into immutable values before logging.
+- The Action contract is now `ToolCall | Wait | Complete`. The only Wait
+  condition is an exact, non-empty `event_type` string.
+- `EventLog` can be in-memory or local append-only JSONL. A durable append is
+  flushed and `fsync`ed before the event enters the authoritative in-memory
+  sequence. `load()` rejects malformed records, schemas, causal links,
+  sequences, and lifecycle transitions.
+- Each event retains deterministic `event_id`, contiguous `sequence`, fixed
+  `event_type`, deeply immutable payload, and past-only `source_event_refs`.
+  Durable restart continues the same sequence; persisted lines are never
+  rewritten by EventLog.
+- `EXECUTION_STARTED` durably records one `execution_id` and one
+  `root_actor_id`. Fresh `RootAgentProcess` objects loaded from the same log
+  reconstruct the same identities.
+- `ExecutionState` remains a pure fold of execution facts. It now derives
+  `running | waiting | completed | failed`, Root identity, `waiting_for`, and
+  the latest typed external event in addition to the Slice 2 state fields.
+- `Checkpoint` internally derives one materialized `ExecutionState` snapshot
+  from its EventLog prefix, plus
+  `last_applied_event_sequence`, schema version, and an integrity digest of the
+  snapshot plus its durable event prefix. Valid recovery checks that digest and
+  folds only the tail. Missing checkpoints use full replay; stale checkpoints
+  fold their durable tail; malformed or inconsistent checkpoints fail
+  explicitly. Tests separately establish full-replay equivalence.
+- A persisted `ROOT_WAITING` event makes State `waiting` and stops sampling.
+  `resume()` performs no Model or Tool call while no matching event exists.
+- `deliver_event(event_type, data)` first persists
+  `EXTERNAL_EVENT_RECEIVED`. Exact typed matching alone appends `ROOT_WOKEN`
+  and resumes; irrelevant events remain durable without waking Root. If a
+  process dies after the matching event append but before `ROOT_WOKEN`, a fresh
+  `resume()` mechanically finishes that wake.
+- Resume builds the next bounded request from current Goal, reconstructed
+  State, the incoming event, and the latest bounded Observation. It does not
+  restore or inject an old transcript or model control flow.
+- `DecisionFrame` still stores the exact `ModelRequest` object, exposed
+  Action/tool contracts, raw response snapshot, structured Action, State
+  version, and source refs for every new decision.
+- Recovery accepts only explicit safe tails. A log ending at
+  `TOOL_CALL_STARTED` or another unsettled decision boundary is rejected; no
+  UNKNOWN side-effect outcome is invented.
 
 ## Source mapping
 
-The symbol-by-symbol audit, original contracts, licenses, Lumina adaptations,
-and rejected scope are recorded in `SOURCE_AUDIT.md`.
+The symbol-level sources, licenses, direct facts, Lumina adaptations, and
+rejected architecture are recorded in `SOURCE_AUDIT.md`.
 
-| Source | Audited version | Behavior used |
+| Source | Audited version | Borrowed semantic |
 | --- | --- | --- |
-| OpenAI Codex | `3ba7b6941d3caf6eec5b3c4e564988ee57d3f083`, Apache-2.0 | Request-scoped context/tool snapshot and explicit canonical-vs-visible tool-result truncation. |
-| DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Append-only sequenced facts, fold-derived surface, and causal source-event refs. |
-| Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | Host-controlled tool side effects and a separate model-visible working projection. |
-| LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Separation of execution evidence, derived progress state, and verification conclusions. |
+| OpenAI Codex | `a9ed4f154a4fad64acf538d6418d3ed012aeab86`, Apache-2.0 | Durable identity is distinct from live session/turn/request state; reopen identity before new work. |
+| DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Canonical sequenced events persist; model-visible state is derived; causal source refs remain explicit. |
+| Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | A live agent object is replaceable and host-owned lifecycle remains outside model working state. |
+| LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Resume from recorded facts and current reality, not a prior model stack. |
+| Temporal Server / Go SDK | `19a774302c613da9adc4436ab14278ccdca8e0a5` / `b7c242c6894df088a57a85b33d0586e908da8b93`, MIT | Durable event-driven wake and history replay without rerunning a committed result. |
 
-No session/plugin framework, persistence layer, IPython, provider stack,
-Manager/Executor/Auditor roles, recovery protocol, or child-agent machinery was
-copied.
+No upstream session/plugin ecosystem, Worker infrastructure, Manager ontology,
+provider stack, IPython, Actor Directory, Child runtime, or generic event bus
+was copied.
 
 ## Experiment results
 
-- **A   reconstruction:** the 4-decision
-  `read -> write -> read -> Complete` task succeeds, and its returned final
-  State equals `fold(full EventLog)` exactly. Event sequences are contiguous;
-  tool results cite their tool-call event.
-- **B   bounded-context comparison:** over 24 tool interactions with the same
-  completed task result, a test-only full-history serialization grows from
-  `212` to `4,774` characters. The State-derived Context is `250` characters
-  initially and stays between `682` and `686` after Observations appear, under
-  the configured `900`-character bound.
-- **C   large result:** canonical EventLog output retains all `20,028`
-  characters. The next actual model Context is exactly `900` characters and
-  exposes `329` output characters with `truncated=true` and
-  `original_chars=20028`; the hidden tail is absent.
-- **D   exact fidelity:** for every call,
-  `ScriptedModel.received_requests[i] is DecisionFrame.actual_request`; model
-  id, tools, raw response, structured Action, State version, and source refs
-  match one-for-one.
-- **E   failure chain:** missing read becomes `TOOL_FAILED`, folds into State,
-  appears in the next bounded request, and is cited by its DecisionFrame. The
-  alternative write is the scripted model response; Runtime adds no recovery
-  decision.
+- **A — durable replay:** a Runtime-created JSONL reloads to an equal immutable
+  Event tuple, and `fold(original) == fold(reloaded)`.
+- **B — checkpoint equivalence:** a WAIT checkpoint at sequence 6 remains valid
+  after external-event/wake/tool/completion tail events; verified
+  checkpoint-plus-tail State equals full replay State. Missing checkpoint also
+  reaches the same State.
+- **C — WAIT zero sampling:** repeated `resume()` while WAITING leaves Model
+  calls unchanged and executes no Tool. A wake at the hard decision bound adds
+  no extra Model call.
+- **D — full restart and wake:** Tool A, Wait, total object destruction, fresh
+  EventLog/Root/Model/ToolHost construction, `CONTINUE`, Tool B, and Complete
+  succeeds with unchanged execution and Root ids.
+- **E — no completed-action replay:** the workspace sentinel Tool A executes
+  exactly once across the full restart; only Tool B executes afterward.
+- **F — irrelevant event:** `NOISE` is durable, leaves State WAITING, and does
+  not sample. A later `CONTINUE` is the only event that wakes Root.
+- **G — recovery boundaries:** missing checkpoint falls back to full replay;
+  stale checkpoint folds its tail; malformed JSONL and corrupt checkpoint fail
+  explicitly. A failed durable append does not enter the authoritative event
+  tuple.
 
 ## Validated invariants
 
-- EventLog is the in-run execution-fact authority; the materialized State is
-  disposable and exactly replayable.
-- Model requests do not include or traverse the full event transcript.
-- Neither a large Observation nor a large Goal/action text can exceed the
-  configured Context character bound; truncation remains explicit.
-- DecisionFrame captures the request before/at the real call boundary by
-  retaining the exact object passed to `Model.decide`, not by reconstruction.
-- Slice 1 completion/failure semantics and typed ToolHost boundaries are
-  unchanged.
-- Validation: `Execution_lab2` 16 passed; root 328 passed / 24 skipped;
+- Durable EventLog is historical authority; State and Checkpoint are
+  disposable projections, and Context is a separate bounded view.
+- Completed Action results are not replayed. Recovery resumes current State,
+  not historical model decisions.
+- WAITING performs zero polling, Model sampling, or Tool execution.
+- Event matching is exact typed equality and contains no semantic planning.
+- Canonical result values remain in events while model-visible projections are
+  explicitly truncated to the configured absolute character bound.
+- DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
+  remain covered by regression tests.
+- Validation: `Execution_lab2` 32 passed; root 328 passed / 24 skipped;
   Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
 
 ## Known limits
 
-- EventLog and DecisionFrames are in-memory results of one synchronous run;
-  there is no persistence, checkpoint, restart, WAIT, pause/resume, or recovery.
-- The Context budget is measured in Python characters, not provider tokens or
-  UTF-8 bytes. No provider adapter exists in this lab slice.
-- Shell isolation remains cwd-based rather than an OS security sandbox, and
-  `subprocess.run` may buffer output before ToolHost truncates it.
-- No completion verifier, unknown-action reconciliation, semantic retrieval,
-  compaction model, planner, scheduler, Child/Spawn, or multi-agent runtime is
-  implemented.
+- UNKNOWN side-effect crash reconciliation: **NOT IMPLEMENTED**.
+- IPython: **NOT IMPLEMENTED**.
+- real provider: **NOT IMPLEMENTED**.
+- Child/recursion: **NOT IMPLEMENTED**.
+- Restart is supported only at a durable settled result, WAIT/external-event
+  safe point, initial start, or terminal event. An unsettled tool call is
+  rejected rather than reconciled.
+- JSONL and Checkpoint are local single-process files. There is no multi-writer
+  coordination, database, checkpoint rotation, scheduler, background worker,
+  generic event bus, completion verifier, or resource accounting.
+- Context is bounded in Python characters rather than provider tokens or UTF-8
+  bytes. Shell isolation remains cwd-based rather than an OS sandbox.
+- Checkpoint recovery hashes the prefix and folds only the tail, but no
+  replay-performance benchmark has been measured.
 
-## Next unanswered question
-
-If a separately approved slice adds durability, can it persist this same
-append-only fact contract without making stored State or reconstructed model
-requests a second authority?
+Further Execution stages require a separate approved task.

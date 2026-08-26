@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import subprocess
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Literal, Mapping, Protocol, TypeAlias
@@ -47,7 +50,28 @@ class Complete:
     output: str
 
 
-Action: TypeAlias = ToolCall | Complete
+@dataclass(frozen=True)
+class Wait:
+    event_type: str
+
+
+@dataclass(frozen=True)
+class ExternalEvent:
+    event_type: str
+    data: str = ""
+
+
+Action: TypeAlias = ToolCall | Wait | Complete
+
+
+def _structured_action(value: object) -> Action | None:
+    if isinstance(value, ToolCall):
+        return value
+    if isinstance(value, Wait):
+        return value if isinstance(value.event_type, str) and value.event_type else None
+    if isinstance(value, Complete):
+        return value if isinstance(value.output, str) else None
+    return None
 
 
 @dataclass(frozen=True)
@@ -64,6 +88,8 @@ TOOL_CONTRACTS = (
     "read(path: str) -> ToolResult",
     "write(path: str, content: str) -> ToolResult",
     "shell(argv: tuple[str, ...]) -> ToolResult",
+    "wait(event_type: str)",
+    "complete(output: str)",
 )
 
 
@@ -249,6 +275,9 @@ EventType: TypeAlias = Literal[
     "TOOL_CALL_STARTED",
     "TOOL_RESULT",
     "TOOL_FAILED",
+    "ROOT_WAITING",
+    "EXTERNAL_EVENT_RECEIVED",
+    "ROOT_WOKEN",
     "EXECUTION_COMPLETED",
     "EXECUTION_FAILED",
 ]
@@ -276,9 +305,124 @@ class DecisionFrame:
     resulting_action: Action | None
 
 
+_SERIALIZABLE_TYPES = {
+    value.__name__: value
+    for value in (
+        ReadRequest,
+        WriteRequest,
+        ShellRequest,
+        ToolResult,
+        ToolCall,
+        Wait,
+        ExternalEvent,
+        Complete,
+        Observation,
+        ModelRequest,
+        DecisionFrame,
+    )
+}
+
+
+def _encode_value(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return {"$type": "bytes", "hex": value.hex()}
+    if isinstance(value, frozenset):
+        encoded_items = [_encode_value(item) for item in value]
+        return {
+            "$type": "frozenset",
+            "items": sorted(
+                encoded_items,
+                key=lambda item: json.dumps(
+                    item, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+                ),
+            ),
+        }
+    if isinstance(value, Mapping):
+        return {
+            "$type": "mapping",
+            "items": [
+                [_encode_value(key), _encode_value(item)]
+                for key, item in value.items()
+            ],
+        }
+    if isinstance(value, (list, tuple)):
+        return {"$type": "tuple", "items": [_encode_value(item) for item in value]}
+    if is_dataclass(value) and type(value).__name__ in _SERIALIZABLE_TYPES:
+        return {
+            "$type": type(value).__name__,
+            "fields": {
+                field.name: _encode_value(getattr(value, field.name))
+                for field in fields(value)
+            },
+        }
+    raise TypeError(f"unsupported durable event value: {type(value).__name__}")
+
+
+def _decode_value(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if not isinstance(value, dict) or not isinstance(value.get("$type"), str):
+        raise ValueError("malformed durable event value")
+    value_type = value["$type"]
+    if value_type == "bytes":
+        if set(value) != {"$type", "hex"} or not isinstance(value["hex"], str):
+            raise ValueError("malformed durable bytes")
+        try:
+            return bytes.fromhex(value["hex"])
+        except ValueError as exc:
+            raise ValueError("malformed durable bytes") from exc
+    if value_type == "frozenset":
+        if set(value) != {"$type", "items"} or not isinstance(value["items"], list):
+            raise ValueError("malformed durable frozenset")
+        try:
+            return frozenset(_decode_value(item) for item in value["items"])
+        except TypeError as exc:
+            raise ValueError("malformed durable frozenset") from exc
+    if value_type == "mapping":
+        if set(value) != {"$type", "items"} or not isinstance(value["items"], list):
+            raise ValueError("malformed durable mapping")
+        decoded: dict[object, object] = {}
+        for item in value["items"]:
+            if not isinstance(item, list) or len(item) != 2:
+                raise ValueError("malformed durable mapping entry")
+            key = _decode_value(item[0])
+            try:
+                if key in decoded:
+                    raise ValueError("malformed durable mapping entry")
+                decoded[key] = _decode_value(item[1])
+            except TypeError as exc:
+                raise ValueError("malformed durable mapping key") from exc
+        return decoded
+    if value_type == "tuple":
+        if set(value) != {"$type", "items"} or not isinstance(value["items"], list):
+            raise ValueError("malformed durable tuple")
+        return tuple(_decode_value(item) for item in value["items"])
+    value_class = _SERIALIZABLE_TYPES.get(value_type)
+    if value_class is None or set(value) != {"$type", "fields"}:
+        raise ValueError(f"unknown durable event value type: {value_type}")
+    encoded_fields = value["fields"]
+    if not isinstance(encoded_fields, dict):
+        raise ValueError("malformed durable dataclass")
+    expected_fields = {field.name for field in fields(value_class)}
+    if set(encoded_fields) != expected_fields:
+        raise ValueError(f"invalid fields for durable {value_type}")
+    return value_class(
+        **{key: _decode_value(item) for key, item in encoded_fields.items()}
+    )
+
+
 class EventLog:
-    def __init__(self) -> None:
+    SCHEMA_VERSION = 1
+
+    def __init__(self, path: str | Path | None = None, *, _loading: bool = False) -> None:
         self._events: list[ExecutionEvent] = []
+        self._path = Path(path) if path is not None else None
+        if self._path is not None:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            if not _loading and self._path.exists() and self._path.stat().st_size:
+                raise ValueError("durable event log already exists; load it explicitly")
 
     @property
     def events(self) -> tuple[ExecutionEvent, ...]:
@@ -304,8 +448,89 @@ class EventLog:
             ),
             source_event_refs=tuple(source_event_refs),
         )
+        if self._path is not None:
+            self._persist(event)
         self._events.append(event)
         return event
+
+    @classmethod
+    def load(cls, path: str | Path) -> EventLog:
+        event_log = cls(path, _loading=True)
+        if not event_log._path.exists():
+            raise FileNotFoundError(event_log._path)
+        with event_log._path.open("r", encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, start=1):
+                if not line.strip():
+                    raise ValueError(f"malformed event log at line {line_number}")
+                try:
+                    event = event_log._event_from_record(json.loads(line))
+                    event_log._accept_loaded(event)
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"malformed event log at line {line_number}: {exc}"
+                    ) from exc
+        return event_log
+
+    def _persist(self, event: ExecutionEvent) -> None:
+        record = {
+            "schema_version": self.SCHEMA_VERSION,
+            "event_id": event.event_id,
+            "sequence": event.sequence,
+            "event_type": event.event_type,
+            "payload": _encode_value(event.payload),
+            "source_event_refs": _encode_value(event.source_event_refs),
+        }
+        serialized = json.dumps(
+            record, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with self._path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(serialized + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    @classmethod
+    def _event_from_record(cls, record: object) -> ExecutionEvent:
+        if not isinstance(record, dict) or set(record) != {
+            "schema_version",
+            "event_id",
+            "sequence",
+            "event_type",
+            "payload",
+            "source_event_refs",
+        }:
+            raise ValueError("invalid durable event record")
+        if (
+            type(record["schema_version"]) is not int
+            or record["schema_version"] != cls.SCHEMA_VERSION
+        ):
+            raise ValueError("unsupported durable event schema")
+        payload = _decode_value(record["payload"])
+        source_refs = _decode_value(record["source_event_refs"])
+        if not isinstance(payload, Mapping) or not isinstance(source_refs, tuple):
+            raise ValueError("invalid durable event payload")
+        if (
+            not isinstance(record["event_id"], str)
+            or type(record["sequence"]) is not int
+        ):
+            raise ValueError("invalid durable event identity")
+        return ExecutionEvent(
+            event_id=record["event_id"],
+            sequence=record["sequence"],
+            event_type=record["event_type"],
+            payload=MappingProxyType(
+                {key: cls._freeze(value) for key, value in payload.items()}
+            ),
+            source_event_refs=source_refs,
+        )
+
+    def _accept_loaded(self, event: ExecutionEvent) -> None:
+        self._validate_append(
+            event.event_type, event.payload, event.source_event_refs
+        )
+        sequence = len(self._events) + 1
+        if event.sequence != sequence or event.event_id != f"event-{sequence:06d}":
+            raise ValueError("durable event sequence or id is not contiguous")
+        self._events.append(event)
 
     def _validate_append(
         self,
@@ -314,17 +539,26 @@ class EventLog:
         source_event_refs: tuple[str, ...],
     ) -> None:
         schemas = {
-            "EXECUTION_STARTED": {"goal"},
             "MODEL_DECISION": {"action", "frame"},
             "TOOL_CALL_STARTED": {"request"},
             "TOOL_RESULT": {"observation"},
             "TOOL_FAILED": {"observation"},
+            "ROOT_WAITING": {"condition"},
+            "EXTERNAL_EVENT_RECEIVED": {"event"},
+            "ROOT_WOKEN": {"event"},
             "EXECUTION_COMPLETED": {"output"},
             "EXECUTION_FAILED": {"failure"},
         }
-        if event_type not in schemas:
+        start_schema = {"goal", "execution_id", "root_actor_id"}
+        if event_type == "EXECUTION_STARTED":
+            if self._path is None and set(payload) == {"goal"}:
+                start_schema = {"goal"}
+        elif event_type not in schemas:
             raise ValueError(f"unknown execution event type: {event_type}")
-        if set(payload) != schemas[event_type]:
+        expected_schema = (
+            start_schema if event_type == "EXECUTION_STARTED" else schemas[event_type]
+        )
+        if set(payload) != expected_schema:
             raise ValueError(f"invalid payload for {event_type}")
         if self._events and self._events[-1].event_type in (
             "EXECUTION_COMPLETED",
@@ -332,7 +566,16 @@ class EventLog:
         ):
             raise ValueError("terminal execution cannot accept more events")
         if event_type == "EXECUTION_STARTED":
-            if self._events or source_event_refs or not isinstance(payload["goal"], str):
+            if (
+                self._events
+                or source_event_refs
+                or not isinstance(payload["goal"], str)
+                or any(
+                    not isinstance(payload[field], str) or not payload[field]
+                    for field in ("execution_id", "root_actor_id")
+                    if field in payload
+                )
+            ):
                 raise ValueError("execution must start once with an uncaused goal")
             return
         if not self._events or source_event_refs != (self._events[-1].event_id,):
@@ -342,13 +585,16 @@ class EventLog:
         if event_type == "MODEL_DECISION":
             frame = payload["frame"]
             raw_action = None
-            if isinstance(frame, DecisionFrame) and isinstance(
-                frame.raw_model_response, (ToolCall, Complete)
-            ):
-                raw_action = frame.raw_model_response
+            if isinstance(frame, DecisionFrame):
+                raw_action = _structured_action(frame.raw_model_response)
             if (
                 previous.event_type
-                not in ("EXECUTION_STARTED", "TOOL_RESULT", "TOOL_FAILED")
+                not in (
+                    "EXECUTION_STARTED",
+                    "TOOL_RESULT",
+                    "TOOL_FAILED",
+                    "ROOT_WOKEN",
+                )
                 or not isinstance(frame, DecisionFrame)
                 or payload["action"] != frame.resulting_action
                 or raw_action != frame.resulting_action
@@ -359,6 +605,40 @@ class EventLog:
                 or frame.goal != self._events[0].payload["goal"]
             ):
                 raise ValueError("model decision requires current execution state")
+        elif event_type == "ROOT_WAITING":
+            frame = previous.payload.get("frame")
+            condition = payload["condition"]
+            if (
+                previous.event_type != "MODEL_DECISION"
+                or not isinstance(frame, DecisionFrame)
+                or not isinstance(frame.resulting_action, Wait)
+                or frame.resulting_action != self._freeze(condition)
+                or not isinstance(condition.event_type, str)
+                or not condition.event_type
+            ):
+                raise ValueError("wait condition must match its model decision")
+        elif event_type == "EXTERNAL_EVENT_RECEIVED":
+            external_event = payload["event"]
+            state = fold_execution_state(self.events)
+            if (
+                state.status != "waiting"
+                or not isinstance(external_event, ExternalEvent)
+                or not isinstance(external_event.event_type, str)
+                or not external_event.event_type
+                or not isinstance(external_event.data, str)
+            ):
+                raise ValueError("external events require a waiting Root")
+        elif event_type == "ROOT_WOKEN":
+            external_event = payload["event"]
+            state = fold_execution_state(self.events)
+            if (
+                previous.event_type != "EXTERNAL_EVENT_RECEIVED"
+                or not isinstance(external_event, ExternalEvent)
+                or previous.payload.get("event") != self._freeze(external_event)
+                or state.status != "waiting"
+                or state.waiting_for != external_event.event_type
+            ):
+                raise ValueError("Root wakes only for its matching external event")
         elif event_type == "TOOL_CALL_STARTED":
             frame = previous.payload.get("frame")
             request = payload["request"]
@@ -393,6 +673,7 @@ class EventLog:
                 "MODEL_DECISION",
                 "TOOL_RESULT",
                 "TOOL_FAILED",
+                "ROOT_WOKEN",
             ):
                 raise ValueError("failure requires the latest execution cause")
 
@@ -454,6 +735,15 @@ class EventLog:
         if isinstance(value, ToolCall):
             request = cls._freeze(value.request)
             return value if request is value.request else ToolCall(request)
+        if isinstance(value, Wait):
+            event_type = cls._freeze(value.event_type)
+            return value if event_type is value.event_type else Wait(event_type)
+        if isinstance(value, ExternalEvent):
+            event_type = cls._freeze(value.event_type)
+            data = cls._freeze(value.data)
+            if event_type is value.event_type and data is value.data:
+                return value
+            return ExternalEvent(event_type, data)
         if isinstance(value, Complete):
             output = cls._freeze(value.output)
             return value if output is value.output else Complete(output)
@@ -504,20 +794,30 @@ class EventLog:
 @dataclass(frozen=True)
 class ExecutionState:
     version: int
-    status: Literal["running", "completed", "failed"]
+    status: Literal["running", "waiting", "completed", "failed"]
     goal: str
+    execution_id: str | None = None
+    root_actor_id: str | None = None
     decision_count: int = 0
     latest_observation: Observation | None = None
     last_action: object | None = None
     last_result: ToolResult | None = None
     completion: str | None = None
     failure: str | None = None
+    waiting_for: str | None = None
+    latest_external_event: ExternalEvent | None = None
 
 
-def fold_execution_state(events: Iterable[ExecutionEvent]) -> ExecutionState:
-    state: ExecutionState | None = None
-    seen_ids: set[str] = set()
-    for expected_sequence, event in enumerate(events, start=1):
+def fold_execution_state(
+    events: Iterable[ExecutionEvent],
+    *,
+    initial_state: ExecutionState | None = None,
+    prior_event_ids: Iterable[str] = (),
+) -> ExecutionState:
+    state = initial_state
+    seen_ids = set(prior_event_ids)
+    start_sequence = state.version + 1 if state is not None else 1
+    for expected_sequence, event in enumerate(events, start=start_sequence):
         if event.sequence != expected_sequence:
             raise ValueError("event sequences must be contiguous and monotonic")
         if event.event_id in seen_ids:
@@ -533,23 +833,34 @@ def fold_execution_state(events: Iterable[ExecutionEvent]) -> ExecutionState:
                 version=event.sequence,
                 status="running",
                 goal=event.payload["goal"],
+                execution_id=event.payload.get("execution_id"),
+                root_actor_id=event.payload.get("root_actor_id"),
             )
             continue
         if state is None:
             raise ValueError("execution must begin with EXECUTION_STARTED")
-        if state.status != "running":
+        if state.status in ("completed", "failed"):
             raise ValueError("terminal execution state cannot accept more events")
+        waiting_event_types = ("EXTERNAL_EVENT_RECEIVED", "ROOT_WOKEN")
+        if state.status == "waiting" and event.event_type not in waiting_event_types:
+            raise ValueError("waiting execution accepts only external wake events")
+        if state.status == "running" and event.event_type in waiting_event_types:
+            raise ValueError("running execution cannot receive a wait-only event")
 
         values = {
             "version": event.sequence,
             "status": state.status,
             "goal": state.goal,
+            "execution_id": state.execution_id,
+            "root_actor_id": state.root_actor_id,
             "decision_count": state.decision_count,
             "latest_observation": state.latest_observation,
             "last_action": state.last_action,
             "last_result": state.last_result,
             "completion": state.completion,
             "failure": state.failure,
+            "waiting_for": state.waiting_for,
+            "latest_external_event": state.latest_external_event,
         }
         if event.event_type == "MODEL_DECISION":
             values["decision_count"] = state.decision_count + 1
@@ -560,6 +871,27 @@ def fold_execution_state(events: Iterable[ExecutionEvent]) -> ExecutionState:
                 raise ValueError("tool result events require an observation")
             values["latest_observation"] = observation
             values["last_result"] = observation.result
+        elif event.event_type == "ROOT_WAITING":
+            condition = event.payload.get("condition")
+            if not isinstance(condition, Wait):
+                raise ValueError("wait events require a typed condition")
+            values["status"] = "waiting"
+            values["waiting_for"] = condition.event_type
+        elif event.event_type == "EXTERNAL_EVENT_RECEIVED":
+            external_event = event.payload.get("event")
+            if not isinstance(external_event, ExternalEvent):
+                raise ValueError("external event receipt requires a typed event")
+            values["latest_external_event"] = external_event
+        elif event.event_type == "ROOT_WOKEN":
+            external_event = event.payload.get("event")
+            if (
+                not isinstance(external_event, ExternalEvent)
+                or state.waiting_for != external_event.event_type
+            ):
+                raise ValueError("wake event must match the current wait condition")
+            values["status"] = "running"
+            values["waiting_for"] = None
+            values["latest_external_event"] = external_event
         elif event.event_type == "EXECUTION_COMPLETED":
             output = event.payload.get("output")
             if not isinstance(output, str):
@@ -576,6 +908,137 @@ def fold_execution_state(events: Iterable[ExecutionEvent]) -> ExecutionState:
     if state is None:
         raise ValueError("event log cannot be empty")
     return state
+
+
+_SERIALIZABLE_TYPES["ExecutionState"] = ExecutionState
+
+
+def _checkpoint_validation_digest(
+    events: tuple[ExecutionEvent, ...], state: ExecutionState
+) -> str:
+    material = {
+        "events": [
+            {
+                "event_id": event.event_id,
+                "sequence": event.sequence,
+                "event_type": event.event_type,
+                "payload": _encode_value(event.payload),
+                "source_event_refs": _encode_value(event.source_event_refs),
+            }
+            for event in events
+        ],
+        "state": _encode_value(state),
+    }
+    encoded = json.dumps(
+        material, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    schema_version: int
+    last_applied_event_sequence: int
+    state: ExecutionState
+    validation_digest: str
+
+    SCHEMA_VERSION = 1
+
+    @classmethod
+    def capture(cls, events: tuple[ExecutionEvent, ...]) -> Checkpoint:
+        state = fold_execution_state(events)
+        prefix = events[: state.version]
+        if len(prefix) != state.version:
+            raise ValueError("checkpoint state exceeds the durable event prefix")
+        return cls(
+            cls.SCHEMA_VERSION,
+            state.version,
+            state,
+            _checkpoint_validation_digest(prefix, state),
+        )
+
+    def save(self, path: str | Path) -> None:
+        checkpoint_path = Path(path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+        record = {
+            "schema_version": self.schema_version,
+            "last_applied_event_sequence": self.last_applied_event_sequence,
+            "state": _encode_value(self.state),
+            "validation_digest": self.validation_digest,
+        }
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(
+                record,
+                stream,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, checkpoint_path)
+
+    @classmethod
+    def load(cls, path: str | Path) -> Checkpoint:
+        try:
+            with Path(path).open("r", encoding="utf-8") as stream:
+                record = json.load(stream)
+            if not isinstance(record, dict) or set(record) != {
+                "schema_version",
+                "last_applied_event_sequence",
+                "state",
+                "validation_digest",
+            }:
+                raise ValueError("invalid checkpoint record")
+            state = _decode_value(record["state"])
+            if (
+                type(record["schema_version"]) is not int
+                or record["schema_version"] != cls.SCHEMA_VERSION
+                or type(record["last_applied_event_sequence"]) is not int
+                or not isinstance(state, ExecutionState)
+                or not isinstance(record["validation_digest"], str)
+                or len(record["validation_digest"]) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in record["validation_digest"]
+                )
+            ):
+                raise ValueError("invalid checkpoint metadata")
+            return cls(
+                record["schema_version"],
+                record["last_applied_event_sequence"],
+                state,
+                record["validation_digest"],
+            )
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"malformed checkpoint: {exc}") from exc
+
+
+def restore_execution_state(
+    events: tuple[ExecutionEvent, ...], checkpoint_path: str | Path | None
+) -> ExecutionState:
+    if checkpoint_path is None or not Path(checkpoint_path).exists():
+        return fold_execution_state(events)
+    checkpoint = Checkpoint.load(checkpoint_path)
+    sequence = checkpoint.last_applied_event_sequence
+    if (
+        sequence < 1
+        or sequence > len(events)
+        or checkpoint.state.version != sequence
+    ):
+        raise ValueError("checkpoint sequence is inconsistent with the event log")
+    if checkpoint.validation_digest != _checkpoint_validation_digest(
+        events[:sequence], checkpoint.state
+    ):
+        raise ValueError("checkpoint is inconsistent with the durable event prefix")
+    restored = fold_execution_state(
+        events[sequence:],
+        initial_state=checkpoint.state,
+        prior_event_ids=(event.event_id for event in events[:sequence]),
+    )
+    return restored
 
 
 def _text_projection(value: str, limit: int = 1_024) -> dict[str, object]:
@@ -610,6 +1073,8 @@ def _action_projection(action: object | None) -> dict[str, object] | None:
     if isinstance(action, ToolCall):
         tool = _request_projection(action.request)["tool"]
         return {"type": "tool_call", "tool": tool}
+    if isinstance(action, Wait):
+        return {"type": "wait", "event_type": _text_projection(action.event_type)}
     if isinstance(action, Complete):
         return {"type": "complete", "output": _text_projection(action.output)}
     if action is None:
@@ -644,7 +1109,14 @@ def _bounded_context(state: ExecutionState, max_chars: int) -> str:
         "state": {
             "version": state.version,
             "status": state.status,
+            "execution_id": state.execution_id,
+            "root_actor_id": state.root_actor_id,
             "decision_count": state.decision_count,
+            "waiting_for": (
+                _text_projection(state.waiting_for)
+                if state.waiting_for is not None
+                else None
+            ),
             "last_action": _action_projection(state.last_action),
             "last_result": (
                 {
@@ -666,6 +1138,16 @@ def _bounded_context(state: ExecutionState, max_chars: int) -> str:
             ),
         },
         "observation": _observation_projection(state.latest_observation),
+        "incoming_event": (
+            {
+                "event_type": _text_projection(
+                    state.latest_external_event.event_type
+                ),
+                "data": _text_projection(state.latest_external_event.data),
+            }
+            if state.latest_external_event is not None
+            else None
+        ),
     }
 
     def render() -> str:
@@ -712,7 +1194,7 @@ def _build_model_request(
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    status: Literal["completed", "failed"]
+    status: Literal["waiting", "completed", "failed"]
     output: str | None
     failure: str | None
     steps: tuple[ExecutionStep, ...]
@@ -729,6 +1211,8 @@ class RootAgentProcess:
         max_decisions: int,
         *,
         max_context_chars: int = 2_000,
+        event_log: EventLog | None = None,
+        checkpoint_path: str | Path | None = None,
     ) -> None:
         if max_decisions < 1:
             raise ValueError("max_decisions must be positive")
@@ -738,29 +1222,109 @@ class RootAgentProcess:
         self._tools = tools
         self._max_decisions = max_decisions
         self._max_context_chars = max_context_chars
+        self._event_log = event_log or EventLog()
+        self._checkpoint_path = (
+            Path(checkpoint_path) if checkpoint_path is not None else None
+        )
+        if self._event_log.events:
+            self._current_state()
+            if self._event_log.events[-1].event_type not in (
+                "EXECUTION_STARTED",
+                "TOOL_RESULT",
+                "TOOL_FAILED",
+                "ROOT_WAITING",
+                "EXTERNAL_EVENT_RECEIVED",
+                "ROOT_WOKEN",
+                "EXECUTION_COMPLETED",
+                "EXECUTION_FAILED",
+            ):
+                raise ValueError(
+                    "unsettled action recovery is not implemented for this event tail"
+                )
 
     def run(self, goal: str) -> ExecutionResult:
-        event_log = EventLog()
-        event_log.append("EXECUTION_STARTED", {"goal": goal})
+        if self._event_log.events:
+            raise ValueError("execution has already started; use resume")
+        self._event_log.append(
+            "EXECUTION_STARTED",
+            {
+                "goal": goal,
+                "execution_id": f"execution-{uuid.uuid4().hex}",
+                "root_actor_id": f"root-{uuid.uuid4().hex}",
+            },
+        )
+        return self._drive()
+
+    def resume(self) -> ExecutionResult:
+        if not self._event_log.events:
+            raise ValueError("execution has not started")
+        state = self._current_state()
+        last_event = self._event_log.events[-1]
+        if state.status == "waiting" and last_event.event_type == "EXTERNAL_EVENT_RECEIVED":
+            external_event = last_event.payload.get("event")
+            if (
+                isinstance(external_event, ExternalEvent)
+                and state.waiting_for == external_event.event_type
+            ):
+                self._event_log.append(
+                    "ROOT_WOKEN",
+                    {"event": external_event},
+                    (last_event.event_id,),
+                )
+                return self._drive()
+        if state.status != "running":
+            return self._result([])
+        return self._drive()
+
+    def deliver_event(self, event_type: str, data: str = "") -> ExecutionResult:
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("event_type must be a non-empty string")
+        if not isinstance(data, str):
+            raise ValueError("event data must be a string")
+        if not self._event_log.events:
+            raise ValueError("execution has not started")
+        state = self._current_state()
+        if state.status != "waiting":
+            raise ValueError("external events can only be delivered to a waiting Root")
+        external_event = ExternalEvent(event_type, data)
+        received = self._event_log.append(
+            "EXTERNAL_EVENT_RECEIVED",
+            {"event": external_event},
+            (self._event_log.events[-1].event_id,),
+        )
+        if state.waiting_for != event_type:
+            return self._result([])
+        self._event_log.append(
+            "ROOT_WOKEN",
+            {"event": external_event},
+            (received.event_id,),
+        )
+        return self._drive()
+
+    def _drive(self) -> ExecutionResult:
         steps: list[ExecutionStep] = []
-        for decision in range(1, self._max_decisions + 1):
-            state = fold_execution_state(event_log.events)
-            source_refs = (event_log.events[-1].event_id,)
+        while True:
+            state = self._current_state()
+            if state.decision_count >= self._max_decisions:
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": "decision_limit_reached"},
+                    (self._event_log.events[-1].event_id,),
+                )
+                return self._result(steps)
+            decision = state.decision_count + 1
+            source_refs = (self._event_log.events[-1].event_id,)
             request = _build_model_request(
                 state, source_refs, self._max_context_chars
             )
             raw_response = self._model.decide(request)
             raw_response_snapshot = EventLog._freeze(raw_response)
-            action = (
-                raw_response
-                if isinstance(raw_response, (ToolCall, Complete))
-                else None
-            )
+            action = _structured_action(raw_response)
             action_snapshot = EventLog._freeze(action)
             frame = DecisionFrame(
                 decision_id=f"decision-{decision:06d}",
                 model_identifier=self._model.identifier,
-                goal=goal,
+                goal=state.goal,
                 state_version=state.version,
                 source_event_refs=source_refs,
                 actual_request=request,
@@ -768,53 +1332,61 @@ class RootAgentProcess:
                 raw_model_response=raw_response_snapshot,
                 resulting_action=action_snapshot,
             )
-            decision_event = event_log.append(
+            decision_event = self._event_log.append(
                 "MODEL_DECISION",
                 {"action": action_snapshot, "frame": frame},
                 source_refs,
             )
             if isinstance(action, Complete):
                 steps.append(ExecutionStep(decision, action, None))
-                event_log.append(
+                self._event_log.append(
                     "EXECUTION_COMPLETED",
                     {"output": action.output},
                     (decision_event.event_id,),
                 )
-                return self._result(event_log, steps)
+                return self._result(steps)
+            if isinstance(action, Wait):
+                steps.append(ExecutionStep(decision, action, None))
+                self._event_log.append(
+                    "ROOT_WAITING",
+                    {"condition": action},
+                    (decision_event.event_id,),
+                )
+                if self._checkpoint_path is not None:
+                    Checkpoint.capture(self._event_log.events).save(
+                        self._checkpoint_path
+                    )
+                return self._result(steps)
             if action is None:
                 steps.append(ExecutionStep(decision, raw_response, None))
-                event_log.append(
+                self._event_log.append(
                     "EXECUTION_FAILED",
                     {"failure": f"unknown_action:{type(raw_response).__name__}"},
                     (decision_event.event_id,),
                 )
-                return self._result(event_log, steps)
-            call_event = event_log.append(
+                return self._result(steps)
+            call_event = self._event_log.append(
                 "TOOL_CALL_STARTED",
                 {"request": action.request},
                 (decision_event.event_id,),
             )
             result = self._tools.execute(action.request)
             observation = Observation(action.request, result)
-            event_log.append(
+            self._event_log.append(
                 "TOOL_RESULT" if result.ok else "TOOL_FAILED",
                 {"observation": observation},
                 (call_event.event_id,),
             )
             steps.append(ExecutionStep(decision, action, observation))
-        event_log.append(
-            "EXECUTION_FAILED",
-            {"failure": "decision_limit_reached"},
-            (event_log.events[-1].event_id,),
-        )
-        return self._result(event_log, steps)
 
-    @staticmethod
-    def _result(
-        event_log: EventLog, steps: list[ExecutionStep]
-    ) -> ExecutionResult:
-        events = event_log.events
-        state = fold_execution_state(events)
+    def _current_state(self) -> ExecutionState:
+        return restore_execution_state(
+            self._event_log.events, self._checkpoint_path
+        )
+
+    def _result(self, steps: list[ExecutionStep]) -> ExecutionResult:
+        events = self._event_log.events
+        state = self._current_state()
         return ExecutionResult(
             status=state.status,
             output=state.completion,
