@@ -36,7 +36,7 @@ response rather than making separate local decisions.
 
 ## Deterministic evidence
 
-Five maintained tests establish:
+Six maintained tests establish:
 
 1. Three Spawns produce three unique Child execution/actor identities with one
    parent. A fourth Spawn fails with `child_limit_reached` and produces no
@@ -53,6 +53,10 @@ Five maintained tests establish:
    Return delivery repeats.
 5. Three live sibling IPython controls retain separate namespaces and shut down
    cleanly. Each Child sees its own sentinel and not either sibling sentinel.
+6. Three identified Child outcomes plus a later ordinary Tool observation
+   remain usable at the minimum supported `max_context_chars=768`. Root sees
+   the creation-ordered actor-id list, the correspondingly indexed return facts,
+   and the real Tool result without exceeding the absolute Context bound.
 
 The migrated Single Child regression also proves that Root may decide to Spawn
 a second sibling after the first Child returns. All other Single Child
@@ -111,9 +115,13 @@ The real-provider criterion is consequently **NOT VALIDATED**, not PASS.
 
 ## Validation
 
-- Focused multi/single Child: 16 passed, 1 gated real test skipped.
-- `Execution_lab2`: 114 passed, 8 gated real tests skipped.
+- Focused multi/single Child: 17 passed, 2 gated real tests skipped.
+- `Execution_lab2`: 115 passed, 8 gated real tests skipped.
 - Repository default suite: 328 passed, 24 skipped.
 - Conversation Memory: 163 passed, 45 skipped.
 - Dream: 36 passed, 1 skipped.
 - Real DeepSeek multi-child experiment: 0/3 validated; exact failure above.
+- `git diff --check`: clean (line-ending notices only).
+- Live `ipykernel` processes after validation: 0.
+- Credential-pattern scan across the six in-scope files: no match.
+- Pinned MAGMA status and diff: clean.

@@ -463,9 +463,12 @@ Bounded sibling Child AgentProcess:
   committed and no run reached verified completion. The prompt and adapter
   were not changed, and no fourth execution was sent.
 - Task-level verdict: **MECHANISM PASS / REAL PROVIDER NOT VALIDATED**. Final
-  regression reports `Execution_lab2` 114 passed / 8 gated real-provider
+  regression reports `Execution_lab2` 115 passed / 8 gated real-provider
   tests skipped; root 328 passed / 24 skipped; Conversation Memory 163 passed /
-  45 skipped; Dream 36 passed / 1 skipped.
+  45 skipped; Dream 36 passed / 1 skipped. A maintained minimum-budget
+  regression also proves three identified Child returns remain associated with
+  their creation-ordered actor ids, while a later real Tool result remains
+  visible, within `max_context_chars=768`.
 
 Slice 3 regression evidence:
 

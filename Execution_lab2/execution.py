@@ -2563,17 +2563,13 @@ def _bounded_context(
             }
         )
     elif state.child_refs:
-        children = []
-        for child in state.child_refs:
-            outcome = next(
-                (
-                    item
-                    for item in state.child_outcomes
-                    if item.child_ref.child_actor_id == child.child_actor_id
-                ),
-                None,
-            )
-            children.append(
+        outcomes_by_actor = {
+            item.child_ref.child_actor_id: item for item in state.child_outcomes
+        }
+        if len(state.child_refs) == 1:
+            child = state.child_refs[0]
+            outcome = outcomes_by_actor.get(child.child_actor_id)
+            document["children"] = [
                 {
                     "child_actor_id": child.child_actor_id,
                     "parent_actor_id": child.parent_actor_id,
@@ -2592,8 +2588,67 @@ def _bounded_context(
                         else None
                     ),
                 }
-            )
-        document["children"] = children
+            ]
+        else:
+            if isinstance(state.latest_observation, ChildObservation):
+                document["observation"] = None
+            elif isinstance(
+                state.latest_observation,
+                (Observation, IPythonObservation),
+            ):
+                observation = _sibling_observation_projection(
+                    state.latest_observation
+                )
+                if isinstance(state.latest_observation, IPythonObservation):
+                    observation["type"] = "ipython"
+                else:
+                    observation["request"] = _request_projection(
+                        state.latest_observation.request
+                    )
+                document["observation"] = observation
+            elif isinstance(state.latest_observation, CompletionObservation):
+                evidence = state.latest_observation.evidence
+                document["observation"] = {
+                    "type": "completion",
+                    "status": state.latest_observation.status,
+                    "path": _text_projection(evidence.observed_path),
+                    "matched": evidence.matched,
+                    "reason": evidence.reason,
+                }
+            child_facts = []
+            for index, child in enumerate(state.child_refs):
+                outcome = outcomes_by_actor.get(child.child_actor_id)
+                if outcome is None:
+                    child_facts.append(f"{index} pending {child.local_goal}")
+                elif outcome.status == "returned":
+                    detail = outcome.local_result or ""
+                    child_facts.append(f"{index} returned {detail}")
+                else:
+                    detail = outcome.failure or ""
+                    child_facts.append(f"{index} failed {detail}")
+            document["children"] = {
+                "actor_ids": [
+                    child.child_actor_id for child in state.child_refs
+                ],
+                "facts": _text_projection("\n".join(child_facts)),
+            }
+            if document["observation"] is None:
+                document.pop("observation")
+            for key in ("incoming_event", "lifecycle"):
+                if document[key] is None:
+                    document.pop(key)
+            state_projection = document["state"]
+            assert isinstance(state_projection, dict)
+            for key in (
+                "version",
+                "execution_id",
+                "root_actor_id",
+                "decision_count",
+            ):
+                state_projection.pop(key)
+            for key in ("waiting_for", "completion", "failure"):
+                if state_projection[key] is None:
+                    state_projection.pop(key)
     if sibling_observations:
         document.clear()
         document["observations"] = [

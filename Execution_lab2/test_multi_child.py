@@ -69,6 +69,70 @@ def test_root_admits_three_sibling_children_and_rejects_a_fourth(tmp_path):
     assert limited.state == fold_execution_state(limited.events)
 
 
+def test_three_child_outcomes_fit_the_minimum_root_context_budget(tmp_path):
+    (tmp_path / "answer.txt").write_text("ready", encoding="utf-8")
+    root_model = ScriptedModel(
+        [
+            SpawnChild("branch A"),
+            SpawnChild("branch B"),
+            SpawnChild("branch C"),
+            Wait("CHILD_RESULT"),
+            Wait("CHILD_RESULT"),
+            Wait("CHILD_RESULT"),
+            ToolCall(ReadRequest("answer.txt")),
+            ClaimComplete(),
+        ]
+    )
+    tools = ToolHost(SharedEnvironment(tmp_path))
+    root = AgentProcess(
+        model=root_model,
+        tools=tools,
+        max_decisions=8,
+        max_context_chars=768,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    )
+    root.run(
+        "keep three identified outcomes visible",
+        FileContentEquals("answer.txt", "ready"),
+    )
+    root.resume()
+    root.resume()
+    waiting = root.resume()
+
+    child_runs = [
+        AgentProcess.for_child(
+            child_ref,
+            model=ScriptedModel([Return(result)]),
+            tools=tools,
+            max_decisions=1,
+        ).run_child()
+        for child_ref, result in zip(
+            waiting.state.child_refs,
+            ("alpha", "beta", "gamma"),
+            strict=True,
+        )
+    ]
+    root.accept_child(child_runs[0])
+    root.accept_child(child_runs[1])
+    completed = root.accept_child(child_runs[2])
+
+    assert completed.status == "completed"
+    final_request = root_model.received_requests[-1]
+    assert final_request.context_size_chars <= 768
+    visible_children = json.loads(final_request.context)["children"]
+    assert visible_children["actor_ids"] == [
+        child_ref.child_actor_id for child_ref in waiting.state.child_refs
+    ]
+    assert visible_children["facts"]["text"].splitlines() == [
+        "0 returned alpha",
+        "1 returned beta",
+        "2 returned gamma",
+    ]
+    visible_observation = json.loads(final_request.context)["observation"]
+    assert visible_observation["request"]["path"]["text"] == "answer.txt"
+    assert visible_observation["result"]["output"]["text"] == "ready"
+
+
 def test_sibling_contexts_are_isolated_while_world_and_outcomes_are_shared(
     tmp_path,
 ):
@@ -79,6 +143,7 @@ def test_sibling_contexts_are_isolated_while_world_and_outcomes_are_shared(
             SpawnChild("B_PRIVATE: read shared.txt and return beta"),
             Wait("CHILD_RESULT"),
             Wait("CHILD_RESULT"),
+            ToolCall(ReadRequest("shared.txt")),
             ClaimComplete(),
         ]
     )
@@ -86,7 +151,7 @@ def test_sibling_contexts_are_isolated_while_world_and_outcomes_are_shared(
     root = AgentProcess(
         model=root_model,
         tools=tools,
-        max_decisions=5,
+        max_decisions=6,
         event_log=EventLog(tmp_path / "root.jsonl"),
     )
 
@@ -156,6 +221,9 @@ def test_sibling_contexts_are_isolated_while_world_and_outcomes_are_shared(
     assert child_b_ref.child_actor_id in final_context
     assert "alpha" in final_context
     assert "beta" in final_context
+    visible_observation = json.loads(final_context)["observation"]
+    assert visible_observation["request"]["path"]["text"] == "shared.txt"
+    assert visible_observation["result"]["output"]["text"] == "from A"
     assert completed.state == fold_execution_state(completed.events)
 
 
