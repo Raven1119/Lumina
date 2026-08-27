@@ -86,6 +86,8 @@ class ChildRef:
     local_goal: str
     event_log_path: str | None
     provider_tool_call_id: str | None = None
+    depth: int = 1
+    max_depth: int = 1
 
 
 @dataclass(frozen=True)
@@ -788,6 +790,10 @@ def _decode_value(value: object) -> object:
     encoded_fields = value["fields"]
     if not isinstance(encoded_fields, dict):
         raise ValueError("malformed durable dataclass")
+    if value_type == "ChildRef":
+        encoded_fields = {"depth": 1, "max_depth": 1, **encoded_fields}
+    elif value_type == "ExecutionState":
+        encoded_fields = {"depth": 0, "max_depth": 1, **encoded_fields}
     expected_fields = {field.name for field in fields(value_class)}
     if set(encoded_fields) != expected_fields:
         raise ValueError(f"invalid fields for durable {value_type}")
@@ -965,6 +971,8 @@ class EventLog:
             "execution_id",
             "root_actor_id",
             "completion_spec",
+            "depth",
+            "max_depth",
         }
         if event_type == "EXECUTION_STARTED":
             if payload.get("actor_role") == "child":
@@ -975,7 +983,14 @@ class EventLog:
                     "actor_role",
                     "actor_id",
                     "parent_actor_id",
+                    "depth",
+                    "max_depth",
                 }
+                legacy_start_schema = start_schema - {"depth", "max_depth"}
+                if set(payload) == legacy_start_schema:
+                    start_schema = legacy_start_schema
+            elif set(payload) == start_schema - {"depth", "max_depth"}:
+                start_schema = start_schema - {"depth", "max_depth"}
             elif self._path is None and set(payload) == {"goal", "completion_spec"}:
                 start_schema = {"goal", "completion_spec"}
         elif event_type not in schemas:
@@ -1002,11 +1017,15 @@ class EventLog:
             or (
                 self._events[-1].event_type == "CHILD_RETURNED"
                 and self._events[0].payload.get("actor_role") == "child"
+                and self._events[-1].payload.get("child_actor_id")
+                == self._events[0].payload.get("actor_id")
             )
         ):
             raise ValueError("terminal execution cannot accept more events")
         if event_type == "EXECUTION_STARTED":
             if payload.get("actor_role") == "child":
+                depth = payload.get("depth", 1)
+                max_depth = payload.get("max_depth", 1)
                 if (
                     self._events
                     or source_event_refs
@@ -1024,11 +1043,18 @@ class EventLog:
                         )
                     )
                     or payload["actor_id"] == payload["parent_actor_id"]
+                    or type(depth) is not int
+                    or type(max_depth) is not int
+                    or depth not in (1, 2)
+                    or max_depth not in (1, 2)
+                    or depth > max_depth
                 ):
                     raise ValueError(
                         "Child execution must start once with direct lineage"
                     )
                 return
+            depth = payload.get("depth", 0)
+            max_depth = payload.get("max_depth", 1)
             if (
                 self._events
                 or source_event_refs
@@ -1044,6 +1070,9 @@ class EventLog:
                     for field in ("execution_id", "root_actor_id")
                     if field in payload
                 )
+                or depth != 0
+                or type(max_depth) is not int
+                or max_depth not in (1, 2)
             ):
                 raise ValueError("execution must start once with an uncaused goal")
             return
@@ -1148,6 +1177,17 @@ class EventLog:
                 for event in self._events
                 if event.event_type == "CHILD_SPAWNED"
             )
+            start = self._events[0].payload
+            parent_actor_id = (
+                start.get("actor_id")
+                if start.get("actor_role") == "child"
+                else start.get("root_actor_id")
+            )
+            parent_depth = start.get(
+                "depth", 1 if start.get("actor_role") == "child" else 0
+            )
+            max_depth = start.get("max_depth", 1)
+            child_limit = 1 if max_depth == 2 else _MAX_CHILDREN_PER_ROOT
             if (
                 not previous_is_valid
                 or not isinstance(frame, DecisionFrame)
@@ -1159,13 +1199,18 @@ class EventLog:
                 or expected_action.provider_tool_call_id != expected_call_id
                 or child_ref.provider_tool_call_id != expected_call_id
                 or child_ref.parent_actor_id
-                != self._events[0].payload.get("root_actor_id")
+                != parent_actor_id
+                or type(parent_depth) is not int
+                or type(max_depth) is not int
+                or parent_depth >= max_depth
+                or child_ref.depth != parent_depth + 1
+                or child_ref.max_depth != max_depth
                 or child_ref.child_actor_id == child_ref.parent_actor_id
                 or not child_ref.child_execution_id
                 or not child_ref.child_actor_id
                 or not isinstance(child_ref.event_log_path, str)
                 or not child_ref.event_log_path
-                or len(prior_child_refs) >= _MAX_CHILDREN_PER_ROOT
+                or len(prior_child_refs) >= child_limit
                 or any(
                     isinstance(prior, ChildRef)
                     and (
@@ -1178,14 +1223,16 @@ class EventLog:
                 )
             ):
                 raise ValueError(
-                    "Child spawn must match one Root decision and direct lineage"
+                    "Child spawn must match one Actor decision and direct lineage"
                 )
         elif event_type == "CHILD_RETURNED":
             frame = previous.payload.get("frame")
             state = fold_execution_state(self.events)
-            if state.actor_role == "child":
+            own_return = payload["child_actor_id"] == state.actor_id
+            if own_return:
                 if (
-                    previous.event_type != "MODEL_DECISION"
+                    state.actor_role != "child"
+                    or previous.event_type != "MODEL_DECISION"
                     or not isinstance(frame, DecisionFrame)
                     or not isinstance(frame.resulting_action, Return)
                     or payload["local_result"]
@@ -1221,7 +1268,7 @@ class EventLog:
                     or len(payload["local_result"]) > 1_024
                 ):
                     raise ValueError(
-                        "Root Child return must match its pending handle"
+                        "Actor Child return must match its pending handle"
                     )
         elif event_type == "CHILD_FAILED":
             state = fold_execution_state(self.events)
@@ -1234,8 +1281,7 @@ class EventLog:
                 None,
             )
             if (
-                state.actor_role != "root"
-                or state.status not in ("child_pending", "waiting")
+                state.status not in ("child_pending", "waiting")
                 or (
                     state.status == "waiting"
                     and state.waiting_for != "CHILD_RESULT"
@@ -1250,7 +1296,7 @@ class EventLog:
                 or len(payload["failure"]) > 1_024
             ):
                 raise ValueError(
-                    "Root Child failure must match its pending handle"
+                    "Actor Child failure must match its pending handle"
                 )
         elif event_type == "MODEL_DECISION":
             frame = payload["frame"]
@@ -1787,6 +1833,9 @@ class EventLog:
                     value.parent_actor_id,
                     value.local_goal,
                     value.event_log_path,
+                    value.provider_tool_call_id,
+                    value.depth,
+                    value.max_depth,
                 )
             )
             if all(
@@ -1799,6 +1848,9 @@ class EventLog:
                         value.parent_actor_id,
                         value.local_goal,
                         value.event_log_path,
+                        value.provider_tool_call_id,
+                        value.depth,
+                        value.max_depth,
                     ),
                 )
             ):
@@ -1967,6 +2019,8 @@ class ExecutionState:
     actor_role: Literal["root", "child"] = "root"
     actor_id: str | None = None
     parent_actor_id: str | None = None
+    depth: int = 0
+    max_depth: int = 1
 
     @property
     def child_ref(self) -> ChildRef | None:
@@ -2023,6 +2077,10 @@ def fold_execution_state(
                     else event.payload.get("root_actor_id")
                 ),
                 parent_actor_id=event.payload.get("parent_actor_id"),
+                depth=event.payload.get("depth", 1)
+                if event.payload.get("actor_role") == "child"
+                else event.payload.get("depth", 0),
+                max_depth=event.payload.get("max_depth", 1),
             )
             continue
         if state is None:
@@ -2072,6 +2130,8 @@ def fold_execution_state(
             "actor_role": state.actor_role,
             "actor_id": state.actor_id,
             "parent_actor_id": state.parent_actor_id,
+            "depth": state.depth,
+            "max_depth": state.max_depth,
         }
         if event.event_type == "MODEL_DECISION":
             values["decision_count"] = state.decision_count + 1
@@ -2190,7 +2250,9 @@ def fold_execution_state(
                 raise ValueError(
                     "Child return requires one bounded local result"
                 )
-            if state.actor_role == "child":
+            if event.payload.get("child_actor_id") == state.actor_id:
+                if state.actor_role != "child":
+                    raise ValueError("only a non-Root Actor can return")
                 values["status"] = "completed"
                 values["completion"] = local_result
             else:
@@ -2205,7 +2267,7 @@ def fold_execution_state(
                 )
                 if not isinstance(child_ref, ChildRef):
                     raise ValueError(
-                        "Root Child return requires a pending handle"
+                        "Actor Child return requires a pending handle"
                     )
                 observation = ChildObservation(
                     status="returned",
@@ -2232,14 +2294,13 @@ def fold_execution_state(
                 None,
             )
             if (
-                state.actor_role != "root"
-                or not isinstance(child_ref, ChildRef)
+                not isinstance(child_ref, ChildRef)
                 or not isinstance(failure, str)
                 or not failure
                 or len(failure) > 1_024
             ):
                 raise ValueError(
-                    "Root Child failure requires one bounded outcome"
+                    "Actor Child failure requires one bounded outcome"
                 )
             observation = ChildObservation(
                 status="failed",
@@ -2303,7 +2364,7 @@ class Checkpoint:
     state: ExecutionState
     validation_digest: str
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     @classmethod
     def capture(cls, events: tuple[ExecutionEvent, ...]) -> Checkpoint:
@@ -2356,7 +2417,7 @@ class Checkpoint:
             state = _decode_value(record["state"])
             if (
                 type(record["schema_version"]) is not int
-                or record["schema_version"] != cls.SCHEMA_VERSION
+                or record["schema_version"] not in (1, cls.SCHEMA_VERSION)
                 or type(record["last_applied_event_sequence"]) is not int
                 or not isinstance(state, ExecutionState)
                 or not isinstance(record["validation_digest"], str)
@@ -2383,6 +2444,8 @@ def restore_execution_state(
     if checkpoint_path is None or not Path(checkpoint_path).exists():
         return fold_execution_state(events)
     checkpoint = Checkpoint.load(checkpoint_path)
+    if checkpoint.schema_version == 1:
+        return fold_execution_state(events)
     sequence = checkpoint.last_applied_event_sequence
     if (
         sequence < 1
@@ -2629,9 +2692,11 @@ def _bounded_context(
                 "actor_role": state.actor_role,
                 "actor_id": state.actor_id,
                 "parent_actor_id": state.parent_actor_id,
+                "depth": state.depth,
+                "max_depth": state.max_depth,
             }
         )
-    elif state.child_refs:
+    if state.child_refs:
         outcomes_by_actor = {
             item.child_ref.child_actor_id: item for item in state.child_outcomes
         }
@@ -2916,12 +2981,15 @@ class RootAgentProcess:
         event_log: EventLog | None = None,
         checkpoint_path: str | Path | None = None,
         ipython_control: PersistentIPython | None = None,
+        max_depth: int = 1,
         _child_ref: ChildRef | None = None,
     ) -> None:
         if max_decisions < 1:
             raise ValueError("max_decisions must be positive")
         if max_context_chars < 768:
             raise ValueError("max_context_chars must be at least 768")
+        if type(max_depth) is not int or max_depth not in (1, 2):
+            raise ValueError("max_depth must be 1 or 2")
         self._model = model
         self._tools = tools
         self._max_decisions = max_decisions
@@ -2931,8 +2999,45 @@ class RootAgentProcess:
         self._actor_role: Literal["root", "child"] = (
             "child" if _child_ref is not None else "root"
         )
+        if self._event_log.events:
+            start_payload = self._event_log.events[0].payload
+            self._depth = start_payload.get(
+                "depth", 1 if start_payload.get("actor_role") == "child" else 0
+            )
+            self._max_depth = start_payload.get("max_depth", 1)
+            if _child_ref is not None and (
+                start_payload.get("actor_id") != _child_ref.child_actor_id
+                or start_payload.get("parent_actor_id")
+                != _child_ref.parent_actor_id
+                or self._depth != _child_ref.depth
+                or self._max_depth != _child_ref.max_depth
+            ):
+                raise ValueError("Child handle conflicts with durable lineage")
+        elif _child_ref is not None:
+            self._depth = _child_ref.depth
+            self._max_depth = _child_ref.max_depth
+        else:
+            self._depth = 0
+            self._max_depth = max_depth
+        self._child_limit = (
+            1
+            if self._max_children_per_root
+            and self._max_depth == 2
+            and self._depth < self._max_depth
+            else (
+                self._max_children_per_root
+                if self._actor_role == "root" and self._depth < self._max_depth
+                else 0
+            )
+        )
         default_contracts = (
-            CHILD_TOOL_CONTRACTS
+            (
+                *CHILD_TOOL_CONTRACTS[:-1],
+                "spawn_child(goal: str) -> ChildRef",
+                CHILD_TOOL_CONTRACTS[-1],
+            )
+            if self._actor_role == "child" and self._child_limit
+            else CHILD_TOOL_CONTRACTS
             if self._actor_role == "child"
             else (
                 ROOT_TOOL_CONTRACTS
@@ -2945,10 +3050,11 @@ class RootAgentProcess:
         )
         allowed_names = (
             {"read", "write", "shell", "ipython", "wait", "return"}
+            | ({"spawn_child"} if self._child_limit else set())
             if self._actor_role == "child"
             else (
                 {"read", "write", "shell", "ipython", "wait", "claim_complete"}
-                | ({"spawn_child"} if self._max_children_per_root else set())
+                | ({"spawn_child"} if self._child_limit else set())
             )
         )
         self._available_tools = tuple(
@@ -2968,7 +3074,21 @@ class RootAgentProcess:
             self._interrupt_requested = (
                 restored_state.lifecycle_notice == "interrupt_requested"
             )
-            if self._event_log.events[-1].event_type not in (
+            last_event = self._event_log.events[-1]
+            if last_event.event_type == "MODEL_DECISION":
+                frame = last_event.payload.get("frame")
+                actions = (
+                    _action_sequence(frame.resulting_action)
+                    if isinstance(frame, DecisionFrame)
+                    else ()
+                )
+                if not actions or any(
+                    not isinstance(action, SpawnChild) for action in actions
+                ):
+                    raise ValueError(
+                        "unsettled action recovery is not implemented for this event tail"
+                    )
+            elif last_event.event_type not in (
                 "EXECUTION_STARTED",
                 "TOOL_RESULT",
                 "TOOL_FAILED",
@@ -3041,6 +3161,8 @@ class RootAgentProcess:
                 "execution_id": f"execution-{uuid.uuid4().hex}",
                 "root_actor_id": f"root-{uuid.uuid4().hex}",
                 "completion_spec": completion_spec,
+                "depth": self._depth,
+                "max_depth": self._max_depth,
             },
         )
         return self._drive()
@@ -3059,13 +3181,15 @@ class RootAgentProcess:
                 "actor_role": "child",
                 "actor_id": self._child_ref.child_actor_id,
                 "parent_actor_id": self._child_ref.parent_actor_id,
+                "depth": self._child_ref.depth,
+                "max_depth": self._child_ref.max_depth,
             },
         )
         return self._drive()
 
     def accept_child(self, child_result: ExecutionResult) -> ExecutionResult:
-        if self._actor_role != "root" or not self._max_children_per_root:
-            raise ValueError("only Root can accept a Child outcome")
+        if not self._child_limit:
+            raise ValueError("this Actor cannot accept a Child outcome")
         state = self._current_state()
         child_ref = next(
             (
@@ -3098,6 +3222,8 @@ class RootAgentProcess:
             canonical_state.actor_role != "child"
             or canonical_state.actor_id != child_ref.child_actor_id
             or canonical_state.parent_actor_id != child_ref.parent_actor_id
+            or canonical_state.depth != child_ref.depth
+            or canonical_state.max_depth != child_ref.max_depth
             or canonical_state.execution_id
             != child_ref.child_execution_id
             or canonical_state.goal != child_ref.local_goal
@@ -3186,6 +3312,8 @@ class RootAgentProcess:
         if state.status not in ("running", "child_pending"):
             return self._result(steps)
         if _has_pending_spawn_batch(state, self._event_log.events):
+            return self._result(steps)
+        if state.status == "child_pending" and self._max_depth == 2:
             return self._result(steps)
         self._resume_sibling_suffix(steps)
         return self._drive(steps)
@@ -3392,7 +3520,7 @@ class RootAgentProcess:
             if isinstance(frame, DecisionFrame)
             else ()
         )
-        if len(actions) < 2 or any(
+        if not actions or any(
             not isinstance(action, SpawnChild) for action in actions
         ):
             return
@@ -3413,13 +3541,18 @@ class RootAgentProcess:
             call_id for call_id in call_ids if call_id is not None
         )
         if (
-            self._actor_role != "root"
+            not self._child_limit
             or self._event_log.path is None
             or len(call_ids) != len(actions)
-            or len(non_null_call_ids) != len(call_ids)
-            or len(non_null_call_ids) != len(set(non_null_call_ids))
+            or (
+                len(actions) > 1
+                and (
+                    len(non_null_call_ids) != len(call_ids)
+                    or len(non_null_call_ids) != len(set(non_null_call_ids))
+                )
+            )
             or len(state.child_refs) + len(actions) - len(committed)
-            > self._max_children_per_root
+            > self._child_limit
             or any(
                 action.provider_tool_call_id != call_id
                 for action, call_id in zip(actions, call_ids, strict=True)
@@ -3442,6 +3575,8 @@ class RootAgentProcess:
                 local_goal=action.goal,
                 event_log_path=str(child_log_path),
                 provider_tool_call_id=provider_call_id,
+                depth=state.depth + 1,
+                max_depth=state.max_depth,
             )
             steps.append(
                 ExecutionStep(state.decision_count, action, None)
@@ -3731,7 +3866,7 @@ class RootAgentProcess:
                 else ()
             )
             if spawn_actions:
-                if self._actor_role != "root" or not self._max_children_per_root:
+                if not self._child_limit:
                     steps.append(ExecutionStep(decision, action_snapshot, None))
                     self._event_log.append(
                         "EXECUTION_FAILED",
@@ -3741,7 +3876,7 @@ class RootAgentProcess:
                     return self._finish(steps)
                 if (
                     len(state.child_refs) + len(spawn_actions)
-                    > self._max_children_per_root
+                    > self._child_limit
                 ):
                     steps.append(ExecutionStep(decision, action_snapshot, None))
                     self._event_log.append(
@@ -3817,6 +3952,8 @@ class RootAgentProcess:
                                 else None
                             ),
                             provider_tool_call_id=provider_call_id,
+                            depth=state.depth + 1,
+                            max_depth=state.max_depth,
                         )
                         steps.append(ExecutionStep(decision, spawn, None))
                         self._event_log.append(

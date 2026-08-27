@@ -478,6 +478,55 @@ Bounded sibling Child AgentProcess:
   ids, while a later real Tool result remains visible, within
   `max_context_chars=768`.
 
+## Slice 11: depth-two recursive AgentProcess
+
+- **Deterministic mechanism: PASS. Real DeepSeek topology: NOT VALIDATED
+  (0/3). Overall Slice 11: NOT VALIDATED.** The implementation therefore is
+  not evidence that a real model will choose recursive delegation.
+- Explicit `AgentProcess(..., max_depth=2)` reuses the existing `_drive()`
+  loop for Root depth 0, Child depth 1, and Grandchild depth 2. In this frozen
+  recursive mode each Actor admits at most one direct Child, so the depth bound
+  also fixes total Actors at three. Existing default depth-one Root branching
+  remains unchanged.
+- `ChildRef`, each new `EXECUTION_STARTED`, and derived `ExecutionState` retain
+  direct Actor/parent identity, depth, and maximum depth. Canonical start facts
+  override reload configuration and reject a handle that attempts to lower a
+  durable depth. Legacy depth-one EventLog records retain depth 0/1 defaults;
+  legacy schema-1 checkpoints safely fall back to full EventLog replay.
+- Depth-one Child receives the same `SpawnChild` capability; depth-two
+  Grandchild does not. Admission checks depth/capacity before generating an
+  identity. Root alone can `ClaimComplete`; both descendant levels use the
+  same `Return` action.
+- `CHILD_RETURNED`/`CHILD_FAILED` is interpreted against Actor identity: an
+  Actor's own `Return` terminates its local process, while a pending direct
+  descendant's outcome becomes a bounded Observation and the parent continues.
+  There is no automatic result bubbling or failure promotion.
+- Eight maintained deterministic/recovery tests cover the task-card A-H cases: exact
+  0->1->2 lineage, depth-two denial with no Spawn fact, three-level Context
+  isolation, `21 -> 42` nested Return, shared workspace evidence, direct-parent
+  failure handling, restart/no-respawn/no-depth-downgrade, and pre-identity
+  total bound. All three local States equal full EventLog replay.
+- A crash after one durable `MODEL_DECISION(SpawnChild)` but before its
+  `CHILD_SPAWNED` append resumes that frozen decision with zero Model calls,
+  creates exactly one identity, and does not duplicate it on a second reload.
+  Checkpoint schema 2 includes depth facts; legacy schema-1 checkpoints safely
+  fall back to full canonical EventLog replay while new checkpoints retain the
+  existing validated tail-fold optimization.
+- The frozen real smoke used `outer.txt: TARGET=answer`, `inner.txt: VALUE=42`,
+  the natural task-card goal, and three fresh attempts. Attempts 1 and 2 took
+  non-recursive Root paths and failed; attempt 3 completed and verified through
+  the Root direct path. All three had zero `CHILD_SPAWNED`, so none counts as
+  recursive validation. No prompt strengthening or fourth attempt occurred.
+- No separate Root/Child/Grandchild loops, RecursiveSpawn, scheduler, parallel
+  recursion, Actor Directory, Blackboard, direct messaging, resource lease,
+  planner/reviewer, specialist persona, or generic recursion framework was
+  added. See `RECURSIVE_DEPTH2_RESULT.md` for the evidence boundary.
+- Final regression reports `Execution_lab2` 137 passed / 9 gated skips; root
+  328 passed / 24 skipped; Conversation Memory 163 passed / 45 skipped; Dream
+  36 passed / 1 skipped. `git diff --check` passed, live ipykernel count was
+  zero, the Slice diff secret scan was clean, and upstream MAGMA remained
+  clean. Dual Standards/Spec re-review has no remaining code or Spec finding.
+
 Slice 3 regression evidence:
 
 - **A — durable replay:** a Runtime-created JSONL reloads to an equal immutable
@@ -505,8 +554,10 @@ Slice 3 regression evidence:
 
 - Durable EventLog is historical authority; State and Checkpoint are
   disposable projections, and Context is a separate bounded view.
-- Completed Action results are not replayed. Recovery resumes current State,
-  not historical model decisions.
+- Completed Action results are not replayed, and recovery never resamples or
+  replays a settled model decision. It may complete only the never-committed
+  suffix of the current durable frozen DecisionFrame where that exact recovery
+  boundary is explicitly supported.
 - A confirmed interrupted Write advances State only through the appended
   `ACTION_RECONCILED` fact. Exact current reality is evidence of the requested
   postcondition, not an exactly-once execution guarantee.
@@ -541,9 +592,11 @@ Slice 3 regression evidence:
   ToolHost-failure continuation evidence remains valid.
 - Up to three direct sibling children: **IMPLEMENTED AND VALIDATED** for one
   Spawn or one homogeneous ordered Spawn tuple in a Root decision. The
-  Host-driven execution order remains sequential. Grandchildren, recursive
-  Spawn, parallel actors, scheduling, joins, messaging, and automatic Child
-  crash recovery remain **NOT IMPLEMENTED**.
+  Host-driven execution order remains sequential. A separate explicit
+  depth-two, one-Child-per-Actor mode is deterministically implemented but its
+  real DeepSeek topology remains **NOT VALIDATED**. Deeper recursion,
+  non-Root branching, parallel actors, scheduling, joins, messaging, and
+  automatic Child crash recovery remain **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe
   point, durable SUSPENDED state, initial start, terminal event, or the exact
   confirmed-Write case above. Other unsettled tool calls remain

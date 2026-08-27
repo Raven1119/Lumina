@@ -656,6 +656,74 @@ DeepSeek run crossed this exact path with two committed children, two
 independent returns, Root integration, and verified
 `answer.txt == "42"`.
 
+## Depth-two recursive AgentProcess delta (2026-08-27)
+
+### Prime Agent - depth admission before Child session creation
+
+- **SOURCE / COMMIT:** [PrimeIntellect-ai/prime-agent at
+  `bc0fa7606abb3b7af0f765319518d255e6ae553d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/bc0fa7606abb3b7af0f765319518d255e6ae553d),
+  rolling `main`, MIT.
+- **SOURCE SYMBOL:** [`AgentSession.runRlmChild`, `RLM_DEPTH`,
+  `RLM_MAX_DEPTH`, and
+  `RlmSpawnHandle`](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/src/core/agent-session.ts),
+  together with the [RLM runtime
+  contract](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/docs/rlm-runtime.md).
+- **BORROWED SEMANTICS:** Child depth is parent depth plus one. The maximum
+  depth check happens before the Child session/handle is admitted, and an
+  admitted Child owns an independent session.
+- **LUMINA ADAPTATION:** Explicit `max_depth=2` selects one frozen recursive
+  chain mode. The same `AgentProcess` and `_drive()` loop run depth 0, 1, and
+  2. `SpawnChild` is exposed only while `depth < max_depth`; the Host checks
+  the one-Child capacity before generating an identity. Existing default
+  depth-one Root branching remains unchanged.
+- **NOT COPIED:** Prime's persona/tool filtering, provider registry, mutable
+  child registry, daemon, detached execution, messaging, scheduler, fork/seed
+  framework, artifacts, or kernel snapshot system.
+
+### DeepSeek Harness (DSH) - durable monotone delegation depth
+
+- **SOURCE / COMMIT:** [deepseek-ai/deepseek-harness at
+  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e),
+  `dsh 0.1.1-rc.2`, MIT.
+- **SOURCE SYMBOL:** `SessionHeader.delegationDepth`, runtime
+  `AgentOptions.subagentDepth`, and
+  [`SubagentStartRequest.parent` /
+  `SubagentDescendantListEntry.depth`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/subagent/subagent/src/types.ts),
+  with the canonical [Session event
+  contract](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/session/src/types.ts).
+- **BORROWED SEMANTICS:** Top-level depth is zero, a Child is parent plus one,
+  and durable delegation depth is authoritative after restart. A restarted
+  descendant must not reappear at a shallower depth and regain admission.
+- **LUMINA ADAPTATION:** Every new Root/Child `EXECUTION_STARTED` fact and
+  every `ChildRef` carries `depth` and the fixed `max_depth`. EventLog start
+  facts override a supplied handle on reload; a conflicting downgraded handle
+  is rejected. Legacy depth-one EventLog records decode as depth 0/1 with max
+  depth 1. Checkpoint schema 2 fingerprints the enlarged State; a schema-1
+  checkpoint is ignored as an obsolete optimization and State is rebuilt from
+  its canonical EventLog instead.
+- **NOT COPIED:** DSH's session/plugin ecosystem, provider registry,
+  activation manager, catalog, rolling concurrency, inbox, scheduler, or
+  generalized subagent lifecycle.
+
+### Depth-two source conclusion
+
+The upstream mechanisms directly support pre-admission depth checks,
+parent-plus-one lineage, independent Child sessions, and durable monotone
+delegation depth. **NO DIRECT SOURCE IMPLEMENTATION** was found for Lumina's
+exact append-only distinction between:
+
+```text
+CHILD_RETURNED whose child_actor_id is this Actor (the Actor's own Return)
+CHILD_RETURNED whose child_actor_id is a pending descendant (an Observation)
+```
+
+That distinction is a task-specific Lumina engineering adaptation which lets
+one existing event type and one existing `AgentProcess` loop serve both parent
+levels. It is not a new recovery algorithm, Actor Directory, scheduler,
+message bus, or generic recursion framework. The fixed recursive mode derives
+`max_total_actors=3` from `depth <= 2` plus one Child per Actor; no separate
+resource/accounting subsystem was added.
+
 ## Source ambiguities and non-equivalences
 
 - **Direct source fact:** every positive upstream behavior above names a pinned symbol or official contract. **Inference** is marked explicitly for Prime's host-authority reading and Temporal's wake shorthand.
