@@ -460,6 +460,106 @@ derived state, role-filtered provider schema, bounded Child Observation, and
 the direct Child-log filename derived from the Root log. These are small local
 bindings to existing Execution seams, not upstream algorithms.
 
+## Bounded sibling Child branching delta (2026-08-27)
+
+### Prime Agent - parent-scoped multiple Child handles
+
+- **SOURCE / COMMIT:** [PrimeIntellect-ai/prime-agent at
+  `bc0fa7606abb3b7af0f765319518d255e6ae553d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/bc0fa7606abb3b7af0f765319518d255e6ae553d),
+  rolling `main`, MIT.
+- **SOURCE SYMBOL:** [`AgentSession`, RLM Host handlers,
+  `RlmSpawnHandle`, `RlmSubagentRegistryEntry`, and list/run
+  wiring](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/src/core/agent-session.ts),
+  plus the [RLM runtime contract](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/docs/rlm-runtime.md).
+- **BORROWED SEMANTICS:** One parent scope may hold multiple stable Child
+  handles. Each admitted Child is a separate session/context and later
+  settlement remains associated with that handle rather than becoming an
+  unlabelled result array.
+- **LUMINA ADAPTATION:** The existing Root EventLog may contain at most three
+  distinct `CHILD_SPAWNED` facts. Each still creates the same independent
+  `AgentProcess.for_child` session used by the Single Child Slice. Root
+  outcomes are correlated only by the persisted Child and parent ids.
+- **NOT COPIED:** Prime's mutable parent registry implementation, list/delete
+  protocol, RLM messaging, daemon, detached work, model selection, artifacts,
+  concurrency, kernel revival, or scheduler.
+
+### DeepSeek Harness (DSH) - independently paired sibling lifecycle facts
+
+- **SOURCE / COMMIT:** [deepseek-ai/deepseek-harness at
+  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e),
+  `dsh 0.1.1-rc.2`, MIT.
+- **SOURCE SYMBOL:** [`SubagentRunInfo`, `SubagentRunEndInfo`,
+  `SubagentStartRequest`, `SubagentRun`, and
+  `SubagentResult`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/subagent/subagent/src/types.ts),
+  plus [`parentSession` and durable Child lifecycle](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/subsystems/subagent.md).
+- **BORROWED SEMANTICS:** Each accepted run has its own Child session id and
+  parent-scoped run identity; start/end observations pair by identity, and one
+  Child-level failure is an explicit result that does not redefine a sibling's
+  settlement.
+- **LUMINA ADAPTATION:** `CHILD_RETURNED` and `CHILD_FAILED` remain
+  independent append-only Root facts. A bounded fold derives handle/outcome
+  tuples and the pending suffix; the EventLog remains the only historical
+  authority.
+- **NOT COPIED:** DSH's provider Registry, activation/continuation manager,
+  inbox, catalog, direct controls, discovery, transport concurrency, disposal,
+  plugin surface, or background scheduler.
+
+### OpenAI Codex - distinct direct Child threads
+
+- **SOURCE / COMMIT:** [openai/codex at
+  `b592a0bfed439386fadc69327bd49eccb074cdc6`](https://github.com/openai/codex/tree/b592a0bfed439386fadc69327bd49eccb074cdc6),
+  rolling `main`, Apache-2.0.
+- **SOURCE SYMBOL:** [`AgentControl::spawn_agent`,
+  `spawn_agent_internal`, `ThreadSpawn`, and persisted spawn
+  edges](https://github.com/openai/codex/blob/b592a0bfed439386fadc69327bd49eccb074cdc6/codex-rs/core/src/agent/control/spawn.rs),
+  plus the [multi-agent spawn handler](https://github.com/openai/codex/blob/b592a0bfed439386fadc69327bd49eccb074cdc6/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs).
+- **BORROWED SEMANTICS:** Separate direct Spawn calls create separately
+  identified Child threads with the same direct parent; a returned identity is
+  not the Child answer.
+- **LUMINA ADAPTATION:** Root makes one model decision per `SpawnChild(goal)`.
+  The Host may explicitly resume Root to admit another sibling, then runs
+  children in creation order.
+- **NOT COPIED:** Codex's AgentControl directory, thread tree/forking, message
+  routing, completion watcher, concurrent sampling, roles, approvals, sandbox,
+  MCP, or collaboration controls.
+
+### AgentSpawn - topology formation only
+
+- **SOURCE / COMMIT:** Igor Costa, [AgentSpawn,
+  arXiv:2602.07072v1](https://arxiv.org/html/2602.07072v1), 2026-02-05,
+  CC BY 4.0. No official source implementation was used, so no code commit
+  exists.
+- **SOURCE SYMBOL:** Section 3.1 topology and Section 3.5
+  `Spawn-Resume Protocol` / `SpawnPackage` / `ResumePackage`.
+- **BORROWED SEMANTICS:** Parent-to-Child topology can form at runtime from a
+  local decision and later return a correlated result to the parent.
+- **LUMINA ADAPTATION:** Only the topology idea applies. Lumina uses repeated
+  typed `SpawnChild(goal)` decisions, fixed depth one, fixed maximum three,
+  bounded local results, and shared filesystem reality.
+- **NOT COPIED:** Spawn score, complexity metrics, threshold, specialist roles,
+  fixed decomposition, memory/skill inheritance, depth three, concurrent
+  children, coherence manager, semantic merge, or performance claims.
+  **NO DIRECT SOURCE IMPLEMENTATION** supplies this Slice's exact mechanics.
+
+### Bounded sibling source conclusion
+
+Prime supplies multiple parent-scoped handles and independent Child sessions;
+DSH supplies identity-paired lifecycle/result facts; Codex supplies separately
+identified direct Child threads; AgentSpawn supplies only the runtime topology
+idea. Lumina-specific engineering is the hard ceiling of three, derived
+`child_refs` / `child_outcomes` tuples, pending derivation, one
+`CHILD_RESULT` WAIT wake at a time, and fixed sequential Host drive. No
+Registry, Actor Directory, Join, scheduler, parallel executor, or recursive
+topology was imported or invented.
+
+**REAL-PROVIDER FACT:** Three fresh DeepSeek runs produced zero committed
+sibling Spawns. In every run DeepSeek eventually emitted two
+`spawn_child` calls in one response; the unchanged adapter rejected the
+response as `model_protocol:mixed_control_tool_calls`. Treating one
+provider response as multiple Root decisions would violate the task contract.
+The deterministic mechanism is PASS, while the real multi-child claim remains
+NOT VALIDATED.
+
 ## Source ambiguities and non-equivalences
 
 - **Direct source fact:** every positive upstream behavior above names a pinned symbol or official contract. **Inference** is marked explicitly for Prime's host-authority reading and Temporal's wake shorthand.

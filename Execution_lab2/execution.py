@@ -102,6 +102,9 @@ Action: TypeAlias = (
 )
 
 
+_MAX_CHILDREN_PER_ROOT = 3
+
+
 @dataclass(frozen=True)
 class NativeModelDecision:
     action: Action | tuple[Action, ...] | None
@@ -1089,6 +1092,11 @@ class EventLog:
         elif event_type == "CHILD_SPAWNED":
             frame = previous.payload.get("frame")
             child_ref = payload["child_ref"]
+            prior_child_refs = tuple(
+                event.payload.get("child_ref")
+                for event in self._events
+                if event.event_type == "CHILD_SPAWNED"
+            )
             if (
                 previous.event_type != "MODEL_DECISION"
                 or not isinstance(frame, DecisionFrame)
@@ -1102,9 +1110,16 @@ class EventLog:
                 or not child_ref.child_actor_id
                 or not isinstance(child_ref.event_log_path, str)
                 or not child_ref.event_log_path
+                or len(prior_child_refs) >= _MAX_CHILDREN_PER_ROOT
                 or any(
-                    event.event_type == "CHILD_SPAWNED"
-                    for event in self._events
+                    isinstance(prior, ChildRef)
+                    and (
+                        prior.child_actor_id == child_ref.child_actor_id
+                        or prior.child_execution_id
+                        == child_ref.child_execution_id
+                        or prior.event_log_path == child_ref.event_log_path
+                    )
+                    for prior in prior_child_refs
                 )
             ):
                 raise ValueError(
@@ -1127,10 +1142,21 @@ class EventLog:
                         "Child return must match its own decision and lineage"
                     )
             else:
-                child_ref = state.child_ref
+                child_ref = next(
+                    (
+                        child
+                        for child in state.pending_child_refs
+                        if child.child_actor_id
+                        == payload["child_actor_id"]
+                    ),
+                    None,
+                )
                 if (
-                    state.status != "child_pending"
-                    or previous.event_type != "CHILD_SPAWNED"
+                    state.status not in ("child_pending", "waiting")
+                    or (
+                        state.status == "waiting"
+                        and state.waiting_for != "CHILD_RESULT"
+                    )
                     or not isinstance(child_ref, ChildRef)
                     or payload["child_actor_id"]
                     != child_ref.child_actor_id
@@ -1144,11 +1170,21 @@ class EventLog:
                     )
         elif event_type == "CHILD_FAILED":
             state = fold_execution_state(self.events)
-            child_ref = state.child_ref
+            child_ref = next(
+                (
+                    child
+                    for child in state.pending_child_refs
+                    if child.child_actor_id == payload["child_actor_id"]
+                ),
+                None,
+            )
             if (
                 state.actor_role != "root"
-                or state.status != "child_pending"
-                or previous.event_type != "CHILD_SPAWNED"
+                or state.status not in ("child_pending", "waiting")
+                or (
+                    state.status == "waiting"
+                    and state.waiting_for != "CHILD_RESULT"
+                )
                 or not isinstance(child_ref, ChildRef)
                 or payload["child_actor_id"]
                 != child_ref.child_actor_id
@@ -1195,6 +1231,7 @@ class EventLog:
                     "COMPLETION_REJECTED",
                     "ROOT_WOKEN",
                     "ACTOR_RESUMED",
+                    "CHILD_SPAWNED",
                     "CHILD_RETURNED",
                     "CHILD_FAILED",
                 )
@@ -1870,10 +1907,26 @@ class ExecutionState:
     latest_external_event: ExternalEvent | None = None
     last_provider_tool_call_id: str | tuple[str, ...] | None = None
     lifecycle_notice: Literal["interrupt_requested", "suspended", "resumed"] | None = None
-    child_ref: ChildRef | None = None
+    child_refs: tuple[ChildRef, ...] = ()
+    child_outcomes: tuple[ChildObservation, ...] = ()
     actor_role: Literal["root", "child"] = "root"
     actor_id: str | None = None
     parent_actor_id: str | None = None
+
+    @property
+    def child_ref(self) -> ChildRef | None:
+        return self.child_refs[-1] if self.child_refs else None
+
+    @property
+    def pending_child_refs(self) -> tuple[ChildRef, ...]:
+        settled_ids = {
+            outcome.child_ref.child_actor_id for outcome in self.child_outcomes
+        }
+        return tuple(
+            child
+            for child in self.child_refs
+            if child.child_actor_id not in settled_ids
+        )
 
 
 def fold_execution_state(
@@ -1922,7 +1975,16 @@ def fold_execution_state(
         if state.status in ("completed", "failed"):
             raise ValueError("terminal execution state cannot accept more events")
         waiting_event_types = ("EXTERNAL_EVENT_RECEIVED", "ROOT_WOKEN")
-        if state.status == "waiting" and event.event_type not in waiting_event_types:
+        child_wake = (
+            state.status == "waiting"
+            and state.waiting_for == "CHILD_RESULT"
+            and event.event_type in ("CHILD_RETURNED", "CHILD_FAILED")
+        )
+        if (
+            state.status == "waiting"
+            and event.event_type not in waiting_event_types
+            and not child_wake
+        ):
             raise ValueError("waiting execution accepts only external wake events")
         if state.status == "running" and event.event_type in waiting_event_types:
             raise ValueError("running execution cannot receive a wait-only event")
@@ -1933,14 +1995,6 @@ def fold_execution_state(
             raise ValueError(
                 "suspended execution accepts only durable events or explicit resume"
             )
-        if (
-            state.status == "child_pending"
-            and event.event_type not in ("CHILD_RETURNED", "CHILD_FAILED")
-        ):
-            raise ValueError(
-                "a pending Child must settle before Root accepts another event"
-            )
-
         values = {
             "version": event.sequence,
             "status": state.status,
@@ -1958,7 +2012,8 @@ def fold_execution_state(
             "latest_external_event": state.latest_external_event,
             "last_provider_tool_call_id": state.last_provider_tool_call_id,
             "lifecycle_notice": state.lifecycle_notice,
-            "child_ref": state.child_ref,
+            "child_refs": state.child_refs,
+            "child_outcomes": state.child_outcomes,
             "actor_role": state.actor_role,
             "actor_id": state.actor_id,
             "parent_actor_id": state.parent_actor_id,
@@ -2070,7 +2125,7 @@ def fold_execution_state(
             if not isinstance(child_ref, ChildRef):
                 raise ValueError("Child spawn events require a typed handle")
             values["status"] = "child_pending"
-            values["child_ref"] = child_ref
+            values["child_refs"] = (*state.child_refs, child_ref)
         elif event.event_type == "CHILD_RETURNED":
             local_result = event.payload.get("local_result")
             if (
@@ -2084,21 +2139,46 @@ def fold_execution_state(
                 values["status"] = "completed"
                 values["completion"] = local_result
             else:
-                if not isinstance(state.child_ref, ChildRef):
+                child_ref = next(
+                    (
+                        child
+                        for child in state.pending_child_refs
+                        if child.child_actor_id
+                        == event.payload.get("child_actor_id")
+                    ),
+                    None,
+                )
+                if not isinstance(child_ref, ChildRef):
                     raise ValueError(
                         "Root Child return requires a pending handle"
                     )
-                values["status"] = "running"
-                values["latest_observation"] = ChildObservation(
+                observation = ChildObservation(
                     status="returned",
-                    child_ref=state.child_ref,
+                    child_ref=child_ref,
                     local_result=local_result,
                 )
+                values["child_outcomes"] = (*state.child_outcomes, observation)
+                values["latest_observation"] = observation
+                values["status"] = (
+                    "child_pending"
+                    if len(state.pending_child_refs) > 1
+                    else "running"
+                )
+                values["waiting_for"] = None
         elif event.event_type == "CHILD_FAILED":
             failure = event.payload.get("failure")
+            child_ref = next(
+                (
+                    child
+                    for child in state.pending_child_refs
+                    if child.child_actor_id
+                    == event.payload.get("child_actor_id")
+                ),
+                None,
+            )
             if (
                 state.actor_role != "root"
-                or not isinstance(state.child_ref, ChildRef)
+                or not isinstance(child_ref, ChildRef)
                 or not isinstance(failure, str)
                 or not failure
                 or len(failure) > 1_024
@@ -2106,12 +2186,19 @@ def fold_execution_state(
                 raise ValueError(
                     "Root Child failure requires one bounded outcome"
                 )
-            values["status"] = "running"
-            values["latest_observation"] = ChildObservation(
+            observation = ChildObservation(
                 status="failed",
-                child_ref=state.child_ref,
+                child_ref=child_ref,
                 failure=failure,
             )
+            values["child_outcomes"] = (*state.child_outcomes, observation)
+            values["latest_observation"] = observation
+            values["status"] = (
+                "child_pending"
+                if len(state.pending_child_refs) > 1
+                else "running"
+            )
+            values["waiting_for"] = None
         elif event.event_type == "EXECUTION_COMPLETED":
             if event.payload.get("status") != "verified":
                 raise ValueError("completion events require verified status")
@@ -2475,6 +2562,38 @@ def _bounded_context(
                 "parent_actor_id": state.parent_actor_id,
             }
         )
+    elif state.child_refs:
+        children = []
+        for child in state.child_refs:
+            outcome = next(
+                (
+                    item
+                    for item in state.child_outcomes
+                    if item.child_ref.child_actor_id == child.child_actor_id
+                ),
+                None,
+            )
+            children.append(
+                {
+                    "child_actor_id": child.child_actor_id,
+                    "parent_actor_id": child.parent_actor_id,
+                    "local_goal": _text_projection(child.local_goal),
+                    "status": outcome.status if outcome is not None else "pending",
+                    "local_result": (
+                        _text_projection(outcome.local_result)
+                        if outcome is not None
+                        and outcome.local_result is not None
+                        else None
+                    ),
+                    "failure": (
+                        _text_projection(outcome.failure)
+                        if outcome is not None
+                        and outcome.failure is not None
+                        else None
+                    ),
+                }
+            )
+        document["children"] = children
     if sibling_observations:
         document.clear()
         document["observations"] = [
@@ -2613,7 +2732,7 @@ class ExecutionResult:
 
 
 class RootAgentProcess:
-    _single_child_enabled = False
+    _max_children_per_root = 0
 
     def __init__(
         self,
@@ -2645,7 +2764,7 @@ class RootAgentProcess:
             if self._actor_role == "child"
             else (
                 ROOT_TOOL_CONTRACTS
-                if self._single_child_enabled
+                if self._max_children_per_root
                 else TOOL_CONTRACTS
             )
         )
@@ -2657,7 +2776,7 @@ class RootAgentProcess:
             if self._actor_role == "child"
             else (
                 {"read", "write", "shell", "ipython", "wait", "claim_complete"}
-                | ({"spawn_child"} if self._single_child_enabled else set())
+                | ({"spawn_child"} if self._max_children_per_root else set())
             )
         )
         self._available_tools = tuple(
@@ -2695,6 +2814,7 @@ class RootAgentProcess:
                 "ACTOR_RESUMED",
                 "CHILD_SPAWNED",
                 "CHILD_RETURNED",
+                "CHILD_FAILED",
                 "EXECUTION_COMPLETED",
                 "EXECUTION_FAILED",
             ):
@@ -2772,12 +2892,24 @@ class RootAgentProcess:
         return self._drive()
 
     def accept_child(self, child_result: ExecutionResult) -> ExecutionResult:
-        if self._actor_role != "root" or not self._single_child_enabled:
+        if self._actor_role != "root" or not self._max_children_per_root:
             raise ValueError("only Root can accept a Child outcome")
         state = self._current_state()
-        child_ref = state.child_ref
-        if state.status != "child_pending" or not isinstance(
-            child_ref, ChildRef
+        child_ref = next(
+            (
+                child
+                for child in state.pending_child_refs
+                if child.child_actor_id == child_result.state.actor_id
+            ),
+            None,
+        )
+        if (
+            state.status not in ("child_pending", "waiting")
+            or (
+                state.status == "waiting"
+                and state.waiting_for != "CHILD_RESULT"
+            )
+            or not isinstance(child_ref, ChildRef)
         ):
             raise ValueError("Root has no pending Child")
         if not child_result.events:
@@ -2874,7 +3006,7 @@ class RootAgentProcess:
                     (last_event.event_id,),
                 )
                 return self._drive()
-        if state.status != "running":
+        if state.status not in ("running", "child_pending"):
             return self._result(steps)
         self._resume_sibling_suffix(steps)
         return self._drive(steps)
@@ -3321,7 +3453,7 @@ class RootAgentProcess:
                 )
                 return self._finish(steps)
             if isinstance(action, SpawnChild):
-                if self._actor_role != "root" or not self._single_child_enabled:
+                if self._actor_role != "root" or not self._max_children_per_root:
                     steps.append(ExecutionStep(decision, action, None))
                     self._event_log.append(
                         "EXECUTION_FAILED",
@@ -3329,7 +3461,7 @@ class RootAgentProcess:
                         (decision_event.event_id,),
                     )
                     return self._finish(steps)
-                if state.child_ref is not None:
+                if len(state.child_refs) >= self._max_children_per_root:
                     steps.append(ExecutionStep(decision, action, None))
                     self._event_log.append(
                         "EXECUTION_FAILED",
@@ -3499,4 +3631,4 @@ class RootAgentProcess:
 
 
 class AgentProcess(RootAgentProcess):
-    _single_child_enabled = True
+    _max_children_per_root = _MAX_CHILDREN_PER_ROOT

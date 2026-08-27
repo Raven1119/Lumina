@@ -10,9 +10,9 @@
   failure-as-Observation, and a hard decision limit.
 - The frozen `RootAgentProcess` Action contract remains
   `ToolCall | IPythonCode | Wait | ClaimComplete`. The explicit
-  single-Child `AgentProcess` surface adds Root-only `SpawnChild` and
-  Child-only `Return`. The only Wait condition is an exact, non-empty
-  `event_type` string.
+  depth-one `AgentProcess` surface adds Root-only `SpawnChild` and
+  Child-only `Return`, with at most three direct siblings. The only Wait
+  condition is an exact, non-empty `event_type` string.
 - Execution creation requires one frozen caller-owned
   `FileContentEquals(path, expected_content)`. That typed CompletionSpec is
   persisted in `EXECUTION_STARTED`, reconstructed by the State fold, visible
@@ -21,9 +21,9 @@
 - `EventLog` can be in-memory or local append-only JSONL. A durable append is
   flushed and `fsync`ed before the event enters the authoritative in-memory
   sequence. `load()` rejects malformed records, schemas, causal links,
-  sequences, and lifecycle transitions. Single-Child admission specifically
-  requires a durable Root log and derives a separate durable Child log path;
-  an in-memory Root cannot Spawn.
+  sequences, and lifecycle transitions. Child admission specifically requires
+  a durable Root log and derives one separate durable log path per Child; an
+  in-memory Root cannot Spawn.
 - Each event retains deterministic `event_id`, contiguous `sequence`, fixed
   `event_type`, deeply immutable payload, and past-only `source_event_refs`.
   Durable restart continues the same sequence; persisted lines are never
@@ -34,7 +34,9 @@
 - `ExecutionState` remains a pure fold of execution facts. It now derives
   `running | waiting | suspended | child_pending | completed | failed`, actor
   identity/direct lineage, `waiting_for`, and the latest typed external event
-  or Child outcome in addition to the Slice 2 state fields.
+  or Child outcome in addition to the Slice 2 state fields. For Root it also
+  derives the bounded tuples of accepted Child handles and delivered outcomes;
+  these tuples are not separately persisted.
 - `Checkpoint` internally derives one materialized `ExecutionState` snapshot
   from its EventLog prefix, plus
   `last_applied_event_sequence`, schema version, and an integrity digest of the
@@ -423,45 +425,47 @@ Slice 8 - explicit Root suspension:
   event delivery while suspended, no replay, ordinary Tool settlement,
   IPython settlement, exact fold equivalence, and interrupted sibling suffix.
 
-Single Child AgentProcess:
+Bounded sibling Child AgentProcess:
 
-- `AgentProcess` is the explicit single-Child surface over the unchanged
+- `AgentProcess` remains the explicit Child surface over the unchanged
   `RootAgentProcess` loop. The frozen MVP class retains its original tool
-  contract; the new surface adds only Root-visible `SpawnChild(goal)` and
+  contract; this surface adds only Root-visible `SpawnChild(goal)` and
   Child-visible `Return(local_result)`.
-- Root persists one bounded `ChildRef` containing a distinct Child execution
-  id, Child actor id, direct parent id, local goal, and Child EventLog path.
-  Spawn returns that handle and stops Root in `child_pending`; it does not run
-  the Child or return a Child answer.
-- The Host constructs the Child with `AgentProcess.for_child(...)`. Child uses
-  the same Runtime machinery but owns its EventLog, derived State, bounded
+- Root may persist at most three bounded `ChildRef` values. Each contains a
+  distinct Child execution id, actor id, direct parent id, local goal, and
+  Child EventLog path. Every Spawn returns one handle and stops Root in
+  `child_pending`; the Host may explicitly resume Root for another local
+  decision. Spawn never runs a Child or returns its answer.
+- The Host constructs each Child with `AgentProcess.for_child(...)` and drives
+  children sequentially. Each Child owns its EventLog, derived State, bounded
   Context, DecisionFrames, live IPython control, and lifecycle. Only the
   `SharedEnvironment` workspace is shared.
-- Root sees Tool/IPython, Wait, one SpawnChild, and ClaimComplete. Child sees
+- Root sees Tool/IPython, Wait, SpawnChild, and ClaimComplete. Child sees
   Tool/IPython, Wait, and Return; Child cannot Spawn or ClaimComplete, and Root
-  cannot Return. A retained Child handle makes a second Root spawn fail
-  explicitly, freezing `max_children=1` and `max_depth=1`.
-- Child termination is its own durable `CHILD_RETURNED` or
-  `EXECUTION_FAILED`. Host delivery appends exactly one matching
-  `CHILD_RETURNED` or `CHILD_FAILED` to the Root EventLog, after which Root
-  derives a bounded structured Observation and continues. Runtime does not
-  retry, replace, schedule, or semantically recover a Child.
-- Deterministic tests establish identity, handle-versus-answer, Context and
-  DecisionFrame isolation, direct shared-workspace observation, distinct live
-  IPython namespaces, role authority, bounded Return, failure propagation,
-  full-fold equality, and restart/delivery deduplication.
-- Three fresh real DeepSeek executions all completed the requested chain:
-  Root SpawnChild -> independent Child read/Return -> Root write ->
-  `COMPLETION_VERIFIED`. Each produced exactly one Root spawn and one delivered
-  return; `answer.txt` exactly matched `42`.
-- Task-level verdict: **PASS / VALIDATED**. The IPython startup/execution
-  boundary fix removed the sole regression blocker without changing Child or
-  provider behavior. Final validation reports `Execution_lab2` 109 passed /
-  7 gated real-provider tests skipped; root 328 passed / 24 skipped;
-  Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
-  The original 0.5-second timeout test also passed three consecutive stability
-  runs. The earlier real DeepSeek Root -> Child -> Return -> Root evidence
-  remains 3/3 and was not rerun.
+  cannot Return. The fixed ceiling is `max_children_per_root=3` and
+  `max_depth=1`; a fourth Spawn fails explicitly without creating an event.
+- Every Child terminal outcome remains its own durable history. Host delivery
+  appends one identified `CHILD_RETURNED` or `CHILD_FAILED` to the Root
+  EventLog. `Wait("CHILD_RESULT")` accepts one such event as its matching wake;
+  Root then decides whether to wait, act, Spawn again, or claim completion.
+  Runtime does not implement join, retry, replacement, scheduling, or semantic
+  Child recovery.
+- Five multi-child deterministic tests establish three unique siblings and
+  fourth-Spawn rejection, Context isolation plus shared workspace reality,
+  identified return/failure retention, exact fold/restart deduplication, and
+  three separate live IPython namespaces. The 11 deterministic Single Child
+  tests remain green after migrating the obsolete one-Child ceiling assertion.
+- Earlier Single Child real evidence remains **PASS / VALIDATED** at 3/3.
+  The bounded sibling real experiment is **NOT VALIDATED**: in all three fresh
+  executions DeepSeek eventually emitted two `spawn_child` control calls in
+  one provider response. The unchanged adapter correctly rejected each as
+  `model_protocol:mixed_control_tool_calls`; zero sibling Spawn events were
+  committed and no run reached verified completion. The prompt and adapter
+  were not changed, and no fourth execution was sent.
+- Task-level verdict: **MECHANISM PASS / REAL PROVIDER NOT VALIDATED**. Final
+  regression reports `Execution_lab2` 114 passed / 8 gated real-provider
+  tests skipped; root 328 passed / 24 skipped; Conversation Memory 163 passed /
+  45 skipped; Dream 36 passed / 1 skipped.
 
 Slice 3 regression evidence:
 
@@ -524,9 +528,10 @@ Slice 3 regression evidence:
   completed 6/6; one real two-shell sibling response crossed the new path with
   exact ids and verified completion. Existing canonical call-id and seeded
   ToolHost-failure continuation evidence remains valid.
-- One direct Child: **IMPLEMENTED AND VALIDATED** through the explicit
-  Host-driven `AgentProcess` surface. A second Child, grandchild, recursive
-  Spawn, parallel actors, scheduling, messaging, and automatic Child crash
+- Up to three direct sibling children: **DETERMINISTIC MECHANISM IMPLEMENTED**;
+  the required real DeepSeek multi-child chain is **NOT VALIDATED** for the
+  exact mixed-control response reason above. Grandchildren, recursive Spawn,
+  parallel actors, scheduling, joins, messaging, and automatic Child crash
   recovery remain **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe
   point, durable SUSPENDED state, initial start, terminal event, or the exact

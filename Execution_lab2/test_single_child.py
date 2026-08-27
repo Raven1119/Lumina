@@ -207,7 +207,7 @@ def test_root_and_child_terminal_authority_is_role_limited(tmp_path):
     )
 
 
-def test_root_cannot_spawn_a_second_child(tmp_path):
+def test_root_can_spawn_a_second_sibling_after_the_first_returns(tmp_path):
     root = AgentProcess(
         model=ScriptedModel(
             [SpawnChild("first"), SpawnChild("second")]
@@ -227,13 +227,17 @@ def test_root_cannot_spawn_a_second_child(tmp_path):
         max_decisions=1,
     ).run_child()
 
-    limited = root.accept_child(returned)
+    second = root.accept_child(returned)
 
-    assert limited.status == "failed"
-    assert limited.failure == "child_limit_reached"
-    assert [event.event_type for event in limited.events].count(
+    assert second.status == "child_pending"
+    assert second.failure is None
+    assert [child.local_goal for child in second.state.child_refs] == [
+        "first",
+        "second",
+    ]
+    assert [event.event_type for event in second.events].count(
         "CHILD_SPAWNED"
-    ) == 1
+    ) == 2
 
 
 def test_child_failure_becomes_one_root_observation_without_retry(tmp_path):
