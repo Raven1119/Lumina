@@ -288,6 +288,53 @@ only for this persistent-IPython experiment; it does not claim isolation.
 - The real A/B used two fixed tasks, two arms, and three fresh runs per arm. Conditional success was 2/3 for both arms while median provider calls fell 4 to 3 and visible result characters fell 884 to 435. Aggregation success rose 2/3 to 3/3 while median calls fell 6 to 4, input tokens 6,449 to 3,445, wall time 11.002 s to 8.034 s, and visible result characters 2,756 to 1,226. IPython produced zero Python runtime failures.
 - **RESULT: PROMOTE.** The task-card gate is satisfied without prompt or fixture tuning. The result is limited to this MVP surface and does not authorize security-sandbox claims, durable namespace, automatic replay, multiple kernels, Child, RLM, recursion, or any general code-runtime framework.
 
+## IPython startup/execution timeout boundary delta (2026-08-27)
+
+### Jupyter Client - startup owns readiness
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [jupyter/jupyter_client at
+  `fe026f7bf3313f7b4502cf773709655d8fb04f66`](https://github.com/jupyter/jupyter_client/tree/fe026f7bf3313f7b4502cf773709655d8fb04f66),
+  `v8.9.1`, BSD-3-Clause.
+- **SOURCE SYMBOL:** [`jupyter_client.manager.start_new_kernel`](https://github.com/jupyter/jupyter_client/blob/fe026f7bf3313f7b4502cf773709655d8fb04f66/jupyter_client/manager.py#L843-L858).
+- **BORROWED SEMANTICS:** The standard helper starts the kernel, creates the
+  client, starts channels, and completes
+  `wait_for_ready(timeout=startup_timeout)` before returning the manager/client.
+  Its readiness-failure branch stops channels and shuts down the kernel.
+- **LUMINA ADAPTATION:** `PersistentIPython` passes a dedicated bounded
+  `kernel_startup_timeout_seconds` to that helper. Only after it returns READY
+  does Lumina call `execute` and start the separate
+  `execution_timeout_seconds` deadline. Startup/readiness exceptions become
+  bounded `kernel_startup_error`; post-ready transport failures retain
+  `kernel_error`; code overrun remains `timeout`.
+- **NOT COPIED:** KernelManager internals, channel/ZMQ implementation,
+  provisioners, multi-kernel management, notebook/server surfaces, or a generic
+  timeout framework.
+
+### Prime Agent - lazy provision before execution
+
+- **SOURCE / COMMIT / VERSION / LICENSE:** [PrimeIntellect-ai/prime-agent at
+  `bc0fa7606abb3b7af0f765319518d255e6ae553d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/bc0fa7606abb3b7af0f765319518d255e6ae553d),
+  rolling `main`, MIT.
+- **SOURCE SYMBOL:** [`IpythonKernelProvisioner` and
+  `executeWithBusyKernelChoice`](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/src/core/tools/ipython.ts).
+- **BORROWED SEMANTICS:** Lazy kernel provisioning/readiness completes through
+  the provisioner before the execution helper submits code to the ready kernel.
+- **LUMINA ADAPTATION:** Retain the existing one-kernel
+  `PersistentIPython` and Jupyter helper; separate only the two fixed timeout
+  budgets and error classifications. No busy-kernel choice or prewarm system is
+  introduced.
+- **NOT COPIED:** Prime's KernelManager/ZeroMQ wrapper, prewarm progress UI,
+  busy-kernel policy, abort framework, snapshots/restoration, RLM, daemon, or
+  session system.
+
+### Timeout-boundary conclusion
+
+This fix reuses the upstream readiness boundary rather than inventing a
+recovery algorithm. The Lumina-specific work is one constructor parameter, two
+private timeout fields, and separate startup/execution error mapping. It does
+not change Runtime, EventLog, Child, provider, prompt, namespace, interrupt, or
+settlement semantics.
+
 ## Slice 7 delta: bounded sequential sibling calls (2026-08-27)
 
 ### DeepSeek official API - array shape and result correlation

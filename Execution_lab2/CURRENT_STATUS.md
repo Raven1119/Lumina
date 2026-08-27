@@ -137,6 +137,12 @@
 - IPython code, execution time, and captured output have fixed bounds.
   Generated Python intentionally has the worker OS permissions and is not a
   sandbox. `DEEPSEEK_API_KEY` is removed from the kernel environment.
+- Lazy kernel startup/readiness and code execution now use distinct bounds.
+  The pinned `start_new_kernel` completes channels plus
+  `wait_for_ready(kernel_startup_timeout)` before the code execution deadline
+  begins. Readiness failure is an explicit bounded
+  `kernel_startup_error` with helper-owned channel/kernel cleanup; code that
+  exceeds its post-ready budget remains `timeout`.
 - Runtime restart preserves durable Root/EventLog/State identity but not
   Python namespace. A resumed Root lazily starts a fresh kernel. A crash tail
   at `IPYTHON_EXECUTION_STARTED` is explicitly unresolved; code is not
@@ -448,13 +454,14 @@ Single Child AgentProcess:
   Root SpawnChild -> independent Child read/Return -> Root write ->
   `COMPLETION_VERIFIED`. Each produced exactly one Root spawn and one delivered
   return; `answer.txt` exactly matched `42`.
-- Task-level verdict: **FAIL**, solely because the required exact
-  `python -m pytest Execution_lab2 -q` run repeatedly ended with the unchanged
-  0.5-second IPython startup timing test at
-  `106 passed, 7 skipped, 1 failed`. The focused Child suite is
-  `11 passed, 1 skipped`; the remaining required repository, Conversation
-  Memory, and Dream regressions passed. Neither the frozen IPython controller
-  nor its timing test was changed in this Slice.
+- Task-level verdict: **PASS / VALIDATED**. The IPython startup/execution
+  boundary fix removed the sole regression blocker without changing Child or
+  provider behavior. Final validation reports `Execution_lab2` 109 passed /
+  7 gated real-provider tests skipped; root 328 passed / 24 skipped;
+  Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
+  The original 0.5-second timeout test also passed three consecutive stability
+  runs. The earlier real DeepSeek Root -> Child -> Return -> Root evidence
+  remains 3/3 and was not rerun.
 
 Slice 3 regression evidence:
 
@@ -517,10 +524,8 @@ Slice 3 regression evidence:
   completed 6/6; one real two-shell sibling response crossed the new path with
   exact ids and verified completion. Existing canonical call-id and seeded
   ToolHost-failure continuation evidence remains valid.
-- One direct Child: **IMPLEMENTED; MECHANISM EVIDENCE POSITIVE, TASK VERDICT
-  FAIL** through the explicit Host-driven `AgentProcess` surface. The hard
-  task verdict reflects the unrelated unchanged IPython regression above, not
-  a failed Child test or provider chain. A second Child, grandchild, recursive
+- One direct Child: **IMPLEMENTED AND VALIDATED** through the explicit
+  Host-driven `AgentProcess` surface. A second Child, grandchild, recursive
   Spawn, parallel actors, scheduling, messaging, and automatic Child crash
   recovery remain **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe

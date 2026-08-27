@@ -85,39 +85,43 @@ was printed by the experiment.
 
 ## Verdict
 
-`FAIL`
+`PASS / VALIDATED`
 
-The single-Child mechanism itself passed all 11 deterministic tests and all
-three fresh real DeepSeek executions. The task-level PASS gate is nevertheless
-not satisfied because the required exact Execution regression command did not
-finish green:
+The single-Child mechanism passed all 11 deterministic tests and all three
+fresh real DeepSeek executions. The sole prior blocker was repaired by
+separating lazy IPython kernel startup/readiness from the post-ready code
+execution timeout:
 
 ```text
 python -m pytest Execution_lab2 -q
-106 passed, 7 skipped, 1 failed
+109 passed, 7 skipped
 ```
 
-The only remaining failure is the pre-existing
-`test_ipython_timeout_is_explicit_and_shutdown_leaves_no_kernel`: with its
-0.5-second limit, the unchanged pinned Jupyter startup path sometimes returns
-`kernel_error` before code execution instead of reaching the expected
-`timeout`. The test passed once in isolation during this run but repeatedly
-failed in the full command. Both `ipython_control.py` and its test have zero
-diff from `execution-mvp-v1`. This Slice did not modify them because that
-would add a second variable outside the task.
+The original
+`test_ipython_timeout_is_explicit_and_shutdown_leaves_no_kernel` now starts
+its 0.5-second budget only after Jupyter reports READY and passed three
+consecutive stability runs. A deterministic delayed-start test proves startup
+may exceed 0.5 seconds while remaining inside its independent startup bound;
+a deterministic readiness-failure test proves explicit
+`kernel_startup_error` and zero live kernel.
 
 Other required regressions completed:
 
 - focused single Child: 11 passed, 1 gated real-provider test skipped;
-- all Execution tests except the named baseline timing case: 106 passed,
-  7 skipped, 1 deselected;
+- complete Execution suite: 109 passed, 7 gated real-provider tests skipped;
 - repository default suite: 328 passed, 24 skipped;
 - Conversation Memory: 163 passed, 45 skipped;
 - Dream: 36 passed, 1 skipped.
 
-Consequently the evidence supports the mechanism hypothesis, but the task's
-strict overall result remains FAIL. No claim about performance, recursive
-utility, emergent hierarchy, swarm behavior, or topology superiority is made.
+The timeout fix did not alter Child, Runtime, EventLog, provider, prompt, or
+namespace behavior, so the existing real DeepSeek 3/3 evidence was not rerun.
+
+A full independent Child AgentProcess can be spawned, execute against the
+shared environment, return a bounded local result, and be integrated by the
+Root.
+
+No claim about performance, recursive utility, emergent hierarchy, swarm
+behavior, or topology superiority is made.
 
 ## Known limits
 

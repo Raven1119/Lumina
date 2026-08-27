@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import Execution_lab2.ipython_control as ipython_control_module
 from Execution_lab2.deepseek_model import DeepSeekModel
 from Execution_lab2.ipython_control import PersistentIPython
 from Execution_lab2.execution import (
@@ -403,6 +404,68 @@ def test_ipython_timeout_is_explicit_and_shutdown_leaves_no_kernel(tmp_path):
         assert result.error_code == "timeout"
     finally:
         control.close()
+    assert control.is_alive is False
+
+
+def test_kernel_startup_has_an_independent_budget_before_execution_timeout(
+    tmp_path, monkeypatch
+):
+    real_start_new_kernel = ipython_control_module.start_new_kernel
+    observed = {}
+
+    def delayed_start_new_kernel(*, startup_timeout, **kwargs):
+        observed["startup_timeout"] = startup_timeout
+        time.sleep(0.75)
+        return real_start_new_kernel(
+            startup_timeout=startup_timeout,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        ipython_control_module,
+        "start_new_kernel",
+        delayed_start_new_kernel,
+    )
+    control = PersistentIPython(
+        tmp_path,
+        kernel_startup_timeout_seconds=10,
+        execution_timeout_seconds=0.5,
+    )
+    try:
+        result = control.execute("while True: pass")
+    finally:
+        control.close()
+
+    assert observed["startup_timeout"] == 10
+    assert result.error_code == "timeout"
+    assert control.is_alive is False
+
+
+def test_kernel_readiness_failure_is_explicit_and_leaves_no_kernel(
+    tmp_path, monkeypatch
+):
+    def fail_readiness(*, startup_timeout, **kwargs):
+        assert startup_timeout == 3
+        raise RuntimeError("readiness failed")
+
+    monkeypatch.setattr(
+        ipython_control_module,
+        "start_new_kernel",
+        fail_readiness,
+    )
+    control = PersistentIPython(
+        tmp_path,
+        kernel_startup_timeout_seconds=3,
+        execution_timeout_seconds=0.5,
+    )
+
+    result = control.execute("print('never executed')")
+
+    assert result.ok is False
+    assert result.error_code == "kernel_startup_error"
+    assert result.error == "RuntimeError: readiness failed"
+    assert control.is_alive is False
+    control.close()
     assert control.is_alive is False
 
 

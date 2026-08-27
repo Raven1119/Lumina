@@ -25,6 +25,7 @@ class PersistentIPython:
         workspace: str | Path,
         *,
         max_code_chars: int = 20_000,
+        kernel_startup_timeout_seconds: float = 10.0,
         execution_timeout_seconds: float = 10.0,
         max_output_chars: int = 10_000,
     ) -> None:
@@ -33,10 +34,13 @@ class PersistentIPython:
             raise ValueError("workspace must be an existing directory")
         if max_code_chars < 1 or max_output_chars < 1:
             raise ValueError("code and output limits must be positive")
+        if kernel_startup_timeout_seconds <= 0:
+            raise ValueError("kernel startup timeout must be positive")
         if execution_timeout_seconds <= 0:
             raise ValueError("execution timeout must be positive")
         self._max_code_chars = max_code_chars
-        self._execution_timeout_seconds = execution_timeout_seconds
+        self._kernel_startup_timeout_seconds = kernel_startup_timeout_seconds
+        self._code_execution_timeout_seconds = execution_timeout_seconds
         self._max_output_chars = max_output_chars
         self._manager = None
         self._client = None
@@ -72,6 +76,16 @@ class PersistentIPython:
             )
         try:
             self._start()
+        except Exception as exc:
+            error, truncated = self._bounded(f"{type(exc).__name__}: {exc}")
+            self.close()
+            return IPythonResult(
+                False,
+                error_code="kernel_startup_error",
+                error=error,
+                truncated=truncated,
+            )
+        try:
             return self._execute(code)
         except Exception as exc:
             error, truncated = self._bounded(f"{type(exc).__name__}: {exc}")
@@ -118,7 +132,7 @@ class PersistentIPython:
         kernel_environment = dict(os.environ)
         kernel_environment.pop("DEEPSEEK_API_KEY", None)
         self._manager, self._client = start_new_kernel(
-            startup_timeout=self._execution_timeout_seconds,
+            startup_timeout=self._kernel_startup_timeout_seconds,
             kernel_name="python3",
             cwd=str(self._workspace),
             env=kernel_environment,
@@ -126,7 +140,7 @@ class PersistentIPython:
 
     def _execute(self, code: str) -> IPythonResult:
         message_id = self._client.execute(code, allow_stdin=False, stop_on_error=False)
-        deadline = time.monotonic() + self._execution_timeout_seconds
+        deadline = time.monotonic() + self._code_execution_timeout_seconds
         output_parts: list[str] = []
         output_chars = 0
         captured_chars = 0
@@ -141,7 +155,8 @@ class PersistentIPython:
                     False,
                     output,
                     "timeout",
-                    f"IPython execution exceeded {self._execution_timeout_seconds} seconds",
+                    "IPython execution exceeded "
+                    f"{self._code_execution_timeout_seconds} seconds",
                     output_chars > self._max_output_chars,
                     output_chars,
                 )
