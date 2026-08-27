@@ -68,6 +68,25 @@ class ClaimComplete:
 
 
 @dataclass(frozen=True)
+class SpawnChild:
+    goal: str
+
+
+@dataclass(frozen=True)
+class Return:
+    local_result: str
+
+
+@dataclass(frozen=True)
+class ChildRef:
+    child_execution_id: str
+    child_actor_id: str
+    parent_actor_id: str
+    local_goal: str
+    event_log_path: str | None
+
+
+@dataclass(frozen=True)
 class Wait:
     event_type: str
 
@@ -78,7 +97,9 @@ class ExternalEvent:
     data: str = ""
 
 
-Action: TypeAlias = ToolCall | IPythonCode | Wait | ClaimComplete
+Action: TypeAlias = (
+    ToolCall | IPythonCode | Wait | ClaimComplete | SpawnChild | Return
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +127,20 @@ def _single_structured_action(value: object) -> Action | None:
         return value if isinstance(value.event_type, str) and value.event_type else None
     if isinstance(value, ClaimComplete):
         return value
+    if isinstance(value, SpawnChild):
+        return (
+            value
+            if isinstance(value.goal, str)
+            and 0 < len(value.goal) <= 1_024
+            else None
+        )
+    if isinstance(value, Return):
+        return (
+            value
+            if isinstance(value.local_result, str)
+            and len(value.local_result) <= 1_024
+            else None
+        )
     return None
 
 
@@ -186,6 +221,18 @@ class CompletionObservation:
 
 
 @dataclass(frozen=True)
+class ChildObservation:
+    status: Literal["returned", "failed"]
+    child_ref: ChildRef
+    local_result: str | None = None
+    failure: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "returned"
+
+
+@dataclass(frozen=True)
 class IPythonObservation:
     result: IPythonResult
     provider_tool_call_id: str | None = None
@@ -196,7 +243,7 @@ class IPythonObservation:
 
 
 RuntimeObservation: TypeAlias = (
-    Observation | IPythonObservation | CompletionObservation
+    Observation | IPythonObservation | CompletionObservation | ChildObservation
 )
 
 
@@ -212,6 +259,32 @@ IPYTHON_TOOL_CONTRACTS = (
     "ipython(code: str)",
     "wait(event_type: str)",
     "claim_complete()",
+)
+
+ROOT_TOOL_CONTRACTS = (
+    *TOOL_CONTRACTS[:-1],
+    "spawn_child(goal: str) -> ChildRef",
+    TOOL_CONTRACTS[-1],
+)
+
+ROOT_IPYTHON_TOOL_CONTRACTS = (
+    *IPYTHON_TOOL_CONTRACTS[:-1],
+    "spawn_child(goal: str) -> ChildRef",
+    IPYTHON_TOOL_CONTRACTS[-1],
+)
+
+CHILD_TOOL_CONTRACTS = (
+    "read(path: str) -> ToolResult",
+    "write(path: str, content: str) -> ToolResult",
+    "shell(argv: tuple[str, ...]) -> ToolResult",
+    "wait(event_type: str)",
+    "return(local_result: str)",
+)
+
+CHILD_IPYTHON_TOOL_CONTRACTS = (
+    "ipython(code: str)",
+    "wait(event_type: str)",
+    "return(local_result: str)",
 )
 
 
@@ -511,6 +584,9 @@ EventType: TypeAlias = Literal[
     "INTERRUPT_REQUESTED",
     "ACTOR_SUSPENDED",
     "ACTOR_RESUMED",
+    "CHILD_SPAWNED",
+    "CHILD_RETURNED",
+    "CHILD_FAILED",
     "EXECUTION_COMPLETED",
     "EXECUTION_FAILED",
 ]
@@ -605,6 +681,10 @@ _SERIALIZABLE_TYPES = {
         Wait,
         ExternalEvent,
         ClaimComplete,
+        SpawnChild,
+        Return,
+        ChildRef,
+        ChildObservation,
         Observation,
         IPythonObservation,
         CompletionEvidence,
@@ -723,6 +803,10 @@ class EventLog:
     def events(self) -> tuple[ExecutionEvent, ...]:
         with self._lock:
             return tuple(self._events)
+
+    @property
+    def path(self) -> Path | None:
+        return self._path
 
     def append(
         self,
@@ -853,6 +937,17 @@ class EventLog:
             "INTERRUPT_REQUESTED": {"status"},
             "ACTOR_SUSPENDED": {"status"},
             "ACTOR_RESUMED": {"status"},
+            "CHILD_SPAWNED": {"child_ref"},
+            "CHILD_RETURNED": {
+                "child_actor_id",
+                "parent_actor_id",
+                "local_result",
+            },
+            "CHILD_FAILED": {
+                "child_actor_id",
+                "parent_actor_id",
+                "failure",
+            },
             "EXECUTION_COMPLETED": {"status"},
             "EXECUTION_FAILED": {"failure"},
         }
@@ -863,7 +958,16 @@ class EventLog:
             "completion_spec",
         }
         if event_type == "EXECUTION_STARTED":
-            if self._path is None and set(payload) == {"goal", "completion_spec"}:
+            if payload.get("actor_role") == "child":
+                start_schema = {
+                    "goal",
+                    "execution_id",
+                    "completion_spec",
+                    "actor_role",
+                    "actor_id",
+                    "parent_actor_id",
+                }
+            elif self._path is None and set(payload) == {"goal", "completion_spec"}:
                 start_schema = {"goal", "completion_spec"}
         elif event_type not in schemas:
             raise ValueError(f"unknown execution event type: {event_type}")
@@ -883,12 +987,39 @@ class EventLog:
             expected_schema = set(payload)
         if set(payload) != expected_schema:
             raise ValueError(f"invalid payload for {event_type}")
-        if self._events and self._events[-1].event_type in (
-            "EXECUTION_COMPLETED",
-            "EXECUTION_FAILED",
+        if self._events and (
+            self._events[-1].event_type
+            in ("EXECUTION_COMPLETED", "EXECUTION_FAILED")
+            or (
+                self._events[-1].event_type == "CHILD_RETURNED"
+                and self._events[0].payload.get("actor_role") == "child"
+            )
         ):
             raise ValueError("terminal execution cannot accept more events")
         if event_type == "EXECUTION_STARTED":
+            if payload.get("actor_role") == "child":
+                if (
+                    self._events
+                    or source_event_refs
+                    or not isinstance(payload["goal"], str)
+                    or not payload["goal"]
+                    or len(payload["goal"]) > 1_024
+                    or payload["completion_spec"] is not None
+                    or any(
+                        not isinstance(payload[field], str)
+                        or not payload[field]
+                        for field in (
+                            "execution_id",
+                            "actor_id",
+                            "parent_actor_id",
+                        )
+                    )
+                    or payload["actor_id"] == payload["parent_actor_id"]
+                ):
+                    raise ValueError(
+                        "Child execution must start once with direct lineage"
+                    )
+                return
             if (
                 self._events
                 or source_event_refs
@@ -955,6 +1086,81 @@ class EventLog:
             state = fold_execution_state(self.events)
             if state.status != "suspended" or payload["status"] != "running":
                 raise ValueError("resume requires a suspended Root")
+        elif event_type == "CHILD_SPAWNED":
+            frame = previous.payload.get("frame")
+            child_ref = payload["child_ref"]
+            if (
+                previous.event_type != "MODEL_DECISION"
+                or not isinstance(frame, DecisionFrame)
+                or not isinstance(frame.resulting_action, SpawnChild)
+                or not isinstance(child_ref, ChildRef)
+                or child_ref.local_goal != frame.resulting_action.goal
+                or child_ref.parent_actor_id
+                != self._events[0].payload.get("root_actor_id")
+                or child_ref.child_actor_id == child_ref.parent_actor_id
+                or not child_ref.child_execution_id
+                or not child_ref.child_actor_id
+                or not isinstance(child_ref.event_log_path, str)
+                or not child_ref.event_log_path
+                or any(
+                    event.event_type == "CHILD_SPAWNED"
+                    for event in self._events
+                )
+            ):
+                raise ValueError(
+                    "Child spawn must match one Root decision and direct lineage"
+                )
+        elif event_type == "CHILD_RETURNED":
+            frame = previous.payload.get("frame")
+            state = fold_execution_state(self.events)
+            if state.actor_role == "child":
+                if (
+                    previous.event_type != "MODEL_DECISION"
+                    or not isinstance(frame, DecisionFrame)
+                    or not isinstance(frame.resulting_action, Return)
+                    or payload["local_result"]
+                    != frame.resulting_action.local_result
+                    or payload["child_actor_id"] != state.actor_id
+                    or payload["parent_actor_id"] != state.parent_actor_id
+                ):
+                    raise ValueError(
+                        "Child return must match its own decision and lineage"
+                    )
+            else:
+                child_ref = state.child_ref
+                if (
+                    state.status != "child_pending"
+                    or previous.event_type != "CHILD_SPAWNED"
+                    or not isinstance(child_ref, ChildRef)
+                    or payload["child_actor_id"]
+                    != child_ref.child_actor_id
+                    or payload["parent_actor_id"]
+                    != child_ref.parent_actor_id
+                    or not isinstance(payload["local_result"], str)
+                    or len(payload["local_result"]) > 1_024
+                ):
+                    raise ValueError(
+                        "Root Child return must match its pending handle"
+                    )
+        elif event_type == "CHILD_FAILED":
+            state = fold_execution_state(self.events)
+            child_ref = state.child_ref
+            if (
+                state.actor_role != "root"
+                or state.status != "child_pending"
+                or previous.event_type != "CHILD_SPAWNED"
+                or not isinstance(child_ref, ChildRef)
+                or payload["child_actor_id"]
+                != child_ref.child_actor_id
+                or payload["parent_actor_id"]
+                != child_ref.parent_actor_id
+                or not isinstance(payload["failure"], str)
+                or not payload["failure"]
+                or len(payload["failure"]) > 1_024
+            ):
+                raise ValueError(
+                    "Root Child failure must match its pending handle"
+                )
         elif event_type == "MODEL_DECISION":
             frame = payload["frame"]
             raw_action = None
@@ -989,6 +1195,8 @@ class EventLog:
                     "COMPLETION_REJECTED",
                     "ROOT_WOKEN",
                     "ACTOR_RESUMED",
+                    "CHILD_RETURNED",
+                    "CHILD_FAILED",
                 )
                 or not isinstance(frame, DecisionFrame)
                 or payload["action"] != frame.resulting_action
@@ -1468,6 +1676,49 @@ class EventLog:
             return ExternalEvent(event_type, data)
         if isinstance(value, ClaimComplete):
             return value
+        if isinstance(value, SpawnChild):
+            goal = cls._freeze(value.goal)
+            return value if goal is value.goal else SpawnChild(goal)
+        if isinstance(value, Return):
+            local_result = cls._freeze(value.local_result)
+            return (
+                value
+                if local_result is value.local_result
+                else Return(local_result)
+            )
+        if isinstance(value, ChildRef):
+            values = tuple(
+                cls._freeze(item)
+                for item in (
+                    value.child_execution_id,
+                    value.child_actor_id,
+                    value.parent_actor_id,
+                    value.local_goal,
+                    value.event_log_path,
+                )
+            )
+            if all(
+                item is original
+                for item, original in zip(
+                    values,
+                    (
+                        value.child_execution_id,
+                        value.child_actor_id,
+                        value.parent_actor_id,
+                        value.local_goal,
+                        value.event_log_path,
+                    ),
+                )
+            ):
+                return value
+            return ChildRef(*values)
+        if isinstance(value, ChildObservation):
+            return ChildObservation(
+                status=cls._freeze(value.status),
+                child_ref=cls._freeze(value.child_ref),
+                local_result=cls._freeze(value.local_result),
+                failure=cls._freeze(value.failure),
+            )
         if isinstance(value, Observation):
             request = cls._freeze(value.request)
             result = cls._freeze(value.result)
@@ -1597,7 +1848,14 @@ class EventLog:
 @dataclass(frozen=True)
 class ExecutionState:
     version: int
-    status: Literal["running", "waiting", "suspended", "completed", "failed"]
+    status: Literal[
+        "running",
+        "waiting",
+        "suspended",
+        "child_pending",
+        "completed",
+        "failed",
+    ]
     goal: str
     completion_spec: CompletionSpec | None = None
     execution_id: str | None = None
@@ -1612,6 +1870,10 @@ class ExecutionState:
     latest_external_event: ExternalEvent | None = None
     last_provider_tool_call_id: str | tuple[str, ...] | None = None
     lifecycle_notice: Literal["interrupt_requested", "suspended", "resumed"] | None = None
+    child_ref: ChildRef | None = None
+    actor_role: Literal["root", "child"] = "root"
+    actor_id: str | None = None
+    parent_actor_id: str | None = None
 
 
 def fold_execution_state(
@@ -1642,6 +1904,17 @@ def fold_execution_state(
                 completion_spec=event.payload.get("completion_spec"),
                 execution_id=event.payload.get("execution_id"),
                 root_actor_id=event.payload.get("root_actor_id"),
+                actor_role=(
+                    "child"
+                    if event.payload.get("actor_role") == "child"
+                    else "root"
+                ),
+                actor_id=(
+                    event.payload.get("actor_id")
+                    if event.payload.get("actor_role") == "child"
+                    else event.payload.get("root_actor_id")
+                ),
+                parent_actor_id=event.payload.get("parent_actor_id"),
             )
             continue
         if state is None:
@@ -1659,6 +1932,13 @@ def fold_execution_state(
         ):
             raise ValueError(
                 "suspended execution accepts only durable events or explicit resume"
+            )
+        if (
+            state.status == "child_pending"
+            and event.event_type not in ("CHILD_RETURNED", "CHILD_FAILED")
+        ):
+            raise ValueError(
+                "a pending Child must settle before Root accepts another event"
             )
 
         values = {
@@ -1678,6 +1958,10 @@ def fold_execution_state(
             "latest_external_event": state.latest_external_event,
             "last_provider_tool_call_id": state.last_provider_tool_call_id,
             "lifecycle_notice": state.lifecycle_notice,
+            "child_ref": state.child_ref,
+            "actor_role": state.actor_role,
+            "actor_id": state.actor_id,
+            "parent_actor_id": state.parent_actor_id,
         }
         if event.event_type == "MODEL_DECISION":
             values["decision_count"] = state.decision_count + 1
@@ -1781,6 +2065,53 @@ def fold_execution_state(
         elif event.event_type == "ACTOR_RESUMED":
             values["status"] = "running"
             values["lifecycle_notice"] = "resumed"
+        elif event.event_type == "CHILD_SPAWNED":
+            child_ref = event.payload.get("child_ref")
+            if not isinstance(child_ref, ChildRef):
+                raise ValueError("Child spawn events require a typed handle")
+            values["status"] = "child_pending"
+            values["child_ref"] = child_ref
+        elif event.event_type == "CHILD_RETURNED":
+            local_result = event.payload.get("local_result")
+            if (
+                not isinstance(local_result, str)
+                or len(local_result) > 1_024
+            ):
+                raise ValueError(
+                    "Child return requires one bounded local result"
+                )
+            if state.actor_role == "child":
+                values["status"] = "completed"
+                values["completion"] = local_result
+            else:
+                if not isinstance(state.child_ref, ChildRef):
+                    raise ValueError(
+                        "Root Child return requires a pending handle"
+                    )
+                values["status"] = "running"
+                values["latest_observation"] = ChildObservation(
+                    status="returned",
+                    child_ref=state.child_ref,
+                    local_result=local_result,
+                )
+        elif event.event_type == "CHILD_FAILED":
+            failure = event.payload.get("failure")
+            if (
+                state.actor_role != "root"
+                or not isinstance(state.child_ref, ChildRef)
+                or not isinstance(failure, str)
+                or not failure
+                or len(failure) > 1_024
+            ):
+                raise ValueError(
+                    "Root Child failure requires one bounded outcome"
+                )
+            values["status"] = "running"
+            values["latest_observation"] = ChildObservation(
+                status="failed",
+                child_ref=state.child_ref,
+                failure=failure,
+            )
         elif event.event_type == "EXECUTION_COMPLETED":
             if event.payload.get("status") != "verified":
                 raise ValueError("completion events require verified status")
@@ -1982,6 +2313,13 @@ def _action_projection(action: object | None) -> dict[str, object] | None:
         return {"type": "wait", "event_type": _text_projection(action.event_type)}
     if isinstance(action, ClaimComplete):
         return {"type": "claim_complete"}
+    if isinstance(action, SpawnChild):
+        return {"type": "spawn_child", "goal": _text_projection(action.goal)}
+    if isinstance(action, Return):
+        return {
+            "type": "return",
+            "local_result": _text_projection(action.local_result),
+        }
     if action is None:
         return None
     return {"type": type(action).__name__}
@@ -1992,6 +2330,23 @@ def _observation_projection(
 ) -> dict[str, object] | None:
     if observation is None:
         return None
+    if isinstance(observation, ChildObservation):
+        return {
+            "type": "child_outcome",
+            "status": observation.status,
+            "child_actor_id": observation.child_ref.child_actor_id,
+            "parent_actor_id": observation.child_ref.parent_actor_id,
+            "local_result": (
+                _text_projection(observation.local_result)
+                if observation.local_result is not None
+                else None
+            ),
+            "failure": (
+                _text_projection(observation.failure)
+                if observation.failure is not None
+                else None
+            ),
+        }
     if isinstance(observation, CompletionObservation):
         evidence = observation.evidence
         return {
@@ -2110,6 +2465,16 @@ def _bounded_context(
         ),
         "lifecycle": state.lifecycle_notice,
     }
+    if state.actor_role == "child":
+        state_projection = document["state"]
+        assert isinstance(state_projection, dict)
+        state_projection.update(
+            {
+                "actor_role": state.actor_role,
+                "actor_id": state.actor_id,
+                "parent_actor_id": state.parent_actor_id,
+            }
+        )
     if sibling_observations:
         document.clear()
         document["observations"] = [
@@ -2228,7 +2593,13 @@ def _build_model_request(
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    status: Literal["waiting", "suspended", "completed", "failed"]
+    status: Literal[
+        "waiting",
+        "suspended",
+        "child_pending",
+        "completed",
+        "failed",
+    ]
     output: str | None
     failure: str | None
     steps: tuple[ExecutionStep, ...]
@@ -2236,8 +2607,14 @@ class ExecutionResult:
     state: ExecutionState
     decision_frames: tuple[DecisionFrame, ...]
 
+    @property
+    def child_ref(self) -> ChildRef | None:
+        return self.state.child_ref
+
 
 class RootAgentProcess:
+    _single_child_enabled = False
+
     def __init__(
         self,
         model: Model,
@@ -2248,6 +2625,7 @@ class RootAgentProcess:
         event_log: EventLog | None = None,
         checkpoint_path: str | Path | None = None,
         ipython_control: PersistentIPython | None = None,
+        _child_ref: ChildRef | None = None,
     ) -> None:
         if max_decisions < 1:
             raise ValueError("max_decisions must be positive")
@@ -2258,8 +2636,34 @@ class RootAgentProcess:
         self._max_decisions = max_decisions
         self._max_context_chars = max_context_chars
         self._event_log = event_log or EventLog()
+        self._child_ref = _child_ref
+        self._actor_role: Literal["root", "child"] = (
+            "child" if _child_ref is not None else "root"
+        )
+        default_contracts = (
+            CHILD_TOOL_CONTRACTS
+            if self._actor_role == "child"
+            else (
+                ROOT_TOOL_CONTRACTS
+                if self._single_child_enabled
+                else TOOL_CONTRACTS
+            )
+        )
+        model_contracts = tuple(
+            getattr(model, "tool_contracts", default_contracts)
+        )
+        allowed_names = (
+            {"read", "write", "shell", "ipython", "wait", "return"}
+            if self._actor_role == "child"
+            else (
+                {"read", "write", "shell", "ipython", "wait", "claim_complete"}
+                | ({"spawn_child"} if self._single_child_enabled else set())
+            )
+        )
         self._available_tools = tuple(
-            getattr(model, "tool_contracts", TOOL_CONTRACTS)
+            contract
+            for contract in model_contracts
+            if contract.partition("(")[0] in allowed_names
         )
         self._ipython_control = ipython_control
         self._checkpoint_path = (
@@ -2289,6 +2693,8 @@ class RootAgentProcess:
                 "INTERRUPT_REQUESTED",
                 "ACTOR_SUSPENDED",
                 "ACTOR_RESUMED",
+                "CHILD_SPAWNED",
+                "CHILD_RETURNED",
                 "EXECUTION_COMPLETED",
                 "EXECUTION_FAILED",
             ):
@@ -2296,9 +2702,44 @@ class RootAgentProcess:
                     "unsettled action recovery is not implemented for this event tail"
                 )
 
+    @classmethod
+    def for_child(
+        cls,
+        child_ref: ChildRef,
+        *,
+        model: Model,
+        tools: ToolHost,
+        max_decisions: int,
+        max_context_chars: int = 2_000,
+        event_log: EventLog | None = None,
+        checkpoint_path: str | Path | None = None,
+        ipython_control: PersistentIPython | None = None,
+    ) -> RootAgentProcess:
+        if not isinstance(child_ref, ChildRef):
+            raise TypeError("child_ref must be a ChildRef")
+        if event_log is None and child_ref.event_log_path is not None:
+            child_path = Path(child_ref.event_log_path)
+            event_log = (
+                EventLog.load(child_path)
+                if child_path.exists() and child_path.stat().st_size
+                else EventLog(child_path)
+            )
+        return cls(
+            model=model,
+            tools=tools,
+            max_decisions=max_decisions,
+            max_context_chars=max_context_chars,
+            event_log=event_log,
+            checkpoint_path=checkpoint_path,
+            ipython_control=ipython_control,
+            _child_ref=child_ref,
+        )
+
     def run(
         self, goal: str, completion_spec: CompletionSpec
     ) -> ExecutionResult:
+        if self._actor_role != "root":
+            raise ValueError("Child execution must use run_child")
         if self._event_log.events:
             raise ValueError("execution has already started; use resume")
         self._event_log.append(
@@ -2309,6 +2750,92 @@ class RootAgentProcess:
                 "root_actor_id": f"root-{uuid.uuid4().hex}",
                 "completion_spec": completion_spec,
             },
+        )
+        return self._drive()
+
+    def run_child(self) -> ExecutionResult:
+        if self._actor_role != "child" or self._child_ref is None:
+            raise ValueError("only a Child AgentProcess can use run_child")
+        if self._event_log.events:
+            raise ValueError("Child execution has already started; use resume")
+        self._event_log.append(
+            "EXECUTION_STARTED",
+            {
+                "goal": self._child_ref.local_goal,
+                "execution_id": self._child_ref.child_execution_id,
+                "completion_spec": None,
+                "actor_role": "child",
+                "actor_id": self._child_ref.child_actor_id,
+                "parent_actor_id": self._child_ref.parent_actor_id,
+            },
+        )
+        return self._drive()
+
+    def accept_child(self, child_result: ExecutionResult) -> ExecutionResult:
+        if self._actor_role != "root" or not self._single_child_enabled:
+            raise ValueError("only Root can accept a Child outcome")
+        state = self._current_state()
+        child_ref = state.child_ref
+        if state.status != "child_pending" or not isinstance(
+            child_ref, ChildRef
+        ):
+            raise ValueError("Root has no pending Child")
+        if not child_result.events:
+            raise ValueError("Child result has no canonical history")
+        canonical_events = child_result.events
+        if child_ref.event_log_path is not None:
+            canonical_events = EventLog.load(
+                child_ref.event_log_path
+            ).events
+            if canonical_events != child_result.events:
+                raise ValueError("Child result is not its durable EventLog truth")
+        canonical_state = fold_execution_state(canonical_events)
+        if (
+            canonical_state.actor_role != "child"
+            or canonical_state.actor_id != child_ref.child_actor_id
+            or canonical_state.parent_actor_id != child_ref.parent_actor_id
+            or canonical_state.execution_id
+            != child_ref.child_execution_id
+            or canonical_state.goal != child_ref.local_goal
+            or child_result.state != canonical_state
+            or child_result.status != canonical_state.status
+            or child_result.output != canonical_state.completion
+            or child_result.failure != canonical_state.failure
+        ):
+            raise ValueError(
+                "Child result does not match canonical Child history"
+            )
+        if (
+            canonical_state.status == "completed"
+            and canonical_events[-1].event_type == "CHILD_RETURNED"
+            and isinstance(canonical_state.completion, str)
+        ):
+            event_type: Literal["CHILD_RETURNED", "CHILD_FAILED"] = (
+                "CHILD_RETURNED"
+            )
+            payload = {
+                "child_actor_id": child_ref.child_actor_id,
+                "parent_actor_id": child_ref.parent_actor_id,
+                "local_result": canonical_state.completion,
+            }
+        elif (
+            canonical_state.status == "failed"
+            and canonical_events[-1].event_type == "EXECUTION_FAILED"
+            and isinstance(canonical_state.failure, str)
+            and canonical_state.failure
+        ):
+            event_type = "CHILD_FAILED"
+            payload = {
+                "child_actor_id": child_ref.child_actor_id,
+                "parent_actor_id": child_ref.parent_actor_id,
+                "failure": canonical_state.failure[:1_024],
+            }
+        else:
+            raise ValueError("Child terminal outcome is not deliverable")
+        self._event_log.append(
+            event_type,
+            payload,
+            (self._event_log.events[-1].event_id,),
         )
         return self._drive()
 
@@ -2388,6 +2915,8 @@ class RootAgentProcess:
         return self._result(steps)
 
     def interrupt(self) -> ExecutionResult:
+        if self._actor_role != "root":
+            raise ValueError("only Root supports explicit interrupt")
         ipython_control = None
         with self._lifecycle:
             state = self._current_state()
@@ -2771,7 +3300,89 @@ class RootAgentProcess:
                     )
                 return self._finish(steps)
             action = actions[0] if len(actions) == 1 else None
+            if isinstance(action, Return):
+                if self._actor_role != "child":
+                    steps.append(ExecutionStep(decision, action, None))
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {"failure": "unauthorized_action:Return"},
+                        (decision_event.event_id,),
+                    )
+                    return self._finish(steps)
+                steps.append(ExecutionStep(decision, action, None))
+                self._event_log.append(
+                    "CHILD_RETURNED",
+                    {
+                        "child_actor_id": state.actor_id or "",
+                        "parent_actor_id": state.parent_actor_id or "",
+                        "local_result": action.local_result,
+                    },
+                    (decision_event.event_id,),
+                )
+                return self._finish(steps)
+            if isinstance(action, SpawnChild):
+                if self._actor_role != "root" or not self._single_child_enabled:
+                    steps.append(ExecutionStep(decision, action, None))
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {"failure": "unauthorized_action:SpawnChild"},
+                        (decision_event.event_id,),
+                    )
+                    return self._finish(steps)
+                if state.child_ref is not None:
+                    steps.append(ExecutionStep(decision, action, None))
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {"failure": "child_limit_reached"},
+                        (decision_event.event_id,),
+                    )
+                    return self._finish(steps)
+                if self._event_log.path is None:
+                    steps.append(ExecutionStep(decision, action, None))
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {"failure": "child_persistence_required"},
+                        (decision_event.event_id,),
+                    )
+                    return self._finish(steps)
+                with self._lifecycle:
+                    if self._suspend_if_requested_locked():
+                        return self._result(steps)
+                    child_actor_id = f"child-{uuid.uuid4().hex}"
+                    child_log_path = (
+                        self._event_log.path.with_name(
+                            f"{self._event_log.path.stem}.{child_actor_id}.jsonl"
+                        )
+                        if self._event_log.path is not None
+                        else None
+                    )
+                    child_ref = ChildRef(
+                        child_execution_id=f"execution-{uuid.uuid4().hex}",
+                        child_actor_id=child_actor_id,
+                        parent_actor_id=state.actor_id or "",
+                        local_goal=action.goal,
+                        event_log_path=(
+                            str(child_log_path)
+                            if child_log_path is not None
+                            else None
+                        ),
+                    )
+                    steps.append(ExecutionStep(decision, action, None))
+                    self._event_log.append(
+                        "CHILD_SPAWNED",
+                        {"child_ref": child_ref},
+                        (decision_event.event_id,),
+                    )
+                return self._result(steps)
             if isinstance(action, ClaimComplete):
+                if self._actor_role != "root":
+                    steps.append(ExecutionStep(decision, action, None))
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {"failure": "unauthorized_action:ClaimComplete"},
+                        (decision_event.event_id,),
+                    )
+                    return self._finish(steps)
                 with self._lifecycle:
                     if self._suspend_if_requested_locked():
                         return self._result(steps)
@@ -2885,3 +3496,7 @@ class RootAgentProcess:
                 if event.event_type == "MODEL_DECISION"
             ),
         )
+
+
+class AgentProcess(RootAgentProcess):
+    _single_child_enabled = True

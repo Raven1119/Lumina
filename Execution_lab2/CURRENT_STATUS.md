@@ -8,9 +8,11 @@
 - Slice 1 behavior remains intact: typed tool requests, structured
   `ToolResult`, workspace-guarded read/write, explicit-argv bounded shell,
   failure-as-Observation, and a hard decision limit.
-- The Action contract is now
-  `ToolCall | IPythonCode | Wait | ClaimComplete`. The only Wait condition
-  is an exact, non-empty `event_type` string.
+- The frozen `RootAgentProcess` Action contract remains
+  `ToolCall | IPythonCode | Wait | ClaimComplete`. The explicit
+  single-Child `AgentProcess` surface adds Root-only `SpawnChild` and
+  Child-only `Return`. The only Wait condition is an exact, non-empty
+  `event_type` string.
 - Execution creation requires one frozen caller-owned
   `FileContentEquals(path, expected_content)`. That typed CompletionSpec is
   persisted in `EXECUTION_STARTED`, reconstructed by the State fold, visible
@@ -19,7 +21,9 @@
 - `EventLog` can be in-memory or local append-only JSONL. A durable append is
   flushed and `fsync`ed before the event enters the authoritative in-memory
   sequence. `load()` rejects malformed records, schemas, causal links,
-  sequences, and lifecycle transitions.
+  sequences, and lifecycle transitions. Single-Child admission specifically
+  requires a durable Root log and derives a separate durable Child log path;
+  an in-memory Root cannot Spawn.
 - Each event retains deterministic `event_id`, contiguous `sequence`, fixed
   `event_type`, deeply immutable payload, and past-only `source_event_refs`.
   Durable restart continues the same sequence; persisted lines are never
@@ -28,8 +32,9 @@
   `root_actor_id`. Fresh `RootAgentProcess` objects loaded from the same log
   reconstruct the same identities.
 - `ExecutionState` remains a pure fold of execution facts. It now derives
-  `running | waiting | completed | failed`, Root identity, `waiting_for`, and
-  the latest typed external event in addition to the Slice 2 state fields.
+  `running | waiting | suspended | child_pending | completed | failed`, actor
+  identity/direct lineage, `waiting_for`, and the latest typed external event
+  or Child outcome in addition to the Slice 2 state fields.
 - `Checkpoint` internally derives one materialized `ExecutionState` snapshot
   from its EventLog prefix, plus
   `last_applied_event_sequence`, schema version, and an integrity digest of the
@@ -412,6 +417,45 @@ Slice 8 - explicit Root suspension:
   event delivery while suspended, no replay, ordinary Tool settlement,
   IPython settlement, exact fold equivalence, and interrupted sibling suffix.
 
+Single Child AgentProcess:
+
+- `AgentProcess` is the explicit single-Child surface over the unchanged
+  `RootAgentProcess` loop. The frozen MVP class retains its original tool
+  contract; the new surface adds only Root-visible `SpawnChild(goal)` and
+  Child-visible `Return(local_result)`.
+- Root persists one bounded `ChildRef` containing a distinct Child execution
+  id, Child actor id, direct parent id, local goal, and Child EventLog path.
+  Spawn returns that handle and stops Root in `child_pending`; it does not run
+  the Child or return a Child answer.
+- The Host constructs the Child with `AgentProcess.for_child(...)`. Child uses
+  the same Runtime machinery but owns its EventLog, derived State, bounded
+  Context, DecisionFrames, live IPython control, and lifecycle. Only the
+  `SharedEnvironment` workspace is shared.
+- Root sees Tool/IPython, Wait, one SpawnChild, and ClaimComplete. Child sees
+  Tool/IPython, Wait, and Return; Child cannot Spawn or ClaimComplete, and Root
+  cannot Return. A retained Child handle makes a second Root spawn fail
+  explicitly, freezing `max_children=1` and `max_depth=1`.
+- Child termination is its own durable `CHILD_RETURNED` or
+  `EXECUTION_FAILED`. Host delivery appends exactly one matching
+  `CHILD_RETURNED` or `CHILD_FAILED` to the Root EventLog, after which Root
+  derives a bounded structured Observation and continues. Runtime does not
+  retry, replace, schedule, or semantically recover a Child.
+- Deterministic tests establish identity, handle-versus-answer, Context and
+  DecisionFrame isolation, direct shared-workspace observation, distinct live
+  IPython namespaces, role authority, bounded Return, failure propagation,
+  full-fold equality, and restart/delivery deduplication.
+- Three fresh real DeepSeek executions all completed the requested chain:
+  Root SpawnChild -> independent Child read/Return -> Root write ->
+  `COMPLETION_VERIFIED`. Each produced exactly one Root spawn and one delivered
+  return; `answer.txt` exactly matched `42`.
+- Task-level verdict: **FAIL**, solely because the required exact
+  `python -m pytest Execution_lab2 -q` run repeatedly ended with the unchanged
+  0.5-second IPython startup timing test at
+  `106 passed, 7 skipped, 1 failed`. The focused Child suite is
+  `11 passed, 1 skipped`; the remaining required repository, Conversation
+  Memory, and Dream regressions passed. Neither the frozen IPython controller
+  nor its timing test was changed in this Slice.
+
 Slice 3 regression evidence:
 
 - **A — durable replay:** a Runtime-created JSONL reloads to an equal immutable
@@ -473,7 +517,12 @@ Slice 3 regression evidence:
   completed 6/6; one real two-shell sibling response crossed the new path with
   exact ids and verified completion. Existing canonical call-id and seeded
   ToolHost-failure continuation evidence remains valid.
-- Child/recursion: **NOT IMPLEMENTED**.
+- One direct Child: **IMPLEMENTED; MECHANISM EVIDENCE POSITIVE, TASK VERDICT
+  FAIL** through the explicit Host-driven `AgentProcess` surface. The hard
+  task verdict reflects the unrelated unchanged IPython regression above, not
+  a failed Child test or provider chain. A second Child, grandchild, recursive
+  Spawn, parallel actors, scheduling, messaging, and automatic Child crash
+  recovery remain **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe
   point, durable SUSPENDED state, initial start, terminal event, or the exact
   confirmed-Write case above. Other unsettled tool calls remain

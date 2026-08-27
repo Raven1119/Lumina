@@ -366,6 +366,53 @@ IMPLEMENTATION** provides this exact combination. No generic cancellation
 framework, scheduler, transaction manager, new Model Action, or additional
 lifecycle state was copied or invented.
 
+## Single Child AgentProcess delta (2026-08-27)
+
+### Prime Agent - independent Child session and admission handle
+
+- **SOURCE / COMMIT:** [PrimeIntellect-ai/prime-agent at `bc0fa7606abb3b7af0f765319518d255e6ae553d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/bc0fa7606abb3b7af0f765319518d255e6ae553d), rolling `main`, MIT.
+- **SOURCE SYMBOL:** [`AgentSession` / RLM host handlers / `RlmSpawnHandle`](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/src/core/agent-session.ts), [`runRlmChild` flow and handle contract](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/docs/rlm-runtime.md), and [`rlm.run`](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/prime-agent-runtime/src/rlm/__init__.py).
+- **BORROWED SEMANTICS:** Spawn admission returns a stable Child handle, never the answer. Detached work constructs a distinct Child `SessionManager`, `Agent`, and `AgentSession`; the answer arrives later. The default depth-one ceiling is retained.
+- **LUMINA ADAPTATION:** `SpawnChild(goal)` reserves one durable `ChildRef`. The Host then uses the existing `AgentProcess` mechanics with a separate Child EventLog/State/Context/DecisionFrames/IPython namespace and the same `SharedEnvironment`. `Return(local_result)` is a later bounded fact.
+- **NOT COPIED:** RLM host protocol, daemon, detached scheduler, registry/list/delete, messaging, resources, model selection, artifacts, kernel revival, configurable depth, or recursion.
+
+### DeepSeek Harness (DSH) - durable local Child identity and lineage
+
+- **SOURCE / COMMIT:** [deepseek-ai/deepseek-harness at `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e), `dsh 0.1.1-rc.2`, MIT.
+- **SOURCE SYMBOL:** [`SubagentStartRequest`, `SubagentRun`, `SubagentResult`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/subagent/subagent/src/types.ts), [local publication / `parentSession`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/subsystems/subagent.md), and [`SessionEvent`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/session/src/types.ts).
+- **BORROWED SEMANTICS:** A local one-shot run publishes an ordinary Child session before start returns; its id is the Child session id, its durable header records the direct parent, and child-level failure is an explicit result. Durable lineage is distinct from live activation.
+- **LUMINA ADAPTATION:** Root persists Child identity/direct lineage before execution; Child owns an independent canonical EventLog; Root later appends one causal `CHILD_RETURNED` or `CHILD_FAILED` fact and derives resumed Context from it.
+- **NOT COPIED:** Provider registry, activation manager, inbox, fork seed, descriptor catalog, listing, plugins, disposal, scheduler, or transports.
+
+### OpenAI Codex - direct spawned thread and parent edge
+
+- **SOURCE / COMMIT:** [openai/codex at `b592a0bfed439386fadc69327bd49eccb074cdc6`](https://github.com/openai/codex/tree/b592a0bfed439386fadc69327bd49eccb074cdc6), rolling `main`, Apache-2.0.
+- **SOURCE SYMBOL:** [`AgentControl::spawn_agent`, `spawn_agent_internal`, `ThreadSpawn`, persisted spawn edges](https://github.com/openai/codex/blob/b592a0bfed439386fadc69327bd49eccb074cdc6/codex-rs/core/src/agent/control/spawn.rs), [spawn tool handler](https://github.com/openai/codex/blob/b592a0bfed439386fadc69327bd49eccb074cdc6/codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs), and [`parentThreadId`](https://github.com/openai/codex/blob/b592a0bfed439386fadc69327bd49eccb074cdc6/codex-rs/app-server/README.md).
+- **BORROWED SEMANTICS:** Spawn creates a distinct Child thread id, records parent/depth, submits initial input, and returns identity while completion arrives later. Non-fork spawn uses a fresh thread.
+- **LUMINA ADAPTATION:** One Root action passes only a bounded local goal. Child's first DecisionFrame uses only its own durable facts plus shared-world observations and role-limited capabilities; Root history and IPython namespace are not copied.
+- **NOT COPIED:** AgentControl registry, thread tree/forks, session protocol, messaging, completion watcher, concurrency, roles, approvals, sandbox, MCP, or graph store.
+
+### AgentSpawn - runtime local-goal handoff only
+
+- **SOURCE / COMMIT:** Igor Costa, [AgentSpawn, arXiv:2602.07072v1](https://arxiv.org/html/2602.07072v1), 2026-02-05, CC BY 4.0. This is a paper version with no official implementation used here, so no source-code commit exists.
+- **SOURCE SYMBOL:** Section 3.1 and Section 3.5 `Spawn-Resume Protocol` / `SpawnPackage` / `ResumePackage`.
+- **BORROWED SEMANTICS:** Runtime spawn creates a parent-to-Child topology, hands off a local task, and later returns a result so the parent can continue.
+- **LUMINA ADAPTATION:** Reduce the package to typed `goal: str` and bounded `local_result: str`; shared filesystem reality replaces copied changes or memory.
+- **NOT COPIED:** Spawn scores, thresholds, specialists, memory slicing, skills, replay package, concurrent children, coherence/semantic merge, performance claims, or depth three. **NO DIRECT SOURCE IMPLEMENTATION** is available from AgentSpawn for this Slice.
+
+### Single Child source conclusion
+
+Prime supplies handle-versus-answer and a full independent Child session; DSH supplies durable identity/lineage and explicit outcome; Codex supplies distinct spawned threads and parent edges; AgentSpawn supplies only the paper-level local task/result topology. Lumina-specific work is limited to the existing append-only AgentProcess seam with one Child, one depth, shared Environment, and Host-driven sequencing. No scheduler, registry, messaging, context slicer, resources, recursion, or parallelism is authorized.
+
+**VERIFIED IMPLEMENTATION FACT:** deterministic mechanism tests and three
+fresh real DeepSeek runs exercised the exact Host-driven sequence
+`Root Spawn -> Child AgentProcess -> Return -> Root continuation -> verified
+completion`. The engineering adaptations specific to Lumina are the
+`ChildRef` fields, three append-only Child event names, the `child_pending`
+derived state, role-filtered provider schema, bounded Child Observation, and
+the direct Child-log filename derived from the Root log. These are small local
+bindings to existing Execution seams, not upstream algorithms.
+
 ## Source ambiguities and non-equivalences
 
 - **Direct source fact:** every positive upstream behavior above names a pinned symbol or official contract. **Inference** is marked explicitly for Prime's host-authority reading and Temporal's wake shorthand.

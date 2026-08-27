@@ -14,7 +14,11 @@ from Execution_lab2.execution import (
     ModelRequest,
     NativeModelDecision,
     ReadRequest,
+    Return,
+    ROOT_IPYTHON_TOOL_CONTRACTS,
+    ROOT_TOOL_CONTRACTS,
     ShellRequest,
+    SpawnChild,
     ToolCall,
     TOOL_CONTRACTS,
     Wait,
@@ -89,6 +93,30 @@ _NATIVE_TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "spawn_child",
+            "description": "Admit one independent Child with a bounded local goal.",
+            "parameters": {
+                "type": "object",
+                "properties": {"goal": {"type": "string"}},
+                "required": ["goal"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "return",
+            "description": "Return one bounded local result to the parent Root.",
+            "parameters": {
+                "type": "object",
+                "properties": {"local_result": {"type": "string"}},
+                "required": ["local_result"],
+            },
+        },
+    },
 ]
 
 _IPYTHON_TOOLS = [
@@ -106,6 +134,8 @@ _IPYTHON_TOOLS = [
     },
     _NATIVE_TOOLS[3],
     _NATIVE_TOOLS[4],
+    _NATIVE_TOOLS[5],
+    _NATIVE_TOOLS[6],
 ]
 
 
@@ -130,20 +160,45 @@ class DeepSeekModel:
     @property
     def tool_contracts(self) -> tuple[str, ...]:
         return (
-            TOOL_CONTRACTS
+            ROOT_TOOL_CONTRACTS + ("return(local_result: str)",)
             if self._tool_mode == "native"
-            else IPYTHON_TOOL_CONTRACTS
+            else ROOT_IPYTHON_TOOL_CONTRACTS + ("return(local_result: str)",)
         )
 
     def decide(self, request: ModelRequest) -> NativeModelDecision:
+        requested_names = {
+            contract.partition("(")[0]
+            for contract in request.available_tools
+        }
+        if requested_names & {"spawn_child", "return"}:
+            exposed_names = requested_names
+        else:
+            exposed_names = {
+                contract.partition("(")[0]
+                for contract in (
+                    TOOL_CONTRACTS
+                    if self._tool_mode == "native"
+                    else IPYTHON_TOOL_CONTRACTS
+                )
+            }
         system_prompt = (
             "Use the provided functions to act on the environment. "
             "Claim completion only through claim_complete."
+            if "claim_complete" in exposed_names
+            else (
+                "Use the provided functions to complete the local Child goal. "
+                "Return only through return."
+            )
         )
         if self._tool_mode == "ipython":
             system_prompt = (
                 "Use the persistent IPython environment to inspect and modify "
-                "the workspace. Use claim_complete when the task is finished."
+                "the workspace. "
+                + (
+                    "Use claim_complete when the task is finished."
+                    if "claim_complete" in exposed_names
+                    else "Return the local result only through return."
+                )
             )
         messages = [
             {
@@ -196,11 +251,15 @@ class DeepSeekModel:
         payload: dict[str, object] = {
             "model": MODEL,
             "messages": messages,
-            "tools": (
+            "tools": [
+                tool
+                for tool in (
                 _NATIVE_TOOLS
                 if self._tool_mode == "native"
                 else _IPYTHON_TOOLS
-            ),
+                )
+                if tool["function"]["name"] in exposed_names
+            ],
             "thinking": {"type": "disabled"},
             "stream": False,
         }
@@ -260,11 +319,7 @@ class DeepSeekModel:
                 return self._failure(payload, response, "duplicate_tool_call_id")
             seen_call_ids.add(call_id)
             parsed_calls.append((call_id, function))
-        allowed_names = (
-            {"read", "write", "shell", "wait", "claim_complete"}
-            if self._tool_mode == "native"
-            else {"ipython", "wait", "claim_complete"}
-        )
+        allowed_names = exposed_names
         actions = []
         call_ids = []
         for call_id, function in parsed_calls:
@@ -281,7 +336,11 @@ class DeepSeekModel:
             actions.append(action)
             call_ids.append(call_id)
         if len(actions) > 1 and any(
-            isinstance(action, (Wait, ClaimComplete)) for action in actions
+            isinstance(
+                action,
+                (Wait, ClaimComplete, SpawnChild, Return),
+            )
+            for action in actions
         ):
             return self._failure(payload, response, "mixed_control_tool_calls")
         return NativeModelDecision(
@@ -360,6 +419,20 @@ class DeepSeekModel:
             return Wait(arguments["event_type"])
         if name == "claim_complete" and not arguments:
             return ClaimComplete()
+        if (
+            name == "spawn_child"
+            and set(arguments) == {"goal"}
+            and isinstance(arguments["goal"], str)
+            and 0 < len(arguments["goal"]) <= 1_024
+        ):
+            return SpawnChild(arguments["goal"])
+        if (
+            name == "return"
+            and set(arguments) == {"local_result"}
+            and isinstance(arguments["local_result"], str)
+            and len(arguments["local_result"]) <= 1_024
+        ):
+            return Return(arguments["local_result"])
         return None
 
     @staticmethod
