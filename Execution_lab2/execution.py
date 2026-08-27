@@ -70,6 +70,7 @@ class ClaimComplete:
 @dataclass(frozen=True)
 class SpawnChild:
     goal: str
+    provider_tool_call_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ class ChildRef:
     parent_actor_id: str
     local_goal: str
     event_log_path: str | None
+    provider_tool_call_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -233,6 +235,10 @@ class ChildObservation:
     @property
     def ok(self) -> bool:
         return self.status == "returned"
+
+    @property
+    def provider_tool_call_id(self) -> str | None:
+        return self.child_ref.provider_tool_call_id
 
 
 @dataclass(frozen=True)
@@ -1041,15 +1047,16 @@ class EventLog:
             ):
                 raise ValueError("execution must start once with an uncaused goal")
             return
-        started_event = event_type in (
+        decision_caused_event = event_type in (
             "TOOL_CALL_STARTED",
             "IPYTHON_EXECUTION_STARTED",
+            "CHILD_SPAWNED",
         )
         if (
             not self._events
-            or (started_event and len(source_event_refs) != 1)
+            or (decision_caused_event and len(source_event_refs) != 1)
             or (
-                not started_event
+                not decision_caused_event
                 and source_event_refs != (self._events[-1].event_id,)
             )
         ):
@@ -1090,19 +1097,67 @@ class EventLog:
             if state.status != "suspended" or payload["status"] != "running":
                 raise ValueError("resume requires a suspended Root")
         elif event_type == "CHILD_SPAWNED":
-            frame = previous.payload.get("frame")
+            decision_event = next(
+                (
+                    event
+                    for event in self._events
+                    if event.event_id == source_event_refs[0]
+                ),
+                None,
+            )
+            frame = (
+                decision_event.payload.get("frame")
+                if decision_event is not None
+                and decision_event.event_type == "MODEL_DECISION"
+                else None
+            )
             child_ref = payload["child_ref"]
+            actions = (
+                _action_sequence(frame.resulting_action)
+                if isinstance(frame, DecisionFrame)
+                else ()
+            )
+            spawn_index = sum(
+                event.event_type == "CHILD_SPAWNED"
+                and event.source_event_refs == source_event_refs
+                for event in self._events
+            )
+            expected_action = (
+                actions[spawn_index] if spawn_index < len(actions) else None
+            )
+            call_ids = (
+                _provider_call_ids(frame.provider_tool_call_id, len(actions))
+                if isinstance(frame, DecisionFrame)
+                else ()
+            )
+            expected_call_id = (
+                call_ids[spawn_index]
+                if spawn_index < len(call_ids)
+                else None
+            )
+            previous_is_valid = (
+                previous.event_id == decision_event.event_id
+                if spawn_index == 0 and decision_event is not None
+                else (
+                    previous.event_type == "CHILD_SPAWNED"
+                    and previous.source_event_refs == source_event_refs
+                )
+            )
             prior_child_refs = tuple(
                 event.payload.get("child_ref")
                 for event in self._events
                 if event.event_type == "CHILD_SPAWNED"
             )
             if (
-                previous.event_type != "MODEL_DECISION"
+                not previous_is_valid
                 or not isinstance(frame, DecisionFrame)
-                or not isinstance(frame.resulting_action, SpawnChild)
+                or not actions
+                or any(not isinstance(action, SpawnChild) for action in actions)
+                or not isinstance(expected_action, SpawnChild)
                 or not isinstance(child_ref, ChildRef)
-                or child_ref.local_goal != frame.resulting_action.goal
+                or child_ref.local_goal != expected_action.goal
+                or expected_action.provider_tool_call_id != expected_call_id
+                or child_ref.provider_tool_call_id != expected_call_id
                 or child_ref.parent_actor_id
                 != self._events[0].payload.get("root_actor_id")
                 or child_ref.child_actor_id == child_ref.parent_actor_id
@@ -2479,8 +2534,22 @@ def _observation_projection(
 
 
 def _sibling_observation_projection(
-    observation: Observation | IPythonObservation,
+    observation: Observation | IPythonObservation | ChildObservation,
 ) -> dict[str, object]:
+    if isinstance(observation, ChildObservation):
+        projection: dict[str, object] = {
+            "ok": observation.ok,
+            "status": observation.status,
+            "child_actor_id": observation.child_ref.child_actor_id,
+            "parent_actor_id": observation.child_ref.parent_actor_id,
+        }
+        if observation.local_result is not None:
+            projection["local_result"] = _text_projection(
+                observation.local_result
+            )
+        if observation.failure is not None:
+            projection["failure"] = _text_projection(observation.failure)
+        return {"result": projection}
     result = observation.result
     projection: dict[str, object] = {
         "ok": result.ok,
@@ -2654,7 +2723,10 @@ def _bounded_context(
         document["observations"] = [
             _sibling_observation_projection(observation)
             for observation in sibling_observations
-            if isinstance(observation, (Observation, IPythonObservation))
+            if isinstance(
+                observation,
+                (Observation, IPythonObservation, ChildObservation),
+            )
         ]
         document["lifecycle"] = state.lifecycle_notice
 
@@ -2691,7 +2763,7 @@ def _bounded_context(
 def _sibling_observations_after(
     events: tuple[ExecutionEvent, ...],
     decision_index: int,
-) -> tuple[Observation | IPythonObservation, ...]:
+) -> tuple[Observation | IPythonObservation | ChildObservation, ...]:
     observations = []
     for event_index in range(decision_index + 1, len(events)):
         event = events[event_index]
@@ -2700,9 +2772,54 @@ def _sibling_observations_after(
             observation = fold_execution_state(
                 events[: event_index + 1]
             ).latest_observation
-        if isinstance(observation, (Observation, IPythonObservation)):
+        elif event.event_type in ("CHILD_RETURNED", "CHILD_FAILED"):
+            observation = fold_execution_state(
+                events[: event_index + 1]
+            ).latest_observation
+        if isinstance(
+            observation,
+            (Observation, IPythonObservation, ChildObservation),
+        ):
             observations.append(observation)
     return tuple(observations)
+
+
+def _has_pending_spawn_batch(
+    state: ExecutionState,
+    events: tuple[ExecutionEvent, ...],
+) -> bool:
+    pending_actor_ids = {
+        child.child_actor_id for child in state.pending_child_refs
+    }
+    if not pending_actor_ids:
+        return False
+    decision_event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.event_type == "MODEL_DECISION"
+        ),
+        None,
+    )
+    if decision_event is None:
+        return False
+    frame = decision_event.payload.get("frame")
+    actions = (
+        _action_sequence(frame.resulting_action)
+        if isinstance(frame, DecisionFrame)
+        else ()
+    )
+    if len(actions) < 2 or any(
+        not isinstance(action, SpawnChild) for action in actions
+    ):
+        return False
+    return any(
+        event.event_type == "CHILD_SPAWNED"
+        and event.source_event_refs == (decision_event.event_id,)
+        and isinstance(event.payload.get("child_ref"), ChildRef)
+        and event.payload["child_ref"].child_actor_id in pending_actor_ids
+        for event in events
+    )
 
 
 def _build_model_request(
@@ -3024,6 +3141,9 @@ class RootAgentProcess:
             payload,
             (self._event_log.events[-1].event_id,),
         )
+        state = self._current_state()
+        if _has_pending_spawn_batch(state, self._event_log.events):
+            return self._result([])
         return self._drive()
 
     def resume(self) -> ExecutionResult:
@@ -3061,7 +3181,11 @@ class RootAgentProcess:
                     (last_event.event_id,),
                 )
                 return self._drive()
+        self._resume_spawn_suffix(steps)
+        state = self._current_state()
         if state.status not in ("running", "child_pending"):
+            return self._result(steps)
+        if _has_pending_spawn_batch(state, self._event_log.events):
             return self._result(steps)
         self._resume_sibling_suffix(steps)
         return self._drive(steps)
@@ -3247,6 +3371,86 @@ class RootAgentProcess:
             (received.event_id,),
         )
         return self._drive()
+
+    def _resume_spawn_suffix(self, steps: list[ExecutionStep]) -> None:
+        events = self._event_log.events
+        decision_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.event_type == "MODEL_DECISION"
+            ),
+            None,
+        )
+        frame = (
+            decision_event.payload.get("frame")
+            if decision_event is not None
+            else None
+        )
+        actions = (
+            _action_sequence(frame.resulting_action)
+            if isinstance(frame, DecisionFrame)
+            else ()
+        )
+        if len(actions) < 2 or any(
+            not isinstance(action, SpawnChild) for action in actions
+        ):
+            return
+        committed = tuple(
+            event
+            for event in events
+            if event.event_type == "CHILD_SPAWNED"
+            and event.source_event_refs == (decision_event.event_id,)
+        )
+        if len(committed) >= len(actions):
+            return
+        call_ids = _provider_call_ids(
+            frame.provider_tool_call_id,
+            len(actions),
+        )
+        state = self._current_state()
+        non_null_call_ids = tuple(
+            call_id for call_id in call_ids if call_id is not None
+        )
+        if (
+            self._actor_role != "root"
+            or self._event_log.path is None
+            or len(call_ids) != len(actions)
+            or len(non_null_call_ids) != len(call_ids)
+            or len(non_null_call_ids) != len(set(non_null_call_ids))
+            or len(state.child_refs) + len(actions) - len(committed)
+            > self._max_children_per_root
+            or any(
+                action.provider_tool_call_id != call_id
+                for action, call_id in zip(actions, call_ids, strict=True)
+            )
+        ):
+            raise ValueError("partial Spawn batch recovery is invalid")
+        for action, provider_call_id in zip(
+            actions[len(committed) :],
+            call_ids[len(committed) :],
+            strict=True,
+        ):
+            child_actor_id = f"child-{uuid.uuid4().hex}"
+            child_log_path = self._event_log.path.with_name(
+                f"{self._event_log.path.stem}.{child_actor_id}.jsonl"
+            )
+            child_ref = ChildRef(
+                child_execution_id=f"execution-{uuid.uuid4().hex}",
+                child_actor_id=child_actor_id,
+                parent_actor_id=state.actor_id or "",
+                local_goal=action.goal,
+                event_log_path=str(child_log_path),
+                provider_tool_call_id=provider_call_id,
+            )
+            steps.append(
+                ExecutionStep(state.decision_count, action, None)
+            )
+            self._event_log.append(
+                "CHILD_SPAWNED",
+                {"child_ref": child_ref},
+                (decision_event.event_id,),
+            )
 
     def _resume_sibling_suffix(self, steps: list[ExecutionStep]) -> None:
         events = self._event_log.events
@@ -3486,6 +3690,19 @@ class RootAgentProcess:
                         (decision_event.event_id,),
                     )
                 return self._finish(steps)
+            control_actions = (Wait, ClaimComplete, SpawnChild, Return)
+            if (
+                len(actions) > 1
+                and any(isinstance(item, control_actions) for item in actions)
+                and not all(isinstance(item, SpawnChild) for item in actions)
+            ):
+                steps.append(ExecutionStep(decision, action_snapshot, None))
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": "model_protocol:mixed_control_tool_calls"},
+                    (decision_event.event_id,),
+                )
+                return self._finish(steps)
             action = actions[0] if len(actions) == 1 else None
             if isinstance(action, Return):
                 if self._actor_role != "child":
@@ -3507,17 +3724,26 @@ class RootAgentProcess:
                     (decision_event.event_id,),
                 )
                 return self._finish(steps)
-            if isinstance(action, SpawnChild):
+            spawn_actions = (
+                actions
+                if actions
+                and all(isinstance(item, SpawnChild) for item in actions)
+                else ()
+            )
+            if spawn_actions:
                 if self._actor_role != "root" or not self._max_children_per_root:
-                    steps.append(ExecutionStep(decision, action, None))
+                    steps.append(ExecutionStep(decision, action_snapshot, None))
                     self._event_log.append(
                         "EXECUTION_FAILED",
                         {"failure": "unauthorized_action:SpawnChild"},
                         (decision_event.event_id,),
                     )
                     return self._finish(steps)
-                if len(state.child_refs) >= self._max_children_per_root:
-                    steps.append(ExecutionStep(decision, action, None))
+                if (
+                    len(state.child_refs) + len(spawn_actions)
+                    > self._max_children_per_root
+                ):
+                    steps.append(ExecutionStep(decision, action_snapshot, None))
                     self._event_log.append(
                         "EXECUTION_FAILED",
                         {"failure": "child_limit_reached"},
@@ -3525,41 +3751,79 @@ class RootAgentProcess:
                     )
                     return self._finish(steps)
                 if self._event_log.path is None:
-                    steps.append(ExecutionStep(decision, action, None))
+                    steps.append(ExecutionStep(decision, action_snapshot, None))
                     self._event_log.append(
                         "EXECUTION_FAILED",
                         {"failure": "child_persistence_required"},
                         (decision_event.event_id,),
                     )
                     return self._finish(steps)
+                non_null_call_ids = tuple(
+                    call_id
+                    for call_id in provider_call_ids
+                    if call_id is not None
+                )
+                if (
+                    len(provider_call_ids) != len(spawn_actions)
+                    or (
+                        len(spawn_actions) > 1
+                        and (
+                            len(non_null_call_ids)
+                            != len(provider_call_ids)
+                            or len(non_null_call_ids)
+                            != len(set(non_null_call_ids))
+                        )
+                    )
+                    or any(
+                        spawn.provider_tool_call_id != call_id
+                        for spawn, call_id in zip(
+                            spawn_actions,
+                            provider_call_ids,
+                            strict=True,
+                        )
+                    )
+                ):
+                    steps.append(ExecutionStep(decision, action_snapshot, None))
+                    self._event_log.append(
+                        "EXECUTION_FAILED",
+                        {"failure": "model_protocol:invalid_spawn_batch"},
+                        (decision_event.event_id,),
+                    )
+                    return self._finish(steps)
                 with self._lifecycle:
                     if self._suspend_if_requested_locked():
                         return self._result(steps)
-                    child_actor_id = f"child-{uuid.uuid4().hex}"
-                    child_log_path = (
-                        self._event_log.path.with_name(
-                            f"{self._event_log.path.stem}.{child_actor_id}.jsonl"
-                        )
-                        if self._event_log.path is not None
-                        else None
-                    )
-                    child_ref = ChildRef(
-                        child_execution_id=f"execution-{uuid.uuid4().hex}",
-                        child_actor_id=child_actor_id,
-                        parent_actor_id=state.actor_id or "",
-                        local_goal=action.goal,
-                        event_log_path=(
-                            str(child_log_path)
-                            if child_log_path is not None
+                    for spawn, provider_call_id in zip(
+                        spawn_actions,
+                        provider_call_ids,
+                        strict=True,
+                    ):
+                        child_actor_id = f"child-{uuid.uuid4().hex}"
+                        child_log_path = (
+                            self._event_log.path.with_name(
+                                f"{self._event_log.path.stem}.{child_actor_id}.jsonl"
+                            )
+                            if self._event_log.path is not None
                             else None
-                        ),
-                    )
-                    steps.append(ExecutionStep(decision, action, None))
-                    self._event_log.append(
-                        "CHILD_SPAWNED",
-                        {"child_ref": child_ref},
-                        (decision_event.event_id,),
-                    )
+                        )
+                        child_ref = ChildRef(
+                            child_execution_id=f"execution-{uuid.uuid4().hex}",
+                            child_actor_id=child_actor_id,
+                            parent_actor_id=state.actor_id or "",
+                            local_goal=spawn.goal,
+                            event_log_path=(
+                                str(child_log_path)
+                                if child_log_path is not None
+                                else None
+                            ),
+                            provider_tool_call_id=provider_call_id,
+                        )
+                        steps.append(ExecutionStep(decision, spawn, None))
+                        self._event_log.append(
+                            "CHILD_SPAWNED",
+                            {"child_ref": child_ref},
+                            (decision_event.event_id,),
+                        )
                 return self._result(steps)
             if isinstance(action, ClaimComplete):
                 if self._actor_role != "root":

@@ -333,14 +333,20 @@ class DeepSeekModel:
             action = self._action(name, arguments)
             if action is None:
                 return self._failure(payload, response, "invalid_arguments")
+            if isinstance(action, SpawnChild):
+                action = SpawnChild(action.goal, call_id)
             actions.append(action)
             call_ids.append(call_id)
-        if len(actions) > 1 and any(
-            isinstance(
-                action,
-                (Wait, ClaimComplete, SpawnChild, Return),
+        if (
+            len(actions) > 1
+            and any(
+                isinstance(
+                    action,
+                    (Wait, ClaimComplete, SpawnChild, Return),
+                )
+                for action in actions
             )
-            for action in actions
+            and not all(isinstance(action, SpawnChild) for action in actions)
         ):
             return self._failure(payload, response, "mixed_control_tool_calls")
         return NativeModelDecision(

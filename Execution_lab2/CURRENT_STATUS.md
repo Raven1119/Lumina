@@ -432,10 +432,12 @@ Bounded sibling Child AgentProcess:
   contract; this surface adds only Root-visible `SpawnChild(goal)` and
   Child-visible `Return(local_result)`.
 - Root may persist at most three bounded `ChildRef` values. Each contains a
-  distinct Child execution id, actor id, direct parent id, local goal, and
-  Child EventLog path. Every Spawn returns one handle and stops Root in
-  `child_pending`; the Host may explicitly resume Root for another local
-  decision. Spawn never runs a Child or returns its answer.
+  distinct Child execution id, actor id, direct parent id, local goal, Child
+  EventLog path, and (for native calls) its original provider call id. A local
+  decision may admit either one Spawn or one homogeneous ordered tuple of
+  Spawns up to remaining capacity. The whole tuple is preflighted before any
+  identity is created; it remains one `MODEL_DECISION` with independent
+  `CHILD_SPAWNED` facts. Spawn never runs a Child or returns its answer.
 - The Host constructs each Child with `AgentProcess.for_child(...)` and drives
   children sequentially. Each Child owns its EventLog, derived State, bounded
   Context, DecisionFrames, live IPython control, and lifecycle. Only the
@@ -456,19 +458,25 @@ Bounded sibling Child AgentProcess:
   three separate live IPython namespaces. The 11 deterministic Single Child
   tests remain green after migrating the obsolete one-Child ceiling assertion.
 - Earlier Single Child real evidence remains **PASS / VALIDATED** at 3/3.
-  The bounded sibling real experiment is **NOT VALIDATED**: in all three fresh
-  executions DeepSeek eventually emitted two `spawn_child` control calls in
-  one provider response. The unchanged adapter correctly rejected each as
-  `model_protocol:mixed_control_tool_calls`; zero sibling Spawn events were
-  committed and no run reached verified completion. The prompt and adapter
-  were not changed, and no fourth execution was sent.
-- Task-level verdict: **MECHANISM PASS / REAL PROVIDER NOT VALIDATED**. Final
-  regression reports `Execution_lab2` 115 passed / 8 gated real-provider
-  tests skipped; root 328 passed / 24 skipped; Conversation Memory 163 passed /
-  45 skipped; Dream 36 passed / 1 skipped. A maintained minimum-budget
-  regression also proves three identified Child returns remain associated with
-  their creation-ordered actor ids, while a later real Tool result remains
-  visible, within `max_context_chars=768`.
+  The bounded sibling real experiment is now **PASS / VALIDATED**. The adapter
+  accepts only a homogeneous Spawn batch; Runtime completes whole-batch
+  preflight before creating any Child identity, then appends one independent
+  event per ordered direct Child. If a crash interrupts those appends, restart
+  uses the same frozen DecisionFrame to append only the never-committed Spawn
+  suffix before waiting for sibling results. All mixed or repeated non-Spawn
+  control batches remain wholly rejected.
+- The frozen DeepSeek experiment succeeded on its first fresh run: one Root
+  response contained two homogeneous `spawn_child` calls, two Child
+  identities and two returns were committed, Root integrated the results,
+  `answer.txt` equalled `"42"`, and completion was verified. The permitted
+  second and third attempts were not sent.
+- Task-level verdict: **PASS / VALIDATED**. Final regression reports
+  `Execution_lab2` 129 passed / 8 gated real-provider tests skipped; root 328
+  passed / 24 skipped; Conversation Memory 163 passed / 45 skipped; Dream 36
+  passed / 1 skipped. A maintained minimum-budget regression also proves three
+  identified Child returns remain associated with their creation-ordered actor
+  ids, while a later real Tool result remains visible, within
+  `max_context_chars=768`.
 
 Slice 3 regression evidence:
 
@@ -531,11 +539,11 @@ Slice 3 regression evidence:
   completed 6/6; one real two-shell sibling response crossed the new path with
   exact ids and verified completion. Existing canonical call-id and seeded
   ToolHost-failure continuation evidence remains valid.
-- Up to three direct sibling children: **DETERMINISTIC MECHANISM IMPLEMENTED**;
-  the required real DeepSeek multi-child chain is **NOT VALIDATED** for the
-  exact mixed-control response reason above. Grandchildren, recursive Spawn,
-  parallel actors, scheduling, joins, messaging, and automatic Child crash
-  recovery remain **NOT IMPLEMENTED**.
+- Up to three direct sibling children: **IMPLEMENTED AND VALIDATED** for one
+  Spawn or one homogeneous ordered Spawn tuple in a Root decision. The
+  Host-driven execution order remains sequential. Grandchildren, recursive
+  Spawn, parallel actors, scheduling, joins, messaging, and automatic Child
+  crash recovery remain **NOT IMPLEMENTED**.
 - Restart is supported at a durable settled result, WAIT/external-event safe
   point, durable SUSPENDED state, initial start, terminal event, or the exact
   confirmed-Write case above. Other unsettled tool calls remain

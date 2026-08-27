@@ -9,6 +9,7 @@ import pytest
 
 from Execution_lab2.deepseek_model import DeepSeekModel
 from Execution_lab2.execution import (
+    AgentProcess,
     Checkpoint,
     ClaimComplete,
     EventLog,
@@ -17,9 +18,12 @@ from Execution_lab2.execution import (
     NativeModelDecision,
     Observation,
     ReadRequest,
+    Return,
     RootAgentProcess,
+    ScriptedModel,
     SharedEnvironment,
     ShellRequest,
+    SpawnChild,
     ToolCall,
     ToolHost,
     ToolResult,
@@ -69,6 +73,465 @@ def _plain(value):
     if isinstance(value, (list, tuple)):
         return [_plain(item) for item in value]
     return value
+
+
+def test_two_homogeneous_spawn_calls_form_one_ordered_root_decision(tmp_path):
+    response = _tool_calls_response(
+        ("call_a", "spawn_child", json.dumps({"goal": "inspect a.txt"})),
+        ("call_b", "spawn_child", json.dumps({"goal": "inspect b.txt"})),
+    )
+    result = AgentProcess(
+        DeepSeekModel(transport=lambda payload: response),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    ).run(
+        "delegate two independent reads",
+        FileContentEquals("answer.txt", "42"),
+    )
+
+    assert result.status == "child_pending"
+    assert len(result.decision_frames) == 1
+    frame = result.decision_frames[0]
+    assert frame.resulting_action == (
+        SpawnChild("inspect a.txt", "call_a"),
+        SpawnChild("inspect b.txt", "call_b"),
+    )
+    assert frame.provider_tool_call_id == ("call_a", "call_b")
+    assert [child.local_goal for child in result.state.child_refs] == [
+        "inspect a.txt",
+        "inspect b.txt",
+    ]
+    assert [child.provider_tool_call_id for child in result.state.child_refs] == [
+        "call_a",
+        "call_b",
+    ]
+    assert len({child.child_actor_id for child in result.state.child_refs}) == 2
+    assert {child.parent_actor_id for child in result.state.child_refs} == {
+        result.state.root_actor_id
+    }
+    spawned = [
+        event for event in result.events if event.event_type == "CHILD_SPAWNED"
+    ]
+    decision_event = next(
+        event for event in result.events if event.event_type == "MODEL_DECISION"
+    )
+    assert len(spawned) == 2
+    assert all(
+        event.source_event_refs == (decision_event.event_id,) for event in spawned
+    )
+
+
+def _child_result(child_ref, tools, local_result):
+    return AgentProcess.for_child(
+        child_ref,
+        model=ScriptedModel([Return(local_result)]),
+        tools=tools,
+        max_decisions=1,
+    ).run_child()
+
+
+def test_three_homogeneous_spawn_calls_are_admitted_in_provider_order(tmp_path):
+    response = _tool_calls_response(
+        ("call_a", "spawn_child", json.dumps({"goal": "A"})),
+        ("call_b", "spawn_child", json.dumps({"goal": "B"})),
+        ("call_c", "spawn_child", json.dumps({"goal": "C"})),
+    )
+    result = AgentProcess(
+        DeepSeekModel(transport=lambda payload: response),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    ).run("delegate three", FileContentEquals("answer.txt", "42"))
+
+    assert result.status == "child_pending"
+    assert [child.local_goal for child in result.state.child_refs] == [
+        "A",
+        "B",
+        "C",
+    ]
+    assert [
+        child.provider_tool_call_id for child in result.state.child_refs
+    ] == ["call_a", "call_b", "call_c"]
+    assert sum(
+        event.event_type == "MODEL_DECISION" for event in result.events
+    ) == 1
+
+
+def test_spawn_batch_over_remaining_capacity_is_rejected_before_new_identity(
+    tmp_path,
+):
+    responses = iter(
+        [
+            _tool_calls_response(
+                ("call_a", "spawn_child", json.dumps({"goal": "A"})),
+                ("call_b", "spawn_child", json.dumps({"goal": "B"})),
+            ),
+            _tool_calls_response(
+                ("call_c", "spawn_child", json.dumps({"goal": "C"})),
+                ("call_d", "spawn_child", json.dumps({"goal": "D"})),
+            ),
+        ]
+    )
+    tools = ToolHost(SharedEnvironment(tmp_path))
+    root = AgentProcess(
+        DeepSeekModel(transport=lambda payload: next(responses)),
+        tools,
+        max_decisions=2,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    )
+    initial = root.run(
+        "delegate within capacity",
+        FileContentEquals("answer.txt", "42"),
+    )
+    first, second = initial.state.child_refs
+
+    after_first = root.accept_child(_child_result(first, tools, "A"))
+    result = root.accept_child(_child_result(second, tools, "B"))
+
+    assert after_first.status == "child_pending"
+    assert result.status == "failed"
+    assert result.failure == "child_limit_reached"
+    assert result.state.child_refs == (first, second)
+    assert sum(
+        event.event_type == "CHILD_SPAWNED" for event in result.events
+    ) == 2
+
+
+def test_duplicate_spawn_provider_id_is_rejected_before_any_child(tmp_path):
+    response = _tool_calls_response(
+        ("call_same", "spawn_child", json.dumps({"goal": "A"})),
+        ("call_same", "spawn_child", json.dumps({"goal": "B"})),
+    )
+    result = AgentProcess(
+        DeepSeekModel(transport=lambda payload: response),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    ).run("reject duplicate identity", FileContentEquals("answer.txt", "42"))
+
+    assert result.status == "failed"
+    assert result.failure == "model_protocol:duplicate_tool_call_id"
+    assert result.state.child_refs == ()
+    assert not any(
+        event.event_type == "CHILD_SPAWNED" for event in result.events
+    )
+
+
+def test_spawn_batch_without_provider_ids_is_rejected_before_any_child(
+    tmp_path,
+):
+    result = AgentProcess(
+        ScriptedModel(
+            [
+                NativeModelDecision(
+                    (
+                        SpawnChild("A"),
+                        SpawnChild("B"),
+                    ),
+                    {},
+                    {"fixture": "missing provider ids"},
+                )
+            ]
+        ),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    ).run("require batch identities", FileContentEquals("answer.txt", "42"))
+
+    assert result.status == "failed"
+    assert result.failure == "model_protocol:invalid_spawn_batch"
+    assert result.state.child_refs == ()
+    assert not any(
+        event.event_type == "CHILD_SPAWNED" for event in result.events
+    )
+
+
+@pytest.mark.parametrize(
+    ("second_name", "second_arguments"),
+    [
+        ("read", json.dumps({"path": "a.txt"})),
+        ("wait", json.dumps({"event_type": "ready"})),
+        ("claim_complete", "{}"),
+    ],
+)
+def test_spawn_mixed_with_another_action_rejects_the_whole_decision(
+    tmp_path,
+    second_name,
+    second_arguments,
+):
+    (tmp_path / "a.txt").write_text("17", encoding="utf-8")
+    response = _tool_calls_response(
+        ("call_spawn", "spawn_child", json.dumps({"goal": "A"})),
+        ("call_other", second_name, second_arguments),
+    )
+    result = AgentProcess(
+        DeepSeekModel(transport=lambda payload: response),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    ).run("reject mixed controls", FileContentEquals("answer.txt", "42"))
+
+    assert result.status == "failed"
+    assert result.failure == "model_protocol:mixed_control_tool_calls"
+    assert result.state.child_refs == ()
+    assert not any(
+        event.event_type
+        in ("CHILD_SPAWNED", "TOOL_CALL_STARTED", "ROOT_WAITING")
+        for event in result.events
+    )
+
+
+@pytest.mark.parametrize(
+    ("calls", "expected_failure"),
+    [
+        (
+            (
+                ("call_a", "wait", json.dumps({"event_type": "A"})),
+                ("call_b", "wait", json.dumps({"event_type": "B"})),
+            ),
+            "model_protocol:mixed_control_tool_calls",
+        ),
+        (
+            (
+                ("call_a", "claim_complete", "{}"),
+                ("call_b", "claim_complete", "{}"),
+            ),
+            "model_protocol:mixed_control_tool_calls",
+        ),
+        (
+            (
+                ("call_spawn", "spawn_child", json.dumps({"goal": "A"})),
+                ("call_return", "return", json.dumps({"local_result": "A"})),
+            ),
+            "model_protocol:unknown_tool",
+        ),
+    ],
+)
+def test_other_multi_control_responses_remain_wholly_rejected(
+    tmp_path,
+    calls,
+    expected_failure,
+):
+    result = AgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: _tool_calls_response(*calls)
+        ),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    ).run("reject control batch", FileContentEquals("answer.txt", "42"))
+
+    assert result.status == "failed"
+    assert result.failure == expected_failure
+    assert result.state.child_refs == ()
+    assert not any(
+        event.event_type
+        in ("CHILD_SPAWNED", "TOOL_CALL_STARTED", "ROOT_WAITING")
+        for event in result.events
+    )
+
+
+def test_spawn_batch_child_results_continue_with_matching_native_call_ids(
+    tmp_path,
+):
+    (tmp_path / "answer.txt").write_text("42", encoding="utf-8")
+    responses = iter(
+        [
+            _tool_calls_response(
+                (
+                    "call_a",
+                    "spawn_child",
+                    json.dumps({"goal": "inspect a.txt"}),
+                ),
+                (
+                    "call_b",
+                    "spawn_child",
+                    json.dumps({"goal": "inspect b.txt"}),
+                ),
+            ),
+            _tool_response("call_claim", "claim_complete", "{}"),
+        ]
+    )
+    payloads = []
+
+    def transport(payload):
+        payloads.append(payload)
+        return next(responses)
+
+    tools = ToolHost(SharedEnvironment(tmp_path))
+    root = AgentProcess(
+        DeepSeekModel(transport=transport),
+        tools,
+        max_decisions=2,
+        event_log=EventLog(tmp_path / "root.jsonl"),
+    )
+    initial = root.run(
+        "delegate and integrate",
+        FileContentEquals("answer.txt", "42"),
+    )
+    first, second = initial.state.child_refs
+
+    after_first = root.accept_child(_child_result(first, tools, "17"))
+    assert after_first.status == "child_pending"
+    assert len(payloads) == 1
+
+    result = root.accept_child(_child_result(second, tools, "25"))
+
+    assert result.status == "completed"
+    assert any(
+        event.event_type == "COMPLETION_VERIFIED" for event in result.events
+    )
+    messages = payloads[1]["messages"]
+    assistant = next(
+        message for message in messages if message["role"] == "assistant"
+    )
+    tool_messages = [
+        message for message in messages if message["role"] == "tool"
+    ]
+    assert [
+        call["id"] for call in assistant["tool_calls"]
+    ] == ["call_a", "call_b"]
+    assert [
+        message["tool_call_id"] for message in tool_messages
+    ] == ["call_a", "call_b"]
+    assert [
+        json.loads(message["content"])["observation"]["result"]["local_result"][
+            "text"
+        ]
+        for message in tool_messages
+    ] == ["17", "25"]
+
+
+def test_restart_preserves_spawn_batch_identities_and_waits_for_all_results(
+    tmp_path,
+):
+    (tmp_path / "answer.txt").write_text("42", encoding="utf-8")
+    first_response = _tool_calls_response(
+        ("call_a", "spawn_child", json.dumps({"goal": "A"})),
+        ("call_b", "spawn_child", json.dumps({"goal": "B"})),
+    )
+    root_path = tmp_path / "root.jsonl"
+    tools = ToolHost(SharedEnvironment(tmp_path))
+    initial = AgentProcess(
+        DeepSeekModel(transport=lambda payload: first_response),
+        tools,
+        max_decisions=2,
+        event_log=EventLog(root_path),
+    ).run("restart a batch", FileContentEquals("answer.txt", "42"))
+    original_refs = initial.state.child_refs
+    original_execution_id = initial.state.execution_id
+    original_root_actor_id = initial.state.root_actor_id
+    continuation_payloads = []
+
+    def continuation_transport(payload):
+        continuation_payloads.append(payload)
+        return _tool_response("call_claim", "claim_complete", "{}")
+
+    restored_root = AgentProcess(
+        DeepSeekModel(transport=continuation_transport),
+        tools,
+        max_decisions=2,
+        event_log=EventLog.load(root_path),
+    )
+    restored = restored_root.resume()
+
+    assert restored.status == "child_pending"
+    assert restored.state.child_refs == original_refs
+    assert restored.state.execution_id == original_execution_id
+    assert restored.state.root_actor_id == original_root_actor_id
+    assert continuation_payloads == []
+    assert sum(
+        event.event_type == "CHILD_SPAWNED" for event in restored.events
+    ) == 2
+
+    after_first = restored_root.accept_child(
+        _child_result(original_refs[0], tools, "17")
+    )
+    assert after_first.status == "child_pending"
+    assert continuation_payloads == []
+
+    result = restored_root.accept_child(
+        _child_result(original_refs[1], tools, "25")
+    )
+
+    assert result.status == "completed"
+    assert result.state.child_refs == original_refs
+    assert fold_execution_state(result.events) == result.state
+    assert len(continuation_payloads) == 1
+    assert [
+        message["tool_call_id"]
+        for message in continuation_payloads[0]["messages"]
+        if message["role"] == "tool"
+    ] == ["call_a", "call_b"]
+
+
+def test_restart_finishes_only_the_uncommitted_spawn_batch_suffix(tmp_path):
+    class CrashBeforeSecondSpawn(EventLog):
+        def __init__(self, path):
+            super().__init__(path)
+            self.spawn_count = 0
+
+        def append(self, event_type, payload, source_event_refs=()):
+            if event_type == "CHILD_SPAWNED":
+                self.spawn_count += 1
+                if self.spawn_count == 2:
+                    raise RuntimeError("crash before second spawn append")
+            return super().append(event_type, payload, source_event_refs)
+
+    response = _tool_calls_response(
+        ("call_a", "spawn_child", json.dumps({"goal": "A"})),
+        ("call_b", "spawn_child", json.dumps({"goal": "B"})),
+    )
+    root_path = tmp_path / "root.jsonl"
+    with pytest.raises(RuntimeError, match="before second spawn"):
+        AgentProcess(
+            DeepSeekModel(transport=lambda payload: response),
+            ToolHost(SharedEnvironment(tmp_path)),
+            max_decisions=2,
+            event_log=CrashBeforeSecondSpawn(root_path),
+        ).run(
+            "survive partial batch admission",
+            FileContentEquals("answer.txt", "42"),
+        )
+
+    crashed = EventLog.load(root_path)
+    first_ref = next(
+        event.payload["child_ref"]
+        for event in crashed.events
+        if event.event_type == "CHILD_SPAWNED"
+    )
+    model_calls = []
+    restored_root = AgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: model_calls.append(payload)
+            or _tool_response("call_claim", "claim_complete", "{}")
+        ),
+        ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=2,
+        event_log=crashed,
+    )
+    restored = restored_root.resume()
+
+    assert restored.status == "child_pending"
+    assert len(restored.state.child_refs) == 2
+    assert restored.state.child_refs[0] == first_ref
+    assert [
+        child.provider_tool_call_id for child in restored.state.child_refs
+    ] == ["call_a", "call_b"]
+    assert len(
+        {
+            child.child_execution_id
+            for child in restored.state.child_refs
+        }
+    ) == 2
+    assert sum(
+        event.event_type == "CHILD_SPAWNED" for event in restored.events
+    ) == 2
+    assert sum(
+        event.event_type == "MODEL_DECISION" for event in restored.events
+    ) == 1
+    assert model_calls == []
 
 
 def _assistant_tool_call_evidence(message):

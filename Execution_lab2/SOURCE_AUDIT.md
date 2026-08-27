@@ -552,13 +552,109 @@ idea. Lumina-specific engineering is the hard ceiling of three, derived
 Registry, Actor Directory, Join, scheduler, parallel executor, or recursive
 topology was imported or invented.
 
-**REAL-PROVIDER FACT:** Three fresh DeepSeek runs produced zero committed
-sibling Spawns. In every run DeepSeek eventually emitted two
-`spawn_child` calls in one response; the unchanged adapter rejected the
-response as `model_protocol:mixed_control_tool_calls`. Treating one
-provider response as multiple Root decisions would violate the task contract.
-The deterministic mechanism is PASS, while the real multi-child claim remains
-NOT VALIDATED.
+**HISTORICAL REAL-PROVIDER FACT:** At the prior bounded-sibling baseline,
+three fresh DeepSeek runs produced zero committed sibling Spawns because every
+two-Spawn response was rejected as a multi-control response. That evidence
+identified the exact compatibility gap. The later homogeneous-Spawn-batch
+task explicitly authorized treating the response as one ordered Root decision,
+not as multiple decisions.
+
+## Homogeneous Spawn batch compatibility delta (2026-08-27)
+
+### OpenAI Codex - preserve distinct call identities
+
+- **SOURCE / COMMIT:** [openai/codex at
+  `bde9db1375667c50dcc0c2b52532a4e2672571c2`](https://github.com/openai/codex/tree/bde9db1375667c50dcc0c2b52532a4e2672571c2),
+  rolling `main`, Apache-2.0.
+- **SOURCE SYMBOL:** [`ToolCallRuntime`, `ToolCall.call_id`, and correlated
+  tool output construction](https://github.com/openai/codex/blob/bde9db1375667c50dcc0c2b52532a4e2672571c2/codex-rs/core/src/tools/parallel.rs).
+- **BORROWED SEMANTICS:** Each model-issued call keeps its own opaque identity
+  through Host handling and its corresponding result. A surrounding group does
+  not replace those identities with one synthetic id.
+- **LUMINA ADAPTATION:** Each `SpawnChild`, `ChildRef`, and
+  `ChildObservation` carries the original DeepSeek call id. The later Root
+  continuation emits one ordered `role=tool` result per original id.
+- **NOT COPIED:** Codex's parallel runtime, locks, router, scheduler,
+  collaboration session, approvals, sandbox, MCP, or thread management.
+
+### Prime Agent - multiple independent handles from one parent scope
+
+- **SOURCE / COMMIT:** [PrimeIntellect-ai/prime-agent at
+  `bc0fa7606abb3b7af0f765319518d255e6ae553d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/bc0fa7606abb3b7af0f765319518d255e6ae553d),
+  rolling `main`, MIT.
+- **SOURCE SYMBOL:** [`AgentSession`, `runRlmChild`,
+  `RlmSpawnHandle`, and parent-scoped registry
+  wiring](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/src/core/agent-session.ts),
+  plus the [RLM runtime contract](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/docs/rlm-runtime.md).
+- **BORROWED SEMANTICS:** Multiple admissions from one parent yield distinct
+  handles and independent Child sessions; a handle is not a Child result.
+- **LUMINA ADAPTATION:** One frozen Root decision may append two or three
+  ordered `CHILD_SPAWNED` facts, each with a separate execution/actor
+  identity and the same direct Root parent. The Host still runs each Child
+  sequentially through the existing `AgentProcess.for_child` path.
+- **NOT COPIED:** Prime's mutable registry, list/delete operations, daemon,
+  detached concurrency, messaging, model selection, artifacts, kernel
+  snapshots, or scheduler.
+
+### DeepSeek Harness (DSH) - operation-local sibling settlement
+
+- **SOURCE / COMMIT:** [deepseek-ai/deepseek-harness at
+  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e),
+  `dsh 0.1.1-rc.2`, MIT.
+- **SOURCE SYMBOL:** [`SubagentRunInfo`, `SubagentRunEndInfo`,
+  `SubagentStartRequest`, and the operation-local settlement
+  contract](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/subagent/subagent/src/types.ts),
+  together with [`executeToolCalls`, `appendToolCall`, and
+  `appendToolResult`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/core/agent-loop/src/tool-calls.ts).
+- **BORROWED SEMANTICS:** Sibling operations retain distinct identities and
+  settlements even when planned together; result ordering remains correlated
+  with model call ordering.
+- **LUMINA ADAPTATION:** Runtime waits until every Child admitted by the one
+  Spawn tuple has a separate durable return/failure before sampling Root. The
+  ordered Child observations then reuse the existing native sibling
+  continuation projection.
+- **NOT COPIED:** DSH's provider registry, activation manager, rolling
+  concurrency pool, inbox, catalog, plugin ecosystem, disposal, or scheduler.
+
+### DeepSeek native API - ordered calls and exact Tool result correlation
+
+- **SOURCE / VERSION:** Official DeepSeek Chat Completion API documentation,
+  live documentation audited 2026-08-27; no source commit or documentation
+  license was stated.
+- **SOURCE SYMBOL:** `choices[].message.tool_calls[]`,
+  `tool_calls[].id`, and `role="tool".tool_call_id`.
+- **BORROWED SEMANTICS:** A response may contain an ordered list of calls, and
+  each Tool result must cite the exact corresponding call id.
+- **LUMINA ADAPTATION:** Only a non-empty homogeneous list of
+  `spawn_child` calls crosses the new control-batch path. All other
+  multi-control responses retain whole-response rejection.
+- **NOT COPIED:** No provider session store, generalized control batching,
+  parallel executor, retry policy, or prompt framework.
+
+### Homogeneous Spawn batch source conclusion
+
+Upstream sources support distinct call identity, multiple parent-scoped Child
+handles, independent settlement, and ordered result correlation. **NO DIRECT
+SOURCE IMPLEMENTATION** was found for Lumina's exact rule:
+
+```text
+one homogeneous Spawn tuple
+-> whole-batch role/schema/id/capacity preflight
+-> one DecisionFrame
+-> multiple independent CHILD_SPAWNED facts
+```
+
+That rule is the task-card-specified Lumina engineering adaptation, not a new
+recovery or scheduling algorithm. The fixed ceiling, sequential Host drive,
+and EventLog fold reuse existing mechanisms. Because the independent Spawn
+facts are separate durable appends, restart reuses the existing frozen-suffix
+pattern to append only a never-committed Spawn suffix after an interrupted
+batch admission; already committed Child identities are not regenerated. This
+is specific crash completion for the one authorized batch form, not a
+transaction manager or generic recovery algorithm. The first frozen real
+DeepSeek run crossed this exact path with two committed children, two
+independent returns, Root integration, and verified
+`answer.txt == "42"`.
 
 ## Source ambiguities and non-equivalences
 

@@ -1,127 +1,136 @@
-# Bounded Sibling Child Result
+# Homogeneous Spawn Batch Result
 
 ## Verdict
 
 - Deterministic mechanism: **PASS**.
-- Real DeepSeek topology evidence: **NOT VALIDATED**.
-- Overall research claim: **NOT VALIDATED**.
+- Real DeepSeek topology evidence: **PASS / VALIDATED**.
+- Overall research claim: **PASS / VALIDATED**.
 
-The implementation proves that one Root can durably form and integrate up to
-three independent depth-one sibling Child processes. The required real-model
-chain did not occur: DeepSeek attempted two `spawn_child` calls in one provider
-response rather than making separate local decisions.
+One Root model response can now request two or three independent direct
+children through an ordered homogeneous tuple of existing
+`SpawnChild(goal)` actions. The Host admits separate Child identities and
+later returns separate results to the same Root continuation. This is not a
+`SpawnMany` action, a scheduler, or parallel execution.
 
 ## Implemented surface
 
-- The existing `SpawnChild(goal) -> ChildRef` action is unchanged. There is no
-  `SpawnMany`.
-- `AgentProcess` admits at most three direct Root children. `max_depth` remains
-  one because Child still cannot Spawn or ClaimComplete.
-- Every accepted Spawn persists a distinct Child execution id, actor id, direct
-  parent id, bounded local goal, and Child EventLog path.
-- Each Child keeps its own EventLog, derived State, bounded Context,
-  DecisionFrames, IPython namespace, and lifecycle. All children use the same
-  `SharedEnvironment`.
-- The Host drives children sequentially in creation order. There is no actor
-  parallelism, scheduler, worker pool, or async join.
-- Each delivered outcome remains a separate Root event with exact Child and
-  parent identity: `CHILD_RETURNED` or `CHILD_FAILED`.
-- Root may use the existing `Wait("CHILD_RESULT")`. One matching Child outcome
-  wakes Root, which decides whether to wait again, act, or claim completion.
-  Runtime has no `wait_all_children` or `all_results_ready` predicate.
-- Root Context projects at most three identified Child handles/outcomes.
-  Child Context does not project sibling private state.
-- Child handles and outcomes are derived only by folding the canonical Root
-  EventLog. They are not a second persistence authority or Actor Directory.
+- `DeepSeekModel` accepts multiple calls only when every parsed action is
+  `SpawnChild`. Ordinary Tool/IPython sibling batches remain supported.
+  Every other multi-control response remains wholly rejected.
+- Before creating any Child id, Runtime checks Root authority, durable Root
+  storage, the total remaining capacity, complete ordered provider call ids,
+  call-id uniqueness, and each action/call-id binding.
+- One provider response produces one `MODEL_DECISION` and one
+  `DecisionFrame` whose resulting action and provider id are ordered tuples.
+  Each admitted Child still gets its own `CHILD_SPAWNED` event citing that
+  decision; no synthetic batch event or batch id exists.
+- `SpawnChild.provider_tool_call_id` and
+  `ChildRef.provider_tool_call_id` retain the original opaque provider
+  identity. Each `ChildObservation` exposes the matching identity only for
+  native continuation correlation.
+- The Host drives admitted children sequentially in creation order. Root is
+  not sampled after only a prefix of the batch settles. Once every sibling in
+  that decision has returned or failed, the next native request contains one
+  ordered `role=tool` message per original call id.
+- EventLog remains historical authority. Child handles, pending status,
+  outcomes, and Context are derived by fold/projection. Restart does not create
+  a second Child identity or repeat a Spawn event.
 
 ## Deterministic evidence
 
-Six maintained tests establish:
+The maintained A-G experiment establishes:
 
-1. Three Spawns produce three unique Child execution/actor identities with one
-   parent. A fourth Spawn fails with `child_limit_reached` and produces no
-   fourth `CHILD_SPAWNED`.
-2. Child A writes `shared.txt`; Child B reads the resulting filesystem state.
-   Their local goals and model Contexts remain isolated while world reality is
-   shared. Root receives independent `alpha` and `beta` events with the correct
-   Child ids.
-3. A return, a failure, and another return remain three distinct Root facts.
-   Runtime does not retry, replace, or cancel a sibling; Root continues and
-   reaches verified completion.
-4. A crash after two durable returns reconstructs the same Root execution id,
-   Root actor id, Child identities, lineage, and results. Neither Spawn nor
-   Return delivery repeats.
-5. Three live sibling IPython controls retain separate namespaces and shut down
-   cleanly. Each Child sees its own sentinel and not either sibling sentinel.
-6. Three identified Child outcomes plus a later ordinary Tool observation
-   remain usable at the minimum supported `max_context_chars=768`. Root sees
-   the creation-ordered actor-id list, the correspondingly indexed return facts,
-   and the real Tool result without exceeding the absolute Context bound.
+1. **A - two Spawn calls:** one DecisionFrame freezes the ordered A/B action
+   and call-id tuples; two unique direct Child identities and two independent
+   causal `CHILD_SPAWNED` events are committed.
+2. **B - three Spawn calls:** three children are admitted in provider/model
+   order under the fixed ceiling of three.
+3. **C - atomic capacity rejection:** with two prior Child identities, a C/D
+   batch is rejected as `child_limit_reached`; zero new identity or Spawn
+   event is created.
+4. **D - duplicate provider identity:** the entire response fails as
+   `model_protocol:duplicate_tool_call_id`; zero Child is admitted.
+5. **E - mixed controls:** Spawn+Read, Spawn+Wait, Spawn+ClaimComplete,
+   Spawn+Return, Wait+Wait, and Claim+Claim are all rejected before any Child,
+   Tool, Wait, or completion effect.
+6. **F - native continuation:** the A/B assistant calls become exactly two
+   ordered Tool result messages with the same A/B provider ids and independent
+   Child results.
+7. **G - restart:** Root execution id, Root actor id, Child identities,
+   creation order, call identities, and fold equality survive EventLog reload.
+   Resume performs zero model calls while any sibling from the batch remains
+   pending and performs no repeated Spawn. A separate crash-between-appends
+   test proves that restart preserves the already committed Child and appends
+   only the same DecisionFrame's never-committed Spawn suffix.
 
-The migrated Single Child regression also proves that Root may decide to Spawn
-a second sibling after the first Child returns. All other Single Child
-identity, authority, isolation, failure, provider, IPython, and restart
-regressions remain green.
+Batch preflight also rejects a native multi-Spawn decision with missing call
+ids. The legacy one-at-a-time scripted Spawn path remains unchanged.
+
+The earlier bounded-sibling evidence also remains green: shared filesystem
+reality with isolated Child Context/IPython namespaces, independently
+identified return/failure facts, a fourth-Child ceiling, bounded Context, and
+single-Child compatibility.
 
 ## Real DeepSeek experiment
 
-The experiment used three fresh workspaces:
+The frozen experiment used:
 
 ```text
 a.txt = 17
 b.txt = 25
+goal = use separate child processes to inspect each input, combine the findings,
+       and write answer.txt containing their sum
 CompletionSpec = FileContentEquals("answer.txt", "42")
 ```
 
-Root received the task-card goal and only the statement that multiple Child
-processes were available. It was not told to Spawn exactly two children or to
-use a fixed A/B order.
+No prompt or provider setting was changed. The first fresh run succeeded, so
+the allowed second and third attempts were not sent.
 
-Observed durable facts:
+| Run | Root response shape | Spawned | Returned | Failed | Integrated output | Verified |
+|---:|---|---:|---:|---:|---|---|
+| 1 | two homogeneous `spawn_child` calls | 2 | 2 | 0 | `answer.txt == "42"` | yes |
 
-| Run | Root decisions before failure | Provider control response | Committed Spawn | Verified |
-|---:|---|---|---:|---:|
-| 1 | first decision | `spawn_child`, `spawn_child` in one response | 0 | no |
-| 2 | shell, then two ordinary reads, then control response | `spawn_child`, `spawn_child` in one response | 0 | no |
-| 3 | first decision | `spawn_child`, `spawn_child` in one response | 0 | no |
+Both provider call ids were distinct and non-empty. Their opaque literal values
+were intentionally not printed to stdout; admission and native continuation
+mechanically required equality across provider response, `SpawnChild`,
+`ChildRef`, `ChildObservation`, and the two ordered `role=tool` messages.
+The durable Root history contained two `CHILD_SPAWNED`, two
+`CHILD_RETURNED`, and `COMPLETION_VERIFIED`.
 
-All three executions ended with
-`model_protocol:mixed_control_tool_calls`. This is the expected admission
-failure for multiple control calls in one provider response. Accepting the
-response would turn one provider-level fan-out into a fake sequence of Root
-local decisions and violate the Slice contract. The adapter and prompt were
-therefore not changed, and no fourth real execution was sent.
-
-DeepSeek demonstrated an intent to branch, but no run produced:
+This validates only the bounded claim:
 
 ```text
-Root -> at least 2 committed Child identities
-     -> independent Returns
-     -> Root integration
-     -> COMPLETION_VERIFIED
+one Root local decision
+-> multiple independent direct sibling Child identities
+-> independent Child execution and Return
+-> one Root continuation integrating both results
+-> environment-verified completion
 ```
 
-The real-provider criterion is consequently **NOT VALIDATED**, not PASS.
+It does not establish parallel speedup, swarm behavior, recursive topology,
+automatic decomposition quality, or general multi-agent superiority.
 
 ## Preserved boundaries
 
-- `RootAgentProcess` MVP actions and completion authority are unchanged.
-- Child cannot Spawn, Return remains bounded, and Root cannot Return.
-- Actors remain sequential and depth remains one.
-- No recursion, grandchild, parallel execution, `SpawnMany`, join framework,
-  Blackboard, Actor Directory, direct messaging, resource system, specialist
-  roles, Planner, or Reviewer was added.
-- No performance, swarm, emergence, or multi-agent superiority claim is made.
+- Maximum direct children remains three and maximum depth remains one.
+- Child still cannot Spawn or ClaimComplete; Root still cannot Return.
+- No Child parallelism, scheduler, join, Actor Directory, Blackboard,
+  messaging layer, resources, specialists, Planner, Reviewer, retry, or
+  cancellation framework was added.
+- Ordinary Tool sibling batches keep their existing ordered sequential
+  semantics.
+- Runtime still performs no semantic planning; it only validates and commits
+  the typed provider decision.
 
 ## Validation
 
-- Focused multi/single Child: 17 passed, 2 gated real tests skipped.
-- `Execution_lab2`: 115 passed, 8 gated real tests skipped.
+- Focused homogeneous Spawn batch tests: 14 passed.
+- `Execution_lab2`: 129 passed, 8 gated real tests skipped.
 - Repository default suite: 328 passed, 24 skipped.
 - Conversation Memory: 163 passed, 45 skipped.
 - Dream: 36 passed, 1 skipped.
-- Real DeepSeek multi-child experiment: 0/3 validated; exact failure above.
-- `git diff --check`: clean (line-ending notices only).
+- Real DeepSeek frozen multi-child experiment: 1/1 full chain validated.
+- `git diff --check`: clean.
 - Live `ipykernel` processes after validation: 0.
-- Credential-pattern scan across the six in-scope files: no match.
+- Credential-pattern scan of in-scope files: no credential value found.
 - Pinned MAGMA status and diff: clean.
