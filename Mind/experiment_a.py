@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from Conversation_Memory.adapter.interfaces import MemoryRetriever
 from Conversation_Memory.adapter.models import MemoryContext, RecallPolicy
 from core.model_client import ModelClient
+from Mind.task_view import output_limit
 from Mind.trace import (
     COGNITIVE_PROBE_PROJECTOR_VERSION,
     COGNITIVE_PROBE_PROMPT_VERSION,
@@ -550,7 +551,8 @@ def _call_model(
         return ActivationFailure("trace_failed")
     except Exception:
         return ActivationFailure("model_failed")
-    if not isinstance(raw, str) or len(raw) > MAX_MODEL_OUTPUT_CHARS:
+    limit = output_limit(trace.events[0].payload.get("cognitive_context", {})) if trace else MAX_MODEL_OUTPUT_CHARS
+    if not isinstance(raw, str) or len(raw) > limit:
         return ActivationFailure("invalid_model_output")
     return raw
 

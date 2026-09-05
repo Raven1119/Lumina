@@ -484,6 +484,31 @@ run failed to open its named pipe. Root regression is 347 passed / 24 skipped.
 See `Mind/docs/COGNITIVE_CHAIN_RESULT.md`, `COGNITIVE_CHAIN_REVIEW.md` and
 `Mind/fixtures/cognitive_chain_d6/analysis.json`. D1–D5 records/verdicts are preserved.
 
+## Isolated Mind D7 input/expression repair (2026-09-06)
+
+D7 reuses persistent Mind/Nervous/Trace, strict sources, D4 recovery and the existing
+Execution Directive seam. One owner task now supports bound business/Execution
+role views; discriminator is optional on explicitly revised D7 items, with old
+history retained. Real thinking continuation and a 6000-character / 8192-token
+submission profile were verified. No production wiring changed.
+
+The once-only independent acceptance is 1/3 cases, 7/9 accepted activities: one
+original Directive was delivered and Execution completed the workspace, but a
+correct outcome update exceeded the old 8000-character context cap; a separate
+uncertainty activity exhausted 8192 output tokens. The complete negative control
+kept NoChange on all three events. D7-v3 now consistently permits 16000 context
+characters. A separately registered one-call restored-history continuation
+corrected the old missing-artifact claim and accepted the actual outcome with
+whole-state restart equality. Its 7669-character response would also fit the old
+cap, so its semantic success is not a causal proof of the capacity increase.
+
+Original acceptance remains failed; qualification NOT_YET, behavioral value
+INCONCLUSIVE. Total 38 calls including the engineering follow-up. Execution had
+already computed the relevant net result before guidance, so adoption is not
+independent Mind benefit. Detailed D7 task/result/review reports and campaign
+artifacts remain local and are excluded from code publication. Regression tests
+construct their D7 fixtures in temporary paths and do not require those records.
+
 ## Not Started / Not Authorized by This Goal Alone
 
 - automatic/startup/background/chat-time Dream;

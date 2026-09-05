@@ -17,6 +17,7 @@ from pathlib import Path
 
 from Mind.event_loop import (COGNITIVE_CONTRACT_VERSION, DIRECTION_CONTRACT, CognitiveModel,
     RECOVERY_CONTRACT_VERSION, SEMANTIC_CONTRACT_VERSION, DockerIPython, ExecutionModel, IMAGE_TAG, ROOT, _document, _episode, _save, canonical, digest, snapshot)
+from Mind.task_view import EXPRESSION_CONTRACT_VERSIONS, THINKING_CONTRACT_VERSION, CONTINUITY_CONTRACT_VERSION
 from Mind.organ import Evidence, MindInput, MindOrgan, CHAIN_CONTRACT_VERSIONS, MAX_EVIDENCE_CHARS
 from Nervous.organ import NervousOrgan
 
@@ -132,7 +133,10 @@ def boundary_review(directory, output, *, evidence=None, items=(), goal='', beha
                 'claims_supported': True, 'direction_relevant': True, 'uncertainty_preserved': True,
                 'behavior_consistent': None, 'grants_tool_authority': False, 'reviewer': 'structural',
                 'reason': 'No proposed direction or factual update to assess.'}
-    request = {'output': output, 'rubric': DIRECTION_CONTRACT,
+    rubric = DIRECTION_CONTRACT
+    if cognitive_revision and cognitive_revision.get('contract_version') in EXPRESSION_CONTRACT_VERSIONS:
+        rubric = rubric.replace('2000 characters', '6000 characters')
+    request = {'output': output, 'rubric': rubric,
         'accepted_items': items, 'exact_sources': evidence, 'goal': goal, 'behavior': behavior,
         'evidence_rubric': 'Assess claims in both cognition and proposed direction separately from abstraction. Supported claims must be warranted by these sources; an allegation proves only that it was alleged. Open hypotheses/questions may remain uncertain. Do not rewrite any proposal.',
         'direction_rubric': 'Separately assess whether the direction responds usefully to the observed constraint or phase, and whether unknown facts remain uncertain rather than driving an unwarranted strategy switch. If behavior is supplied, require identifiable later Execution actions consistent with this particular direction; correct output alone is insufficient. This is trace consistency, not a counterfactual benefit claim.',
@@ -201,17 +205,30 @@ def _start_stage(root, stage, limit, transport=None, *, source_files=None, cases
         if not key:
             raise ValueError('missing_deepseek_key')
         def transport(wire):
-            response = httpx.post(registration['endpoint'], json=wire, timeout=45,
+            response = httpx.post(registration['endpoint'], json=wire, timeout=registration.get('candidate_limits', {}).get('timeout_seconds', 45),
                 headers={'x-api-key': key, 'anthropic-version': '2023-06-01'})
             response.raise_for_status()
             return response.json()
     calls, started = [], time.monotonic()
     def recorded(wire):
-        if registration['version'].startswith('cognitive-chain-d6') and any('error_type' in c for c in calls):
+        d7 = registration['version'].startswith('cognitive-input-d7')
+        if (registration['version'].startswith('cognitive-chain-d6') or d7) and any('error_type' in c for c in calls):
             raise ValueError('hard_gate_unknown_provider_outcome')
         if len(calls) >= limit or time.monotonic() - started >= 1800:
             raise ValueError('stage_budget_exhausted')
-        if (wire['model'] != registration['model'] or wire['temperature'] != 0 or
+        if d7:
+            # Count durable reservations across development revisions and every stage.
+            prior_calls = list(root.glob('*/calls/*.json'))
+            group = 'development' if stage.startswith('development-') else 'protocol_probe' if stage.startswith('protocol_probe') else stage
+            used_in_group = sum(p.parent.parent.name.startswith(group) for p in prior_calls)
+            if len(prior_calls) >= registration['total_call_limit'] or used_in_group >= registration['stage_limits'][group]:
+                raise ValueError('campaign_budget_exhausted')
+            thinking = wire.get('thinking') == {'type': 'enabled'}
+            profile_valid = (wire.get('output_config') == {'effort': 'high'} and 'temperature' not in wire
+                if thinking else wire.get('thinking') == {'type': 'disabled'} and wire.get('temperature') == 0)
+            if wire.get('model') != registration['model'] or not profile_valid or not 0 < wire['max_tokens'] <= 8192:
+                raise ValueError('provider_contract_mismatch')
+        elif (wire['model'] != registration['model'] or wire['temperature'] != 0 or
                 wire['thinking'] != {'type': 'disabled'} or wire['max_tokens'] > 2000):
             raise ValueError('provider_contract_mismatch')
         call = {'wire': wire, 'started_at': datetime.now(timezone.utc).isoformat()}
@@ -221,10 +238,14 @@ def _start_stage(root, stage, limit, transport=None, *, source_files=None, cases
         began = time.monotonic()
         try:
             response = transport(wire)
-            call['response'] = {**response, 'content': [b for b in response.get('content', []) if b.get('type') in {'text', 'tool_use'}]}
+            call['response'] = response if d7 else {**response, 'content': [b for b in response.get('content', []) if b.get('type') in {'text', 'tool_use'}]}
+            if d7 and response.get('model') != registration['model']:
+                raise ValueError('unexpected_response_model')
             return call['response']
         except Exception as error:
             call['error_type'] = type(error).__name__
+            if d7 and getattr(error, 'response', None) is not None:
+                call['http_error'] = {'status_code': error.response.status_code, 'body': error.response.text[:4000]}
             raise
         finally:
             call['elapsed_seconds'] = time.monotonic() - began
@@ -553,7 +574,7 @@ def seed_semantic(case, directory):
             available_capabilities=('inspect_execution',)) as mind:
         value = MindInput('seed', 'Developer-supplied prior cognition; SCRIPTED fixture initialization.',
             'semantic-task', 1, case['goal'], 'seed-owner', 'waiting',
-            tuple(Evidence(**e) for e in seed['evidence']))
+            tuple(Evidence(**e) for e in seed['evidence']), owner_task=case.get('owner_task'))
         receipt = _episode(nervous, mind, value, None)
         if receipt.status != 'accepted':
             raise ValueError('scripted_seed_not_accepted')
@@ -608,7 +629,7 @@ def run_semantic_case(case, directory, *, transport, review, image, contract=SEM
     directory = Path(directory)
     record = {'case': case, 'seed': seed_semantic(case, directory), 'episodes': [], 'passed': False}
     chain = contract in CHAIN_CONTRACT_VERSIONS
-    cognition = CognitiveModel(transport, contract=contract)
+    cognition = CognitiveModel(transport, contract=contract, thinking=case.get('thinking'))
     record['cognition_calls'] = cognition.calls
     owner, workspace, result = None, None, None
     try:
@@ -654,10 +675,13 @@ def run_semantic_case(case, directory, *, transport, review, image, contract=SEM
             if chain and len(inspected) > MAX_EVIDENCE_CHARS:
                 suffix = ' [truncated; owner event evidence retains the task files]'
                 inspected = inspected[:MAX_EVIDENCE_CHARS-len(suffix)] + suffix
-            observation = {'capability': 'inspect_execution', 'goal': case['goal'], 'status': status,
+            observed_goal = result.state.goal if workspace else case['goal']
+            if observed_goal != case['goal']:
+                raise ValueError('hard_gate_execution_goal_identity')
+            observation = {'capability': 'inspect_execution', 'goal': observed_goal, 'status': status,
                 'recent_outcome': inspected, 'failure': None}
             value = MindInput(event_id, event_spec['trigger'], 'semantic-task', 1, case['goal'], run_ref, status,
-                              evidence)
+                              evidence, owner_task=case.get('owner_task'))
             with NervousOrgan(directory / 'nervous') as nervous, MindOrgan(directory=directory / 'mind',
                     model=cognition, available_capabilities=('inspect_execution',)) as mind:
                 prior = _document(mind.inspect())
@@ -673,7 +697,8 @@ def run_semantic_case(case, directory, *, transport, review, image, contract=SEM
                     raise ValueError('hard_gate_partial_commit')
                 admission = (review({'output': output, 'items': view['items'], 'goal': case['goal'],
                     'evidence': citation_sources(cognition.calls[-1]['projection']['user_message']),
-                    'cognitive_revision': {'prior_items': prior['items'], 'new_source_ref': source_ref}})
+                    'cognitive_revision': {'prior_items': prior['items'], 'new_source_ref': source_ref,
+                        **({'contract_version': contract} if contract in EXPRESSION_CONTRACT_VERSIONS else {})}})
                     if receipt.status == 'accepted' else {'allowed': False, 'reason': 'Protocol failure, no semantic substitution.'})
                 episode = {'receipt': _document(receipt), 'reopened_view': prior, 'view': view, 'source_facts': facts,
                     'source_ref': source_ref, 'admission': admission, 'delivered': False}
@@ -719,8 +744,11 @@ def run_semantic_case(case, directory, *, transport, review, image, contract=SEM
                 for item in record['final_view']['items'] for b in item.get('basis', []))
         quality = all(e['receipt']['status'] == 'accepted' and all(e['admission'].get(k) is True for k in
             ('allowed', 'claims_supported', 'direction_relevant', 'uncertainty_preserved', *SEMANTIC_FIELDS)) for e in episodes)
-        expected = chain or all(not spec.get('expected_output') or
+        expected = (chain and contract not in EXPRESSION_CONTRACT_VERSIONS) or all(not spec.get('expected_output') or
             (e['receipt']['output'] or {}).get('type') == spec['expected_output'] for spec, e in zip(case['events'], episodes))
+        if contract in EXPRESSION_CONTRACT_VERSIONS:
+            record['expected_output_matches'] = expected
+            record['actual_outputs'] = [(e['receipt']['output'] or {}).get('type') for e in episodes]
         if workspace:
             files = snapshot(workspace)
             record.update(final_workspace=files, final_status=result.status, objective_success=_check_telemetry(files))
@@ -785,16 +813,176 @@ def run_semantic(root, stage, *, transport=None, review=None):
     return artifact
 
 
+D7_SOURCES = (*D6_SOURCES, 'Mind/task_view.py', 'Mind/test_cognitive_input.py')
+
+
+def run_input(root, stage, *, transport=None, review=None):
+    """D7 bounded entry; existing owner/event/Execution loop remains the runner."""
+    root = Path(root)
+    plan = json.loads((root / (stage + '-cases.json')).read_text(encoding='utf-8'))
+    if digest({k: v for k, v in plan.items() if k != 'sha256'}) != plan['sha256']:
+        raise ValueError('input_cases_changed')
+    if any(hashlib.sha256((ROOT / n).read_bytes()).hexdigest() != h for n, h in plan['source_hashes'].items()):
+        raise ValueError('source_changed_after_stage_freeze')
+    registration = json.loads((root / 'registration.json').read_text(encoding='utf-8'))
+    group = 'development' if stage.startswith('development-') else 'protocol_probe' if stage.startswith('protocol_probe') else stage
+    _, directory, recorded, calls = _start_stage(root, stage, registration['stage_limits'][group],
+        transport, source_files=D7_SOURCES, cases=plan)
+    artifact = {'stage': stage, 'plan_sha256': plan['sha256'], 'cases': []}
+    review = review or (lambda request: boundary_review(directory, **request))
+    try:
+        for case in plan['cases']:
+            if plan['kind'] == 'diagnostic':
+                # Frozen response-only pair, no cognition/delivery claim.
+                from Mind.event_loop import parameter_errors
+                from Mind.task_view import output_limit
+                model = CognitiveModel(recorded, contract=case['contract'])
+                prepared = model._prepare_call(**case['projection'])
+                returned = recorded(prepared['wire'])
+                blocks = [b for b in returned.get('content', []) if b.get('type') == 'tool_use']
+                errors = parameter_errors(blocks[0].get('input'), prepared['wire']['tools'][0]['input_schema']) if len(blocks) == 1 else ['cardinality']
+                context = json.loads(case['projection']['user_message'])['cognition']
+                size = len(canonical(blocks[0].get('input'))) if len(blocks) == 1 else None
+                result = {'id': case['id'], 'response_only': True, 'raw_response_call': len(calls),
+                    'errors': errors, 'serialized_chars': size, 'within_budget': size is not None and size <= output_limit(context)}
+            else:
+                result = run_semantic_case(case, directory / case['id'], transport=recorded,
+                    review=review, image=plan.get('image_id', IMAGE_TAG), contract=plan.get('contract', THINKING_CONTRACT_VERSION))
+            artifact['cases'].append(result)
+            _save(directory / 'result.json', artifact)
+            print(canonical({'case_done': case['id']}), flush=True)
+    except Exception as error:
+        artifact['error_type'] = type(error).__name__
+        raise
+    finally:
+        artifact['provider_calls'] = len(calls)
+        artifact['sha256'] = digest(artifact)
+        _save(directory / 'result.json', artifact)
+    return artifact
+
+
+def run_input_continuation(root, *, transport=None, review=None):
+    """One engineering follow-up, restoring exact failed history; never a holdout rerun."""
+    from Execution import ExecutionOrgan
+    from Nervous.organ import Event
+    from Mind.event_loop import citation_sources
+    root = Path(root)
+    original = root / 'acceptance' / 'signed_summary_revision'
+    previous = json.loads((original / 'result.json').read_text(encoding='utf-8'))
+    acceptance = json.loads((root / 'acceptance/result.json').read_text(encoding='utf-8'))
+    if ('sha256' not in acceptance or previous['episodes'][-1]['receipt']['error'] != 'context_budget_exceeded'
+            or previous['final_status'] != 'completed'):
+        raise ValueError('continuation_prerequisite_missing')
+    campaign = root / 'capacity-followup-campaign'
+    parent = json.loads((root / 'registration.json').read_text(encoding='utf-8'))
+    already_used = len(list(root.glob('*/calls/*.json')))
+    if already_used + 3 > parent['total_call_limit']:
+        raise ValueError('campaign_budget_exhausted')
+    files = snapshot(Path(previous['workspace']))
+    if files != previous['final_workspace']:
+        raise ValueError('workspace_changed_before_continuation')
+    lineage = {str(p.relative_to(original)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for name in ('mind', 'nervous') for p in (original / name).rglob('*') if p.is_file() and p.name != 'writer.lock'}
+    lineage.update({name: hashlib.sha256((original/name).read_bytes()).hexdigest()
+                    for name in ('execution.jsonl', 'checkpoint.json')})
+    history = json.loads((original/'mind/cognition.json').read_text(encoding='utf-8'))['records']
+    last_input = next(r['input'] for r in reversed(history) if r['kind'] == 'started')
+    registration = {'version': 'cognitive-input-d7-capacity-followup-v1',
+        'created_at': datetime.now(timezone.utc).isoformat(), 'parent_registration_sha256': parent['sha256'],
+        'original_acceptance_sha256': acceptance['sha256'], 'parent_calls_used': already_used,
+        'total_call_limit': 3, 'stage_limits': {'continuation': 3}, 'execution_call_limit': 0,
+        'model': parent['model'], 'endpoint': parent['endpoint'], 'candidate_limits': parent['candidate_limits'],
+        'contract': CONTINUITY_CONTRACT_VERSION, 'context_chars': 16000,
+        'purpose': 'Capacity-only engineering recovery of the same failed Mind history; NOT independent acceptance. One new event, no reruns.',
+        'conditions': 'Same goal/run, exact restored history including failure. Fresh owner files only; no rejected response or review is injected. Evaluate entire state and restart. No directive delivery to the completed run.',
+        'stop': 'Three physical calls maximum, one read/repair; unknown results or authority/partial-commit defects stop. Semantic failure is retained.',
+        'lineage': lineage, 'workspace': files}
+    registration['sha256'] = digest(registration)
+    _save(campaign / 'registration.json', registration, exclusive=True)
+    _, directory, recorded, calls = _start_stage(campaign, 'continuation', 3, transport,
+        source_files=D7_SOURCES, cases={'source_case': str(original), 'new_event': 'cognition-4'})
+    for name in ('mind', 'nervous'):
+        shutil.copytree(original / name, directory / name)
+    for name in ('execution.jsonl', 'checkpoint.json'):
+        shutil.copyfile(original/name, directory/name)
+    for name, expected in lineage.items():
+        if hashlib.sha256((directory / name).read_bytes()).hexdigest() != expected:
+            raise ValueError('restored_history_mismatch')
+    # The supported facade restores the actual goal/status from checkpoint + event log.
+    owner = ExecutionOrgan(workspace=previous['workspace'], event_log_path=directory / 'execution.jsonl',
+        checkpoint_path=directory / 'checkpoint.json', max_decisions=12, model=object(),
+        ipython_control=DockerIPython(previous['workspace']))
+    try:
+        state, reality = owner.state, [_document(e) for e in owner.reality_evidence()]
+    finally:
+        owner.shutdown()
+    if state.goal != previous['case']['goal'] or state.status != 'completed':
+        raise ValueError('hard_gate_execution_goal_identity')
+    if state.execution_id != last_input['execution_ref']:
+        raise ValueError('hard_gate_execution_run_identity')
+    facts = _telemetry_facts(files, state.status)
+    source_ref = state.execution_id + ':owner-event-4'
+    value = MindInput('cognition-4', 'Owner workspace observation arrived after restart; reassess current understanding.',
+        'semantic-task', 1, state.goal, state.execution_id, state.status,
+        _telemetry_evidence(files, source_ref), owner_task=previous['case']['owner_task'])
+    observation = {'capability': 'inspect_execution', 'goal': state.goal, 'status': state.status,
+        'recent_outcome': facts[:MAX_EVIDENCE_CHARS], 'failure': None}
+    model = CognitiveModel(recorded, contract=CONTINUITY_CONTRACT_VERSION)
+    result = {'registration_sha256': registration['sha256'], 'owner_reality': reality, 'passed': False}
+    try:
+        with NervousOrgan(directory / 'nervous') as nervous, MindOrgan(directory=directory / 'mind',
+                model=model, available_capabilities=('inspect_execution',)) as mind:
+            result['before'] = _document(mind.inspect())
+            if result['before'] != previous['final_view']:
+                raise ValueError('restored_cognition_mismatch')
+            nervous.publish(Event('owner-event-4', 'execution', 'host', 'execution.outcome', {'facts': facts}, 'owner-event-3'))
+            receipt = _episode(nervous, mind, value, observation, causation_id='owner-event-4')
+            result.update(receipt=_document(receipt), after=_document(mind.inspect()))
+            if any('response' not in c for c in model.calls):
+                raise ValueError('hard_gate_unknown_provider_outcome')
+            if receipt.error == 'trace_failed':
+                raise ValueError('hard_gate_persistence')
+            if receipt.status == 'failed' and result['after'] != result['before']:
+                raise ValueError('hard_gate_partial_commit')
+            receipt_event, = nervous.pending('host')
+            nervous.complete(receipt_event.event_id, 'host')
+        _save(directory / 'result.json', result)
+        with MindOrgan(directory=directory / 'mind', model=None) as mind:
+            result['restarted'] = _document(mind.inspect())
+        result['history_prefix_unchanged'] = json.loads((directory/'mind/cognition.json').read_text(encoding='utf-8'))['records'][:len(history)] == history
+        if receipt.status == 'accepted':
+            request = {'output': _document(receipt.output), 'items': result['after']['items'], 'goal': state.goal,
+                'evidence': citation_sources(model.calls[-1]['projection']['user_message']),
+                'cognitive_revision': {'prior_items': result['before']['items'], 'new_source_ref': source_ref,
+                    'contract_version': CONTINUITY_CONTRACT_VERSION}}
+            result['admission'] = (review or (lambda r: boundary_review(directory, **r)))(request)
+            result['passed'] = (all(result['admission'].get(k) is True for k in
+                ('allowed', 'claims_supported', 'direction_relevant', 'uncertainty_preserved', *SEMANTIC_FIELDS))
+                and result['after'] == result['restarted'] and result['history_prefix_unchanged']
+                and result['receipt']['output']['type'] == 'no_change')
+    except Exception as error:
+        result['error_type'] = type(error).__name__
+        raise
+    finally:
+        result['provider_calls'] = len(calls)
+        result['sha256'] = digest(result)
+        _save(directory / 'result.json', result)
+    return result
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('register', 'register-d4', 'dev-1', 'dev-2', 'acceptance', 'loop',
         'register-d5', 'freeze-d5', 'd5-baseline', 'd5-dev-1', 'd5-dev-2', 'd5-acceptance',
-        'd6-diagnostic', 'd6-development-1', 'd6-development-2', 'd6-acceptance'))
+        'd6-diagnostic', 'd6-development-1', 'd6-development-2', 'd6-acceptance',
+        'd7-diagnostic', 'd7-protocol_probe', 'd7-protocol_probe-2', 'd7-development-1', 'd7-development-2', 'd7-acceptance', 'd7-continuation'))
     parser.add_argument('directory')
     parser.add_argument('case_file', nargs='?')
     args = parser.parse_args()
-    value = (register_semantic(args.directory, args.case_file) if args.operation == 'register-d5' else
+    value = (run_input_continuation(args.directory) if args.operation == 'd7-continuation' else
+             run_input(args.directory, args.operation[3:]) if args.operation.startswith('d7-') else
+             register_semantic(args.directory, args.case_file) if args.operation == 'register-d5' else
              freeze_semantic_acceptance(args.directory, args.case_file) if args.operation == 'freeze-d5' else
              run_semantic(args.directory, args.operation[3:]) if args.operation.startswith(('d5-', 'd6-')) else
              register(args.directory, contract=RECOVERY_CONTRACT_VERSION if args.operation == 'register-d4' else COGNITIVE_CONTRACT_VERSION)

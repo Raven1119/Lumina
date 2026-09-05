@@ -115,3 +115,9 @@ docs/experiments/legacy_entity_backfill/results.json
 !/Mind/fixtures/cognitive_chain_d6/acceptance/
 !/Mind/fixtures/cognitive_chain_d6/acceptance/reverse_scope_summary/
 !/Mind/fixtures/cognitive_chain_d6/acceptance/reverse_scope_summary/result.json
+
+# D7 experiment records stay local; publish code, tests and maintained design docs.
+/Mind/fixtures/cognitive_input_d7/**
+/Mind/docs/COGNITIVE_INPUT_TASK.md
+/Mind/docs/COGNITIVE_INPUT_RESULT.md
+/Mind/docs/COGNITIVE_INPUT_REVIEW.md

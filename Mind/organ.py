@@ -22,6 +22,8 @@ from Mind.experiment_a import (
     ActivationFailure, ActivationInput, ExecutionObservation,
     _CapabilityRequest, _continue_activation, _parse_output, _record_terminal, _request_payload, _run_activation,
 )
+from Mind.task_view import (EXPRESSION_CONTRACT_VERSIONS, CONTINUITY_CONTRACT_VERSION,
+                           context_limit, mind_task_view, project_observation)
 from Mind.trace import (
     COGNITIVE_PROBE_PROJECTOR_VERSION,
     COGNITIVE_COMPACT_PROJECTOR_VERSION,
@@ -39,9 +41,13 @@ MAX_JOURNAL_BYTES = 4 * 1024 * 1024
 BUDGET_VERSION = "cognition-minimal-v1:2-model-calls:1-read:2000-output-chars"
 MODEL_BUDGET_VERSION = "cognition-minimal-v2:2-model-calls:1-capability:2000-output-chars"
 EVENT_BUDGET_VERSION = "cognition-events-v1:2-model-calls:1-result:2000-output-chars"
+EXPRESSION_EVENT_BUDGET_VERSION = "cognition-events-d7:2-steps:3-calls:1-result:6000-output-chars"
+CONTINUITY_EVENT_BUDGET_VERSION = "cognition-events-d7-v3:2-steps:3-calls:1-result:6000-output-chars:16000-context-chars"
+EVENT_BUDGET_VERSIONS = (EVENT_BUDGET_VERSION, EXPRESSION_EVENT_BUDGET_VERSION,
+                       CONTINUITY_EVENT_BUDGET_VERSION)
 CHAIN_CONTRACT_VERSION = "cognitive-submit-d6-v1"
 REVISED_CHAIN_CONTRACT_VERSION = "cognitive-submit-d6-v2"
-CHAIN_CONTRACT_VERSIONS = (CHAIN_CONTRACT_VERSION, REVISED_CHAIN_CONTRACT_VERSION)
+CHAIN_CONTRACT_VERSIONS = (CHAIN_CONTRACT_VERSION, REVISED_CHAIN_CONTRACT_VERSION, *EXPRESSION_CONTRACT_VERSIONS)
 MAX_UPDATES = 4
 MAX_EVIDENCE_CHARS = 1000
 
@@ -80,10 +86,13 @@ def cognitive_step_schema(sources, items=(), capabilities=(), *, contract=CHAIN_
     variants = copy.deepcopy(list(_UPDATE_SCHEMAS.values()))
     for variant in variants:
         props = variant["properties"]
-        if contract == REVISED_CHAIN_CONTRACT_VERSION and "claim" in props:
+        if contract in {REVISED_CHAIN_CONTRACT_VERSION, *EXPRESSION_CONTRACT_VERSIONS} and "claim" in props:
             props["claim"]["description"] = "The literal assertion, including relevant policy and time. A statement that an artifact is defective can itself be true."
             props["status"]["description"] = "Evaluate the literal claim: supported = evidence warrants this sentence; contradicted = evidence warrants its negation; open = undecided. This is NOT an artifact pass/fail label or a record that an old belief changed."
             props["discriminator"]["description"] = "A conditional observation that would distinguish this claim from its negation, under its stated scope. It is unobserved, not an additional rule. Re-derive it from sources rather than copying a prior test."
+        if contract in EXPRESSION_CONTRACT_VERSIONS and "discriminator" in props:
+            variant["required"].remove("discriminator")
+            props["discriminator"]["description"] = "Optional: a useful unobserved test of an unresolved claim, not a condition to invent for a sourced rule. Omission on a revised item explicitly retires its prior test; prior versions remain in history."
         props["id"]["anyOf"] = [{"pattern": r"^new:[A-Za-z0-9_-]{1,32}$"}]
         if items:
             props["id"]["anyOf"].append({"enum": [item["id"] for item in items]})
@@ -154,6 +163,7 @@ class MindInput:
     execution_observation: ExecutionObservation | None = None
     model_probe: ModelProbe | None = None
     model_feedback: ModelFeedback | None = None
+    owner_task: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +264,10 @@ def _input_document(value: MindInput) -> dict:
             if outcome is not None and (type(outcome) is not str or outcome not in {"ongoing", "complete", "failed", "unknown"}):
                 raise ValueError("invalid_model_feedback")
     document = asdict(value)
+    if value.owner_task is None:
+        document.pop("owner_task")
+    else:
+        mind_task_view(value.owner_task, value.goal)
     # Preserve the canonical identity of historical events without these fields.
     return _json(_canonical_json({key: item for key, item in document.items()
             if key not in {"model_probe", "model_feedback"} or item is not None}))
@@ -272,7 +286,7 @@ def _basis(basis: object, sources: dict[str, dict]) -> None:
 
 
 def _apply_updates(items: dict, updates: object, sources: dict, event_id: str,
-                   artifact: dict | None = None) -> dict:
+                   artifact: dict | None = None, *, contract=None) -> dict:
     if type(updates) is not list or len(updates) > MAX_UPDATES:
         raise ValueError("update_budget_exceeded")
     candidate = _json(_canonical_json(items))
@@ -300,7 +314,12 @@ def _apply_updates(items: dict, updates: object, sources: dict, event_id: str,
         if identity in items and kind != items[identity]["kind"]:
             raise ValueError("item_kind_conflict")
         common = {"kind", "id", "status"}
-        if kind in _UPDATE_VALIDATORS and not _UPDATE_VALIDATORS[kind].is_valid(value):
+        validator = _UPDATE_VALIDATORS.get(kind)
+        if kind == "belief" and contract in EXPRESSION_CONTRACT_VERSIONS:
+            schema = copy.deepcopy(_UPDATE_SCHEMAS[kind])
+            schema["required"].remove("discriminator")
+            validator = Draft202012Validator(schema)
+        if validator is not None and not validator.is_valid(value):
             if kind == "belief" and value.get("status") in {"supported", "contradicted"} and value.get("basis") == []:
                 raise ValueError("assessment_needs_evidence")
             raise ValueError("invalid_" + kind)
@@ -448,6 +467,7 @@ class MindOrgan:
                     observation = _thaw(event.payload["observation"])
                     if observation["capability"] in {"run_world_model", "evaluate_model"}:
                         continue  # Computed predictions are never admitted as reality evidence.
+                    observation = project_observation(observation, start["context"].get("task_view"))
                     text = observation_source_text(observation, start["context"].get("contract_version"))
                     if text:
                         sources["activation:observation"] = {
@@ -477,7 +497,7 @@ class MindOrgan:
 
     def _fold(self, records: list[dict]):
         state = {"revision": 0, "intention": None, "items": {}, "sources": {}, "execution_ref": None,
-                 "results": {}}
+                 "results": {}, "owner_task": None}
         starts: dict[str, dict] = {}
         ends: dict[str, dict] = {}
         for record in records:
@@ -491,17 +511,33 @@ class MindOrgan:
                     or record["request_digest"] != _digest(value)
                     or record["activation_id"] != "activation-" + _digest([event_id, value])[:24]
                     or record["base_revision"] != state["revision"]
-                    or record["budget_version"] not in {BUDGET_VERSION, MODEL_BUDGET_VERSION, EVENT_BUDGET_VERSION}):
+                    or record["budget_version"] not in {BUDGET_VERSION, MODEL_BUDGET_VERSION, *EVENT_BUDGET_VERSIONS}):
                     raise ValueError("invalid_cognition_start")
+                if (record["budget_version"] == EXPRESSION_EVENT_BUDGET_VERSION
+                        and record["context"].get("contract_version") not in EXPRESSION_CONTRACT_VERSIONS):
+                    raise ValueError("budget_contract_conflict")
+                if (record["budget_version"] == CONTINUITY_EVENT_BUDGET_VERSION
+                        and record["context"].get("contract_version") != CONTINUITY_CONTRACT_VERSION):
+                    raise ValueError("budget_contract_conflict")
                 intention = [value["intention_ref"], value["intention_revision"], value["goal"]]
                 if state["intention"] is not None and intention != state["intention"]:
                     raise ValueError("intention_conflict")
+                task = value.get("owner_task")
+                if state["owner_task"] is not None and task != state["owner_task"]:
+                    raise ValueError("owner_task_identity_conflict")
+                if task is not None:
+                    expected = mind_task_view(task, value["goal"])
+                    if record["context"].get("task_view") != expected:
+                        raise ValueError("task_view_context_mismatch")
+                elif "task_view" in record["context"]:
+                    raise ValueError("task_view_without_owner")
+                state["owner_task"] = task
                 state["intention"] = intention
                 starts[event_id] = record
             elif kind == "result_received":
                 if (set(record) != {"kind", "event_id", "result", "result_digest"}
                         or event_id not in starts or event_id in ends or event_id in state["results"]
-                        or starts[event_id]["budget_version"] != EVENT_BUDGET_VERSION
+                        or starts[event_id]["budget_version"] not in EVENT_BUDGET_VERSIONS
                         or record["result_digest"] != _digest(record["result"])):
                     raise ValueError("invalid_result_receipt")
                 trace = MindTrace.reopen(self._trace_path(starts[event_id]))
@@ -526,7 +562,7 @@ class MindOrgan:
                     if record["revision"] != state["revision"] + 1 or start["base_revision"] != state["revision"]:
                         raise ValueError("stale_cognition_commit")
                     trace = MindTrace.reopen(self._trace_path(start))
-                    if (start["budget_version"] == EVENT_BUDGET_VERSION
+                    if (start["budget_version"] in EVENT_BUDGET_VERSIONS
                             and any(event.event_type == CAPABILITY_OBSERVED for event in trace.events)
                             and event_id not in state["results"]):
                         raise ValueError("missing_result_receipt")
@@ -539,7 +575,7 @@ class MindOrgan:
                         raise ValueError("cognition_trace_mismatch")
                     sources = self._sources(start, trace)
                     items = _apply_updates(state["items"], record["updates"], sources, event_id,
-                                           self._model_artifact(trace))
+                                           self._model_artifact(trace), contract=start["context"].get("contract_version"))
                     # Local observation aliases must not collide across activations.
                     durable_ref = start["activation_id"] + ":observation"
                     for item in items.values():
@@ -614,7 +650,7 @@ class MindOrgan:
                     raise ValueError("event_identity_conflict")
                 if value.event_id in ends:
                     return self._receipt(start, ends[value.event_id], duplicate=True)
-                if start["budget_version"] == EVENT_BUDGET_VERSION and value.event_id not in state["results"]:
+                if start["budget_version"] in EVENT_BUDGET_VERSIONS and value.event_id not in state["results"]:
                     try:
                         return self._waiting(start)
                     except TraceError:
@@ -625,6 +661,8 @@ class MindOrgan:
             intention = [value.intention_ref, value.intention_revision, value.goal]
             if state["intention"] is not None and intention != state["intention"]:
                 raise ValueError("intention_conflict")
+            if state["owner_task"] is not None and document.get("owner_task") != state["owner_task"]:
+                raise ValueError("owner_task_identity_conflict")
             if len(starts) >= MAX_ACTIVATIONS:
                 return MindReceipt(value.event_id, "failed", state["revision"], error="activation_budget_exceeded")
             sources = dict(state["sources"])
@@ -639,6 +677,12 @@ class MindOrgan:
             context = {"revision": state["revision"], "event_id": value.event_id,
                        "intention_ref": value.intention_ref, "intention_revision": value.intention_revision,
                        "items": list(state["items"].values()), "evidence": list(sources.values())}
+            if "owner_task" in document:
+                context["task_view"] = mind_task_view(document["owner_task"], document["goal"])
+                task_source = {"ref": "owner-task:" + context["task_view"]["owner_task_sha256"],
+                    "text": document["owner_task"]["business_goal"], "origin": "execution"}
+                if task_source["ref"] not in sources:
+                    context["evidence"].append(task_source)
             contract = getattr(self._model, "cognitive_contract_version", None)
             if contract is not None:
                 if contract not in CHAIN_CONTRACT_VERSIONS:
@@ -660,12 +704,14 @@ class MindOrgan:
                 # owner data. It is not admitted to the factual quote source map.
                 context["model_feedback"] = {**report, "artifact_ref": artifact["ref"],
                                              "source_refs": list(feedback["source_refs"])}
-            if len(_canonical_json(context)) > 8000:
+            if len(_canonical_json(context)) > context_limit(context):
                 return MindReceipt(value.event_id, "failed", state["revision"], error="context_budget_exceeded")
             start = {"kind": "started", "event_id": value.event_id, "input": document,
                      "request_digest": _digest(document), "base_revision": state["revision"],
                      "activation_id": "activation-" + _digest([value.event_id, document])[:24],
-                     "context": context, "budget_version": EVENT_BUDGET_VERSION}
+                     "context": context, "budget_version": (CONTINUITY_EVENT_BUDGET_VERSION
+                         if contract == CONTINUITY_CONTRACT_VERSION else EXPRESSION_EVENT_BUDGET_VERSION
+                         if contract in EXPRESSION_CONTRACT_VERSIONS else EVENT_BUDGET_VERSION)}
             self._append(start)  # No model call before durable event identity.
             trace = MindTrace.create(self._trace_path(start), activation_id=start["activation_id"])
             result = _run_activation(
@@ -706,7 +752,7 @@ class MindOrgan:
             state, starts, ends = self._fold(self._load())
             start = next((start for start in starts.values()
                           if value.request_ref.startswith(start["activation_id"] + ":request:")), None)
-            if start is None or start["budget_version"] != EVENT_BUDGET_VERSION:
+            if start is None or start["budget_version"] not in EVENT_BUDGET_VERSIONS:
                 raise ValueError("unknown_result_request")
             event_id = start["event_id"]
             if event_id in state["results"]:
@@ -717,6 +763,8 @@ class MindOrgan:
                 return self._finish(start, state, recovering=True)
             if event_id in ends:
                 raise ValueError("activation_already_ended")
+            if document["observation"] is not None:
+                project_observation(document["observation"], start["context"].get("task_view"))
             trace = MindTrace.reopen_for_result(self._trace_path(start))
             request = self._request(start, trace)
             if value.request_ref != request.request_ref:
@@ -781,11 +829,12 @@ class MindOrgan:
                 raise ValueError("activation_failed")
             updates = _json(replay.model_outputs[-1])["updates"]
             sources = self._sources(start, trace)
-            items = _apply_updates(state["items"], updates, sources, start["event_id"], self._model_artifact(trace))
+            items = _apply_updates(state["items"], updates, sources, start["event_id"], self._model_artifact(trace),
+                                   contract=start["context"].get("contract_version"))
             used = {basis["ref"] for item in items.values() for basis in item.get("basis", [])}
             next_context = {**start["context"], "items": list(items.values()),
                             "evidence": [sources[ref] for ref in sorted(used)]}
-            if len(_canonical_json(next_context)) > 8000:
+            if len(_canonical_json(next_context)) > context_limit(next_context):
                 raise ValueError("context_budget_exceeded")
         except (KeyError, TypeError, ValueError) as exc:
             safe = {"ungrounded_basis", "unknown_item", "unknown_scenario_assumption",

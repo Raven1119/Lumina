@@ -377,6 +377,14 @@ source_refs / bounded continuation condition
 
 恢复不要求 LLM 再次生成相同文本；要求已接受的记录、实际可见输入与实际应用结果可重建。
 
+### D7 实验提交契约补充
+
+D7-v3 仅把完整认知上下文容量版本化为 16000 字符，统一启动、提交与 Trace 回放；旧版本仍为 8000。该调整来自一次 8046 字符合格候选被拒绝的真实证据，不是长期自动压缩机制。一次后续恢复闭环成立，原独立验收仍未通过；状态摘要见 [CURRENT_STATUS](CURRENT_STATUS.md#isolated-mind-d7-inputexpression-repair-2026-09-06)。
+
+`cognitive-submit-d7-v2` 沿用持久条目、原子更新、精确引用、事件取证和单次 Directive 投递。`status` 判断当前写下的 claim；旧条目不因本轮遗漏而消失。belief 的 discriminator 改为按需表达未观察的区分性检验，已有来源的事实或规则不必为了填表另造假设。旧 discriminator 继续进入上下文；模型显式重写某条目并省略该字段时，才退役该条目的旧检验，历史版本仍可回放。验收仍检查整个有效状态，删除字段不等于修复旧命题。
+
+D7 每次提交最多 4 个更新、8 个有效条目、6000 序列化字符；每活动最多两步、一次取证和三次物理调用（含既有一次结构修正）。真实验证的 Mind 分配 8192 输出 token。思考模式使用 Anthropic-compatible 的 auto tool choice，并在同活动取证/协议修正续接时保留原始 thinking 内容块；它们属于传输状态，不成为认知事实来源。失败或超预算不转换成 NoChange。旧契约和历史记录保留其原始含义。D7 实验任务、结果报告与原始记录仅保留在本地，不随代码提交；不能由这些接口能力推断长程行为收益。
+
 ### 11.3 Directive 与 Intention
 
 Directive 的 `APPLIED` 只表示绑定至某个 decision 的上下文，不表示 Actor 采纳，更不表示任务成功。继续复用 D/E0 的现有语义。

@@ -11,6 +11,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
+from Mind.task_view import (EXPRESSION_CONTRACT_VERSIONS, CONTINUITY_CONTRACT_VERSION,
+                           context_limit, output_limit, project_observation, fingerprint)
 from Mind.world_model import _request as _model_request, verify_run
 
 
@@ -28,7 +30,6 @@ COGNITIVE_COMPACT_PROJECTOR_VERSION = "mind-cognitive-projector-v4"
 COGNITIVE_COMPACT_PROMPT_VERSION = "mind-cognitive-prompt-v4"
 COGNITIVE_PROBE_PROJECTOR_VERSION = "mind-cognitive-projector-v5"
 COGNITIVE_PROBE_PROMPT_VERSION = "mind-cognitive-prompt-v5"
-MAX_COGNITIVE_CONTEXT_CHARS = 8_000
 NATIVE_PROTOCOL_VERSION = "cognition-native-d4:3-calls:1-repair:1-read"
 
 ACTIVATION_STARTED = "ACTIVATION_STARTED"
@@ -45,6 +46,8 @@ MIND_DIRECTIVE_APPLIED = "MIND_DIRECTIVE_APPLIED"
 
 MAX_TRACE_EVENTS = 8
 MAX_EVENT_BYTES = 16_384
+EXPRESSION_EVENT_BYTES = 32_768
+CONTINUITY_EVENT_BYTES = 98_304  # 16k Unicode context plus activation/Trace envelope.
 MAX_ACTIVATION_ID_CHARS = 128
 MAX_DECISION_ID_CHARS = 128
 
@@ -428,11 +431,15 @@ class MindTrace:
         trace._read_only = False
         return trace
 
+    def _native_record_limit(self):
+        context = self.events[0].payload.get("cognitive_context", {})
+        return 262144 if context.get("contract_version") in EXPRESSION_CONTRACT_VERSIONS else 65536
+
     def native_records(self) -> list[dict]:
         """Bounded wire annex to this activation; legacy logical Trace is unchanged."""
         path = self._path.with_suffix(".native.jsonl")
         try:
-            if path.stat().st_size > 6 * 65536:
+            if path.stat().st_size > 6 * self._native_record_limit():
                 raise TraceError("native_trace_too_large")
             records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
             self._validate_native(records)
@@ -496,7 +503,7 @@ class MindTrace:
                   "version": NATIVE_PROTOCOL_VERSION, **payload}
         self._validate_native([*records, record])
         encoded = (_canonical_json(record) + "\n").encode("utf-8")
-        if len(encoded) > 65536:
+        if len(encoded) > self._native_record_limit():
             raise TraceError("native_record_too_large")
         try:
             with self._path.with_suffix(".native.jsonl").open("ab") as stream:
@@ -567,7 +574,7 @@ class MindTrace:
         candidate = self._events + (event,)
         _validate_sequence(candidate, require_terminal=False)
         encoded = (_canonical_json(_event_document(event)) + "\n").encode("utf-8")
-        if len(encoded) - 1 > MAX_EVENT_BYTES:
+        if len(encoded) - 1 > _event_byte_limit(candidate[0]):
             raise TraceError("event_too_large")
 
         return event
@@ -647,6 +654,17 @@ def project_model_request(events: Sequence[MindEvent]) -> ModelRequestProjection
                             COGNITIVE_PROBE_PROJECTOR_VERSION}
     if cognitive:
         user_payload["cognition"] = _thaw(start.payload["cognitive_context"])
+        task_view = user_payload["cognition"].get("task_view")
+        if task_view is not None:
+            if fingerprint(activation["execution_goal_snapshot"]) != task_view["execution_goal_sha256"]:
+                raise TraceError("execution_task_view_conflict")
+            activation["execution_goal_snapshot"] = task_view["goal"]
+            for field in ("initial_execution_observation", "observation"):
+                if field in user_payload:
+                    try:
+                        user_payload[field] = project_observation(user_payload[field], task_view)
+                    except ValueError as exc:
+                        raise TraceError(str(exc)) from exc
     if version in {COGNITIVE_STEP_PROJECTOR_VERSION, COGNITIVE_MODEL_PROJECTOR_VERSION,
                    COGNITIVE_COMPACT_PROJECTOR_VERSION, COGNITIVE_PROBE_PROJECTOR_VERSION}:
         user_payload["available_capabilities"] = (
@@ -797,7 +815,7 @@ def _validate_sequence(
                     == SUPERVISOR_PROJECTOR_VERSION
                 ):
                     raise TraceError("supervisor_evidence_requires_initial_observation")
-                _validate_model_output(event.payload, expected_call_index=1)
+                _validate_model_output(event.payload, expected_call_index=1, limit=output_limit(events[0].payload.get("cognitive_context", {})))
                 _require_refs(event, (0,))
                 last_model_event = event
                 state = "after_model_1"
@@ -831,7 +849,7 @@ def _validate_sequence(
                     == SUPERVISOR_PROJECTOR_VERSION
                 ):
                     raise TraceError("missing_supervisor_evidence")
-                _validate_model_output(event.payload, expected_call_index=1)
+                _validate_model_output(event.payload, expected_call_index=1, limit=output_limit(events[0].payload.get("cognitive_context", {})))
                 assert initial_execution_event is not None
                 _require_refs(event, (0, initial_execution_event.seq))
                 last_model_event = event
@@ -854,7 +872,7 @@ def _validate_sequence(
                 supervisor_evidence_event.seq,
             )
             if event.event_type == MODEL_OUTPUT_RECORDED:
-                _validate_model_output(event.payload, expected_call_index=1)
+                _validate_model_output(event.payload, expected_call_index=1, limit=output_limit(events[0].payload.get("cognitive_context", {})))
                 _require_refs(event, dependencies)
                 last_model_event = event
                 state = "after_model_1"
@@ -968,7 +986,7 @@ def _validate_sequence(
                 )
             )
             if event.event_type == MODEL_OUTPUT_RECORDED:
-                _validate_model_output(event.payload, expected_call_index=2)
+                _validate_model_output(event.payload, expected_call_index=2, limit=output_limit(events[0].payload.get("cognitive_context", {})))
                 _require_refs(event, dependencies)
                 last_model_event = event
                 state = "after_model_2"
@@ -1090,7 +1108,7 @@ def _validate_started(payload: Mapping[str, object]) -> None:
         context = payload["cognitive_context"]
         if (
             not isinstance(context, Mapping)
-            or len(_canonical_json(_thaw(context))) > MAX_COGNITIVE_CONTEXT_CHARS
+            or len(_canonical_json(_thaw(context))) > context_limit(context)
         ):
             raise TraceError("invalid_cognitive_context")
     if type(payload["information_acquisition_allowed"]) is not bool:
@@ -1133,6 +1151,7 @@ def _validate_model_output(
     payload: Mapping[str, object],
     *,
     expected_call_index: int,
+    limit: int = MAX_MODEL_OUTPUT_CHARS,
 ) -> None:
     _require_keys(payload, {"call_index", "text"})
     if type(payload["call_index"]) is not int or (
@@ -1140,7 +1159,7 @@ def _validate_model_output(
     ):
         raise TraceError("invalid_model_call_index")
     text = payload["text"]
-    if type(text) is not str or len(text) > MAX_MODEL_OUTPUT_CHARS:
+    if type(text) is not str or len(text) > limit:
         raise TraceError("invalid_model_output_event")
 
 
@@ -1516,15 +1535,21 @@ def _event_document(event: MindEvent) -> dict[str, object]:
     }
 
 
+def _event_byte_limit(start):
+    contract = start.payload.get("cognitive_context", {}).get("contract_version")
+    return (CONTINUITY_EVENT_BYTES if contract == CONTINUITY_CONTRACT_VERSION else
+            EXPRESSION_EVENT_BYTES if contract in EXPRESSION_CONTRACT_VERSIONS else MAX_EVENT_BYTES)
+
+
 def _read_events(path: Path) -> tuple[MindEvent, ...]:
     events: list[MindEvent] = []
     try:
         with path.open("rb") as handle:
             while True:
-                raw = handle.readline(MAX_EVENT_BYTES + 2)
+                raw = handle.readline(CONTINUITY_EVENT_BYTES + 2)
                 if not raw:
                     break
-                if len(raw) > MAX_EVENT_BYTES + 1 or not raw.endswith(b"\n"):
+                if len(raw) > CONTINUITY_EVENT_BYTES + 1 or not raw.endswith(b"\n"):
                     raise TraceError("invalid_jsonl_record")
                 if raw == b"\n":
                     raise TraceError("empty_jsonl_record")
@@ -1537,6 +1562,8 @@ def _read_events(path: Path) -> tuple[MindEvent, ...]:
                 except (RecursionError, TypeError, UnicodeDecodeError, ValueError):
                     raise TraceError("invalid_jsonl_record") from None
                 events.append(_event_from_document(document))
+                if len(raw) > _event_byte_limit(events[0]) + 1:
+                    raise TraceError("invalid_jsonl_record")
                 if len(events) > MAX_TRACE_EVENTS + int(events[0].payload.get("native_protocol") == NATIVE_PROTOCOL_VERSION):
                     raise TraceError("too_many_events")
     except TraceError:

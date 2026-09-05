@@ -145,6 +145,8 @@ Detailed task decomposition belongs inside Execution. A planner may later emerge
 
 ## 3.1 Intention
 
+D7's experimental role views use one owner task: `business_goal` preserves the goal and business acceptance; `execution_protocol` preserves the execution runtime instructions. Their deterministic full rendering is the real Execution goal, retained in MindInput, raw Trace and owner identity checks. Mind's initial request, inspect_execution projection and citation catalogue use the literal business view with shared task fingerprints. Operational completion is evidence, not proof of business acceptance. This opt-in experiment does not change production Chat wiring or implement an Intention switch. See the [cognitive architecture contract](MIND_COGNITIVE_ARCHITECTURE.md#d7-实验提交契约补充).
+
 `Intention` is the overall direction that Execution is currently pursuing. Conceptually it is similar to a persistent `/Goal`.
 
 Examples:

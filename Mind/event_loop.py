@@ -26,6 +26,8 @@ from jsonschema import validate, Draft202012Validator
 from Execution.deepseek_model import DeepSeekModel
 from Execution.ipython_control import IPythonResult
 from Mind.decoupling_value import _messages, _native, _save, _jsonl, _high_level, canonical, digest
+from Mind.task_view import (EXPRESSION_CONTRACT_VERSIONS, THINKING_CONTRACT_VERSION,
+                           CONTINUITY_CONTRACT_VERSION, output_limit)
 from Mind.organ import (CHAIN_CONTRACT_VERSION, REVISED_CHAIN_CONTRACT_VERSION, CHAIN_CONTRACT_VERSIONS, MAX_UPDATES, MAX_ACTIVE_ITEMS,
     MAX_MODEL_OUTPUT_CHARS, cognitive_step_schema, observation_source_text)
 
@@ -334,15 +336,48 @@ def parameter_errors(value, schema):
             for path, item, selected in checks for e in Draft202012Validator(selected).iter_errors(item)]
 
 
+EXPRESSION_SYSTEM_PROMPT = (
+    "You are Lumina's persistent Mind under one owner intention. Maintain a concise understanding "
+    "of the goal, its acceptance conditions, current reality and unresolved questions. Owner task "
+    "and evidence are sources; prior items are revisable judgments.\n"
+    "For each event, reason about the selected rule and its scope, compare affected prior judgments "
+    "with the evidence, then submit coherent updates. Status evaluates the literal claim now written: "
+    "supported means warranted, contradicted means its negation is warranted, open means undecided. "
+    "Preserve correct knowledge and its time/scope. A later condition does not erase a historical fact. "
+    "Sources establish what they say, not every inference from them. Success does not identify an "
+    "unobserved branch or distinguish confounded explanations.\n"
+    "A discriminator is OPTIONAL. Use one only when a proposed observation usefully distinguishes "
+    "an unresolved claim. Do not invent a test for each sourced rule or fact. Review old tests too: "
+    "when revising an item, omission retires its previous test; unchanged items retain every field. "
+    "Use open claims/questions for uncertainty, or request an available read when it can resolve it. "
+    "Quotes are exact source substrings. Reuse IDs for revisions; history is retained.\n"
+    "Choose next independently of cognitive updates. NoChange is appropriate when the direction "
+    "remains sound, including after repairing beliefs. A Directive states the mistaken assumption, "
+    "missing acceptance condition, strategy or priority; concrete domain conditions and filenames "
+    "are allowed. Execution chooses implementation, tool use and local steps. Its completion "
+    "status is operational evidence, not proof of business acceptance or an instruction for Mind. "
+    "Only explicitly submitted Directive text reaches Execution. DecisionIntent is a proposal, "
+    "not permission to change the intention. World Model is unavailable.\n"
+    "Submit at most 4 affected updates, 8 active items, 6000 serialized characters. One activity "
+    "permits two cognitive steps, one read and three physical calls including one protocol repair. "
+    "Updates before a read are provisional: resubmit the intended updates after the observation. "
+    "Return concise cognitive results, not a reasoning transcript.")
+
+
 class CognitiveModel:
     """Native serialization of existing cognitive_step, not an action tool."""
-    def __init__(self, transport, *, history=(), contract='p0'):
+    def __init__(self, transport, *, history=(), contract='p0', thinking=None):
         if contract not in {'p0', COGNITIVE_CONTRACT_VERSION, RECOVERY_CONTRACT_VERSION, SEMANTIC_CONTRACT_VERSION, *CHAIN_CONTRACT_VERSIONS}:
             raise ValueError('unknown_cognitive_contract')
         self.transport = transport
         self.history = list(history)
         self.calls = []
         self.contract = contract
+        if thinking is not None and contract not in EXPRESSION_CONTRACT_VERSIONS:
+            raise ValueError('thinking_requires_versioned_contract')
+        self.thinking = (True if thinking is None else thinking) if contract in EXPRESSION_CONTRACT_VERSIONS else False
+        if type(self.thinking) is not bool:
+            raise ValueError('invalid_thinking_configuration')
         from Mind.trace import NATIVE_PROTOCOL_VERSION
         self.native_protocol_version = NATIVE_PROTOCOL_VERSION if contract in {RECOVERY_CONTRACT_VERSION, SEMANTIC_CONTRACT_VERSION, *CHAIN_CONTRACT_VERSIONS} else None
         self.cognitive_contract_version = contract if contract in CHAIN_CONTRACT_VERSIONS else None
@@ -401,6 +436,15 @@ class CognitiveModel:
                 'description': 'Submit one bounded cognitive step as data. This function executes no action.',
                 'input_schema': cognitive_step_schema(sources, payload['cognition']['items'], payload['available_capabilities'], contract=self.contract)}]
             wire['max_tokens'] = 2000
+            if self.contract in EXPRESSION_CONTRACT_VERSIONS:
+                wire['system'] = 'Contract version: ' + self.contract + '\n' + EXPRESSION_SYSTEM_PROMPT
+                wire['max_tokens'] = 8192
+                if self.thinking:
+                    wire['thinking'] = {'type': 'enabled'}
+                    if self.contract in {THINKING_CONTRACT_VERSION, CONTINUITY_CONTRACT_VERSION}:
+                        wire['tool_choice'] = {'type': 'auto'}
+                    wire['output_config'] = {'effort': 'high'}
+                    wire.pop('temperature')  # Ignored by provider in thinking mode.
         record = {'projection': {'recent_context': list(recent_context), 'user_message': user_message,
                                 'system_prompt': system_prompt}, 'wire': wire, 'contract_version': self.contract}
         return record
@@ -427,6 +471,20 @@ class CognitiveModel:
         record = self._prepare_call(**projection.as_model_call())
         base_wire = record['wire']
         phase = 2 if any(e.event_type == CAPABILITY_OBSERVED for e in trace.events) else 1
+        if phase == 2 and self.contract in EXPRESSION_CONTRACT_VERSIONS:
+            # Same-activity continuation preserves complete provider content, including
+            # thinking blocks. It is transport state, never accepted cognitive evidence.
+            prior = trace.native_records()
+            pair = next(i for i in range(len(prior)-1, 0, -1)
+                if prior[i]['kind'] == 'result' and prior[i]['accepted']
+                and prior[i-1]['phase'] == 1)
+            response, previous_wire = prior[pair]['response'], prior[pair-1]['wire']
+            block = next(b for b in response['content'] if b['type'] == 'tool_use')
+            base_wire = {**base_wire, 'messages': [*previous_wire['messages'],
+                {'role': 'assistant', 'content': response['content']},
+                {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': block['id'],
+                    'content': canonical({'submission_status': 'provisional_until_final_step',
+                        'continuation': record['wire']['messages'][-1]['content']})}]}]}
         while True:
             history = trace.native_records()
             phase_calls = [r for r in history if r['kind'] == 'call' and r['phase'] == phase]
@@ -472,8 +530,9 @@ class CognitiveModel:
             errors = (parameter_errors(blocks[0].get('input'), wire['tools'][0]['input_schema']) if valid_envelope
                       else [{'validator': 'native_envelope', 'path': [], 'message': 'Expected one complete cognitive_step tool return.'}])
             value = canonical(blocks[0].get('input')) if valid_envelope else ''
-            if not errors and len(value) > MAX_MODEL_OUTPUT_CHARS:
-                errors = [{'validator': 'serialized_limit', 'path': [], 'message': 'Cognitive step exceeds 2000 characters.'}]
+            limit = output_limit(trace.events[0].payload.get("cognitive_context", {}))
+            if not errors and len(value) > limit:
+                errors = [{'validator': 'serialized_limit', 'path': [], 'message': f'Cognitive step exceeds {limit} characters.'}]
             recoverable = bool(errors and all(e['validator'] in {'required', 'type'}
                 and 'basis' not in e['path'] for e in errors))
             trace.append_native(kind='result', response=response, errors=errors,

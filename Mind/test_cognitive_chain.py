@@ -60,7 +60,10 @@ def test_literal_evidence_roundtrip_commit_reopen_and_strict_rejection(tmp_path,
     def transport(wire):
         wire = json.loads(json.dumps(wire, ensure_ascii=True))
         calls.append(wire)
-        payload = json.loads(wire['messages'][0]['content'].split('\n\nExact citation catalogue')[0])
+        content = wire['messages'][-1]['content']
+        if isinstance(content, list):
+            content = json.loads(content[0]['content'])['continuation']
+        payload = json.loads(content.split('\n\nExact citation catalogue')[0])
         sources = citation_sources(json.dumps(payload, ensure_ascii=True))
         assert sources == {e.ref: e.text for e in evidence}
         assert literal in wire['messages'][0]['content']  # Literal catalogue, not extra body encoding.
@@ -93,7 +96,10 @@ def test_read_result_uses_same_logical_text_through_native_commit_and_next_event
     def transport(wire):
         wire = json.loads(json.dumps(wire, ensure_ascii=True))
         calls.append(wire)
-        payload = json.loads(wire['messages'][0]['content'].split('\n\nExact citation catalogue')[0])
+        content = wire['messages'][-1]['content']
+        if isinstance(content, list):
+            content = json.loads(content[0]['content'])['continuation']
+        payload = json.loads(content.split('\n\nExact citation catalogue')[0])
         if len(calls) == 1:
             return response(next_value={'type': 'capability_request', 'capability': 'inspect_execution'})
         if len(calls) == 2:
