@@ -31,7 +31,7 @@ Offline memory writing remains explicit:
 ```text
 manual Dream
 -> pending Cold Draft segments
--> MiniMax-M3 Grounded Formation (non-thinking, max_tokens=2000)
+-> DeepSeek-V4-Pro Grounded Formation (non-thinking, max_tokens=2000)
 -> deterministic grounding validation + bounded semantic fallback
    + self-name coverage guard
 -> durable GroundedMemoryUnit checkpoint before MAGMA
@@ -48,13 +48,13 @@ unavailable memory does not block normal conversation.
 
 - same-origin browser chat, `GET /api/status`, and `POST /api/chat` (`Enter`
   sends, `Shift+Enter` inserts a newline, IME-composition Enter never sends);
-- mock mode plus explicit MiniMax Anthropic-compatible real-model mode;
+- mock mode plus explicit DeepSeek Anthropic-compatible real-model mode;
 - safe provider fallback;
 - restart-persistent Hot Draft and Cold-first compaction;
 - stable per-turn provenance with aware timestamps/timezones;
 - immutable Cold source records;
 - manual bounded Dream;
-- dedicated MiniMax-M3, non-thinking Grounded Formation with a 2000-token
+- dedicated DeepSeek-V4-Pro, non-thinking Grounded Formation with a 2000-token
   output budget for configured real-model Dream;
 - deterministic `grounded-span-v2` projection for mock/legacy ingestion;
 - a deterministic, LLM-free self-name coverage guard inside Formation:
@@ -146,8 +146,10 @@ are active.
 
 ## Real Model Mode
 
-Copy the ignored `.env.example` to `.env.local`, configure the supported
-MiniMax Anthropic-compatible provider, and restart the process after changes.
+Copy the ignored `.env.example` to `.env.local`, configure `DEEPSEEK_API_KEY`,
+and restart the process after changes. DeepSeek-V4-Pro is the only supported
+real model; Chat, Dream, Mind, and Execution use it through their existing
+authority-specific interfaces.
 Process environment values take precedence over `.env.local`.
 
 No provider request occurs merely from importing the application. Provider

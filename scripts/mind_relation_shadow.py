@@ -45,7 +45,7 @@ from adapter.models import (  # noqa: E402
 from ingestion.state_store import IngestionStateStore  # noqa: E402
 
 V3REL_PROMPT_VERSION = "mind-gate-v3rel"
-_GATE_MODEL_NAME = "MiniMax-M3"
+_GATE_MODEL_NAME = "deepseek-v4-pro"
 _GATE_MAX_TOKENS = 64  # JSON output is longer than v2's single word
 _GATE_TEMPERATURE = 0.0
 _MAX_RELATIONS = 2

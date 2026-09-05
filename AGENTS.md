@@ -55,13 +55,13 @@ is a design compass, not authorization to expand the current task.
 Treat these as completed behavior unless a task identifies a verified defect:
 
 - same-origin browser chat, `/api/status`, and `/api/chat`;
-- mock mode plus one explicit MiniMax Anthropic-compatible real-model adapter;
+- mock mode plus one explicit DeepSeek Anthropic-compatible real-model adapter;
 - safe provider fallback;
 - restart-persistent Hot Draft and Cold-first logical compaction;
 - Draft Turn Provenance V2 with stable IDs and truthful aware time provenance;
 - immutable Cold source records with owner-controlled pending/consumed state;
 - manual, synchronous, bounded Dream;
-- configured real-model Dream uses MiniMax-M3 in non-thinking mode with a
+- configured real-model Dream uses DeepSeek-V4-Pro in non-thinking mode with a
   Formation-only 2000-token output budget;
 - deterministic `grounded-span-v2` projection from eligible Cold source spans
   remains for mock/legacy ingestion;
@@ -93,12 +93,17 @@ Treat these as completed behavior unless a task identifies a verified defect:
 - fail-soft empty/unavailable Recall behavior that does not block normal chat;
 - isolated real-MAGMA Recall E2E validation with restart/idempotency coverage;
 - a Mind gate on every chat message before the Recall guard: stage 2
-  `LlmMindGate` (mind-gate-v2, MiniMax-M3 non-thinking, 8 output tokens,
+  `LlmMindGate` (mind-gate-v2, DeepSeek-V4-Pro non-thinking, 8 output tokens,
   temperature 0) is the real-model default; mock/explicit `constant` mode uses
   `ConstantMindGate`; decisions are `{recall: bool}`, fail-open, and
   append-only audited.
 
 Do not duplicate these capabilities or silently replace their boundaries.
+
+Real-model provider policy: DeepSeek-V4-Pro is the only provider/model for all
+new experiments and production paths. Preserve deterministic mock adapters for
+tests and preserve historical artifacts truthfully; do not issue new MiniMax
+calls or rewrite past experiment provenance.
 
 ## 3. Current Recall facts
 
@@ -171,8 +176,17 @@ production.
 
 Execution V1 is frozen as isolated experimental history at tag
 `execution-organ-v1-final`; it was never connected to the production path.
-Execution V2 has not started. Any further Execution capability requires a
-separate approved task and independent validation before promotion.
+The frozen and audited Execution V2 substrate is promoted as the supported
+`Execution/` production package behind the minimal `ExecutionOrgan` facade.
+Its Root model surface is `IPython + Wait + ClaimComplete`; eligible Child
+delegation is available only as `await spawn_child(goal)` inside IPython, and a
+Child sees `IPython + Wait + Return`. `Execution_lab2` remains evidence and
+regression history and must not become a production dependency. The explicit
+`POST /api/execution` entry is available and creates one isolated workspace per
+request through `ExecutionOrgan`; it is not a Chat path and performs no Mind
+routing. Execution remains unwired from Chat, Mind, Memory, and Dream. Any such
+wiring or any new Execution capability requires a separate approved task and
+independent validation.
 Durability, provenance, boundedness, safety, and fail-soft behavior remain
 non-negotiable.
 
@@ -289,10 +303,18 @@ Decision order:
 ### `core/`
 
 Owns API validation, one `MessageRuntime`, one `ModelClient` protocol, Recall
-invocation/injection, Draft creation, Hot Draft, and Cold-first compaction.
+invocation/injection, Draft creation, Hot Draft, Cold-first compaction, and the
+thin manual `/api/execution` projection through `ExecutionOrgan`.
 
 Do not put MAGMA traversal, graph internals, BGE implementation, or Dream
 orchestration inside `MessageRuntime`.
+
+### `Execution/`
+
+Owns the supported `ExecutionOrgan` facade, frozen event-sourced Runtime,
+persistent IPython control, ToolHost, and DeepSeek adapter. Production callers
+may use only the package's public facade and DTOs; they must not import
+`Execution_lab2` or Runtime/IPython internals.
 
 ### `Conversation_Memory/`
 

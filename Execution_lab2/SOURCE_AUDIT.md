@@ -724,6 +724,188 @@ message bus, or generic recursion framework. The fixed recursive mode derives
 `max_total_actors=3` from `depth <= 2` plus one Child per Actor; no separate
 resource/accounting subsystem was added.
 
+## Flat-vs-Nested topology-emergence experiment (2026-08-28)
+
+### DeepSeek Harness (DSH) - optional capability and independent depth bound
+
+- **SOURCE / COMMIT:** [deepseek-ai/deepseek-harness at
+  `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`](https://github.com/deepseek-ai/deepseek-harness/tree/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e),
+  `dsh 0.1.1-rc.2`, MIT.
+- **SOURCE SYMBOL:** `AgentOptions.subagentDepth`,
+  `SessionHeader.delegationDepth`, `SubagentStartRequest`, and
+  [`SubagentDescendantListEntry.depth`](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/packages/subagent/subagent/src/types.ts),
+  with the [subagent subsystem
+  contract](https://github.com/deepseek-ai/deepseek-harness/blob/b150a551b8d465e31e418e1b2eaf5e79bbb7d28e/docs/subsystems/subagent.md).
+- **BORROWED SEMANTICS:** Subagent execution is an optional action seam;
+  durable delegation depth independently constrains admission and restart
+  identity. Possessing the seam and a positive depth budget does not itself
+  require a session to choose a fixed decomposition.
+- **LUMINA ADAPTATION:** None in Runtime for this experiment. All Flat and
+  Nested runs receive the same already-implemented `SpawnChild` capability and
+  durable depth-two ceiling. Topology is measured afterward from canonical
+  EventLogs.
+- **NOT COPIED:** DSH's provider Registry, catalog, activation/continuation
+  manager, concurrency controls, inbox, session/plugin ecosystem, or any
+  decomposition policy.
+
+### AgentSpawn - deliberately excluded topology heuristics
+
+- **SOURCE / COMMIT:** Igor Costa, [AgentSpawn,
+  arXiv:2602.07072v1](https://arxiv.org/html/2602.07072v1), 2026-02-05,
+  CC BY 4.0. No official source implementation was used, so no code commit
+  exists.
+- **SOURCE SYMBOL:** Section 3.1 topology formation and Section 3.5
+  `Spawn-Resume Protocol` / `SpawnPackage` / `ResumePackage`.
+- **BORROWED SEMANTICS:** Only the research distinction between a runtime
+  substrate that permits topology formation and the topology that actually
+  appears during execution.
+- **LUMINA ADAPTATION:** Three paired Flat/Nested fixtures hold the substrate
+  fixed and mechanically classify the resulting EventLog tree as linear,
+  depth-one branching, or depth-two recursive.
+- **NOT COPIED:** Complexity metrics, Spawn score/threshold, specialist roles,
+  coherence or semantic merge, memory/skill slicing, task decomposition,
+  concurrency, or performance claims. Those mechanisms would steer the model
+  choice this experiment is intended to observe.
+
+### Prime Agent - recursive full-Agent substrate, not RLM policy
+
+- **SOURCE / COMMIT:** [PrimeIntellect-ai/prime-agent at
+  `bc0fa7606abb3b7af0f765319518d255e6ae553d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/bc0fa7606abb3b7af0f765319518d255e6ae553d),
+  rolling `main`, MIT.
+- **SOURCE SYMBOL:** [`AgentSession.runRlmChild`, `RLM_DEPTH`,
+  `RLM_MAX_DEPTH`, and
+  `RlmSpawnHandle`](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/src/core/agent-session.ts),
+  plus the [RLM runtime
+  contract](https://github.com/PrimeIntellect-ai/prime-agent/blob/bc0fa7606abb3b7af0f765319518d255e6ae553d/packages/coding-agent/docs/rlm-runtime.md).
+- **BORROWED SEMANTICS:** A recursive Child can be a complete independent
+  Agent session under a Host-enforced depth ceiling; the substrate is separate
+  from a particular local delegation choice.
+- **LUMINA ADAPTATION:** None in Runtime for this experiment. The existing
+  same-`AgentProcess` depth-two substrate is the frozen independent variable
+  control, while only fixture dependency structure varies.
+- **NOT COPIED:** Prime's RLM prompting/policy, persona and tool filtering,
+  mutable registry, daemon, detached work, provider stack, artifacts, kernel
+  snapshotting, fork/seed machinery, messaging, or scheduler.
+
+### Topology-emergence source conclusion
+
+The sources justify keeping optional delegation, recursive full-Agent
+execution, and a durable depth bound as separate concepts. They do not provide
+the exact Flat-vs-Nested paired experiment, EventLog classifier, or the
+preregistered 2/3-versus-1/3 claim threshold. Those are small Lumina-specific
+research-fixture choices, not production algorithms. **NO DIRECT SOURCE
+IMPLEMENTATION** was found or claimed for them. No upstream heuristic was
+reimplemented, and this experiment changed no Runtime mechanism.
+
+## Shell-surface A/B delta (2026-08-28)
+
+### DeepSeek Harness - scoped model-visible capability restriction
+
+- **SOURCE / COMMIT:** [deepseek-ai/deepseek-harness at
+  cd5ef8148158c3a752a658978873241fdf8e2bbc](https://github.com/deepseek-ai/deepseek-harness/tree/cd5ef8148158c3a752a658978873241fdf8e2bbc),
+  rolling master audited 2026-08-28, MIT.
+- **SOURCE SYMBOL:** [ToolRestriction, compiled restrictions, ToolView and
+  ToolRuntime](https://github.com/deepseek-ai/deepseek-harness/blob/cd5ef8148158c3a752a658978873241fdf8e2bbc/packages/core/tools/src/index.ts),
+  especially ToolRuntime.restrict and ToolRuntime.schemas(scope), plus the
+  [tools subsystem contract](https://github.com/deepseek-ai/deepseek-harness/blob/cd5ef8148158c3a752a658978873241fdf8e2bbc/docs/subsystems/tools.md).
+- **BORROWED SEMANTICS:** A Host-owned agent scope may narrow the exact tool
+  schemas presented to that model request. The visible schema view remains
+  explicit and inspectable. DSH expressly treats this restriction as live
+  visibility composition, not as a security authority boundary.
+- **LUMINA ADAPTATION:** The existing DeepSeek model tool-contract projection
+  has one default-on Shell visibility switch. The shell-hidden research arm
+  deletes exactly one name before AgentProcess constructs ModelRequest and
+  before the adapter constructs provider tools. The test-only sequential
+  driver passes the same switch to each Root/Child model object, and
+  DecisionFrame preserves the actual resulting request.
+- **NOT COPIED:** DSH Tool Registry, layered scope inheritance, allow/deny
+  sets, shadowing, local registrations, plugin lifecycle, execution guards,
+  Code Mode, system-prompt waterfalls, personas or security policy.
+
+### OpenAI Codex - Host assembly of request tool specs
+
+- **SOURCE / COMMIT:** [openai/codex at
+  5f49aba876922d6f2f55caa153bbb0ed1b46feba](https://github.com/openai/codex/tree/5f49aba876922d6f2f55caa153bbb0ed1b46feba),
+  rolling main audited 2026-08-28, Apache-2.0.
+- **SOURCE SYMBOL:** [build_specs_with_discoverable_tools,
+  build_tool_registry_builder, ToolRegistryBuildParams and builder
+  specs](https://github.com/openai/codex/blob/5f49aba876922d6f2f55caa153bbb0ed1b46feba/codex-rs/core/src/tools/spec.rs),
+  with serialized ToolSpec in
+  [tool_spec.rs](https://github.com/openai/codex/blob/5f49aba876922d6f2f55caa153bbb0ed1b46feba/codex-rs/tools/src/tool_spec.rs).
+- **BORROWED SEMANTICS:** The Host assembles the concrete tool specifications
+  that enter a model turn; provider-visible capability is an explicit request
+  input rather than an inference made after sampling.
+- **LUMINA ADAPTATION:** Lumina reuses its existing ModelRequest
+  available-tools field and DecisionFrame actual-request evidence. A and B
+  differ only by deletion of Shell from that projection. ToolHost authority
+  and executable Shell behavior are unchanged.
+- **NOT COPIED:** Codex tool registry/router, discoverable tools, MCP,
+  approvals, sandbox policy, dynamic/deferred tools, Responses stack,
+  session/turn framework or execution scheduler.
+
+### Shell-surface source conclusion
+
+The upstream sources support explicit Host-owned request visibility and warn
+against treating visibility as execution security. They do not supply this
+exact six-run Shell A/B, its observation partition or its preregistered
+thresholds. Those are Lumina-specific research choices. No generic capability
+policy, Registry, router or new execution algorithm was introduced.
+
+The independent replication's hybrid adapter view is a Lumina engineering
+composition of the already-existing native and persistent-IPython schemas so
+both arms retain identical underlying capabilities while only Shell visibility
+changes. It borrows no additional upstream algorithm and adds no Runtime
+authority, routing, sandbox, Tool registry or capability-policy semantics.
+
+## IPython-native Child delegation (2026-08-28)
+
+### Prime Agent - Python delegation call with Host-owned admission
+
+- **SOURCE / COMMIT:** [PrimeIntellect-ai/prime-agent at
+  `0fa717d4f01265e4418bda57d444aa4c36a6b8d9`](https://github.com/PrimeIntellect-ai/prime-agent/tree/0fa717d4f01265e4418bda57d444aa4c36a6b8d9),
+  rolling `main` audited 2026-08-28, MIT. The earlier Jupyter transport was
+  separately inspected at
+  [`514633727bf26d74f39f3119c2b0e31a5ceb2a9d`](https://github.com/PrimeIntellect-ai/prime-agent/tree/514633727bf26d74f39f3119c2b0e31a5ceb2a9d).
+- **SOURCE SYMBOL:** Current
+  [`prime-agent-runtime/src/rlm/__init__.py::host_request` and
+  `run`](https://github.com/PrimeIntellect-ai/prime-agent/blob/0fa717d4f01265e4418bda57d444aa4c36a6b8d9/prime-agent-runtime/src/rlm/__init__.py),
+  [`prime-agent-runtime/src/rlm/repl.py::host_request`](https://github.com/PrimeIntellect-ai/prime-agent/blob/0fa717d4f01265e4418bda57d444aa4c36a6b8d9/prime-agent-runtime/src/rlm/repl.py),
+  [`createRlmRunHostHandler`](https://github.com/PrimeIntellect-ai/prime-agent/blob/0fa717d4f01265e4418bda57d444aa4c36a6b8d9/packages/coding-agent/src/core/rlm-runtime.ts),
+  and `AgentSession._createKernelHostHandlers` / `runRlmChild`. At the pinned
+  earlier commit, the relevant symbols are the injected Python `host_request`,
+  the kernel `host.request` comm target, and Host control-channel reply path.
+- **BORROWED SEMANTICS:** Delegation is invoked as an awaitable Python
+  callable, but the Host remains authoritative for admission, identity and
+  Child lifecycle. A structured request/reply transport avoids interpreting
+  stdout, and a reply channel independent of the executing shell cell avoids
+  the obvious busy-kernel deadlock.
+- **LUMINA ADAPTATION:** The existing persistent IPython bootstrap installs
+  only `spawn_child(goal)` for a configured delegation Actor. One Jupyter comm
+  target carries a bounded goal to one Host callback. The callable persists
+  with that kernel, while the callback rechecks current depth/capacity on every
+  request and reuses Lumina's existing pre-admission checks and
+  `CHILD_SPAWNED` / `ChildRef` path; the reply is only the admitted handle
+  projection. The formal Root provider schemas remain IPython, Wait and
+  ClaimComplete, while the truthful bounded context names the entry rather
+  than asserting that an unused Child slot still exists.
+- **NOT COPIED:** Prime's generic HostRequest types/registry, Python REPL
+  protocol, RLM spawn handles/daemon, model selection, provider/session stack,
+  KernelManager or ZeroMQ wrapper, snapshotting, fork/seed system, messaging,
+  scheduler, concurrency and resource accounting.
+
+### Delegation source conclusion
+
+Prime provides a direct implementation precedent for the Python-call/Host-
+authority boundary and, in its earlier Jupyter implementation, the comm-based
+busy-kernel reply transport. Lumina's exact EventLog causal insertion
+(`IPYTHON_EXECUTION_STARTED -> CHILD_SPAWNED -> IPYTHON_EXECUTION_RESULT`) is a
+small local adaptation required to preserve the existing append-only Child
+lifecycle. A restart with `CHILD_SPAWNED` durable but its enclosing IPython cell
+unsettled is explicitly refused; Lumina does not infer that arbitrary code
+after the await completed. No new delegation algorithm, reconciliation
+algorithm, generic bridge framework, or Runtime planning policy was
+introduced.
+
 ## Source ambiguities and non-equivalences
 
 - **Direct source fact:** every positive upstream behavior above names a pinned symbol or official contract. **Inference** is marked explicitly for Prime's host-authority reading and Temporal's wake shorthand.

@@ -1,0 +1,198 @@
+{
+  "schema": "mind-e2-safe-artifact-v1",
+  "campaign_status": "invalidated_by_preregistered_contamination_policy",
+  "verdict": "EXPERIMENT_E2_INCONCLUSIVE",
+  "single_variable": "when the same frozen bounded ExecutionObservation becomes model-visible",
+  "hashes": {
+    "manifest_sha256": "b20d785ba6d9a5c32b672c03c92f507e121627ecf2cd59ae9f8cf00961f0656b",
+    "preregistration_canonical_sha256": "31b9653608a17c4e6dee559f57b29dbc8075e8851832a0d86b7cd48347de1020",
+    "preregistration_file_sha256": "f55ead2589d69530c69950436fbac6b264a160ea20b1a97588cd9fecf1dd5496",
+    "blinded_primary_sha256": "09c08176c2f5bf299776692032e0115bcf14ad4f4e647c93244bd1ed26b4a816",
+    "blinded_directive_audit_sha256": "f1e0b8eacab0feb3802039a91e372c123a60056ed6273d85be40691399523eed",
+    "raw_campaign_artifact_sha256": "f45acd5653e1ba85b25995bb306848751ad2f5c76fae0ef596677988c866ae06"
+  },
+  "mechanism": {
+    "pull": "run_activation(initial_execution_observation_visible=false)",
+    "push": "run_activation(initial_execution_observation_visible=true)",
+    "snapshot_rule": "one immutable ExecutionObservation constructed from the frozen prefix and passed to both arms",
+    "inspect_rule": "inspect_execution returns that same frozen snapshot without live refresh",
+    "trace_event": "INITIAL_EXECUTION_OBSERVED",
+    "projector_version": "mind-projector-v1",
+    "prompt_version": "mind-prompt-v1"
+  },
+  "summary": {
+    "pull_verified_completions": 3,
+    "push_verified_completions": 4,
+    "PUSH_WIN": 1,
+    "PULL_WIN": 0,
+    "BOTH_PASS": 3,
+    "BOTH_FAIL": 2,
+    "pull_mind_outcomes": {
+      "ActivationFailure": 1,
+      "NoChange": 3,
+      "Directive": 2,
+      "DecisionIntent": 0
+    },
+    "push_mind_outcomes": {
+      "ActivationFailure": 0,
+      "NoChange": 5,
+      "Directive": 1,
+      "DecisionIntent": 0
+    },
+    "directive_count": 3,
+    "directive_audit": {
+      "SUPPORTED": 0,
+      "UNCERTAIN": 0,
+      "CONTRADICTED": 3
+    },
+    "threshold_result_before_integrity_guard": "EXPERIMENT_E2_INCONCLUSIVE"
+  },
+  "prefixes": [
+    {
+      "task_id": "e2-01-weighted-quorum",
+      "task_sha256": "3e0ddba046072aba92955cc8751ac63e40c0ff11109bc9446ba8c56d1259fb07",
+      "checkpoint_sha256": "09db616f091a09c686bd2374709690fc3d6d61d9486c2d346094ddd4b8381133",
+      "event_log_sha256": "6e20ba0172e3b82d2c947caa49381128edf2726354a7931f05b6268682929754",
+      "workspace_sha256": "873b155b4bb466a4baf5dbb2a8f898cc2b6c503780468d5c878978b4ee6901e2",
+      "decision_count": 1,
+      "branch_equivalent": true
+    },
+    {
+      "task_id": "e2-02-effective-access",
+      "task_sha256": "6fc5ce914e794ffe7c864a5b63ebed0fa043dc487c963626ecb9244df36c42f5",
+      "checkpoint_sha256": "faf2d2b407139e7288f137fef0522dc7b5a96e96aec2aaab59627b313de7e76e",
+      "event_log_sha256": "721201cb12a8512b75f54ea1e7eecfb4f8af5c58cefaf27ad175bf458e217e53",
+      "workspace_sha256": "f0014bd778498117c0f708097df86231c4df26a75923bfc066edec91d7c19feb",
+      "decision_count": 1,
+      "branch_equivalent": true
+    },
+    {
+      "task_id": "e2-03-fragment-chain",
+      "task_sha256": "a5cb813557c830ad99d480f2c47d9e379c4cc7cacc65e619c2c553de4ee5d328",
+      "checkpoint_sha256": "3e210026b74e3bfc67a2a83dff896ddcc037306260d059b9821d72de3a1cd7f7",
+      "event_log_sha256": "96ad48e0fcfee8006c7bb90f8752965030ed2349171189ca8c23dc8add58b8bc",
+      "workspace_sha256": "1b2466d3f98a960e3b8bd55f0fbf6a52a108e23fba9b79e590fcfc937b2385cf",
+      "decision_count": 1,
+      "branch_equivalent": true
+    },
+    {
+      "task_id": "e2-04-min-cost-assignment",
+      "task_sha256": "80b9944955f09e71688ad9dcd1f093e773ad041dea8cfdd6f26f137a86c8ad6e",
+      "checkpoint_sha256": "f74d622ad2c8e56ca0fead09a7691500df18db30a81aece008382cc54e21eb79",
+      "event_log_sha256": "e2f033eb988c6cd4b65a8f63a7c65e4c6ba31345b76990e64e9b8c51b0ba4186",
+      "workspace_sha256": "f8115b3a8c3f528943e92a9a005a0f78fd5f3475015e1eaf01c4bcd353be17c3",
+      "decision_count": 1,
+      "branch_equivalent": true
+    },
+    {
+      "task_id": "e2-05-calibrated-sensors",
+      "task_sha256": "cea61ad7f8f1ee95b5a5058fafabb6550e4e1a8ad951576dad2c8fd36db54395",
+      "checkpoint_sha256": "1f34fb58649cb7f0c48b3d2224fa9ca005a49132251a5023f1b2eecb3e260c1f",
+      "event_log_sha256": "ff323f41a5b014b2293aaa837183342ebf0d76ed61e7f24423508fcf5bbf05cb",
+      "workspace_sha256": "a96666ce7c5e7077756adcd16ce33430eee6bac53e795c173213ba06930750d3",
+      "decision_count": 1,
+      "branch_equivalent": true
+    },
+    {
+      "task_id": "e2-06-bom-expansion",
+      "task_sha256": "4396278ed39ea3d9aa0306958391ad4960d246e82b9b72d72534b50de9948a5a",
+      "checkpoint_sha256": "f7baf15080b48c45897577d94aae71ea04b491fe4a82510eea68080651bb8bdf",
+      "event_log_sha256": "09fcd738083c43b3633cf89050e83d0239334bb985ba9d3456db338b27b33c59",
+      "workspace_sha256": "5d42dc500559bad891e97b7aa0c31225ca33e8efbab2f8e7557dc423c2f41dc5",
+      "decision_count": 1,
+      "branch_equivalent": true
+    }
+  ],
+  "runs": [
+    {
+      "task_id": "e2-01-weighted-quorum",
+      "arm_order": "pull_first",
+      "classification": "BOTH_PASS",
+      "pull": {"verified_completion": true, "mind_result": "ActivationFailure", "mind_failure": "invalid_model_output", "mind_calls": 1, "directive_applied": false, "root_decisions": 6},
+      "push": {"verified_completion": true, "mind_result": "NoChange", "mind_failure": null, "mind_calls": 2, "directive_applied": false, "root_decisions": 6}
+    },
+    {
+      "task_id": "e2-02-effective-access",
+      "arm_order": "push_first",
+      "classification": "BOTH_PASS",
+      "pull": {"verified_completion": true, "mind_result": "NoChange", "mind_failure": null, "mind_calls": 2, "directive_applied": false, "root_decisions": 6},
+      "push": {"verified_completion": true, "mind_result": "NoChange", "mind_failure": null, "mind_calls": 2, "directive_applied": false, "root_decisions": 3}
+    },
+    {
+      "task_id": "e2-03-fragment-chain",
+      "arm_order": "pull_first",
+      "classification": "PUSH_WIN",
+      "pull": {"verified_completion": false, "mind_result": "NoChange", "mind_failure": null, "mind_calls": 2, "directive_applied": false, "root_decisions": 6},
+      "push": {"verified_completion": true, "mind_result": "NoChange", "mind_failure": null, "mind_calls": 2, "directive_applied": false, "root_decisions": 5}
+    },
+    {
+      "task_id": "e2-04-min-cost-assignment",
+      "arm_order": "push_first",
+      "classification": "BOTH_PASS",
+      "pull": {"verified_completion": true, "mind_result": "NoChange", "mind_failure": null, "mind_calls": 2, "directive_applied": false, "root_decisions": 3},
+      "push": {"verified_completion": true, "mind_result": "Directive", "mind_failure": null, "mind_calls": 1, "directive_applied": true, "root_decisions": 6, "review_id": "directive-001"}
+    },
+    {
+      "task_id": "e2-05-calibrated-sensors",
+      "arm_order": "pull_first",
+      "classification": "BOTH_FAIL",
+      "pull": {"verified_completion": false, "mind_result": "Directive", "mind_failure": null, "mind_calls": 2, "directive_applied": true, "root_decisions": 6, "review_id": "directive-002"},
+      "push": {"verified_completion": false, "mind_result": "NoChange", "mind_failure": null, "mind_calls": 2, "directive_applied": false, "root_decisions": 6}
+    },
+    {
+      "task_id": "e2-06-bom-expansion",
+      "arm_order": "push_first",
+      "classification": "BOTH_FAIL",
+      "pull": {"verified_completion": false, "mind_result": "Directive", "mind_failure": null, "mind_calls": 2, "directive_applied": true, "root_decisions": 6, "review_id": "directive-003"},
+      "push": {"verified_completion": false, "mind_result": "NoChange", "mind_failure": null, "mind_calls": 2, "directive_applied": false, "root_decisions": 6}
+    }
+  ],
+  "directive_audit": {
+    "reviewer_a": {
+      "directive-001": "CONTRADICTED",
+      "directive-002": "CONTRADICTED",
+      "directive-003": "CONTRADICTED"
+    },
+    "reviewer_b": {
+      "directive-001": "CONTRADICTED",
+      "directive-002": "CONTRADICTED",
+      "directive-003": "CONTRADICTED"
+    },
+    "consensus": {
+      "directive-001": "CONTRADICTED",
+      "directive-002": "CONTRADICTED",
+      "directive-003": "CONTRADICTED"
+    },
+    "reviewer_disagreements": 0,
+    "blinding": "reviewers received only opaque review_id, frozen ExecutionObservation, Directive text, and the frozen rubric"
+  },
+  "contamination_audit": {
+    "files_reviewed": 18,
+    "ipython_actions_reviewed": 69,
+    "unique_action_bodies": 45,
+    "violations": [
+      {
+        "task_id": "e2-05-calibrated-sensors",
+        "arm": "pull",
+        "branch_directory": "baseline",
+        "event_sequence": 29,
+        "decision_id": "decision-000007",
+        "code": "open('/workspace/answer.txt','w').write('36')",
+        "result": "FileNotFoundError",
+        "policy_effect": "invalidates_entire_campaign"
+      }
+    ],
+    "other_forbidden_patterns_found": 0,
+    "note": "The failed absolute-path attempt is still a cwd-external access attempt under the frozen policy. No rerun was performed."
+  },
+  "post_campaign_review": {
+    "changes": [
+      "recast invalidated-campaign interpretation as descriptive rather than causal",
+      "require evaluate_verdict audit labels to exactly cover every recorded Directive review_id"
+    ],
+    "campaign_mechanism_changed": false,
+    "provider_calls_repeated": false,
+    "actual_audit_already_had_complete_coverage": true,
+    "formula_verdict_changed": false
+  }
+}

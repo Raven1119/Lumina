@@ -99,7 +99,7 @@ explicit trigger
 -> ColdDraftStore.list_pending(limit)
 -> complete logical Cold segment
 -> ColdDraftSegmentConverter
--> one bounded MiniMax-M3 Formation call (non-thinking, max_tokens=2000)
+-> one bounded DeepSeek-V4-Pro Formation call (non-thinking, max_tokens=2000)
    for a new segment
 -> deterministic source-grounding validation plus bounded semantic fallback
    and value-only guard
@@ -113,7 +113,7 @@ explicit trigger
 ```
 
 Dream passes the bounded source segment to the adapter. With a configured real
-model, the adapter sends that segment once to dedicated MiniMax-M3 Formation
+model, the adapter sends that segment once to dedicated DeepSeek-V4-Pro Formation
 in non-thinking mode with `max_tokens=2000`, accepts only units admitted by the
 current grounding validator and bounded semantic fallback, and checkpoints them
 before MAGMA. Retry after a MAGMA failure reuses the checkpoint. Mock/legacy adapters

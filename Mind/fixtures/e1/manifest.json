@@ -1,0 +1,217 @@
+{
+  "schema": "mind-e1-preregistered-fixtures-v1",
+  "single_variable": "whether one real cognitive Mind activation may produce and deliver one Directive",
+  "primary_metric": "VerifiedCompletion",
+  "trigger": {
+    "branch_after_root_decisions": 1,
+    "text": "Mechanical E1 activation after Root decision 1.",
+    "selection_rationale": "Uniform N=1 was selected before candidate runs because supported Execution may complete, wait, or spawn before decision 3; decision 1 is the earliest durable restart boundary, and an unavailable boundary blocks the campaign rather than causing task-specific replacement."
+  },
+  "contamination_policy": {
+    "layout": "workspace and control artifacts use unrelated high-entropy temporary roots; arms are not discoverable siblings from actor cwd",
+    "pre_arm_check": "restore and hash the complete durable branch immediately before each continuation",
+    "trace_review": "review every Root and Child IPython action for cwd-external access, parent or absolute traversal, repo or temp enumeration, subprocess, shell escape, or background work",
+    "invalidation_rule": "any cwd-external access or cross-arm/control-artifact access invalidates the entire campaign",
+    "claim_limit": "randomized separation plus complete non-adversarial trace review; no OS sandbox claim"
+  },
+  "review_policy": "inspect the separate blinded-primary artifact before opening arm labels, Mind output, or trajectory details",
+  "budget": {
+    "max_additional_root_decisions": 6,
+    "max_child_decisions": 4,
+    "max_context_chars": 5000,
+    "wall_time_seconds": 420
+  },
+  "execution_model": {
+    "provider": "DeepSeek",
+    "model": "deepseek-v4-pro",
+    "thinking": "disabled",
+    "stream": false,
+    "temperature": "provider_default",
+    "max_tokens": "provider_default",
+    "request_timeout_seconds": 60
+  },
+  "mind_model": {
+    "provider": "minimax-anthropic",
+    "base_url": "https://api.minimaxi.com/anthropic",
+    "model": "MiniMax-M2.7",
+    "temperature": "provider_default",
+    "max_tokens": 1000,
+    "request_timeout_seconds": 30,
+    "max_model_calls": 2,
+    "max_capability_calls": 1,
+    "prompt_version": "mind-prompt-v1",
+    "projector_version": "mind-projector-v1"
+  },
+  "memory_policy": "fixed_empty_read_only",
+  "directive_rendering_version": "mind-directive-render-v1-source-frozen",
+  "output_contract": {
+    "padding_character": "~",
+    "padding_count": 1100,
+    "separator": "\n",
+    "trailing_newline": true
+  },
+  "arm_order": [
+    "baseline_first",
+    "candidate_first",
+    "baseline_first",
+    "candidate_first",
+    "baseline_first",
+    "candidate_first"
+  ],
+  "tasks": [
+    {
+      "task_id": "e1-01-ledger-replay",
+      "description": "Replay a small account ledger with duplicate-event suppression.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "Aster=110;Birch=70;Cedar=65",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Use policy.txt to replay opening.csv and events.jsonl. Produce one payload listing final balances in account-name order as name=value pairs joined by semicolons. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "policy.txt",
+          "text": "Replay events by ascending sequence. An event id is applied only on its first occurrence; later duplicate ids are ignored. Amounts are signed integers.\n"
+        },
+        {
+          "path": "opening.csv",
+          "text": "account,balance\nAster,100\nBirch,80\nCedar,50\n"
+        },
+        {
+          "path": "events.jsonl",
+          "text": "{\"seq\":1,\"event_id\":\"evt-a\",\"account\":\"Aster\",\"amount\":25}\n{\"seq\":2,\"event_id\":\"evt-b\",\"account\":\"Birch\",\"amount\":-10}\n{\"seq\":3,\"event_id\":\"evt-c\",\"account\":\"Cedar\",\"amount\":15}\n{\"seq\":4,\"event_id\":\"evt-d\",\"account\":\"Aster\",\"amount\":-15}\n{\"seq\":5,\"event_id\":\"evt-b\",\"account\":\"Birch\",\"amount\":999}\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e1-02-utc-window",
+      "description": "Find an earliest shared UTC interval across local availability windows.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "2026-09-14T09:00Z/2026-09-14T09:30Z",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Find the earliest legal common UTC interval described by request.txt, participants.csv, and blackouts.csv. Windows are half-open. Format the payload as START/END using YYYY-MM-DDTHH:MMZ. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "request.txt",
+          "text": "date=2026-09-14\nduration_minutes=30\n"
+        },
+        {
+          "path": "participants.csv",
+          "text": "participant,utc_offset,local_start,local_end\nAmina,+02:00,10:30,13:00\nBoris,-05:00,04:00,07:00\nChao,+00:00,08:00,10:30\n"
+        },
+        {
+          "path": "blackouts.csv",
+          "text": "participant,utc_start,utc_end\nAmina,2026-09-14T09:30Z,2026-09-14T10:00Z\nBoris,2026-09-14T11:30Z,2026-09-14T12:00Z\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e1-03-dependency-lock",
+      "description": "Select the highest non-revoked compatible dependency tuple.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "atlas=1.5;beacon=2.2;cinder=3.1",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Choose the lexicographically highest version tuple, in atlas then beacon then cinder order, that satisfies constraints.txt, appears in compatibility.jsonl, and contains no revoked.txt entry. Format the payload as atlas=V;beacon=V;cinder=V. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "catalog.csv",
+          "text": "package,version\natlas,1.4\natlas,1.5\nbeacon,2.1\nbeacon,2.2\ncinder,3.1\ncinder,3.2\n"
+        },
+        {
+          "path": "constraints.txt",
+          "text": "atlas>=1.4\nbeacon>=2.1\ncinder>=3.1\n"
+        },
+        {
+          "path": "compatibility.jsonl",
+          "text": "{\"atlas\":\"1.4\",\"beacon\":\"2.2\",\"cinder\":\"3.2\"}\n{\"atlas\":\"1.5\",\"beacon\":\"2.1\",\"cinder\":\"3.1\"}\n{\"atlas\":\"1.5\",\"beacon\":\"2.2\",\"cinder\":\"3.1\"}\n"
+        },
+        {
+          "path": "revoked.txt",
+          "text": "cinder=3.2\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e1-04-event-projection",
+      "description": "Project device state with duplicate suppression and one rollback.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "alarm=disarmed;gate=closed;pump=standby",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Project final state from snapshot.json and commands.jsonl under replay_rules.txt. Format the payload with keys in alphabetical order as key=value pairs joined by semicolons. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "snapshot.json",
+          "text": "{\"alarm\":\"armed\",\"gate\":\"open\",\"pump\":\"standby\"}\n"
+        },
+        {
+          "path": "replay_rules.txt",
+          "text": "Process ascending seq. Apply only the first occurrence of each command id. A set stores the prior value. A rollback restores the prior value stored by its target set command.\n"
+        },
+        {
+          "path": "commands.jsonl",
+          "text": "{\"seq\":1,\"id\":\"cmd-a\",\"op\":\"set\",\"key\":\"pump\",\"value\":\"active\"}\n{\"seq\":2,\"id\":\"cmd-b\",\"op\":\"set\",\"key\":\"gate\",\"value\":\"closed\"}\n{\"seq\":3,\"id\":\"cmd-c\",\"op\":\"set\",\"key\":\"alarm\",\"value\":\"disarmed\"}\n{\"seq\":4,\"id\":\"cmd-d\",\"op\":\"rollback\",\"target\":\"cmd-a\"}\n{\"seq\":5,\"id\":\"cmd-b\",\"op\":\"set\",\"key\":\"gate\",\"value\":\"open\"}\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e1-05-constrained-route",
+      "description": "Find a lowest-cost directed route with one required waypoint.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "A>C>E>D>F;cost=8",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Find the unique lowest-cost directed route defined by request.txt and edges.csv while excluding closures.txt. Format the payload as nodes joined by >, then ;cost=N. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "request.txt",
+          "text": "start=A\nend=F\nrequired_waypoint=E\n"
+        },
+        {
+          "path": "edges.csv",
+          "text": "source,target,cost\nA,B,2\nA,C,2\nB,E,3\nB,D,2\nC,E,2\nC,D,3\nE,D,1\nE,F,7\nD,F,3\n"
+        },
+        {
+          "path": "closures.txt",
+          "text": "B>D\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e1-06-grid-transform",
+      "description": "Apply two grid transforms and extract indexed cells.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "AJPG",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Apply operations.txt to grid.csv in order, then read zero-based row,column coordinates from picks.csv in listed order and concatenate the selected cells as the payload. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "grid.csv",
+          "text": "A,B,C,D\nE,F,G,H\nI,J,K,L\nM,N,O,P\n"
+        },
+        {
+          "path": "operations.txt",
+          "text": "rotate_clockwise\nmirror_left_right\n"
+        },
+        {
+          "path": "picks.csv",
+          "text": "row,column\n0,0\n1,2\n3,3\n2,1\n"
+        }
+      ]
+    }
+  ]
+}

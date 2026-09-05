@@ -1060,7 +1060,7 @@ def test_cli_default_version_tracks_effective_model_and_explicit_value(monkeypat
 
     monkeypatch.setattr(runner_module, "build_model_client_from_env", build_mock)
     assert runner_module.main([]) == 0
-    assert requested_models[-1] == ("MiniMax-M3", 2000)
+    assert requested_models[-1] == (None, 2000)
     assert observed[-1] == "grounded-span-v2"
 
     real = FakeFormationModel([])
@@ -1071,7 +1071,7 @@ def test_cli_default_version_tracks_effective_model_and_explicit_value(monkeypat
 
     monkeypatch.setattr(runner_module, "build_model_client_from_env", build_real)
     assert runner_module.main([]) == 0
-    assert requested_models[-1] == ("MiniMax-M3", 2000)
+    assert requested_models[-1] == (None, 2000)
     assert observed[-1] == FORMATION_VERSION
     assert runner_module.main(["--ingestion-version", "grounded-span-v2"]) == 0
     assert observed[-1] == "grounded-span-v2"
@@ -1102,7 +1102,7 @@ def test_default_runner_uses_dedicated_formation_model(monkeypatch, tmp_path):
         str(tmp_path / "magma"),
     )
     runner_module.build_default_runner()
-    assert requested_models == [("MiniMax-M3", 2000)]
+    assert requested_models == [(None, 2000)]
 
 
 def test_multi_turn_referenced_time_uses_the_unique_source_turn_timestamp(tmp_path):

@@ -1,0 +1,19 @@
+{
+	"nodes":[
+		{"id":"13ed204771f91cb0","type":"text","text":"ToolHost","x":-125,"y":-30,"width":250,"height":60},
+		{"id":"50f57749082c77de","x":220,"y":-30,"width":250,"height":60,"type":"text","text":"Shared Environment"},
+		{"id":"8990a7c77bb9db40","x":60,"y":140,"width":250,"height":60,"type":"text","text":"result/event"},
+		{"id":"635776bb64faeaa1","x":-125,"y":340,"width":250,"height":60,"type":"text","text":"EventLog"},
+		{"id":"f51e30640f20ed88","x":220,"y":340,"width":250,"height":60,"type":"text","text":"StateReducer"},
+		{"id":"162dcd26ccc7111f","x":580,"y":340,"width":250,"height":60,"type":"text","text":"ExecutionState"},
+		{"id":"fa4e09ceed736cdb","x":580,"y":480,"width":250,"height":60,"type":"text","text":"Checkpoint"}
+	],
+	"edges":[
+		{"id":"9923fe1a28a4aae5","fromNode":"13ed204771f91cb0","fromSide":"right","toNode":"50f57749082c77de","toSide":"left"},
+		{"id":"edd2f4b557681ed9","fromNode":"50f57749082c77de","fromSide":"bottom","toNode":"8990a7c77bb9db40","toSide":"right"},
+		{"id":"3551f3c75d18bfe6","fromNode":"13ed204771f91cb0","fromSide":"bottom","toNode":"8990a7c77bb9db40","toSide":"left"},
+		{"id":"551f61d475807178","fromNode":"635776bb64faeaa1","fromSide":"right","toNode":"f51e30640f20ed88","toSide":"left"},
+		{"id":"af7c777dfb9f645c","fromNode":"f51e30640f20ed88","fromSide":"right","toNode":"162dcd26ccc7111f","toSide":"left"},
+		{"id":"93d7dfa90bcca325","fromNode":"162dcd26ccc7111f","fromSide":"bottom","toNode":"fa4e09ceed736cdb","toSide":"top"}
+	]
+}

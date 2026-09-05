@@ -1,5 +1,4 @@
 import json
-import os
 import threading
 import time
 from collections.abc import Mapping
@@ -12,6 +11,7 @@ from Execution_lab2.execution import (
     AgentProcess,
     Checkpoint,
     ClaimComplete,
+    ChildRef,
     EventLog,
     FileContentEquals,
     ModelRequest,
@@ -19,6 +19,7 @@ from Execution_lab2.execution import (
     Observation,
     ReadRequest,
     Return,
+    ROOT_TOOL_CONTRACTS,
     RootAgentProcess,
     ScriptedModel,
     SharedEnvironment,
@@ -75,13 +76,21 @@ def _plain(value):
     return value
 
 
+class _NativeToolTestModel(DeepSeekModel):
+    """Explicit test-only access to historical native tool contracts."""
+
+    @property
+    def tool_contracts(self):
+        return ROOT_TOOL_CONTRACTS + ("return(local_result: str)",)
+
+
 def test_two_homogeneous_spawn_calls_form_one_ordered_root_decision(tmp_path):
     response = _tool_calls_response(
         ("call_a", "spawn_child", json.dumps({"goal": "inspect a.txt"})),
         ("call_b", "spawn_child", json.dumps({"goal": "inspect b.txt"})),
     )
     result = AgentProcess(
-        DeepSeekModel(transport=lambda payload: response),
+        _NativeToolTestModel(transport=lambda payload: response),
         ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=1,
         event_log=EventLog(tmp_path / "root.jsonl"),
@@ -138,7 +147,7 @@ def test_three_homogeneous_spawn_calls_are_admitted_in_provider_order(tmp_path):
         ("call_c", "spawn_child", json.dumps({"goal": "C"})),
     )
     result = AgentProcess(
-        DeepSeekModel(transport=lambda payload: response),
+        _NativeToolTestModel(transport=lambda payload: response),
         ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=1,
         event_log=EventLog(tmp_path / "root.jsonl"),
@@ -175,7 +184,7 @@ def test_spawn_batch_over_remaining_capacity_is_rejected_before_new_identity(
     )
     tools = ToolHost(SharedEnvironment(tmp_path))
     root = AgentProcess(
-        DeepSeekModel(transport=lambda payload: next(responses)),
+        _NativeToolTestModel(transport=lambda payload: next(responses)),
         tools,
         max_decisions=2,
         event_log=EventLog(tmp_path / "root.jsonl"),
@@ -266,7 +275,7 @@ def test_spawn_mixed_with_another_action_rejects_the_whole_decision(
         ("call_other", second_name, second_arguments),
     )
     result = AgentProcess(
-        DeepSeekModel(transport=lambda payload: response),
+        _NativeToolTestModel(transport=lambda payload: response),
         ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=1,
         event_log=EventLog(tmp_path / "root.jsonl"),
@@ -361,7 +370,7 @@ def test_spawn_batch_child_results_continue_with_matching_native_call_ids(
 
     tools = ToolHost(SharedEnvironment(tmp_path))
     root = AgentProcess(
-        DeepSeekModel(transport=transport),
+        _NativeToolTestModel(transport=transport),
         tools,
         max_decisions=2,
         event_log=EventLog(tmp_path / "root.jsonl"),
@@ -414,7 +423,7 @@ def test_restart_preserves_spawn_batch_identities_and_waits_for_all_results(
     root_path = tmp_path / "root.jsonl"
     tools = ToolHost(SharedEnvironment(tmp_path))
     initial = AgentProcess(
-        DeepSeekModel(transport=lambda payload: first_response),
+        _NativeToolTestModel(transport=lambda payload: first_response),
         tools,
         max_decisions=2,
         event_log=EventLog(root_path),
@@ -429,7 +438,7 @@ def test_restart_preserves_spawn_batch_identities_and_waits_for_all_results(
         return _tool_response("call_claim", "claim_complete", "{}")
 
     restored_root = AgentProcess(
-        DeepSeekModel(transport=continuation_transport),
+        _NativeToolTestModel(transport=continuation_transport),
         tools,
         max_decisions=2,
         event_log=EventLog.load(root_path),
@@ -486,7 +495,7 @@ def test_restart_finishes_only_the_uncommitted_spawn_batch_suffix(tmp_path):
     root_path = tmp_path / "root.jsonl"
     with pytest.raises(RuntimeError, match="before second spawn"):
         AgentProcess(
-            DeepSeekModel(transport=lambda payload: response),
+            _NativeToolTestModel(transport=lambda payload: response),
             ToolHost(SharedEnvironment(tmp_path)),
             max_decisions=2,
             event_log=CrashBeforeSecondSpawn(root_path),
@@ -602,7 +611,7 @@ def test_native_read_call_maps_to_the_existing_typed_action():
         payloads.append(payload)
         return _tool_response("call_read", "read", json.dumps({"path": "input.txt"}))
 
-    decision = DeepSeekModel(transport=fake_transport).decide(
+    decision = _NativeToolTestModel(transport=fake_transport).decide(
         ModelRequest("{}", ("read(path: str) -> ToolResult",), ("event-1",))
     )
 
@@ -614,11 +623,7 @@ def test_native_read_call_maps_to_the_existing_typed_action():
     assert payloads[0]["thinking"] == {"type": "disabled"}
     assert payloads[0]["stream"] is False
     assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == [
-        "read",
-        "write",
-        "shell",
-        "wait",
-        "claim_complete",
+        "read"
     ]
 
 
@@ -640,7 +645,7 @@ def test_native_read_call_maps_to_the_existing_typed_action():
     ],
 )
 def test_native_function_calls_map_to_existing_actions(name, arguments, expected):
-    model = DeepSeekModel(
+    model = _NativeToolTestModel(
         transport=lambda payload: _tool_response(
             f"call_{name}", name, json.dumps(arguments)
         )
@@ -651,6 +656,92 @@ def test_native_function_calls_map_to_existing_actions(name, arguments, expected
     assert decision.action == expected
     assert decision.provider_tool_call_id == f"call_{name}"
     assert decision.failure is None
+
+
+def test_default_root_surface_is_prime_like_in_frame_and_provider_request(
+    tmp_path,
+):
+    payloads = []
+    root = AgentProcess(
+        DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload)
+                or _tool_response('call_claim', 'claim_complete', '{}')
+            ),
+        ),
+        ToolHost(SharedEnvironment(tmp_path)),
+        event_log=EventLog(tmp_path / 'root.jsonl'),
+        max_decisions=1,
+        max_depth=2,
+    )
+    try:
+        result = root.run(
+            'Complete the task.',
+            FileContentEquals('outcome.txt', 'done'),
+        )
+    finally:
+        root.close()
+
+    assert [
+        contract.partition('(')[0]
+        for contract in result.decision_frames[0].actual_request.available_tools
+    ] == ['ipython', 'wait', 'claim_complete']
+    assert [
+        tool['function']['name'] for tool in payloads[0]['tools']
+    ] == ['ipython', 'wait', 'claim_complete']
+
+
+@pytest.mark.parametrize(
+    ('depth', 'expected_names'),
+    [
+        (1, ['ipython', 'wait', 'return']),
+        (2, ['ipython', 'wait', 'return']),
+    ],
+)
+def test_default_child_surface_is_prime_like_and_respects_depth_admission(
+    tmp_path,
+    depth,
+    expected_names,
+):
+    log_path = tmp_path / f'child-{depth}.jsonl'
+    payloads = []
+    child_ref = ChildRef(
+        child_execution_id=f'execution-child-{depth}',
+        child_actor_id=f'child-{depth}',
+        parent_actor_id='parent',
+        local_goal='Return one local result.',
+        event_log_path=str(log_path),
+        provider_tool_call_id='call_spawn',
+        depth=depth,
+        max_depth=2,
+    )
+    child = AgentProcess.for_child(
+        child_ref,
+        model=DeepSeekModel(
+            transport=lambda payload: (
+                payloads.append(payload)
+                or _tool_response(
+                    'call_return',
+                    'return',
+                    json.dumps({'local_result': 'done'}),
+                )
+            ),
+        ),
+        tools=ToolHost(SharedEnvironment(tmp_path)),
+        max_decisions=1,
+    )
+    try:
+        result = child.run_child()
+    finally:
+        child.close()
+
+    assert [
+        contract.partition('(')[0]
+        for contract in result.decision_frames[0].actual_request.available_tools
+    ] == expected_names
+    assert [
+        tool['function']['name'] for tool in payloads[0]['tools']
+    ] == expected_names
 
 
 def test_two_ordinary_siblings_execute_in_model_order_and_continue_together(
@@ -676,7 +767,7 @@ def test_two_ordinary_siblings_execute_in_model_order_and_continue_together(
             return super().execute(request)
 
     result = RootAgentProcess(
-        DeepSeekModel(
+        _NativeToolTestModel(
             transport=lambda payload: (
                 payloads.append(payload) or next(responses)
             )
@@ -774,7 +865,7 @@ def test_interrupt_stops_unstarted_sibling_until_explicit_resume(tmp_path):
     tools = BlockingFirstTools(SharedEnvironment(tmp_path))
     event_log = EventLog(tmp_path / "siblings.jsonl")
     runtime = RootAgentProcess(
-        DeepSeekModel(
+        _NativeToolTestModel(
             transport=lambda payload: (
                 payloads.append(payload) or next(responses)
             )
@@ -829,7 +920,7 @@ def test_next_sibling_cannot_start_before_previous_sibling_settles(tmp_path):
             raise RuntimeError("crash before first result")
 
     process = RootAgentProcess(
-        DeepSeekModel(transport=lambda payload: response),
+        _NativeToolTestModel(transport=lambda payload: response),
         CrashBeforeRead(SharedEnvironment(tmp_path)),
         event_log=event_log,
         max_decisions=1,
@@ -896,7 +987,7 @@ def test_restart_resumes_only_the_unstarted_sibling_suffix(
     monkeypatch.setattr(event_log, "append", crash_after_first_result)
     with pytest.raises(SystemExit, match="first sibling settled"):
         RootAgentProcess(
-            DeepSeekModel(transport=lambda payload: first_response),
+            _NativeToolTestModel(transport=lambda payload: first_response),
             RecordingTools(SharedEnvironment(tmp_path)),
             event_log=event_log,
             max_decisions=2,
@@ -905,7 +996,7 @@ def test_restart_resumes_only_the_unstarted_sibling_suffix(
     before = fold_execution_state(EventLog.load(log_path).events)
     payloads = []
     resumed = RootAgentProcess(
-        DeepSeekModel(
+        _NativeToolTestModel(
             transport=lambda payload: (
                 payloads.append(payload)
                 or _tool_response("call_complete", "claim_complete", "{}")
@@ -954,7 +1045,7 @@ def test_restart_reconciles_committed_write_then_resumes_sibling_suffix(
     )
     with pytest.raises(SystemExit, match="committed sibling write"):
         RootAgentProcess(
-            DeepSeekModel(transport=lambda payload: first_response),
+            _NativeToolTestModel(transport=lambda payload: first_response),
             CrashAfterFirstWrite(SharedEnvironment(tmp_path)),
             event_log=EventLog(log_path),
             max_decisions=2,
@@ -969,7 +1060,7 @@ def test_restart_reconciles_committed_write_then_resumes_sibling_suffix(
             return super().execute(request)
 
     resumed = RootAgentProcess(
-        DeepSeekModel(
+        _NativeToolTestModel(
             transport=lambda payload: (
                 payloads.append(payload)
                 or _tool_response("call_complete", "claim_complete", "{}")
@@ -1035,7 +1126,7 @@ def test_restart_reconciles_committed_write_then_resumes_sibling_suffix(
 def test_invalid_native_decisions_are_rejected_atomically(
     response, expected_failure
 ):
-    decision = DeepSeekModel(transport=lambda payload: response).decide(
+    decision = _NativeToolTestModel(transport=lambda payload: response).decide(
         ModelRequest("{}", (), ("event-1",))
     )
 
@@ -1066,7 +1157,7 @@ def test_batch_preflight_rejects_an_invalid_third_call_before_writes(tmp_path):
         ("call_invalid", "invalid_tool", "{}"),
     )
     result = RootAgentProcess(
-        DeepSeekModel(transport=lambda payload: response),
+        _NativeToolTestModel(transport=lambda payload: response),
         RecordingTools(SharedEnvironment(tmp_path)),
         max_decisions=1,
     ).run(
@@ -1096,7 +1187,7 @@ def test_over_bound_sibling_batch_is_rejected_before_any_effect(tmp_path):
         ]
     )
     runtime = RootAgentProcess(
-        DeepSeekModel(transport=lambda payload: response),
+        _NativeToolTestModel(transport=lambda payload: response),
         RecordingTools(SharedEnvironment(tmp_path)),
         max_decisions=1,
     )
@@ -1107,7 +1198,7 @@ def test_over_bound_sibling_batch_is_rejected_before_any_effect(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("response", "expected_failure", "tool_mode"),
+    ("response", "expected_failure", "model_type"),
     [
         (
             _tool_calls_response(
@@ -1115,7 +1206,7 @@ def test_over_bound_sibling_batch_is_rejected_before_any_effect(tmp_path):
                 ("call_same", "read", json.dumps({"path": "b.txt"})),
             ),
             "model_protocol:duplicate_tool_call_id",
-            "native",
+            _NativeToolTestModel,
         ),
         (
             _tool_calls_response(
@@ -1123,7 +1214,7 @@ def test_over_bound_sibling_batch_is_rejected_before_any_effect(tmp_path):
                 ("call_complete", "claim_complete", "{}"),
             ),
             "model_protocol:mixed_control_tool_calls",
-            "native",
+            _NativeToolTestModel,
         ),
         (
             _tool_calls_response(
@@ -1135,12 +1226,12 @@ def test_over_bound_sibling_batch_is_rejected_before_any_effect(tmp_path):
                 ),
             ),
             "model_protocol:mixed_control_tool_calls",
-            "ipython",
+            DeepSeekModel,
         ),
     ],
 )
 def test_invalid_sibling_batch_is_rejected_before_any_effect(
-    tmp_path, response, expected_failure, tool_mode
+    tmp_path, response, expected_failure, model_type
 ):
     executed = []
 
@@ -1157,9 +1248,7 @@ def test_invalid_sibling_batch_is_rejected_before_any_effect(
             pass
 
     result = RootAgentProcess(
-        DeepSeekModel(
-            tool_mode=tool_mode, transport=lambda payload: response
-        ),
+        model_type(transport=lambda payload: response),
         RecordingTools(SharedEnvironment(tmp_path)),
         ipython_control=RejectingIPython(),
         max_decisions=1,
@@ -1197,7 +1286,7 @@ def test_failed_sibling_is_committed_without_erasing_later_calls(tmp_path):
         ]
     )
     result = RootAgentProcess(
-        DeepSeekModel(
+        _NativeToolTestModel(
             transport=lambda payload: (
                 payloads.append(payload) or next(responses)
             )
@@ -1266,7 +1355,7 @@ def test_runtime_preserves_native_call_id_into_the_tool_result_continuation(
         payloads.append(payload)
         return next(responses)
 
-    model = DeepSeekModel(transport=fake_transport)
+    model = _NativeToolTestModel(transport=fake_transport)
     result = RootAgentProcess(
         model=model,
         tools=ToolHost(SharedEnvironment(tmp_path)),
@@ -1412,7 +1501,7 @@ def test_reconciled_native_write_preserves_call_id_into_observation_and_continua
             raise RuntimeError("simulated crash after committed write")
 
     first = RootAgentProcess(
-        model=DeepSeekModel(
+        model=_NativeToolTestModel(
             transport=lambda payload: _tool_response(
                 "call_write",
                 "write",
@@ -1433,7 +1522,7 @@ def test_reconciled_native_write_preserves_call_id_into_observation_and_continua
 
     payloads = []
     result = RootAgentProcess(
-        model=DeepSeekModel(
+        model=_NativeToolTestModel(
             transport=lambda payload: (
                 payloads.append(payload)
                 or _tool_response("call_complete", "claim_complete", "{}")
@@ -1464,7 +1553,7 @@ def test_event_log_rejects_a_tool_result_with_a_different_provider_call_id(
             raise RuntimeError("simulated crash before read")
 
     process = RootAgentProcess(
-        model=DeepSeekModel(
+        model=_NativeToolTestModel(
             transport=lambda payload: _tool_response(
                 "call_read", "read", json.dumps({"path": "input.txt"})
             )
@@ -1523,7 +1612,7 @@ def test_native_tool_result_uses_the_bounded_projection_not_canonical_output(
     payloads = []
 
     result = RootAgentProcess(
-        model=DeepSeekModel(
+        model=_NativeToolTestModel(
             transport=lambda payload: payloads.append(payload) or next(responses)
         ),
         tools=ToolHost(SharedEnvironment(tmp_path), max_output_chars=30_000),
@@ -1579,7 +1668,7 @@ def test_four_siblings_fit_the_minimum_context_bound(tmp_path):
     )
     payloads = []
     result = RootAgentProcess(
-        DeepSeekModel(
+        _NativeToolTestModel(
             transport=lambda payload: (
                 payloads.append(payload) or next(responses)
             )
@@ -1620,7 +1709,7 @@ def test_four_failed_siblings_fit_the_minimum_context_bound(tmp_path):
     )
     payloads = []
     result = RootAgentProcess(
-        DeepSeekModel(
+        _NativeToolTestModel(
             transport=lambda payload: (
                 payloads.append(payload) or next(responses)
             )
@@ -1693,356 +1782,3 @@ def test_production_transport_keeps_the_environment_key_out_of_the_decision(
     assert observed["payload"] == decision.provider_wire_request
     assert observed["timeout"] == 60.0
     assert token not in repr(decision)
-
-
-_RUN_REAL = (
-    os.environ.get("RUN_DEEPSEEK_REAL_TESTS") == "1"
-    and bool(os.environ.get("DEEPSEEK_API_KEY"))
-)
-_REAL_REASON = (
-    "set RUN_DEEPSEEK_REAL_TESTS=1 and DEEPSEEK_API_KEY to run DeepSeek experiments"
-)
-
-
-def _usage(result):
-    totals = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-    }
-    for frame in result.decision_frames:
-        response = frame.raw_provider_response
-        if isinstance(response, Mapping):
-            usage = response.get("usage")
-            if isinstance(usage, Mapping):
-                for provider_name, result_name in (
-                    ("prompt_tokens", "input_tokens"),
-                    ("completion_tokens", "output_tokens"),
-                    ("total_tokens", "total_tokens"),
-                ):
-                    value = usage.get(provider_name)
-                    if isinstance(value, int):
-                        totals[result_name] += value
-    return totals
-
-
-@pytest.mark.skipif(not _RUN_REAL, reason=_REAL_REASON)
-def test_real_deepseek_completes_canonical_task_three_of_three(tmp_path):
-    summaries = []
-    completed = 0
-    for run_number in range(1, 4):
-        workspace = tmp_path / f"canonical-{run_number}"
-        workspace.mkdir()
-        (workspace / "input.txt").write_text("alpha", encoding="utf-8")
-        started = time.perf_counter()
-
-        result = RootAgentProcess(
-            model=DeepSeekModel(),
-            tools=ToolHost(SharedEnvironment(workspace)),
-            max_decisions=6,
-        ).run(
-            "Read input.txt and create output.txt containing its uppercase content.",
-            FileContentEquals("output.txt", "ALPHA"),
-        )
-
-        elapsed = time.perf_counter() - started
-        verified = result.status == "completed"
-        output_path = workspace / "output.txt"
-        output_match = (
-            output_path.is_file()
-            and output_path.read_text(encoding="utf-8") == "ALPHA"
-        )
-        completed += int(verified)
-        summaries.append(
-            {
-                "run": run_number,
-                "verified": verified,
-                "output_match": output_match,
-                "elapsed_seconds": round(elapsed, 3),
-                "provider_requests": len(result.decision_frames),
-                "model_calls": len(result.decision_frames),
-                "tool_calls": sum(
-                    event.event_type == "TOOL_CALL_STARTED"
-                    for event in result.events
-                ),
-                "native_call_ids": [
-                    frame.provider_tool_call_id
-                    for frame in result.decision_frames
-                    if frame.provider_tool_call_id is not None
-                ],
-                **_usage(result),
-            }
-        )
-        assert result.state == fold_execution_state(result.events)
-
-    print("DEEPSEEK_REAL_CANONICAL=" + json.dumps(summaries, sort_keys=True))
-    assert completed == 3
-    assert all(summary["output_match"] for summary in summaries)
-
-
-@pytest.mark.skipif(not _RUN_REAL, reason=_REAL_REASON)
-def test_real_deepseek_preserves_each_canonical_tool_call_id(tmp_path):
-    (tmp_path / "input.txt").write_text("alpha", encoding="utf-8")
-
-    result = RootAgentProcess(
-        model=DeepSeekModel(),
-        tools=ToolHost(SharedEnvironment(tmp_path)),
-        max_decisions=6,
-    ).run(
-        "Read input.txt and create output.txt containing its uppercase content.",
-        FileContentEquals("output.txt", "ALPHA"),
-    )
-
-    evidence = []
-    tool_steps = [
-        step
-        for step in result.steps
-        if isinstance(step.action, ToolCall)
-        and isinstance(step.observation, Observation)
-    ]
-    for step in tool_steps:
-        frame = result.decision_frames[step.decision - 1]
-        next_frame = result.decision_frames[step.decision]
-        response = _plain(frame.raw_provider_response)
-        assert isinstance(response, dict)
-        choices = response.get("choices")
-        assert isinstance(choices, list) and choices
-        message = choices[0].get("message")
-        status, provider_call = _assistant_tool_call_evidence(message)
-        assert status == "observed"
-
-        next_request = _plain(next_frame.provider_wire_request)
-        assert isinstance(next_request, dict)
-        messages = next_request.get("messages")
-        assert isinstance(messages, list) and len(messages) >= 2
-        assistant_status, continued_call = _assistant_tool_call_evidence(messages[-2])
-        assert assistant_status == "observed"
-        tool_message = messages[-1]
-        assert isinstance(tool_message, dict)
-
-        decision_event = next(
-            event
-            for event in result.events
-            if event.event_type == "MODEL_DECISION"
-            and event.payload["frame"].decision_id == frame.decision_id
-        )
-        call_event = next(
-            event
-            for event in result.events
-            if event.event_type == "TOOL_CALL_STARTED"
-            and event.source_event_refs == (decision_event.event_id,)
-        )
-        outcome_event = next(
-            event
-            for event in result.events
-            if event.event_type in {"TOOL_RESULT", "TOOL_FAILED"}
-            and event.source_event_refs == (call_event.event_id,)
-        )
-        call_id = provider_call["id"]
-        equal = (
-            call_id
-            == frame.provider_tool_call_id
-            == step.observation.provider_tool_call_id
-            == continued_call["id"]
-            == tool_message.get("tool_call_id")
-        )
-        assert equal
-        evidence.append(
-            {
-                "call_id": call_id,
-                "tool_name": provider_call["function"]["name"],
-                "decision_event_sequence": [
-                    decision_event.event_type,
-                    call_event.event_type,
-                    outcome_event.event_type,
-                    "MODEL_DECISION",
-                ],
-                "equality_result": equal,
-            }
-        )
-
-    assert result.status == "completed"
-    assert (tmp_path / "output.txt").read_text(encoding="utf-8") == "ALPHA"
-    assert len(evidence) == 2
-    assert result.state == fold_execution_state(result.events)
-    print("DEEPSEEK_REAL_CALL_ID_CONTINUITY=" + json.dumps(evidence, sort_keys=True))
-
-
-@pytest.mark.skipif(not _RUN_REAL, reason=_REAL_REASON)
-def test_real_deepseek_accepts_a_mechanically_seeded_failed_tool_result(tmp_path):
-    (tmp_path / "fallback.txt").write_text("fallback", encoding="utf-8")
-    seeded_call_id = "call_test_failure_continuation"
-    real_transport = DeepSeekModel._post
-    real_responses = []
-    request_count = 0
-
-    def seeded_then_real(payload):
-        nonlocal request_count
-        request_count += 1
-        if request_count == 1:
-            return _tool_response(
-                seeded_call_id,
-                "read",
-                json.dumps({"path": "candidate.txt"}),
-            )
-        response = real_transport(payload)
-        real_responses.append(response)
-        return response
-
-    result = RootAgentProcess(
-        model=DeepSeekModel(transport=seeded_then_real),
-        tools=ToolHost(SharedEnvironment(tmp_path)),
-        max_decisions=2,
-    ).run(
-        "Try candidate.txt; if unavailable use fallback.txt and write its "
-        "content to output.txt.",
-        FileContentEquals("output.txt", "fallback"),
-    )
-
-    first_frame, continuation_frame = result.decision_frames
-    failure_event = next(
-        event for event in result.events if event.event_type == "TOOL_FAILED"
-    )
-    failure = failure_event.payload["observation"]
-    assert first_frame.resulting_action == ToolCall(ReadRequest("candidate.txt"))
-    assert first_frame.provider_tool_call_id == seeded_call_id
-    assert isinstance(failure, Observation)
-    assert failure.request == ReadRequest("candidate.txt")
-    assert failure.result.ok is False
-    assert failure.result.error_code == "not_found"
-    assert failure.provider_tool_call_id == seeded_call_id
-
-    continuation_request = _plain(continuation_frame.provider_wire_request)
-    assert isinstance(continuation_request, dict)
-    messages = continuation_request.get("messages")
-    assert isinstance(messages, list) and len(messages) >= 2
-    assistant_status, assistant_call = _assistant_tool_call_evidence(messages[-2])
-    assert assistant_status == "observed"
-    tool_message = messages[-1]
-    assert isinstance(tool_message, dict)
-    visible_failure = json.loads(tool_message["content"])
-    continuation_equal = (
-        assistant_call["id"]
-        == failure.provider_tool_call_id
-        == tool_message.get("tool_call_id")
-        == seeded_call_id
-    )
-    assert continuation_equal
-    assert tool_message.get("role") == "tool"
-    assert visible_failure["observation"]["result"]["ok"] is False
-
-    assert len(real_responses) == 1
-    response = real_responses[0]
-    assert isinstance(response, Mapping)
-    choices = response.get("choices")
-    assert isinstance(choices, list) and choices
-    message = choices[0].get("message")
-    response_status, response_call = _assistant_tool_call_evidence(message)
-    assert response_status in {"mechanism_absent", "observed"}
-    if response_status == "observed":
-        assert continuation_frame.provider_tool_call_id == response_call["id"]
-        assert continuation_frame.resulting_action is not None
-
-    next_action = continuation_frame.resulting_action
-    if isinstance(next_action, ToolCall):
-        next_action_name = type(next_action.request).__name__
-    else:
-        next_action_name = type(next_action).__name__ if next_action else None
-    summary = {
-        "initial_call_source": "mechanically_seeded_test_apparatus",
-        "call_id": seeded_call_id,
-        "tool_failure_source": "ToolHost",
-        "tool_failure_error_code": failure.result.error_code,
-        "provider_continuation_accepted": True,
-        "next_response_status": response_status,
-        "next_action": next_action_name,
-        "continuation_equality_result": continuation_equal,
-        "completion_exercised": result.status == "completed",
-        **_usage(result),
-    }
-    print(
-        "DEEPSEEK_REAL_MECHANICAL_FAILURE_CONTINUATION="
-        + json.dumps(summary, sort_keys=True)
-    )
-
-
-@pytest.mark.skipif(not _RUN_REAL, reason=_REAL_REASON)
-def test_real_deepseek_continues_after_a_failed_read(tmp_path):
-    (tmp_path / "fallback.txt").write_text("fallback", encoding="utf-8")
-    started = time.perf_counter()
-
-    result = RootAgentProcess(
-        model=DeepSeekModel(),
-        tools=ToolHost(SharedEnvironment(tmp_path)),
-        max_decisions=8,
-    ).run(
-        "Try candidate.txt; if unavailable use fallback.txt and write its "
-        "content to output.txt.",
-        FileContentEquals("output.txt", "fallback"),
-    )
-
-    candidate_failures = [
-        (index, event.payload["observation"])
-        for index, event in enumerate(result.events)
-        if event.event_type == "TOOL_FAILED"
-        and event.payload["observation"].request == ReadRequest("candidate.txt")
-    ]
-    failure_index, failure_observation = (
-        candidate_failures[0] if candidate_failures else (-1, None)
-    )
-    later_decision_events = [
-        event
-        for index, event in enumerate(result.events)
-        if event.event_type == "MODEL_DECISION"
-        and index > failure_index
-    ]
-    continuation_request = (
-        _plain(later_decision_events[0].payload["frame"].provider_wire_request)
-        if later_decision_events
-        else None
-    )
-    continuation_messages = (
-        continuation_request["messages"]
-        if isinstance(continuation_request, dict)
-        else []
-    )
-    assistant_evidence, assistant_call = _assistant_tool_call_evidence(
-        continuation_messages[-2] if len(continuation_messages) >= 2 else None
-    )
-    assistant_call_id = (
-        assistant_call["id"] if assistant_evidence == "observed" else None
-    )
-    tool_message = continuation_messages[-1] if continuation_messages else {}
-    visible_failure = (
-        json.loads(tool_message["content"])
-        if isinstance(tool_message, dict) and "content" in tool_message
-        else {}
-    )
-    summary = {
-        "verified": result.status == "completed",
-        "elapsed_seconds": round(time.perf_counter() - started, 3),
-        "provider_requests": len(result.decision_frames),
-        "model_calls": len(result.decision_frames),
-        "candidate_read_failures": len(candidate_failures),
-        "continued_decisions": len(later_decision_events),
-        "continuation_evidence": assistant_evidence,
-        "native_call_ids": [
-            frame.provider_tool_call_id
-            for frame in result.decision_frames
-            if frame.provider_tool_call_id is not None
-        ],
-        **_usage(result),
-    }
-    print("DEEPSEEK_REAL_FAILURE_CONTINUATION=" + json.dumps(summary, sort_keys=True))
-
-    assert result.status == "completed"
-    assert failure_observation is not None, assistant_evidence
-    assert failure_observation.result.ok is False
-    assert later_decision_events
-    assert assistant_evidence == "observed"
-    assert assistant_call_id == failure_observation.provider_tool_call_id
-    assert tool_message["role"] == "tool"
-    assert tool_message["tool_call_id"] == failure_observation.provider_tool_call_id
-    assert visible_failure["observation"]["result"]["ok"] is False
-    assert (tmp_path / "output.txt").read_text(encoding="utf-8") == "fallback"
-    assert result.state == fold_execution_state(result.events)

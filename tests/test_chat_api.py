@@ -15,7 +15,7 @@ from Conversation_Memory.adapter import backend as memory_backend_module
 from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
 from ingestion.state_store import IngestionStateStore
 from core.main import create_app
-from core.model_client import MiniMaxAnthropicModelClient, MockModelClient
+from core.model_client import DeepSeekAnthropicModelClient, MockModelClient
 from Mind.constant_gate import ConstantMindGate
 from Mind.llm_gate import LlmMindGate
 
@@ -240,7 +240,6 @@ def test_real_model_defaults_to_llm_mind_gate(
     def build_gate_client(*args, **kwargs):
         assert not args
         assert kwargs == {
-            "model_name_override": "MiniMax-M3",
             "max_tokens_override": 8,
             "temperature_override": 0.0,
         }
@@ -606,7 +605,7 @@ def test_model_chat_is_truthfully_labeled_and_receives_prior_turn(tmp_path: Path
 
 
 def test_real_adapter_fake_http_reaches_chat_without_thinking(tmp_path: Path) -> None:
-    adapter = MiniMaxAnthropicModelClient(
+    adapter = DeepSeekAnthropicModelClient(
         api_key="test-value",
         base_url="https://provider.invalid/anthropic",
         model="test-model",

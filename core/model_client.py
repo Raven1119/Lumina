@@ -1,4 +1,4 @@
-"""Mock and explicit MiniMax model clients for the Cold Draft MVP."""
+"""Mock and explicit DeepSeek model clients for Lumina."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from core.contracts import MemoryTurn
 
 MOCK_ASSISTANT_TEXT = "Lumina backend shell received your message."
 ModelClientKind = Literal["mock", "model"]
+DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic"
+DEEPSEEK_MODEL = "deepseek-v4-pro"
 _HOT_DRAFT_SUMMARY_PROMPT = """You maintain Lumina's rolling Hot Draft summary.
 Rewrite the existing summary together with the supplied archived conversation turns into one concise, directly readable summary.
 
@@ -71,8 +73,8 @@ class ModelClientError(RuntimeError):
     """A provider failure safe to handle without exposing provider details."""
 
 
-class MiniMaxAnthropicModelClient:
-    """Minimal synchronous client for MiniMax's Anthropic-compatible API."""
+class DeepSeekAnthropicModelClient:
+    """Minimal synchronous client for DeepSeek's Anthropic-compatible API."""
 
     client_kind: ModelClientKind = "model"
 
@@ -104,6 +106,7 @@ class MiniMaxAnthropicModelClient:
         body: dict[str, Any] = {
             "model": self._model,
             "max_tokens": self._max_tokens,
+            "thinking": {"type": "disabled"},
             "messages": [
                 *self._project_context(recent_context),
                 {"role": "user", "content": user_message},
@@ -137,6 +140,7 @@ class MiniMaxAnthropicModelClient:
             "model": self._model,
             "max_tokens": self._max_tokens,
             "temperature": 0.0,
+            "thinking": {"type": "disabled"},
             "system": _HOT_DRAFT_SUMMARY_PROMPT,
             "messages": [
                 {
@@ -216,31 +220,26 @@ def build_model_client_from_env(
     if env.get("LUMINA_MODEL_MODE", "mock").strip().lower() != "real":
         return MockModelClient()
 
-    provider = env.get("LUMINA_MODEL_PROVIDER", "").strip().lower()
-    api_key = env.get("LUMINA_MODEL_API_KEY", "").strip()
-    base_url = env.get("LUMINA_MODEL_BASE_URL", "").strip()
-    configured_model = env.get("LUMINA_MODEL_NAME", "").strip()
-    if provider != "minimax-anthropic" or not all(
-        (api_key, base_url, configured_model)
-    ):
+    api_key = env.get("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
         return MockModelClient()
     model = (
         model_name_override.strip()
         if model_name_override is not None
-        else configured_model
+        else DEEPSEEK_MODEL
     )
-    if not model:
+    if model != DEEPSEEK_MODEL:
         return MockModelClient()
 
     client_options: dict[str, Any] = {
         "api_key": api_key,
-        "base_url": base_url,
+        "base_url": DEEPSEEK_ANTHROPIC_BASE_URL,
         "model": model,
     }
     if max_tokens_override is not None:
         client_options["max_tokens"] = max_tokens_override
     if temperature_override is not None:
         client_options["temperature"] = temperature_override
-    return MiniMaxAnthropicModelClient(
+    return DeepSeekAnthropicModelClient(
         **client_options,
     )

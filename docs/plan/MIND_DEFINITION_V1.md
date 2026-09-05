@@ -65,7 +65,7 @@ class MindDecision:
 
 ### 2.4 决策机制
 
-- 复用已配置的 MiniMax provider（与 Grounded Formation 同族），
+- 复用已配置的 DeepSeek-V4-Pro provider（与 Grounded Formation 同族），
   non-thinking 模式；
 - `max_tokens` 极小，输出约束为单个布尔；
 - temperature 固定为 0，追求近似确定性；

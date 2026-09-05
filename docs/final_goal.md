@@ -40,7 +40,7 @@ Browser -> FastAPI -> MessageRuntime
 
 Offline memory
 manual Dream -> pending Cold Draft
-             -> MiniMax-M3 Grounded Formation
+             -> DeepSeek-V4-Pro Grounded Formation
                 (non-thinking, max_tokens=2000)
              -> grounding validator + bounded semantic fallback
                 + value-only guard + self-name coverage guard
@@ -84,7 +84,7 @@ caller-supplied relation surfaces, but normal Chat supplies none. Assistant
 utterance alone is not verified fact/self-action provenance, and future
 self-action memory waits for Execution Trace or tool-result provenance.
 
-## Current Product Objective: Preserve the parent baseline before Execution V2
+## Current Product Objective: Preserve the parent baseline around Execution
 
 The Memory objective is met: the adopted loop is in production end to end,
 including Recall in chat, the Mind Recall gate stage 2, Grounded Write with the
@@ -92,8 +92,10 @@ self-name coverage guard, and the generic multi-entity Entity graph.
 
 Execution V1 is frozen as isolated experimental evidence at tag
 `execution-organ-v1-final` and was never promoted into the production path.
-Execution V2 has not started; its design and implementation require a separate
-approved task.
+The frozen and audited Execution V2 substrate is promoted as the supported
+`Execution/` package behind `ExecutionOrgan`. It remains deliberately separate
+from production Chat, Mind, Memory, and Dream; wiring any of those paths to
+Execution requires a separate approved task.
 
 The Memory-side boundary remains explicit: `ControlledRelationResolver` can
 use caller-supplied relation surfaces, but normal Chat supplies none. Future
@@ -148,5 +150,5 @@ Later memory capabilities must extend, not bypass, these boundaries:
 
 Conversation Graph as a separate production system, PostgreSQL/Neo4j,
 autonomous Dream, schedulers, additional organs, and generalized memory
-management are not implied by the completed Memory stage or frozen Execution
-V1.
+management are not implied by the completed Memory stage or the supported,
+still-unwired Execution substrate.

@@ -1,5 +1,4 @@
 import json
-import os
 from dataclasses import replace
 
 import pytest
@@ -418,8 +417,15 @@ def test_deepseek_adapter_exposes_and_parses_role_specific_actions(tmp_path):
                                 "id": "root-spawn-1",
                                 "type": "function",
                                 "function": {
-                                    "name": "spawn_child",
-                                    "arguments": '{"goal":"read facts.txt"}',
+                                    "name": "ipython",
+                                    "arguments": json.dumps(
+                                        {
+                                            "code": (
+                                                "await spawn_child("
+                                                "'read facts.txt')"
+                                            )
+                                        }
+                                    ),
                                 },
                             }
                         ]
@@ -476,7 +482,8 @@ def test_deepseek_adapter_exposes_and_parses_role_specific_actions(tmp_path):
         tool["function"]["name"] for tool in child_payloads[0]["tools"]
     }
     assert returned.output == "42"
-    assert "spawn_child" in root_tools
+    assert "ipython" in root_tools
+    assert "spawn_child" not in root_tools
     assert "return" not in root_tools
     assert "return" in child_tools
     assert "spawn_child" not in child_tools
@@ -550,86 +557,3 @@ def test_root_and_child_have_separate_live_ipython_namespaces(tmp_path):
 
     assert child_control.is_alive is False
     assert root_control.is_alive is False
-
-
-_RUN_REAL = (
-    os.environ.get("RUN_DEEPSEEK_REAL_TESTS") == "1"
-    and bool(os.environ.get("DEEPSEEK_API_KEY"))
-)
-
-
-@pytest.mark.skipif(
-    not _RUN_REAL,
-    reason="set RUN_DEEPSEEK_REAL_TESTS=1 and DEEPSEEK_API_KEY",
-)
-def test_real_deepseek_single_child_full_chain_one_of_three(tmp_path):
-    summaries = []
-    successes = 0
-    for run_number in range(1, 4):
-        workspace = tmp_path / f"single-child-{run_number}"
-        workspace.mkdir()
-        (workspace / "facts.txt").write_text("VALUE=42", encoding="utf-8")
-        tools = ToolHost(SharedEnvironment(workspace))
-        root = AgentProcess(
-            model=DeepSeekModel(),
-            tools=tools,
-            max_decisions=6,
-            event_log=EventLog(workspace / "root.jsonl"),
-        )
-        root_result = root.run(
-            "Use one child process to inspect facts.txt and obtain VALUE. "
-            "Then write answer.txt containing only the VALUE.",
-            FileContentEquals("answer.txt", "42"),
-        )
-        child_result = None
-        if root_result.status == "child_pending":
-            child = AgentProcess.for_child(
-                root_result.child_ref,
-                model=DeepSeekModel(),
-                tools=tools,
-                max_decisions=5,
-            )
-            child_result = child.run_child()
-            if child_result.status in ("completed", "failed"):
-                root_result = root.accept_child(child_result)
-
-        event_types = [event.event_type for event in root_result.events]
-        output_match = (
-            (workspace / "answer.txt").is_file()
-            and (workspace / "answer.txt").read_text(encoding="utf-8") == "42"
-        )
-        full_chain = (
-            root_result.status == "completed"
-            and child_result is not None
-            and child_result.status == "completed"
-            and child_result.output is not None
-            and "42" in child_result.output
-            and event_types.count("CHILD_SPAWNED") == 1
-            and event_types.count("CHILD_RETURNED") == 1
-            and "COMPLETION_VERIFIED" in event_types
-            and output_match
-        )
-        successes += int(full_chain)
-        summaries.append(
-            {
-                "run": run_number,
-                "root_status": root_result.status,
-                "child_status": (
-                    child_result.status if child_result is not None else None
-                ),
-                "full_chain": full_chain,
-                "output_match": output_match,
-                "root_model_calls": len(root_result.decision_frames),
-                "child_model_calls": (
-                    len(child_result.decision_frames)
-                    if child_result is not None
-                    else 0
-                ),
-            }
-        )
-        assert root_result.state == fold_execution_state(root_result.events)
-        if child_result is not None:
-            assert child_result.state == fold_execution_state(child_result.events)
-
-    print("DEEPSEEK_REAL_SINGLE_CHILD=" + json.dumps(summaries, sort_keys=True))
-    assert successes >= 1

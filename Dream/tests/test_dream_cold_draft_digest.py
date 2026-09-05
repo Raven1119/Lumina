@@ -705,7 +705,6 @@ def test_default_dream_runner_requests_formation_output_budget(tmp_path, monkeyp
 
     assert isinstance(runner, DreamRunner)
     assert captured == {
-        "model_name_override": "MiniMax-M3",
         "max_tokens_override": 2000,
     }
 
@@ -731,7 +730,6 @@ def test_manual_dream_cli_requests_formation_output_budget(monkeypatch, capsys):
     assert main([]) == 0
     assert json.loads(capsys.readouterr().out)["attempted"] == 0
     assert captured == {
-        "model_name_override": "MiniMax-M3",
         "max_tokens_override": 2000,
     }
 

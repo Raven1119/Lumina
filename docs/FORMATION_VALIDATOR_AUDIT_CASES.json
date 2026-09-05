@@ -1,7 +1,7 @@
 {
   "audit_version": "formation-validator-audit-v1",
   "scope": {
-    "formation": "current real single-pass MiniMax ModelClient",
+    "formation": "current real single-pass DeepSeek ModelClient",
     "validator": "current grounding validator, unchanged",
     "cases": 5,
     "semantic_retry": false,

@@ -8,7 +8,7 @@
 - the browser chat input sends on `Enter`, inserts a newline on
   `Shift+Enter`, and never sends during IME composition
   (`edge/static/app.js`);
-- deterministic mock mode and explicit MiniMax Anthropic-compatible real-model
+- deterministic mock mode and explicit DeepSeek Anthropic-compatible real-model
   mode;
 - safe provider fallback;
 - append-only restart-persistent Hot Draft source storage;
@@ -24,7 +24,7 @@
 - manual, synchronous, serial, bounded Dream;
 - no startup/background/chat-time Dream;
 - configured real-model Dream uses one bounded `grounded-formation-v1`
-  MiniMax-M3 call in non-thinking mode with a Formation-only 2000-token output
+  DeepSeek-V4-Pro call in non-thinking mode with a Formation-only 2000-token output
   budget per newly seen Cold segment;
 - minimal atomic `GroundedMemoryUnit` values carry source-grounded
   subject/relation/value and exact source refs;
@@ -177,9 +177,11 @@
 - every chat message passes a Mind gate before the Recall guard
   (`User -> Mind -> Memory`);
 - the production default for real model configuration is the promoted
-  `LlmMindGate` (`mind-gate-v2`, MiniMax-M3 non-thinking, 8 output tokens,
-  temperature 0), validated by shadow + holdout + operational + regression
-  evidence (`docs/experiments/mind_stage2_promotion/RESULT.md`);
+  `LlmMindGate` (`mind-gate-v2`, DeepSeek-V4-Pro non-thinking, 8 output tokens,
+  temperature 0); the gate mechanism was previously validated with MiniMax-M3
+  by shadow + holdout + operational + regression evidence
+  (`docs/experiments/mind_stage2_promotion/RESULT.md`), while the provider
+  migration itself is not attributed to that historical evidence;
 - mock mode always uses the stage-1 `ConstantMindGate`
   (`MindDecision(recall=True)`), regardless of mode setting;
 - `LUMINA_MIND_GATE_MODE=constant` rolls back to the stage-1 constant-allow
@@ -197,12 +199,36 @@
   responsibilities require separate approval
   (`docs/plan/MIND_DEFINITION_V1.md`).
 
+### Manual explicit Execution entry
+
+- `POST /api/execution` accepts only a bounded non-blank `goal` and invokes the
+  supported `ExecutionOrgan` facade; it does not enter `MessageRuntime` or the
+  Mind gate;
+- each request gets a unique Lumina-controlled run directory with an isolated
+  `workspace/`; IPython starts in that workspace, while durable Execution state
+  is stored in the sibling `state/` directory;
+- the endpoint preserves the frozen Root surface
+  `IPython + Wait + ClaimComplete`; eligible `spawn_child(goal)` remains an
+  IPython bridge rather than a provider-facing tool schema;
+- completion is the existing typed `FileContentEquals` check over the reserved
+  `.lumina-complete == "verified"` workspace marker. `verified=true` reports
+  only that mechanical evidence, not natural-language Goal verification;
+- the response exposes only `execution_id`, status, the bounded verified
+  result, and `verified`; EventLog, DecisionFrame, provider data, code, paths,
+  and failure detail remain internal;
+- automatic Mind routing, Chat-triggered execution, Execution Memory writes,
+  and frontend integration are **NOT IMPLEMENTED**. Ordinary `/api/chat`
+  behavior is unchanged.
+
 ### Validation and audit
 
 Latest reported local validation:
 
 ```text
-root tests:                 328 passed, 24 skipped
+root tests:                 338 passed, 24 skipped
+Execution production tests: 5 passed
+manual Execution API tests: 5 passed
+Execution_lab2 regression:  147 passed
 Conversation_Memory tests: 163 passed, 45 skipped
 Dream tests:                36 passed, 1 skipped
 real MAGMA Recall E2E:      PASS (10 / 10 queries)
@@ -322,8 +348,15 @@ coverage guard (`Conversation_Memory/adapter/identity_coverage.py`;
 
 Execution V1 is frozen as isolated experimental history at tag
 `execution-organ-v1-final`; it was never connected to production Chat,
-Memory, Dream, or Mind. Execution V2 has not started, and no production
-Execution or ToolRuntime implementation exists on this baseline.
+Memory, Dream, or Mind. The frozen and audited Execution V2 substrate is now a
+supported production package under `Execution/`, owned through the minimal
+`ExecutionOrgan` facade. Its Root surface is `IPython + Wait + ClaimComplete`;
+eligible delegation remains `await spawn_child(goal)` inside IPython, and a
+Child sees `IPython + Wait + Return`. `Execution_lab2` remains the evidence and
+regression history and aliases the supported modules rather than carrying a
+second active implementation. Execution is not wired into Chat, Mind, Memory,
+or Dream, so existing production conversations make no Execution provider
+calls.
 
 `ControlledRelationResolver` remains a fail-open Memory-side capability for
 explicit structured callers; normal Chat provides no relation surfaces. No

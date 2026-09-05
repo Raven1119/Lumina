@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
 from pathlib import Path
 from threading import Lock
 from typing import cast
@@ -21,6 +22,8 @@ from core.contracts import (
     DreamRunResponse,
     DreamStatusResponse,
     DraftTurn,
+    ExecutionRequest,
+    ExecutionResponse,
     HistoryResponse,
     HistoryTurnResponse,
     StatusResponse,
@@ -35,6 +38,7 @@ from core.turn_provenance import Clock, TurnIdFactory
 from Dream.cold_draft_digest import ColdDraftDigestionTask
 from Dream.models import DreamRunPolicy
 from Dream.runner import DreamRunner, build_formation_model_client
+from Execution import ExecutionOrgan, FileContentEquals
 from Mind.constant_gate import ConstantMindGate
 from Mind.decision_log import JsonlDecisionLog
 from Mind.interfaces import MindGate
@@ -56,6 +60,11 @@ _CHAT_RECALL_POLICY = RecallPolicy(
     final_min_score=0.144,
 )
 _PENDING_STATUS_LIMIT = 100
+_EXECUTION_MAX_DECISIONS = 8
+_EXECUTION_COMPLETION_SPEC = FileContentEquals(
+    ".lumina-complete",
+    "verified",
+)
 
 
 def _history_projection(turn: DraftTurn) -> HistoryTurnResponse | None:
@@ -173,7 +182,6 @@ def _default_mind_gate(chat_model: ModelClient) -> MindGate:
     # falls back to the constant gate so chat stays available.
     try:
         gate_client = build_model_client_from_env(
-            model_name_override="MiniMax-M3",
             max_tokens_override=8,
             temperature_override=0.0,
         )
@@ -238,6 +246,8 @@ def create_app(
     recall_policy: RecallPolicy | None = None,
     mind_gate: MindGate | None = None,
     mind_decision_log_path: str | Path | None = None,
+    execution_root: str | Path | None = None,
+    execution_model: object | None = None,
 ) -> FastAPI:
     chat_background = _load_chat_background(_CHAT_BACKGROUND_PATH)
     if env_file_path is not None:
@@ -359,6 +369,11 @@ def create_app(
     app.state.dream_running = False
     app.state.recall_enabled = effective_recall_enabled
     app.state.hot_draft_compactor = compactor
+    effective_execution_root = (
+        Path(execution_root)
+        if execution_root is not None
+        else _ROOT_DIRECTORY / "data" / "execution"
+    ).resolve()
 
     @app.get("/api/status", response_model=StatusResponse)
     def get_status() -> StatusResponse:
@@ -408,6 +423,54 @@ def create_app(
             return runtime.handle_chat(request).response
         finally:
             app.state.writer_lock.release()
+
+    @app.post("/api/execution", response_model=ExecutionResponse)
+    def post_execution(request: ExecutionRequest) -> ExecutionResponse:
+        goal = request.goal.strip()
+        if not goal:
+            raise HTTPException(status_code=400, detail="goal is required")
+        run_directory = effective_execution_root / f"run-{uuid.uuid4().hex}"
+        workspace = run_directory / "workspace"
+        organ = None
+        try:
+            workspace.mkdir(parents=True)
+            organ = ExecutionOrgan(
+                workspace=workspace,
+                event_log_path=run_directory / "state" / "events.jsonl",
+                checkpoint_path=run_directory / "state" / "checkpoint.json",
+                max_decisions=_EXECUTION_MAX_DECISIONS,
+                model=execution_model,
+            )
+            result = organ.run_goal(goal, _EXECUTION_COMPLETION_SPEC)
+            organ.shutdown()
+        except Exception:
+            if organ is not None:
+                try:
+                    organ.shutdown()
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "execution_unavailable",
+                    "message": "Execution could not complete",
+                },
+            ) from None
+        if result.state.execution_id is None:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "execution_unavailable",
+                    "message": "Execution could not complete",
+                },
+            )
+        verified = result.status == "completed" and result.output == "verified"
+        return ExecutionResponse(
+            execution_id=result.state.execution_id,
+            status=result.status,
+            result=result.output if verified else None,
+            verified=verified,
+        )
 
     @app.post("/api/dream/run", response_model=DreamRunResponse)
     def post_dream() -> DreamRunResponse:

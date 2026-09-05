@@ -1,626 +1,252 @@
-# Execution V2 Lab Status
+# Execution V2 — Frozen Status
 
-## Implemented
+Date: 2026-08-28
+Branch: `Execution_lab2`
+Starting HEAD for the final audit: `f08e73840241e4037e8015456fe6762ce60a345f`
+Status: **EXECUTION V2 SUBSTRATE FROZEN**
 
-- `execution.py` remains an isolated lab module. Its one programmable
-  control-plane helper uses pinned `jupyter_client` and `ipykernel`; no
-  production Chat, Memory, Dream, or Mind code is imported or changed.
-- Slice 1 behavior remains intact: typed tool requests, structured
-  `ToolResult`, workspace-guarded read/write, explicit-argv bounded shell,
-  failure-as-Observation, and a hard decision limit.
-- The frozen `RootAgentProcess` Action contract remains
-  `ToolCall | IPythonCode | Wait | ClaimComplete`. The explicit
-  depth-one `AgentProcess` surface adds Root-only `SpawnChild` and
-  Child-only `Return`, with at most three direct siblings. The only Wait
-  condition is an exact, non-empty `event_type` string.
-- Execution creation requires one frozen caller-owned
-  `FileContentEquals(path, expected_content)`. That typed CompletionSpec is
-  persisted in `EXECUTION_STARTED`, reconstructed by the State fold, visible
-  through a bounded Context projection, and cannot be supplied or changed by
-  `ClaimComplete`.
-- `EventLog` can be in-memory or local append-only JSONL. A durable append is
-  flushed and `fsync`ed before the event enters the authoritative in-memory
-  sequence. `load()` rejects malformed records, schemas, causal links,
-  sequences, and lifecycle transitions. Child admission specifically requires
-  a durable Root log and derives one separate durable log path per Child; an
-  in-memory Root cannot Spawn.
-- Each event retains deterministic `event_id`, contiguous `sequence`, fixed
-  `event_type`, deeply immutable payload, and past-only `source_event_refs`.
-  Durable restart continues the same sequence; persisted lines are never
-  rewritten by EventLog.
-- `EXECUTION_STARTED` durably records one `execution_id` and one
-  `root_actor_id`. Fresh `RootAgentProcess` objects loaded from the same log
-  reconstruct the same identities.
-- `ExecutionState` remains a pure fold of execution facts. It now derives
-  `running | waiting | suspended | child_pending | completed | failed`, actor
-  identity/direct lineage, `waiting_for`, and the latest typed external event
-  or Child outcome in addition to the Slice 2 state fields. For Root it also
-  derives the bounded tuples of accepted Child handles and delivered outcomes;
-  these tuples are not separately persisted.
-- `Checkpoint` internally derives one materialized `ExecutionState` snapshot
-  from its EventLog prefix, plus
-  `last_applied_event_sequence`, schema version, and an integrity digest of the
-  snapshot plus its durable event prefix. Valid recovery checks that digest and
-  folds only the tail. Missing checkpoints use full replay; stale checkpoints
-  fold their durable tail; malformed or inconsistent checkpoints fail
-  explicitly. Tests separately establish full-replay equivalence.
-- A persisted `ROOT_WAITING` event makes State `waiting` and stops sampling.
-  `resume()` performs no Model or Tool call while no matching event exists.
-- `deliver_event(event_type, data)` first persists
-  `EXTERNAL_EVENT_RECEIVED`. Exact typed matching alone appends `ROOT_WOKEN`
-  and resumes; irrelevant events remain durable without waking Root. If a
-  process dies after the matching event append but before `ROOT_WOKEN`, a fresh
-  `resume()` mechanically finishes that wake.
-- Resume builds the next bounded request from current Goal, reconstructed
-  State, the incoming event, and the latest bounded Observation. It does not
-  restore or inject an old transcript or model control flow.
-- `DecisionFrame` still stores the exact `ModelRequest` object, exposed
-  Action/tool contracts, raw response snapshot, structured Action, State
-  version, and source refs for every new decision.
-- Recovery still accepts only explicit safe tails, with one narrow exception:
-  a dangling `TOOL_CALL_STARTED` carrying a `WriteRequest` is inspected
-  against the current Host filesystem. Exact logical-content equality appends
-  a causal `ACTION_RECONCILED` with `status=confirmed_applied`, path,
-  intended/observed SHA-256, and observed character count. The old call event
-  is not rewritten and the Write is not executed again.
-- Missing, unreadable, or different Write targets remain UNKNOWN and raise an
-  explicit unresolved recovery error without appending success or sampling the
-  Model. Dangling `ShellRequest` remains explicitly unsupported; no generic
-  effect reconciliation or retry path was added.
-- A Root completion claim now appends `COMPLETION_CLAIMED`; it never terminates
-  Execution directly. Runtime mechanically reads the current Host workspace
-  against the execution-start `FileContentEquals` spec. Exact logical UTF-8
-  equality appends causal `COMPLETION_VERIFIED` and then
-  `EXECUTION_COMPLETED(status=verified)` without another Model call.
-- Missing, mismatched, unreadable, or workspace-invalid completion targets
-  append causal `COMPLETION_REJECTED` with typed evidence containing the spec
-  type/fingerprint, observed path, match result, and bounded reason. State
-  remains runnable and the next Root request receives a bounded rejection
-  Observation; Runtime does not repair the file.
-- Slice 6 adds one fixed `DeepSeekModel` adapter for the official
-  `deepseek-v4-pro` Chat Completions endpoint. Native-mode requests use
-  `read`, `write`, `shell`, `wait`, and `claim_complete` function schemas;
-  IPython mode uses only `ipython`, `wait`, and `claim_complete`. Both use
-  `thinking={"type":"disabled"}` and `stream=false`. There is no generic
-  provider registry, SDK session, retry, fallback, streaming, parallel
-  execution, or scheduler.
-- The adapter accepts one native call or at most four ordinary sibling calls.
-  It parses the whole response and validates the count, every call shape,
-  unique non-empty call ids, every tool name, JSON, exact arguments, and the
-  control rule before any Host effect. Any batch containing `wait` or
-  `claim_complete` with count greater than one is rejected as a whole.
-- Valid ordinary siblings execute strictly in model order, one start/settle at
-  a time. A committed Tool failure remains an Observation and later siblings
-  still execute. There is no abort policy, rollback, transaction, dependency
-  inference, concurrency classifier, or rolling pool.
-- Every DeepSeek-issued `tool_call.id` is persisted with the ordered typed
-  native decision, `DecisionFrame`, individual started event, and structured
-  `Observation`. The next provider request retains the original assistant
-  `tool_calls` array and emits matching `role=tool` messages in model order.
-  A fresh Runtime after WAIT reconstructs that
-  continuation from durable frames and bounded current facts; the adapter has
-  no private message transcript.
-- `DecisionFrame` now retains the actual Lumina request, actual exposed Lumina
-  contracts, secret-free provider-wire request, reasoning-free provider
-  response, one typed Action or ordered Action tuple, matching call id(s), and
-  source refs. API credentials
-  are read only from `DEEPSEEK_API_KEY` inside the HTTP send boundary and are
-  not part of provider payloads, frames, events, or test artifacts.
-- Native continuation applies one shared `model_visible_context_limit` to the
-  aggregate dynamic `user` plus all `tool` message content. They remain structured
-  JSON projections with explicit text truncation; fixed system text and the
-  five fixed schemas contain no ToolResult/EventLog data. A 20,000-character
-  canonical read at the minimum 768-character Runtime limit stays complete in
-  EventLog while all dynamic native continuation content together remains at
-  or below 768 characters.
-- Two 20,000-character sibling reads and separate four-sibling success and
-  four-sibling failure batches were verified to remain canonical and complete
-  while all ordered provider-visible results plus user context stayed within
-  the minimum 768-character aggregate bound.
-- Normal Tool results are rejected by EventLog if their observation call id
-  differs from the causal provider decision. The same id also survives the
-  committed-Write crash window: `ACTION_RECONCILED` derives its structured
-  Observation with the original durable DeepSeek call id before continuation.
-- The promoted IPython arm exposes only `ipython(code)`, `wait`, and
-  `claim_complete`. A lazy `PersistentIPython` owns at most one
-  `ipykernel` for one live Root, fixes its initial cwd to the shared
-  workspace, preserves Python namespace across decisions, and closes the
-  kernel at terminal execution or explicit process close.
-- Multiple IPython calls in one valid response use that same live kernel in
-  strict order. The maintained acceptance test executes `x = 41` followed by
-  `print(x + 1)` and observes `42` from the second sibling.
-- Runtime records
-  `MODEL_DECISION -> IPYTHON_EXECUTION_STARTED -> RESULT/FAILED` with the
-  code SHA-256, provider call id, bounded output/error, truthful original
-  output character count, and causal refs. It does not invent ToolHost events
-  for Python's internal filesystem or subprocess operations; current
-  filesystem reality plus Completion Verification remains acceptance
-  authority.
-- IPython code, execution time, and captured output have fixed bounds.
-  Generated Python intentionally has the worker OS permissions and is not a
-  sandbox. `DEEPSEEK_API_KEY` is removed from the kernel environment.
-- Lazy kernel startup/readiness and code execution now use distinct bounds.
-  The pinned `start_new_kernel` completes channels plus
-  `wait_for_ready(kernel_startup_timeout)` before the code execution deadline
-  begins. Readiness failure is an explicit bounded
-  `kernel_startup_error` with helper-owned channel/kernel cleanup; code that
-  exceeds its post-ready budget remains `timeout`.
-- Runtime restart preserves durable Root/EventLog/State identity but not
-  Python namespace. A resumed Root lazily starts a fresh kernel. A crash tail
-  at `IPYTHON_EXECUTION_STARTED` is explicitly unresolved; code is not
-  replayed automatically and no kernel snapshot/dill path exists.
+Execution V2's frozen implementation is now supported from the production
+`Execution/` package. This directory remains the historical evidence and
+regression suite; its three former implementation modules are compatibility
+aliases to production, so there is no second active copy. Execution remains
+unconnected to production Chat, Mind, Memory, or Dream.
 
-## Fresh Python Code Mode experiment gate
+## Frozen definition
 
-This section is retained as historical evidence for the earlier, stricter
-typed-binding-only authority requirement. The current task explicitly
-superseded that requirement for persistent IPython by granting IPython and
-ToolHost equal trusted local OS/workspace authority. It does not retroactively
-turn fresh Code Mode into an isolation mechanism.
+```text
+Persistent Actor
++ Event-sourced Runtime
++ Shared Environment
++ Persistent IPython
++ IPython-native recursive AgentProcess
+```
 
-- **Result: BLOCKED before implementation.** The task required generated
-  Python to be unable to access filesystem, process, or network reality except
-  through typed bindings that re-enter the existing Runtime and `ToolHost`.
-- The current lab has no code-isolation substrate. A normal Python subprocess
-  or same-process `exec` inherits Host permissions and can directly use
-  `open`, `os.remove`, `subprocess`, or `Path.write_text`, bypassing workspace
-  checks, structured `ToolResult`, EventLog, and causal identity.
-- Existing Shell execution is `subprocess.run(..., cwd=workspace)`; the working
-  directory is not an OS sandbox. No dependency or module supplies a
-  container, AppContainer, restricted process, or equivalent deny-by-default
-  Python backend.
-- Source audit confirmed the desired DSH orchestration semantics but also its
-  explicit bash-equivalent, non-security-boundary trust posture. Prime's
-  persistent IPython likewise executes with worker OS permissions and is only
-  a future comparison, not an isolation solution.
-- No `run_code` schema, `code_mode.py`, test module, prompt change, Runtime or
-  ToolHost change, credential load, or live DeepSeek A/B call was made. A
-  restricted-builtins, AST, or import-filter Python jail was deliberately not
-  invented.
-- The smallest unblocker is a pre-existing independently verified process or
-  container sandbox that denies direct filesystem/process/network authority
-  and permits only bounded typed IPC bindings. Building that substrate is
-  outside this task.
+The smallest formal provider-facing surface is:
 
-## Source mapping
+| Actor | Provider-facing functions |
+|---|---|
+| Root | `ipython`, `wait`, `claim_complete` |
+| Child | `ipython`, `wait`, `return` |
 
-The symbol-level sources, licenses, direct facts, Lumina adaptations, and
-rejected architecture are recorded in `SOURCE_AUDIT.md`.
+When current depth and capacity permit delegation, the Actor's persistent
+IPython namespace additionally contains:
 
-| Source | Audited version | Borrowed semantic |
-| --- | --- | --- |
-| DeepSeek official API | live docs audited 2026-08-27; no source commit or stated docs license | Ordered `tool_calls[]`, exact per-call result correlation, fixed `deepseek-v4-pro` request shape, and explicit non-thinking mode. |
-| OpenAI Codex | sibling-call re-audit pin `bde9db1375667c50dcc0c2b52532a4e2672571c2`, Apache-2.0 | Preserve each call identity across Host dispatch and model-visible output; no synthetic batch id. |
-| DeepSeek Harness | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.1-rc.2`, MIT | Whole-response planning, distinct sibling identity, and model-ordered commit; parallel scheduling was not copied. Its UNKNOWN repair semantics remain the Write-reconciliation reference. |
-| Prime Agent | `514633727bf26d74f39f3119c2b0e31a5ceb2a9d`, `v0.8.1`, MIT | One persistent kernel per live session, worker-OS trust boundary, and Host-owned kernel lifecycle. |
-| Jupyter | `jupyter_client==8.9.1` / `ipykernel==7.3.0`, BSD-3-Clause | Mature kernel start, execute, IOPub result collection, interrupt, and shutdown. |
-| LongHorizon-Harness | `a1dd930614972b92361c1b9cd6aac441a6db5a65`, `v0.1.7`, MIT | Agent completion claims require independent acceptance authority grounded in the current workspace; Lumina does not copy its LLM Auditor. |
-| Temporal Server / Go SDK | `19a774302c613da9adc4436ab14278ccdca8e0a5` / `b7c242c6894df088a57a85b33d0586e908da8b93`, MIT | Durable history does not make an external Activity exactly once; a crash before completion is recorded can retry the effect. |
+```python
+await spawn_child(goal)
+```
 
-No upstream session/plugin ecosystem, Worker infrastructure, Manager ontology,
-provider stack, RLM, Actor Directory, Child runtime, or generic event bus was
-copied.
+`read`, `write`, `shell`, and `spawn_child` are not normal Root
+provider-facing functions. Native Read/Write/Shell and native Spawn parsing
+remain internal/historical compatibility paths for ToolHost, recovery, and
+deterministic tests. **Available is not the same as model-visible.**
 
-## Experiment results
+## Authority map
 
-Fresh Python Code Mode gate:
+| Object | Frozen authority |
+|---|---|
+| `EventLog` | Append-only historical truth for Runtime and Actor lifecycle facts |
+| `ExecutionState` | Pure derived view: `fold(EventLog)` |
+| `Checkpoint` | Validated EventLog-prefix snapshot and tail-replay optimization; never an independent authority |
+| `Context` | Bounded model-visible projection rebuilt from current state and relevant observations |
+| `DecisionFrame` | Frozen evidence of the actual request, capabilities, provider request/response, call ids, and selected action at sampling time |
+| IPython namespace | Per-Actor live working state; intentionally non-durable across process restart |
+| `SharedEnvironment` | Current external filesystem/process reality |
+| Provider context | Decision evidence held in DecisionFrame; not an independent transcript or state store |
 
-- **A/B task 1:** not run; Native 0, Code 0.
-- **A/B task 2:** not run; Native 0, Code 0.
-- No model calls, Tool/capability calls, token usage, wall-time comparison,
-  context-exposure comparison, syntax/runtime failures, or live credentials
-  were generated by this blocked experiment.
-- The programmable Code Mode value hypothesis remains unmeasured. Persistent
-  IPython was subsequently authorized under a different equal-local-authority
-  trust model; that later result does not change this historical isolation
-  finding.
+There is no dual state authority. EventLog does not claim to contain every
+Python side effect, and the workspace does not replace Runtime history.
 
-Persistent IPython A/B:
+## Frozen mechanisms
 
-- **Result: PROMOTE.** The frozen real experiment used two tasks, two arms,
-  three fresh runs per arm, the same `deepseek-v4-pro`, CompletionSpec,
-  workspaces, decision bound, and Context bound.
-- Conditional task: Native and IPython each verified 2/3. Median provider
-  calls were 4 vs 3; input tokens 3,436 vs 2,141; model-visible result
-  characters 884 vs 435; maximum request characters 3,016 vs 2,531.
-- Aggregation task: Native verified 2/3 and IPython 3/3. Median provider calls
-  were 6 vs 4; input/output tokens 6,449/420 vs 3,445/344; wall time
-  11.002 s vs 8.034 s; result characters 2,756 vs 1,226; maximum request
-  characters 3,831 vs 3,085.
-- Both arms encountered the then-existing single-call adapter's
-  `model_protocol:multiple_tool_calls` boundary; the old result artifact
-  retained failure codes but not raw call arrays. IPython had zero Python
-  runtime failures. All tested terminal kernels were closed. Full per-run
-  evidence and metric definitions are in `IPYTHON_AB_RESULT.md`.
-- The promotion is bounded to this MVP control plane. It does not authorize
-  sandbox claims, durable namespace, multiple kernels, automatic code replay,
-  Child, RLM, recursion, or a benchmark framework.
+### Core Runtime
 
-Bounded sequential sibling slice:
+- Persistent execution and Actor identities survive EventLog reload.
+- EventLog validates schema, sequence, causal references, and lifecycle
+  transitions before accepting loaded or appended facts.
+- State, Trace, Context, and DecisionFrame remain distinct.
+- Checkpoint recovery validates the durable prefix and folds only the tail;
+  full replay remains authoritative.
+- `WAIT -> EXTERNAL_EVENT_RECEIVED -> ROOT_WOKEN -> resume` is durable.
+- Explicit interrupt stops future admission, settles or interrupts in-flight
+  work, appends `ACTOR_SUSPENDED`, and requires explicit resume.
+- Completed actions are not replayed. A frozen ordinary sibling decision may
+  resume only its never-started suffix.
+- A dangling Write may be reconciled only when current file content exactly
+  proves the requested postcondition; otherwise it remains unresolved.
+  Dangling Shell and arbitrary active IPython execution remain unsupported.
+- Root can only claim completion. Runtime verifies the caller-owned immutable
+  `FileContentEquals` against the current workspace before appending
+  `EXECUTION_COMPLETED`.
+- Runtime validates and dispatches typed actions; it does not interpret the
+  natural-language goal or perform semantic planning.
 
-- **Failure audit:** the historical A/B artifact names three
-  `multiple_tool_calls` failures (conditional Native run 3, conditional
-  IPython run 1, aggregation Native run 2) but did not persist their raw
-  arrays. Nine fresh unchanged baseline reproductions captured one exact
-  `ORDINARY_SIBLINGS` response: three `read` calls for `data-1.txt`,
-  `data-2.txt`, and `data-3.txt`, with distinct ids
-  `call_00_JpALCfWFEQRyKrhg969p0457`,
-  `call_01_lTOsmlUFnAsRIbeqPXdW5180`, and
-  `call_02_pqVNAG2nJho71DUYny353445`. It contained no control action and
-  failed only at the old adapter boundary.
-- **Mechanism:** one response now carries 1..4 ordinary siblings; complete
-  preflight precedes effects; controls remain single-only; execution and
-  result commit are strictly sequential; runtime Tool failure does not erase
-  later siblings; one frame preserves all actions, ids, raw response, and
-  order. A replacement Runtime resumes only the never-started ToolCall suffix
-  after a settled or confirmed-Write prefix; it does not replay that prefix.
-  Offline A-G tests cover ordinary reads, atomic invalid-third rejection,
-  success/failure/success, count bound, duplicate ids, both mixed-control
-  cases, shared-kernel sequential IPython, minimum-bound projection, and both
-  settled-prefix and reconciled-Write restart.
-- **Real DeepSeek:** six fresh executions reused the exact historical
-  aggregation prompt/fixture with no prompt change. All six were
-  completion-verified. Five emitted only single calls. One emitted two
-  ordinary `shell` siblings, `ls -la` and `cat data-*.txt`, with ids
-  `call_00_k8YrWDw3xGga52bnPLlm6868` and
-  `call_01_a0oHzhrnGccB3rfb25O04193`; started and settled order matched
-  provider order, the next decision was accepted, and completion verified.
-- **Result: PASS.** The observed real blocker crossed the new path. This does
-  not claim a success-rate improvement and does not authorize parallel tools,
-  mixed controls, a scheduler, transaction/rollback, Child, or recursion.
-  Exact evidence is in `MULTI_TOOL_RESULT.md`.
+### Persistent IPython
 
-Slice 6:
+- One lazy kernel per live Actor, with a persistent namespace across that
+  Actor's decisions.
+- Kernel cwd is the shared workspace. Python has direct `os`, `pathlib`,
+  filesystem, and `subprocess` authority under the worker OS identity.
+- Startup readiness and code execution have separate bounds; code and output
+  are bounded; Python failures and timeouts are explicit observations.
+- Live interrupt uses the kernel interrupt primitive and waits for an observed
+  failure/timeout settlement.
+- Terminal close shuts down channels and kernel resources. Restart creates a
+  fresh namespace while retaining durable Actor facts and workspace reality.
+- This is a trusted local execution plane, not a security sandbox.
 
-- **Local provider configuration:** the repository's existing
-  `core.env_loader.load_env_file()` loaded the ignored `.env.local` without a
-  new configuration seam. A secret-safe smoke confirmed a configured
-  `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL=deepseek-v4-pro`, and
-  `DEEPSEEK_BASE_URL=https://api.deepseek.com`; thinking and streaming remain
-  fixed in code as disabled/false. `.env.local` remains ignored and untracked.
-- **A - adapter protocol:** 21 deterministic tests pass across native
-  read/write/shell/wait/claim mapping, invalid name/JSON/arguments, zero and
-  multiple call rejection, provider failure, exact request settings, and
-  environment-only credential policy. This includes a test-only evidence
-  extractor regression that distinguishes a legal assistant response with no
-  `tool_calls` as `mechanism_absent` from a malformed assistant message.
-  Rejected decisions execute zero Tools.
-- **B - native call/result continuity:** `call_123` is preserved in the typed
-  decision, durable frame/Observation, next assistant tool call, and matching
-  `role=tool.tool_call_id`. The second request contains a native tool-result
-  message rather than prose pretending to be one.
-- **C - real canonical task:** **PASS, 3/3 verified.** Three fresh
-  `deepseek-v4-pro` executions, all with thinking/streaming disabled, each made
-  3 provider requests / 3 model decisions / 2 Tool calls and produced exact
-  `output.txt == "ALPHA"` followed by verified completion. Run 1 used 2,430
-  input / 145 output / 2,575 total tokens in 5.026 s; run 2 used 2,445 / 157 /
-  2,602 in 4.201 s; run 3 used 2,411 / 132 / 2,543 in 4.170 s. Aggregate:
-  9 requests, 9 decisions, 6 Tool calls, 7,286 input / 434 output / 7,720
-  total tokens, and 13.397 s measured model/Runtime wall time.
-- **C - real call-id continuity:** **PASS.** The first new canonical run exposed
-  an `APPARATUS` defect: the test treated EventLog's frozen tuple snapshot as
-  a mutable list. The task itself reached a native call, but no equality result
-  was accepted. After a test-only `_plain()` projection fix, one fresh
-  canonical evidence run completed and programmatically proved both Tool
-  chains. For `read`, provider id
-  `call_00_861ZQVWYNYRAvrUfs8y40455`; for `write`, provider id
-  `call_00_QmOWiXG3eEaJTuIp01su5753`. In each chain:
-  provider assistant id == `DecisionFrame.provider_tool_call_id` == structured
-  `Observation.provider_tool_call_id` == the next assistant call id ==
-  `role=tool.tool_call_id`. Both causal sequences were
-  `MODEL_DECISION -> TOOL_CALL_STARTED -> TOOL_RESULT -> MODEL_DECISION`.
-  Adapter private transcript state remains **NONE**.
-- **D - evidence extractor repair:** the previous autonomous experiment could
-  index a user-only continuation as though it were an assistant tool call and
-  raise `KeyError("tool_calls")`. The test-only extractor now returns
-  `mechanism_absent` for a legal assistant message without calls,
-  `malformed` for an invalid assistant shape, and `observed` only for one
-  non-empty call id. It never fabricates a call; its regression passes.
-- **E - mechanically exercised real failed ToolResult continuation:** **PASS.**
-  Test apparatus seeded the valid assistant call
-  `call_test_failure_continuation: read(candidate.txt)`; the existing
-  `DeepSeekModel` parser produced `ToolCall(ReadRequest("candidate.txt"))`;
-  the real `ToolHost` produced structured `not_found`; the next wire request
-  paired the same id in the assistant call and `role=tool.tool_call_id`.
-  `deepseek-v4-pro` accepted that request without HTTP/protocol error and
-  returned one schema-valid native call, parsed through the existing adapter as
-  a `ReadRequest`. The single real continuation used 905 input / 60 output /
-  965 total tokens. The experiment stopped at the two-decision protocol bound;
-  completion was intentionally not exercised.
-- **F - autonomous failure-first behavior:** the earlier three autonomous
-  attempts remain `MODEL_BEHAVIOR / MECHANISM_NOT_EXERCISED` and were not
-  rerun. The mechanical experiment does **not** claim DeepSeek autonomously
-  selected the initial failure-first strategy.
-- **G - persistence:** a deterministic DeepSeek wire fixture performs WAIT,
-  destroys Runtime/model state, reloads the durable EventLog, wakes, and sends
-  the original native call id on the next request. Completion succeeds with
-  unchanged execution/root identity and full-fold equivalence. Adapter private
-  persistent state: **NONE**. A separate committed-Write crash fixture proves
-  reconciliation preserves the original provider call id in its Observation
-  and next native tool-result continuation; a mismatched durable result id is
-  rejected.
-- A separate large-result experiment proves canonical output remains complete
-  in the durable event while the native `role=tool` content obeys the absolute
-  model-context bound and excludes the hidden tail.
+### Child AgentProcess
 
-Slice 5:
+Every Child uses the same `AgentProcess` loop and owns:
 
-- **A - false completion rejected:** an initial claim against mismatched file
-  content appends `COMPLETION_REJECTED`, leaves Execution runnable, and gives
-  Root a bounded structured Observation. Root then writes the caller-required
-  content, claims again, and reaches verified completion.
-- **B - true completion verified:** a pre-satisfied file requires exactly one
-  Model call and produces `CLAIMED -> VERIFIED -> COMPLETED`; no follow-up
-  Model call is made.
-- **C - Root cannot self-authorize:** `ClaimComplete` has no fields, rejects
-  attempted `expected_content` or `success` arguments, and cannot mutate the
-  frozen execution-start CompletionSpec.
-- **D - restart after rejection:** a durable rejected claim reconstructs the
-  same execution/root identities in non-completed runnable State. A fresh Root
-  sees the rejection Observation, fixes the file, and can complete.
-- **E - restart after verification:** a completed durable log reloads as
-  completed with zero new Model calls and zero Tool actions, even if the file
-  changes after terminal completion; verification is not rerun.
-- **F - event/state replay:** durable completion events reload exactly;
-  full-log fold equals restored State, and the immediate causal references are
-  `MODEL_DECISION -> COMPLETION_CLAIMED -> COMPLETION_VERIFIED ->
-  EXECUTION_COMPLETED`.
-- Separate experiments establish deterministic `missing`, `content_mismatch`,
-  and `unreadable` rejection outcomes without Tool execution or fabricated
-  success.
+- a distinct `actor_id` and `execution_id`;
+- durable direct-parent lineage and depth;
+- an independent EventLog, derived State, bounded Context, DecisionFrames, and
+  IPython namespace;
+- access to the same SharedEnvironment;
+- `Return(local_result)` instead of Root completion authority.
 
-Slice 4:
+Return/failure travels only to the direct parent as a bounded identified
+observation. Runtime does not bubble a grandchild result directly to Root.
 
-- **A - committed Write crash:** `TOOL_CALL_STARTED`, real filesystem write,
-  simulated process death before `TOOL_RESULT`, total Runtime replacement,
-  exact Host inspection, `ACTION_RECONCILED(confirmed_applied)`, and Complete
-  succeeds. The Write execution count remains exactly 1.
-- **B - replay and identity:** after recovered completion,
-  `fold(full durable EventLog) == restored ExecutionState`;
-  `execution_id` and `root_actor_id` remain unchanged across replacement.
-- **C - ambiguous reality:** a dangling Write whose current target contains
-  different content is not replayed and does not produce fabricated success;
-  recovery remains explicitly unresolved and the dangling call stays last.
-- **D - unsupported Shell:** a dangling `ShellRequest` reports unsupported,
-  appends no reconciliation event, executes no Shell on recovery, and samples
-  no Model.
+Current reachable bounds must be stated exactly:
 
-Slice 8 - explicit Root suspension:
+- `RootAgentProcess` has no Child admission.
+- `AgentProcess(max_depth=1)` admits at most three direct Root children,
+  sequentially; its children cannot Spawn.
+- `AgentProcess(max_depth=2)` admits one Child per eligible Actor and at most
+  three Actors total: Root -> Child -> Grandchild.
+- The exact one-Child depth-one experiment used a narrow subclass override;
+  there is no public `max_children_per_actor` constructor parameter today.
 
-- `RootAgentProcess.interrupt()` is an external Host lifecycle command, not a
-  Model Action. The Action vocabulary and provider tool contracts are
-  unchanged.
-- The minimum durable lifecycle is
-  `INTERRUPT_REQUESTED -> settled/cancelled action evidence ->
-  ACTOR_SUSPENDED -> ACTOR_RESUMED`. `ExecutionState.status` now includes only
-  the one new `suspended` value.
-- An interrupt request prevents admission of another model sample, ToolHost
-  call, or IPython execution. With no in-flight work, Runtime checkpoints and
-  suspends immediately. With an ordinary Tool in flight, Runtime waits for its
-  real result/failure, records it, and then suspends.
-- For an in-flight IPython cell, Runtime calls the existing Jupyter kernel
-  interrupt primitive, but never treats that request as a successful cancel.
-  Suspension follows only after the cell produces an actual execution failure
-  or settles through the existing timeout. The maintained Windows experiment
-  observed the truthful timeout-settlement branch.
-- A suspended Root survives EventLog/checkpoint reload with unchanged
-  execution/root identity and zero model calls. External events remain durable
-  while suspended but never wake it. Only explicit `resume()` appends
-  `ACTOR_RESUMED` and restores runnable State.
-- A durable `INTERRUPT_REQUESTED` that survives a process crash remains the
-  admission authority after reload. Recovery first settles the supported
-  interrupted Write against current reality and enters SUSPENDED; a second,
-  explicit `resume()` is required to continue. Unsupported or ambiguous
-  in-flight work remains unresolved and cannot sample or dispatch.
-- Model-result admission and `MODEL_DECISION` append are serialized with the
-  lifecycle gate. A frozen Tool/IPython action that was decided but never
-  started can continue after explicit resume; a started or settled action is
-  never replayed.
-- Settled actions are not replayed. A bounded multi-tool decision preserves its
-  settled prefix, starts no later sibling while suspended, and continues only
-  its never-started suffix after explicit resume.
-- WAITING remains an Agent-selected typed condition; SUSPENDED remains an
-  external lifecycle state. The two transitions and wake rules are distinct.
-- Maintained experiments cover interrupt between decisions, suspended restart,
-  event delivery while suspended, no replay, ordinary Tool settlement,
-  IPython settlement, exact fold equivalence, and interrupted sibling suffix.
+The single-Child path, bounded sibling path, and depth-two substrate are
+mechanically validated. They are not evidence that a model will choose or
+benefit from those topologies.
 
-Bounded sibling Child AgentProcess:
+## Evidence tiers
 
-- `AgentProcess` remains the explicit Child surface over the unchanged
-  `RootAgentProcess` loop. The frozen MVP class retains its original tool
-  contract; this surface adds only Root-visible `SpawnChild(goal)` and
-  Child-visible `Return(local_result)`.
-- Root may persist at most three bounded `ChildRef` values. Each contains a
-  distinct Child execution id, actor id, direct parent id, local goal, Child
-  EventLog path, and (for native calls) its original provider call id. A local
-  decision may admit either one Spawn or one homogeneous ordered tuple of
-  Spawns up to remaining capacity. The whole tuple is preflighted before any
-  identity is created; it remains one `MODEL_DECISION` with independent
-  `CHILD_SPAWNED` facts. Spawn never runs a Child or returns its answer.
-- The Host constructs each Child with `AgentProcess.for_child(...)` and drives
-  children sequentially. Each Child owns its EventLog, derived State, bounded
-  Context, DecisionFrames, live IPython control, and lifecycle. Only the
-  `SharedEnvironment` workspace is shared.
-- Root sees Tool/IPython, Wait, SpawnChild, and ClaimComplete. Child sees
-  Tool/IPython, Wait, and Return; Child cannot Spawn or ClaimComplete, and Root
-  cannot Return. The fixed ceiling is `max_children_per_root=3` and
-  `max_depth=1`; a fourth Spawn fails explicitly without creating an event.
-- Every Child terminal outcome remains its own durable history. Host delivery
-  appends one identified `CHILD_RETURNED` or `CHILD_FAILED` to the Root
-  EventLog. `Wait("CHILD_RESULT")` accepts one such event as its matching wake;
-  Root then decides whether to wait, act, Spawn again, or claim completion.
-  Runtime does not implement join, retry, replacement, scheduling, or semantic
-  Child recovery.
-- Five multi-child deterministic tests establish three unique siblings and
-  fourth-Spawn rejection, Context isolation plus shared workspace reality,
-  identified return/failure retention, exact fold/restart deduplication, and
-  three separate live IPython namespaces. The 11 deterministic Single Child
-  tests remain green after migrating the obsolete one-Child ceiling assertion.
-- Earlier Single Child real evidence remains **PASS / VALIDATED** at 3/3.
-  The bounded sibling real experiment is now **PASS / VALIDATED**. The adapter
-  accepts only a homogeneous Spawn batch; Runtime completes whole-batch
-  preflight before creating any Child identity, then appends one independent
-  event per ordered direct Child. If a crash interrupts those appends, restart
-  uses the same frozen DecisionFrame to append only the never-committed Spawn
-  suffix before waiting for sibling results. All mixed or repeated non-Spawn
-  control batches remain wholly rejected.
-- The frozen DeepSeek experiment succeeded on its first fresh run: one Root
-  response contained two homogeneous `spawn_child` calls, two Child
-  identities and two returns were committed, Root integrated the results,
-  `answer.txt` equalled `"42"`, and completion was verified. The permitted
-  second and third attempts were not sent.
-- Task-level verdict: **PASS / VALIDATED**. Final regression reports
-  `Execution_lab2` 129 passed / 8 gated real-provider tests skipped; root 328
-  passed / 24 skipped; Conversation Memory 163 passed / 45 skipped; Dream 36
-  passed / 1 skipped. A maintained minimum-budget regression also proves three
-  identified Child returns remain associated with their creation-ordered actor
-  ids, while a later real Tool result remains visible, within
-  `max_context_chars=768`.
+### VALIDATED — mechanisms
 
-## Slice 11: depth-two recursive AgentProcess
+- Persistent Root and event-sourced Runtime
+- bounded Context and exact DecisionFrame fidelity
+- checkpoint + tail replay
+- WAIT/event/resume and explicit interrupt/suspend/resume
+- completed-action non-replay
+- minimal Write UNKNOWN reconciliation
+- deterministic completion verification
+- persistent per-Actor IPython
+- Prime-like provider surface
+- independent Child identity/lineage/Context/State/EventLog/IPython
+- SharedEnvironment and direct-parent Return
+- single Child, bounded direct siblings, and bounded depth-two substrate
+- IPython `spawn_child(goal)` -> Jupyter comm -> existing Host admission ->
+  existing Child lifecycle
 
-- **Deterministic mechanism: PASS. Real DeepSeek topology: NOT VALIDATED
-  (0/3). Overall Slice 11: NOT VALIDATED.** The implementation therefore is
-  not evidence that a real model will choose recursive delegation.
-- Explicit `AgentProcess(..., max_depth=2)` reuses the existing `_drive()`
-  loop for Root depth 0, Child depth 1, and Grandchild depth 2. In this frozen
-  recursive mode each Actor admits at most one direct Child, so the depth bound
-  also fixes total Actors at three. Existing default depth-one Root branching
-  remains unchanged.
-- `ChildRef`, each new `EXECUTION_STARTED`, and derived `ExecutionState` retain
-  direct Actor/parent identity, depth, and maximum depth. Canonical start facts
-  override reload configuration and reject a handle that attempts to lower a
-  durable depth. Legacy depth-one EventLog records retain depth 0/1 defaults;
-  legacy schema-1 checkpoints safely fall back to full EventLog replay.
-- Depth-one Child receives the same `SpawnChild` capability; depth-two
-  Grandchild does not. Admission checks depth/capacity before generating an
-  identity. Root alone can `ClaimComplete`; both descendant levels use the
-  same `Return` action.
-- `CHILD_RETURNED`/`CHILD_FAILED` is interpreted against Actor identity: an
-  Actor's own `Return` terminates its local process, while a pending direct
-  descendant's outcome becomes a bounded Observation and the parent continues.
-  There is no automatic result bubbling or failure promotion.
-- Eight maintained deterministic/recovery tests cover the task-card A-H cases: exact
-  0->1->2 lineage, depth-two denial with no Spawn fact, three-level Context
-  isolation, `21 -> 42` nested Return, shared workspace evidence, direct-parent
-  failure handling, restart/no-respawn/no-depth-downgrade, and pre-identity
-  total bound. All three local States equal full EventLog replay.
-- A crash after one durable `MODEL_DECISION(SpawnChild)` but before its
-  `CHILD_SPAWNED` append resumes that frozen decision with zero Model calls,
-  creates exactly one identity, and does not duplicate it on a second reload.
-  Checkpoint schema 2 includes depth facts; legacy schema-1 checkpoints safely
-  fall back to full canonical EventLog replay while new checkpoints retain the
-  existing validated tail-fold optimization.
-- The frozen real smoke used `outer.txt: TARGET=answer`, `inner.txt: VALUE=42`,
-  the natural task-card goal, and three fresh attempts. Attempts 1 and 2 took
-  non-recursive Root paths and failed; attempt 3 completed and verified through
-  the Root direct path. All three had zero `CHILD_SPAWNED`, so none counts as
-  recursive validation. No prompt strengthening or fourth attempt occurred.
-- No separate Root/Child/Grandchild loops, RecursiveSpawn, scheduler, parallel
-  recursion, Actor Directory, Blackboard, direct messaging, resource lease,
-  planner/reviewer, specialist persona, or generic recursion framework was
-  added. See `RECURSIVE_DEPTH2_RESULT.md` for the evidence boundary.
-- Final regression reports `Execution_lab2` 137 passed / 9 gated skips; root
-  328 passed / 24 skipped; Conversation Memory 163 passed / 45 skipped; Dream
-  36 passed / 1 skipped. `git diff --check` passed, live ipykernel count was
-  zero, the Slice diff secret scan was clean, and upstream MAGMA remained
-  clean. Dual Standards/Spec re-review has no remaining code or Spec finding.
+### VALIDATED — recorded real-model behavior
 
-Slice 3 regression evidence:
+Recorded, frozen DeepSeek-V4-Pro evidence establishes only that:
 
-- **A — durable replay:** a Runtime-created JSONL reloads to an equal immutable
-  Event tuple, and `fold(original) == fold(reloaded)`.
-- **B — checkpoint equivalence:** a WAIT checkpoint at sequence 6 remains valid
-  after external-event/wake/tool/completion tail events; verified
-  checkpoint-plus-tail State equals full replay State. Missing checkpoint also
-  reaches the same State.
-- **C — WAIT zero sampling:** repeated `resume()` while WAITING leaves Model
-  calls unchanged and executes no Tool. A wake at the hard decision bound adds
-  no extra Model call.
-- **D — full restart and wake:** Tool A, Wait, total object destruction, fresh
-  EventLog/Root/Model/ToolHost construction, `CONTINUE`, Tool B, and Complete
-  succeeds with unchanged execution and Root ids.
-- **E — no completed-action replay:** the workspace sentinel Tool A executes
-  exactly once across the full restart; only Tool B executes afterward.
-- **F — irrelevant event:** `NOISE` is durable, leaves State WAITING, and does
-  not sample. A later `CONTINUE` is the only event that wakes Root.
-- **G — recovery boundaries:** missing checkpoint falls back to full replay;
-  stale checkpoint folds its tail; malformed JSONL and corrupt checkpoint fail
-  explicitly. A failed durable append does not enter the authoritative event
-  tuple.
+- the fixed adapter can execute real local tasks and preserve native call
+  identity;
+- persistent IPython can complete the tested local filesystem tasks;
+- a prompted single-Child chain completed 3/3;
+- one prompted two-sibling chain completed and integrated two Returns;
+- the Prime-like surface beat the Wide surface on the frozen three-pair A/B
+  sample (2/3 versus 0/3 verified completion).
 
-## Validated invariants
+These are bounded observations, not general policy or superiority claims.
+Canonical details remain in the corresponding `RESULT.md` and `ARTIFACT.json`
+files.
 
-- Durable EventLog is historical authority; State and Checkpoint are
-  disposable projections, and Context is a separate bounded view.
-- Completed Action results are not replayed, and recovery never resamples or
-  replays a settled model decision. It may complete only the never-committed
-  suffix of the current durable frozen DecisionFrame where that exact recovery
-  boundary is explicitly supported.
-- A confirmed interrupted Write advances State only through the appended
-  `ACTION_RECONCILED` fact. Exact current reality is evidence of the requested
-  postcondition, not an exactly-once execution guarantee.
-- WAITING performs zero polling, Model sampling, or Tool execution.
-- Event matching is exact typed equality and contains no semantic planning.
-- Canonical result values remain in events while model-visible projections are
-  explicitly truncated to the configured absolute character bound.
-- DecisionFrame exact-request identity and Slice 1 ToolHost/failure behavior
-  remain covered by regression tests.
-- Final explicit-suspension validation reports: `Execution_lab2` 96 passed / 6
-  real-provider experiments skipped; root 328 passed / 24 skipped;
-  Conversation Memory 163 passed / 45 skipped; Dream 36 passed / 1 skipped.
-  The six Execution skips are explicitly gated real DeepSeek experiments;
-  normal regression runs do not load local credentials or make provider calls.
+### NOT VALIDATED / UNVERIFIABLE
 
-## Known limits
+- DeepSeek autonomous delegation policy: **NOT VALIDATED**; the final eligible
+  B arm invoked `spawn_child` 0/3.
+- Recursive topology emergence: **NOT VALIDATED**; depth two occurred 0/3.
+- Child utility gain: **NOT EVALUATED** because the utility B runs committed no
+  Child.
+- Multi-agent or recursive superiority: **NOT VALIDATED**.
+- Prime Agent basic-execution parity: **UNVERIFIABLE**, not failed; the
+  historical EXP-025 Prime runner lacks verifiable commit/path/content
+  identity.
 
-- UNKNOWN side-effect crash reconciliation is implemented only for a dangling
-  `WriteRequest` whose target can be read and exactly equals intended content.
-  All ambiguous Writes and every other effect kind remain unresolved.
-- Completion verification supports only caller-declared
-  `FileContentEquals(path, expected_content)`. There is no natural-language
-  goal judgment, Reviewer Agent, LLM verifier, registry, composite predicate,
-  test runner, or second verifier type.
-- Persistent IPython control plane: **IMPLEMENTED AND PROMOTED** for the
-  bounded one-kernel-per-live-Root surface above.
-- DeepSeek native provider adapter: **IMPLEMENTED AND VALIDATED** for this
-  fixed non-thinking, non-streaming surface with one call or at most four
-  strictly sequential ordinary siblings. Six fresh unchanged aggregation runs
-  completed 6/6; one real two-shell sibling response crossed the new path with
-  exact ids and verified completion. Existing canonical call-id and seeded
-  ToolHost-failure continuation evidence remains valid.
-- Up to three direct sibling children: **IMPLEMENTED AND VALIDATED** for one
-  Spawn or one homogeneous ordered Spawn tuple in a Root decision. The
-  Host-driven execution order remains sequential. A separate explicit
-  depth-two, one-Child-per-Actor mode is deterministically implemented but its
-  real DeepSeek topology remains **NOT VALIDATED**. Deeper recursion,
-  non-Root branching, parallel actors, scheduling, joins, messaging, and
-  automatic Child crash recovery remain **NOT IMPLEMENTED**.
-- Restart is supported at a durable settled result, WAIT/external-event safe
-  point, durable SUSPENDED state, initial start, terminal event, or the exact
-  confirmed-Write case above. Other unsettled tool calls remain
-  unsupported/unresolved.
-- For a partially dispatched ordinary ToolCall sibling batch, restart
-  preserves the settled/reconciled prefix and executes only its never-started
-  suffix in original order. This is frozen-decision continuation, not retry,
-  scheduling, rollback, or transaction management. Partial IPython sibling
-  recovery remains unsupported because its live namespace is not durable.
-- JSONL and Checkpoint are local single-process files. There is no multi-writer
-  coordination, database, checkpoint rotation, scheduler, background worker,
-  generic event bus, generic verifier framework, or resource accounting.
-- Context is bounded in Python characters rather than provider tokens or UTF-8
-  bytes. Shell isolation remains cwd-based rather than an OS sandbox.
-- Fresh typed-binding-only Python Code Mode remains **NOT IMPLEMENTED** because
-  its stricter isolation boundary is unavailable. Persistent IPython is
-  implemented under the later explicit equal-local-authority decision and is
-  deliberately not described as a sandbox.
-- IPython namespace is live-process-only. It is discarded on Runtime
-  replacement. A live external interrupt uses the existing kernel primitive
-  and waits for actual failure/timeout settlement before suspension; a process
-  crash leaving only `IPYTHON_EXECUTION_STARTED` remains unresolved and is not
-  replayed.
-- Checkpoint recovery hashes the prefix and folds only the tail, but no
-  replay-performance benchmark has been measured.
+## Differences from the architecture documents
 
-Further Execution stages require a separate approved task.
+The MVP architecture's durable Runtime invariants are implemented and
+validated. Later work intentionally changed three design details:
+
+1. **IPython authority.** The original diagrams route every Python effect
+   through a typed capability and ToolHost. The frozen implementation instead
+   gives IPython and ToolHost equal trusted local OS/workspace authority.
+   Runtime records the outer IPython lifecycle and later authoritative
+   environment evidence; it does not intercept every internal Python side
+   effect.
+2. **Capability surface.** Provider-visible Read/Write/Shell and native
+   SpawnChild were replaced by the minimal programmable surface. Delegation is
+   an IPython callable backed by a narrow Host comm.
+3. **Module shape.** The conceptual ExecutionRuntime lifecycle remains
+   co-located in `RootAgentProcess` rather than split into a separate module.
+
+The final architecture's Activity, Actor Directory, Blackboard, Capability
+Search/Registry, parallel Actors, resource economy, Mind integration,
+Self-Cognition, and Evolution remain future-only.
+
+## Known limits and revisit gates
+
+- A crash during an arbitrary active IPython cell is explicit unsupported
+  recovery; Python continuation and namespace are not restored.
+- Write equality is current-postcondition evidence, not causal proof,
+  exactly-once execution, or generic side-effect reconciliation.
+- Completion verification supports only `FileContentEquals`.
+- Jupyter comm invocation identity is not a separate durable idempotency key;
+  the durable facts are the outer IPython call and newly admitted Child
+  identities. Multiple invocations in one cell share the outer provider call
+  id. Admission bounds cap effects but do not deduplicate them, so no generic
+  exactly-once bridge claim is made.
+- Child execution is Host-driven and sequential. There is no automatic Child
+  crash recovery, scheduler, parallel join, global resource policy, or
+  shared-world conflict protocol.
+- Context is bounded in characters, not provider tokens.
+- The local workspace/process authority is sufficient for this lab but is not
+  a sandbox or a browser/API/device environment.
+- Default sibling capacity and the one-Child experimental configuration do not
+  share a public configuration interface. Revisit that interface only when a
+  production integration task needs it.
+
+## Frozen evidence and repository policy
+
+Canonical result documents and JSON artifacts are retained. Deterministic
+regression tests are retained. The final cleanup removed:
+
+- the topology-only pre-admission evidence callback from the production
+  adapter after its artifact was frozen;
+- eight opt-in real-provider experiment runners and their fixture/metric
+  helpers;
+- generated Python cache files.
+
+The four-call admission rule and all Runtime/provider outcomes are unchanged.
+No real provider request was sent by the final audit.
+
+Source provenance and adaptation details remain in `SOURCE_AUDIT.md`. The
+complete final classification is in `EXECUTION_V2_FINAL_AUDIT.md`.
+
+## Final validation
+
+- Execution deterministic suite: **147 passed**.
+- Full repository suite: **328 passed, 24 skipped**, with two unchanged pinned
+  MAGMA warnings.
+- `git diff --check`: **PASS**; line-ending notices only.
+- Live `ipykernel`: **0**.
+- Credential-pattern files under `Execution_lab2`: **0**.
+- Generated `__pycache__` / `*.pyc`: **0 / 0** after cleanup.
+- Pinned MAGMA status/diff: **clean / clean**.
+- Real provider requests made by the final audit: **0**.
+- Final `/code-review`: **Spec PASS / Standards PASS**, no findings.
+- Final verdict: **EXECUTION_V2_READY_TO_FREEZE**.
+
+## Freeze rule
+
+No more Execution behavior, surface, benchmark, delegation-prompt, or topology
+experiments are authorized by this status. Any future change requires a
+separate approved task. The next research question, outside this freeze, is
+whether Child/recursive AgentProcess topology can produce a real capability
+gain; the current substrate does not answer it.

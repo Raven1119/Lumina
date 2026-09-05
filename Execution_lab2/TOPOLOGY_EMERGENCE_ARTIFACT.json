@@ -1,0 +1,257 @@
+{
+  "runs": [
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 1,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": true,
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 4
+      },
+      "input_tokens": 5844,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 7,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 955,
+          "sum": 4873
+        }
+      },
+      "output_match": true,
+      "output_tokens": 406,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "root_failure": null,
+      "root_spawn_count": 0,
+      "root_status": "completed",
+      "shape": "FLAT",
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "tool_actions_by_actor": {
+        "depth0-1": 8
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "wall_seconds": 9.842
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 1,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 2
+      },
+      "input_tokens": 7249,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 8,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 1816,
+          "sum": 6445
+        }
+      },
+      "output_match": false,
+      "output_tokens": 769,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "root_failure": "decision_limit_reached",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "tool_actions_by_actor": {
+        "depth0-1": 15
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "wall_seconds": 14.562
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 2,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": true,
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 1
+      },
+      "input_tokens": 4268,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 5,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 952,
+          "sum": 3678
+        }
+      },
+      "output_match": true,
+      "output_tokens": 313,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "root_failure": null,
+      "root_spawn_count": 0,
+      "root_status": "completed",
+      "shape": "FLAT",
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "tool_actions_by_actor": {
+        "depth0-1": 5
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "wall_seconds": 7.658
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 2,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 1
+      },
+      "input_tokens": 7675,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 8,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 1612,
+          "sum": 6854
+        }
+      },
+      "output_match": false,
+      "output_tokens": 552,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "root_failure": "decision_limit_reached",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "tool_actions_by_actor": {
+        "depth0-1": 11
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "wall_seconds": 13.175
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 3,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": true,
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 0
+      },
+      "input_tokens": 3230,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 4,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 952,
+          "sum": 2727
+        }
+      },
+      "output_match": true,
+      "output_tokens": 212,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "root_failure": null,
+      "root_spawn_count": 0,
+      "root_status": "completed",
+      "shape": "FLAT",
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "tool_actions_by_actor": {
+        "depth0-1": 4
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "wall_seconds": 5.523
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 3,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 2
+      },
+      "input_tokens": 7430,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 8,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 1613,
+          "sum": 6729
+        }
+      },
+      "output_match": false,
+      "output_tokens": 487,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "root_failure": "decision_limit_reached",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "tool_actions_by_actor": {
+        "depth0-1": 10
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "wall_seconds": 11.436
+    }
+  ],
+  "schema": "topology-emergence-cardinality-v1"
+}

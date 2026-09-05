@@ -54,7 +54,7 @@ second Cold owner or a second resident MAGMA backend.
 explicit Dream trigger
 -> bounded complete pending segments from ColdDraftStore
 -> ColdDraftSegmentConverter
--> one bounded MiniMax-M3 Formation call in non-thinking mode with
+-> one bounded DeepSeek-V4-Pro Formation call in non-thinking mode with
    max_tokens=2000 when a real model is configured
 -> validated units checkpointed before MemoryIngestor MAGMA writes
 -> durable graph/vector persistence and ingestion checkpoint

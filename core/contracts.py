@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 ModelResponseType = Literal["mock", "model", "fallback"]
@@ -47,6 +47,27 @@ class DreamRunResponse(BaseModel):
     consumed: int
     skipped: int
     failed: int
+
+
+class ExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str = Field(max_length=4_096)
+
+
+class ExecutionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_id: str
+    status: Literal[
+        "waiting",
+        "suspended",
+        "child_pending",
+        "completed",
+        "failed",
+    ]
+    result: str | None
+    verified: bool
 
 
 class ChatRequest(BaseModel):

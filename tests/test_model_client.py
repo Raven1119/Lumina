@@ -5,8 +5,10 @@ import pytest
 
 from core.contracts import MemoryTurn
 from core.model_client import (
+    DEEPSEEK_ANTHROPIC_BASE_URL,
+    DEEPSEEK_MODEL,
+    DeepSeekAnthropicModelClient,
     MOCK_ASSISTANT_TEXT,
-    MiniMaxAnthropicModelClient,
     MockModelClient,
     ModelClientError,
     build_model_client_from_env,
@@ -23,62 +25,61 @@ def test_default_configuration_uses_mock() -> None:
     ) == MOCK_ASSISTANT_TEXT
 
 
-def test_complete_explicit_configuration_builds_minimax_adapter() -> None:
+def test_real_configuration_builds_deepseek_adapter() -> None:
     client = build_model_client_from_env(
         {
             "LUMINA_MODEL_MODE": "real",
-            "LUMINA_MODEL_PROVIDER": "minimax-anthropic",
-            "LUMINA_MODEL_API_KEY": "test-value",
-            "LUMINA_MODEL_BASE_URL": "https://provider.invalid/anthropic",
-            "LUMINA_MODEL_NAME": "test-model",
+            "DEEPSEEK_API_KEY": "test-value",
         }
     )
-    assert isinstance(client, MiniMaxAnthropicModelClient)
+    assert isinstance(client, DeepSeekAnthropicModelClient)
 
 
-def test_explicit_model_name_override_selects_dedicated_model(monkeypatch) -> None:
+def test_explicit_model_name_override_accepts_only_deepseek_v4_pro(monkeypatch) -> None:
     import core.model_client as model_client_module
 
     configured = {
         "LUMINA_MODEL_MODE": "real",
-        "LUMINA_MODEL_PROVIDER": "minimax-anthropic",
-        "LUMINA_MODEL_API_KEY": "test-value",
-        "LUMINA_MODEL_BASE_URL": "https://provider.invalid/anthropic",
-        "LUMINA_MODEL_NAME": "MiniMax-M2.7",
+        "DEEPSEEK_API_KEY": "test-value",
     }
     captured = {}
     sentinel = object()
 
-    def build_minimax(**kwargs):
+    def build_deepseek(**kwargs):
         captured.update(kwargs)
         return sentinel
 
     monkeypatch.setattr(
         model_client_module,
-        "MiniMaxAnthropicModelClient",
-        build_minimax,
+        "DeepSeekAnthropicModelClient",
+        build_deepseek,
     )
     client = build_model_client_from_env(
         configured,
-        model_name_override="MiniMax-M3",
+        model_name_override=DEEPSEEK_MODEL,
         max_tokens_override=2000,
     )
     assert client is sentinel
     assert captured == {
         "api_key": "test-value",
-        "base_url": "https://provider.invalid/anthropic",
-        "model": "MiniMax-M3",
+        "base_url": DEEPSEEK_ANTHROPIC_BASE_URL,
+        "model": DEEPSEEK_MODEL,
         "max_tokens": 2000,
     }
-    assert configured["LUMINA_MODEL_NAME"] == "MiniMax-M2.7"
 
     captured.clear()
     default_client = build_model_client_from_env(configured)
     assert default_client is sentinel
-    assert captured["model"] == "MiniMax-M2.7"
+    assert captured["model"] == DEEPSEEK_MODEL
+
+    unsupported_client = build_model_client_from_env(
+        configured,
+        model_name_override="deepseek-v4-flash",
+    )
+    assert isinstance(unsupported_client, MockModelClient)
 
 
-def test_incomplete_or_unsupported_real_configuration_falls_back_to_mock() -> None:
+def test_real_configuration_without_deepseek_key_falls_back_to_mock() -> None:
     assert isinstance(
         build_model_client_from_env({"LUMINA_MODEL_MODE": "real"}),
         MockModelClient,
@@ -87,17 +88,15 @@ def test_incomplete_or_unsupported_real_configuration_falls_back_to_mock() -> No
         build_model_client_from_env(
             {
                 "LUMINA_MODEL_MODE": "real",
-                "LUMINA_MODEL_PROVIDER": "unsupported",
-                "LUMINA_MODEL_API_KEY": "test-value",
-                "LUMINA_MODEL_BASE_URL": "https://provider.invalid",
-                "LUMINA_MODEL_NAME": "test-model",
+                "LUMINA_MODEL_PROVIDER": "minimax-anthropic",
+                "LUMINA_MODEL_API_KEY": "legacy-key-must-not-be-used",
             }
         ),
         MockModelClient,
     )
 
 
-def test_minimax_request_shape_and_thinking_block_filter() -> None:
+def test_deepseek_request_shape_and_thinking_block_filter() -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -114,7 +113,7 @@ def test_minimax_request_shape_and_thinking_block_filter() -> None:
             },
         )
 
-    client = MiniMaxAnthropicModelClient(
+    client = DeepSeekAnthropicModelClient(
         api_key="test-value",
         base_url="https://provider.invalid/anthropic/",
         model="test-model",
@@ -139,6 +138,7 @@ def test_minimax_request_shape_and_thinking_block_filter() -> None:
     assert captured["body"] == {
         "model": "test-model",
         "max_tokens": 1000,
+        "thinking": {"type": "disabled"},
         "system": "chat background\n\nhot rolling summary",
         "messages": [
             {"role": "user", "content": "earlier user"},
@@ -159,7 +159,7 @@ def test_hot_draft_summarizer_does_not_receive_chat_background() -> None:
             json={"content": [{"type": "text", "text": "new summary"}]},
         )
 
-    client = MiniMaxAnthropicModelClient(
+    client = DeepSeekAnthropicModelClient(
         api_key="test-value",
         base_url="https://provider.invalid/anthropic",
         model="test-model",
@@ -191,7 +191,7 @@ def test_hot_draft_summarizer_request_has_hard_output_budget() -> None:
             json={"content": [{"type": "text", "text": "new summary"}]},
         )
 
-    client = MiniMaxAnthropicModelClient(
+    client = DeepSeekAnthropicModelClient(
         api_key="test-value",
         base_url="https://provider.invalid/anthropic",
         model="test-model",
@@ -206,13 +206,14 @@ def test_hot_draft_summarizer_request_has_hard_output_budget() -> None:
     body = captured["body"]
     assert body["max_tokens"] == 321
     assert body["temperature"] == 0.0
+    assert body["thinking"] == {"type": "disabled"}
 
 
 def test_provider_transport_and_invalid_body_errors_are_sanitized() -> None:
     def fail_transport(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("raw provider detail")
 
-    client = MiniMaxAnthropicModelClient(
+    client = DeepSeekAnthropicModelClient(
         api_key="sensitive-test-value",
         base_url="https://provider.invalid/private",
         model="test-model",
@@ -224,7 +225,7 @@ def test_provider_transport_and_invalid_body_errors_are_sanitized() -> None:
     assert "sensitive-test-value" not in str(exc_info.value)
     assert "provider.invalid" not in str(exc_info.value)
 
-    invalid = MiniMaxAnthropicModelClient(
+    invalid = DeepSeekAnthropicModelClient(
         api_key="sensitive-test-value",
         base_url="https://provider.invalid/private",
         model="test-model",
@@ -238,7 +239,7 @@ def test_provider_transport_and_invalid_body_errors_are_sanitized() -> None:
         invalid.generate([], "hello", system_prompt="chat background")
 
 
-def test_minimax_generate_includes_temperature_only_when_configured() -> None:
+def test_deepseek_generate_includes_temperature_only_when_configured() -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -248,7 +249,7 @@ def test_minimax_generate_includes_temperature_only_when_configured() -> None:
             json={"content": [{"type": "text", "text": "answer"}]},
         )
 
-    client = MiniMaxAnthropicModelClient(
+    client = DeepSeekAnthropicModelClient(
         api_key="test-value",
         base_url="https://provider.invalid/anthropic",
         model="test-model",
@@ -258,7 +259,7 @@ def test_minimax_generate_includes_temperature_only_when_configured() -> None:
     client.generate([], "hi", system_prompt="background")
     assert captured["body"]["temperature"] == 0.0
 
-    default_client = MiniMaxAnthropicModelClient(
+    default_client = DeepSeekAnthropicModelClient(
         api_key="test-value",
         base_url="https://provider.invalid/anthropic",
         model="test-model",
@@ -273,22 +274,19 @@ def test_builder_temperature_override_passes_through(monkeypatch) -> None:
 
     captured = {}
 
-    def build_minimax(**kwargs):
+    def build_deepseek(**kwargs):
         captured.update(kwargs)
         return object()
 
     monkeypatch.setattr(
         model_client_module,
-        "MiniMaxAnthropicModelClient",
-        build_minimax,
+        "DeepSeekAnthropicModelClient",
+        build_deepseek,
     )
     build_model_client_from_env(
         {
             "LUMINA_MODEL_MODE": "real",
-            "LUMINA_MODEL_PROVIDER": "minimax-anthropic",
-            "LUMINA_MODEL_API_KEY": "test-value",
-            "LUMINA_MODEL_BASE_URL": "https://provider.invalid/anthropic",
-            "LUMINA_MODEL_NAME": "test-model",
+            "DEEPSEEK_API_KEY": "test-value",
         },
         temperature_override=0.0,
     )

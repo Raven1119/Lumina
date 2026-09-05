@@ -23,7 +23,7 @@ from core.model_client import ModelClient, build_model_client_from_env
 from Mind.constant_gate import ConstantMindGate
 from Mind.llm_gate import LlmMindGate
 
-_GATE_MODEL_NAME = "MiniMax-M3"
+_GATE_MODEL_NAME = "deepseek-v4-pro"
 _GATE_MAX_TOKENS = 8
 _GATE_TEMPERATURE = 0.0
 _FALSE_ALLOW_RATE_LIMIT = 0.25

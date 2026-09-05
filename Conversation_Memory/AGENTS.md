@@ -64,7 +64,8 @@ private.
 ## Current ingestion behavior
 
 - Configured real-model manual Dream uses `grounded-formation-v1` with
-  MiniMax-M3 in non-thinking mode and a Formation-only 2000-token output budget;
+  DeepSeek-V4-Pro in non-thinking mode and a Formation-only 2000-token output
+  budget;
   the deterministic `grounded-span-v2` path remains for mock/legacy callers.
 - A deterministic, LLM-free self-name coverage guard runs inside Formation
   after model-call validation: when an explicit user self-identification

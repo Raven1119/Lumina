@@ -13,15 +13,15 @@
             "state": {
               "type": "canvas",
               "state": {
-                "file": "Lumina_Execution_Organ.canvas",
+                "file": "Execution_MVP.canvas",
                 "viewState": {
                   "x": 0,
-                  "y": 279,
-                  "zoom": 0
+                  "y": 1539.76618705036,
+                  "zoom": -0.8950793975914275
                 }
               },
               "icon": "lucide-layout-dashboard",
-              "title": "Lumina_Execution_Organ"
+              "title": "Execution_MVP"
             }
           }
         ]
@@ -206,8 +206,10 @@
   },
   "active": "d5776717bac1e9fc",
   "lastOpenFiles": [
-    "Lumina_Nervous_Organ.canvas",
+    "Execution_runtime.canvas",
+    "Execution_MVP.canvas",
     "Lumina_Execution_Organ.canvas",
+    "Lumina_Nervous_Organ.canvas",
     "未命名.md",
     "Lumina_ReAct.canvas",
     "task-decoupled-planning-agent-flow.canvas",

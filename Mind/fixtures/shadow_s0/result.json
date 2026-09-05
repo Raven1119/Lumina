@@ -1,0 +1,153 @@
+{
+  "artifact_format": "world-model-shadow-s0-v1",
+  "authority_checks": {
+    "decision_advisory": true,
+    "deliver_event": true,
+    "filesystem": true,
+    "interrupt": true,
+    "ipython": true,
+    "network": true,
+    "open_child": true,
+    "resume": true,
+    "run_goal": true,
+    "shell": true,
+    "tool_host": true
+  },
+  "cases": [
+    {
+      "comparison": "MATCHED",
+      "execution_ref": "execution-00000000000000000000000000000001",
+      "final_shadow_trace_sha256": "f90453d3acadde05a6b485c9fdb8f2ee0e8f0350e71f349a1809ba33554836bb",
+      "name": "matched",
+      "outcome_evidence_ref": "execution-00000000000000000000000000000001:event-000009:outcome",
+      "outcome_projection_sha256": "8eaf588996c4cd3e17f77a1ab8938bc8855bcf76194144db3789e0fd8b59a3c6",
+      "outcome_restart_equal": true,
+      "outcome_sequence": 9,
+      "pre_evidence_ref": "execution-00000000000000000000000000000001:event-000003:pre_outcome",
+      "pre_projection_sha256": "82c36029ee7b5a46b20bba586702f7809a0b743fee8929ba6c349e2b77886ce7",
+      "pre_replay_after_outcome": false,
+      "pre_restart_equal": true,
+      "pre_sequence": 3,
+      "prediction_durable_before_outcome": true,
+      "prediction_ref": "s0-prediction-4449aafbe66b7f1c",
+      "prediction_trace_sha256_before_outcome": "e2402e5913bed90fd2879a8aa937dbe0310f282f1adc6ec2e39a9831a08bb418",
+      "redaction_checks": {
+        "absolute_workspace_excluded": true,
+        "file_content_excluded": true,
+        "provider_body_excluded": true,
+        "raw_code_excluded": true
+      },
+      "scripted_model_decisions": 2,
+      "source_event_refs": [
+        "event-000001",
+        "event-000002",
+        "event-000003",
+        "event-000004",
+        "event-000005",
+        "event-000006",
+        "event-000007",
+        "event-000008",
+        "event-000009"
+      ],
+      "trace_replay_equal": true
+    },
+    {
+      "comparison": "ERROR",
+      "execution_ref": "execution-00000000000000000000000000000003",
+      "final_shadow_trace_sha256": "813c316f7f4f6a5b963bdb9ad7b721e2b4ac329ba50a03d19195653bd0602cbf",
+      "name": "error",
+      "outcome_evidence_ref": "execution-00000000000000000000000000000003:event-000009:outcome",
+      "outcome_projection_sha256": "64d37f7ad81d4c7a8dd5b8fa90a90a438b3314f80bcae93e229e406b4b197b64",
+      "outcome_restart_equal": true,
+      "outcome_sequence": 9,
+      "pre_evidence_ref": "execution-00000000000000000000000000000003:event-000003:pre_outcome",
+      "pre_projection_sha256": "62473744b2675ea58d4f9a46c706f6a233bb464594d8696f30db95a27fd1f880",
+      "pre_replay_after_outcome": false,
+      "pre_restart_equal": true,
+      "pre_sequence": 3,
+      "prediction_durable_before_outcome": true,
+      "prediction_ref": "s0-prediction-6681c5169a3f941d",
+      "prediction_trace_sha256_before_outcome": "7e9f988649d6466965b097ea6a95679c28fdb4c825533e094ca4380c49f4ffc2",
+      "redaction_checks": {
+        "absolute_workspace_excluded": true,
+        "file_content_excluded": true,
+        "provider_body_excluded": true,
+        "raw_code_excluded": true
+      },
+      "scripted_model_decisions": 2,
+      "source_event_refs": [
+        "event-000001",
+        "event-000002",
+        "event-000003",
+        "event-000004",
+        "event-000005",
+        "event-000006",
+        "event-000007",
+        "event-000008",
+        "event-000009"
+      ],
+      "trace_replay_equal": true
+    },
+    {
+      "comparison": "UNVERIFIABLE",
+      "execution_ref": "execution-00000000000000000000000000000005",
+      "final_shadow_trace_sha256": "2c0dce327d935d2dc71df3afaecff527ef8f221e077595ac28e11eeb2b9b5afd",
+      "name": "unverifiable",
+      "outcome_evidence_ref": "execution-00000000000000000000000000000005:event-000010:outcome",
+      "outcome_projection_sha256": "b83eebfa2ba5d10dacb9c2af9a88b8080bc525771c6c4ee67a5d2706c673cc01",
+      "outcome_restart_equal": true,
+      "outcome_sequence": 10,
+      "pre_evidence_ref": "execution-00000000000000000000000000000005:event-000003:pre_outcome",
+      "pre_projection_sha256": "6a4d8aad135d1bb7bd60fe226bd24dffaf078c20bb0b2b0ab9d53abd9b993109",
+      "pre_replay_after_outcome": false,
+      "pre_restart_equal": true,
+      "pre_sequence": 3,
+      "prediction_durable_before_outcome": true,
+      "prediction_ref": "s0-prediction-c208277539136452",
+      "prediction_trace_sha256_before_outcome": "1189f329adea54d561ebd9cbe74d988bc9216ccc2f96a698599a8bf4ff6ca036",
+      "redaction_checks": {
+        "absolute_workspace_excluded": true,
+        "file_content_excluded": true,
+        "provider_body_excluded": true,
+        "raw_code_excluded": true
+      },
+      "scripted_model_decisions": 2,
+      "source_event_refs": [
+        "event-000001",
+        "event-000002",
+        "event-000003",
+        "event-000004",
+        "event-000005",
+        "event-000006",
+        "event-000007",
+        "event-000008",
+        "event-000009",
+        "event-000010"
+      ],
+      "trace_replay_equal": true
+    }
+  ],
+  "fail_soft": {
+    "execution_failure": null,
+    "execution_status": "completed",
+    "shadow_error": "RuntimeError"
+  },
+  "projection_bounds": {
+    "max_evidence_items": 8,
+    "max_payload_chars": 128,
+    "max_source_refs": 16,
+    "payload_schema": "fixed scalar fields only"
+  },
+  "provider_request_count": 0,
+  "redaction_checks": {
+    "absolute_workspace_excluded": true,
+    "file_content_excluded": true,
+    "provider_body_excluded": true,
+    "raw_code_excluded": true
+  },
+  "shadow_off_observable_sha256": "6c18250a10e17b0cedf07f780b54a19e6e3add60ab9e5fbcd18e7c79da90c48e",
+  "shadow_on_observable_sha256": "6c18250a10e17b0cedf07f780b54a19e6e3add60ab9e5fbcd18e7c79da90c48e",
+  "shadow_on_off_identical": true,
+  "single_variable": "synthetic Reality Evidence -> Execution-derived Reality Evidence",
+  "verdict": "S0_INCONCLUSIVE"
+}

@@ -1,0 +1,563 @@
+{
+  "schema": "mind-e4-preregistered-fixtures-v1",
+  "single_variable": "Visibility of one host-owned bounded supervisor_evidence block containing the strong trigger cause and recent trajectory evidence",
+  "activation_policy": {
+    "initial_execution_observation_visible": true,
+    "allow_information_acquisition": false,
+    "max_model_calls": 1,
+    "max_capability_calls": 0
+  },
+  "model_config": {
+    "provider": "deepseek-anthropic",
+    "base_url": "https://api.deepseek.com/anthropic",
+    "model": "deepseek-v4-pro",
+    "temperature": "provider_default",
+    "max_tokens": 1000,
+    "request_timeout_seconds": 30
+  },
+  "views": {
+    "baseline": {
+      "initial_execution_observation": true,
+      "supervisor_evidence": false,
+      "system_prompt_sha256": "86814749115871cf012bfac5ed97968c8f989ab9534449784fdc13f4107a1613"
+    },
+    "candidate": {
+      "initial_execution_observation": true,
+      "supervisor_evidence": true,
+      "system_prompt_sha256": "86814749115871cf012bfac5ed97968c8f989ab9534449784fdc13f4107a1613"
+    }
+  },
+  "trigger_vocabulary": [
+    "action_failure",
+    "completion_rejected"
+  ],
+  "evidence_vocabulary": [
+    "action_failure",
+    "action_result",
+    "completion_rejected",
+    "observation"
+  ],
+  "bounds": {
+    "trigger_summary_chars": 500,
+    "evidence_item_chars": 1000,
+    "evidence_count": 3,
+    "source_ref_chars": 128,
+    "source_ref_count": 3,
+    "supervisor_bundle_chars": 3500
+  },
+  "review_policy": {
+    "reviewers": 2,
+    "arm_visible": false,
+    "raw_model_metadata_visible": false,
+    "full_ground_truth_supervisor_evidence_visible": true,
+    "disagreement": "UNCERTAIN_without_third_reviewer"
+  },
+  "semantic_audit_rubric": {
+    "SUPPORTED": "Every factual premise in the Directive is supported by the full frozen supervisor evidence, or the Directive explicitly preserves the uncertainty shown there; the guidance remains high-level.",
+    "CONTRADICTED": "At least one factual premise in the Directive is explicitly refuted by the full frozen supervisor evidence.",
+    "UNCERTAIN": "The full frozen supervisor evidence is insufficient to confirm or refute a factual premise in the Directive, or the relationship asserted by the Directive is not established."
+  },
+  "verdict_criteria": {
+    "SUPPORTED": {
+      "baseline_CONTRADICTED_gte": 2,
+      "candidate_CONTRADICTED_lt_baseline": true,
+      "candidate_CONTRADICTED_lte": 1,
+      "candidate_SUPPORTED_gte_baseline": true,
+      "candidate_SUPPORTED_gte": 3,
+      "candidate_Directive_gte": 3,
+      "paired_semantic_improvements_gte": 2
+    },
+    "NEGATIVE": {
+      "candidate_CONTRADICTED_gt_baseline": true,
+      "or_candidate_SUPPORTED_lt_baseline_minus": 2
+    },
+    "INCONCLUSIVE": "all_other_outcomes_including_baseline_CONTRADICTED_lt_2"
+  },
+  "arm_order": [
+    "baseline_first",
+    "candidate_first",
+    "baseline_first",
+    "candidate_first",
+    "baseline_first",
+    "candidate_first",
+    "baseline_first",
+    "candidate_first",
+    "baseline_first",
+    "candidate_first",
+    "baseline_first",
+    "candidate_first"
+  ],
+  "cases": [
+    {
+      "case_id": "e4-01-missing-release-file",
+      "coverage": "wrong_completion_assumption",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Produce the exact release artifact required by the frozen completion specification.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Produce the exact release artifact required by the frozen completion specification.",
+        "status": "running",
+        "recent_outcome": "The actor asserted that release preparation was complete.",
+        "failure": "An objective execution check requires review before completion can be accepted."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Produce the exact release artifact required by the frozen completion specification.",
+          "status": "running",
+          "recent_outcome": "The actor asserted that release preparation was complete.",
+          "failure": "An objective execution check requires review before completion can be accepted."
+        },
+        "trigger": {
+          "type": "completion_rejected",
+          "summary": "The actor claimed completion, but the required release.txt artifact was absent.",
+          "source_refs": ["event-000003", "event-000004"]
+        },
+        "recent_evidence": [
+          {"kind": "action_result", "text": "The preceding action wrote notes.txt successfully; it did not write release.txt."},
+          {"kind": "completion_rejected", "text": "The file-content verifier reported reason=missing for release.txt."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "Goal and exact release.txt completion specification were frozen."},
+        {"event_id": "event-000002", "event_type": "IPYTHON_EXECUTION_RESULT", "text": "The action wrote notes.txt successfully."},
+        {"event_id": "event-000003", "event_type": "COMPLETION_CLAIMED", "text": "The actor claimed completion."},
+        {"event_id": "event-000004", "event_type": "COMPLETION_REJECTED", "text": "Verifier reason=missing for release.txt."}
+      ],
+      "case_sha256": "6a19a86cb5d6e7db0fcb3b0a5631bfa7fb99430265d43744a745818d8b002d35"
+    },
+    {
+      "case_id": "e4-02-incomplete-package",
+      "coverage": "wrong_completion_assumption",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Assemble the complete three-file handoff package.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Assemble the complete three-file handoff package.",
+        "status": "running",
+        "recent_outcome": "The actor reported that the handoff package was ready.",
+        "failure": "An objective execution check requires review before completion can be accepted."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Assemble the complete three-file handoff package.",
+          "status": "running",
+          "recent_outcome": "The actor reported that the handoff package was ready.",
+          "failure": "An objective execution check requires review before completion can be accepted."
+        },
+        "trigger": {
+          "type": "completion_rejected",
+          "summary": "Completion was claimed after only two of the three required handoff files were created.",
+          "source_refs": ["event-000004", "event-000005"]
+        },
+        "recent_evidence": [
+          {"kind": "action_result", "text": "manifest.json and checksums.txt were present; instructions.md was absent."},
+          {"kind": "completion_rejected", "text": "The verifier rejected the package because instructions.md was missing."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The completion specification required three named files."},
+        {"event_id": "event-000002", "event_type": "TOOL_RESULT", "text": "manifest.json was written successfully."},
+        {"event_id": "event-000003", "event_type": "TOOL_RESULT", "text": "checksums.txt was written successfully."},
+        {"event_id": "event-000004", "event_type": "COMPLETION_CLAIMED", "text": "The actor claimed the package was complete."},
+        {"event_id": "event-000005", "event_type": "COMPLETION_REJECTED", "text": "instructions.md was missing."}
+      ],
+      "case_sha256": "0fff4629fe81f1aa3a4b2a39f053c31e74f8961559ff757b28c1515a1bc8a1a4"
+    },
+    {
+      "case_id": "e4-03-artifact-at-different-path",
+      "coverage": "missed_existing_artifact",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Place the generated report at the exact path required by the verifier.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Place the generated report at the exact path required by the verifier.",
+        "status": "running",
+        "recent_outcome": "Report generation completed and the actor claimed the task was done.",
+        "failure": "An objective execution check requires review before completion can be accepted."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Place the generated report at the exact path required by the verifier.",
+          "status": "running",
+          "recent_outcome": "Report generation completed and the actor claimed the task was done.",
+          "failure": "An objective execution check requires review before completion can be accepted."
+        },
+        "trigger": {
+          "type": "completion_rejected",
+          "summary": "The report existed at build/report.txt, while the frozen verifier required report.txt at the workspace root.",
+          "source_refs": ["event-000003", "event-000004"]
+        },
+        "recent_evidence": [
+          {"kind": "action_result", "text": "A successful write produced build/report.txt with the requested report content."},
+          {"kind": "completion_rejected", "text": "The verifier reported report.txt missing at the required root path."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The specification named report.txt at the workspace root."},
+        {"event_id": "event-000002", "event_type": "TOOL_RESULT", "text": "build/report.txt was written successfully."},
+        {"event_id": "event-000003", "event_type": "COMPLETION_CLAIMED", "text": "The actor claimed completion."},
+        {"event_id": "event-000004", "event_type": "COMPLETION_REJECTED", "text": "Verifier reason=missing for root report.txt."}
+      ],
+      "case_sha256": "ee88c6eed7145eaacb26a956be6b725b13b92bb2ec66deb2cd2c15a282e97e31"
+    },
+    {
+      "case_id": "e4-04-existing-bundle-overlooked",
+      "coverage": "missed_existing_artifact",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Deliver the already generated deployment bundle under the required name.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Deliver the already generated deployment bundle under the required name.",
+        "status": "running",
+        "recent_outcome": "Bundle preparation was reported complete before the claim.",
+        "failure": "An objective execution check requires review before completion can be accepted."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Deliver the already generated deployment bundle under the required name.",
+          "status": "running",
+          "recent_outcome": "Bundle preparation was reported complete before the claim.",
+          "failure": "An objective execution check requires review before completion can be accepted."
+        },
+        "trigger": {
+          "type": "completion_rejected",
+          "summary": "The correct bundle already existed as package-final.zip, but the verifier required deployment.zip.",
+          "source_refs": ["event-000003", "event-000004"]
+        },
+        "recent_evidence": [
+          {"kind": "observation", "text": "Workspace evidence showed package-final.zip with the expected digest."},
+          {"kind": "completion_rejected", "text": "The completion verifier reported deployment.zip missing."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The completion specification named deployment.zip."},
+        {"event_id": "event-000002", "event_type": "IPYTHON_EXECUTION_RESULT", "text": "Workspace inspection found package-final.zip with the expected digest."},
+        {"event_id": "event-000003", "event_type": "COMPLETION_CLAIMED", "text": "The actor claimed completion without renaming the existing bundle."},
+        {"event_id": "event-000004", "event_type": "COMPLETION_REJECTED", "text": "deployment.zip was missing."}
+      ],
+      "case_sha256": "f47baddc77df912de595105f44dffdc0e824d5bb5eb437c48dc97be3c733294b"
+    },
+    {
+      "case_id": "e4-05-newline-protocol-mismatch",
+      "coverage": "correct_output_failed_protocol",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Write the approved status phrase using the exact completion protocol.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Write the approved status phrase using the exact completion protocol.",
+        "status": "running",
+        "recent_outcome": "The actor produced the approved status phrase and claimed completion.",
+        "failure": "An objective execution check requires review before completion can be accepted."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Write the approved status phrase using the exact completion protocol.",
+          "status": "running",
+          "recent_outcome": "The actor produced the approved status phrase and claimed completion.",
+          "failure": "An objective execution check requires review before completion can be accepted."
+        },
+        "trigger": {
+          "type": "completion_rejected",
+          "summary": "The semantic phrase was correct, but the frozen exact-content protocol required a trailing newline that was absent.",
+          "source_refs": ["event-000003", "event-000004"]
+        },
+        "recent_evidence": [
+          {"kind": "action_result", "text": "status.txt contained exactly APPROVED with no trailing newline."},
+          {"kind": "completion_rejected", "text": "The verifier reported content_mismatch against expected APPROVED followed by one newline."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The specification required exact bytes for status.txt."},
+        {"event_id": "event-000002", "event_type": "TOOL_RESULT", "text": "status.txt was written as APPROVED without a newline."},
+        {"event_id": "event-000003", "event_type": "COMPLETION_CLAIMED", "text": "The actor claimed completion."},
+        {"event_id": "event-000004", "event_type": "COMPLETION_REJECTED", "text": "Exact content differed only by the required trailing newline."}
+      ],
+      "case_sha256": "416cce0941ac4d5719a5e246be73d4996637d1756310178d436210b0b9c49c29"
+    },
+    {
+      "case_id": "e4-06-encoding-protocol-mismatch",
+      "coverage": "correct_output_failed_protocol",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Write the approved identifier in the verifier's exact text encoding.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Write the approved identifier in the verifier's exact text encoding.",
+        "status": "running",
+        "recent_outcome": "The visible identifier was correct and the actor claimed completion.",
+        "failure": "An objective execution check requires review before completion can be accepted."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Write the approved identifier in the verifier's exact text encoding.",
+          "status": "running",
+          "recent_outcome": "The visible identifier was correct and the actor claimed completion.",
+          "failure": "An objective execution check requires review before completion can be accepted."
+        },
+        "trigger": {
+          "type": "completion_rejected",
+          "summary": "The visible identifier matched, but a UTF-8 byte-order mark violated the frozen exact-content protocol.",
+          "source_refs": ["event-000003", "event-000004"]
+        },
+        "recent_evidence": [
+          {"kind": "action_result", "text": "identifier.txt rendered as CLIENT-42 but began with a UTF-8 byte-order mark."},
+          {"kind": "completion_rejected", "text": "The verifier reported content_mismatch against BOM-free CLIENT-42."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The specification required exact BOM-free text."},
+        {"event_id": "event-000002", "event_type": "IPYTHON_EXECUTION_RESULT", "text": "identifier.txt visibly contained CLIENT-42 with a byte-order mark."},
+        {"event_id": "event-000003", "event_type": "COMPLETION_CLAIMED", "text": "The actor claimed completion."},
+        {"event_id": "event-000004", "event_type": "COMPLETION_REJECTED", "text": "Exact bytes did not match the BOM-free specification."}
+      ],
+      "case_sha256": "9ea388f32f991bd3c88143cb71f781a622c4e9c59140188c1db4ba42a356d205"
+    },
+    {
+      "case_id": "e4-07-repeated-permission-failure",
+      "coverage": "repeated_observable_failure",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Read the protected export using the granted read-only access path.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Read the protected export using the granted read-only access path.",
+        "status": "running",
+        "recent_outcome": "The current access attempt did not produce the export.",
+        "failure": "An objective execution failure requires review."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Read the protected export using the granted read-only access path.",
+          "status": "running",
+          "recent_outcome": "The current access attempt did not produce the export.",
+          "failure": "An objective execution failure requires review."
+        },
+        "trigger": {
+          "type": "action_failure",
+          "summary": "Two consecutive reads used the same unauthorized endpoint and both returned permission denied.",
+          "source_refs": ["event-000003", "event-000005"]
+        },
+        "recent_evidence": [
+          {"kind": "action_failure", "text": "First read of /admin/export returned permission_denied."},
+          {"kind": "action_failure", "text": "Second read repeated /admin/export and returned permission_denied again."},
+          {"kind": "observation", "text": "The granted read-only endpoint was /reports/export, not /admin/export."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The goal named the granted read-only access path."},
+        {"event_id": "event-000002", "event_type": "TOOL_CALL_STARTED", "text": "Read /admin/export."},
+        {"event_id": "event-000003", "event_type": "TOOL_FAILED", "text": "permission_denied for /admin/export."},
+        {"event_id": "event-000004", "event_type": "TOOL_CALL_STARTED", "text": "Repeated read /admin/export."},
+        {"event_id": "event-000005", "event_type": "TOOL_FAILED", "text": "permission_denied again for /admin/export."}
+      ],
+      "case_sha256": "a1dad20c8125ff92a29b4f8d21f6d59571a8a65abe783cf98cc185eedbbc342d"
+    },
+    {
+      "case_id": "e4-08-repeated-parser-failure",
+      "coverage": "repeated_observable_failure",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Parse the supplied tab-separated inventory export.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Parse the supplied tab-separated inventory export.",
+        "status": "running",
+        "recent_outcome": "The parser did not produce inventory rows.",
+        "failure": "An objective execution failure requires review."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Parse the supplied tab-separated inventory export.",
+          "status": "running",
+          "recent_outcome": "The parser did not produce inventory rows.",
+          "failure": "An objective execution failure requires review."
+        },
+        "trigger": {
+          "type": "action_failure",
+          "summary": "The same comma-delimited parser was retried twice against an explicitly tab-separated file.",
+          "source_refs": ["event-000003", "event-000005"]
+        },
+        "recent_evidence": [
+          {"kind": "action_failure", "text": "First parser run failed because the expected comma-separated header was absent."},
+          {"kind": "action_failure", "text": "The unchanged parser was rerun and failed with the same header error."},
+          {"kind": "observation", "text": "The file header visibly used tab separators."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The input contract identified a tab-separated export."},
+        {"event_id": "event-000002", "event_type": "IPYTHON_EXECUTION_STARTED", "text": "Ran the comma-delimited parser."},
+        {"event_id": "event-000003", "event_type": "IPYTHON_EXECUTION_FAILED", "text": "Comma-header lookup failed."},
+        {"event_id": "event-000004", "event_type": "IPYTHON_EXECUTION_STARTED", "text": "Reran the same comma-delimited parser."},
+        {"event_id": "event-000005", "event_type": "IPYTHON_EXECUTION_FAILED", "text": "The same comma-header lookup failed again."}
+      ],
+      "case_sha256": "646a766c3b9d7e09c24a82dc308324e7046bc8ccda08d0079a9733107b23174a"
+    },
+    {
+      "case_id": "e4-09-transient-upload-timeout",
+      "coverage": "direction_sound_after_local_failure",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Upload all six validated archive chunks through the approved endpoint.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Upload all six validated archive chunks through the approved endpoint.",
+        "status": "running",
+        "recent_outcome": "The latest upload attempt did not complete.",
+        "failure": "An objective execution failure requires review."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Upload all six validated archive chunks through the approved endpoint.",
+          "status": "running",
+          "recent_outcome": "The latest upload attempt did not complete.",
+          "failure": "An objective execution failure requires review."
+        },
+        "trigger": {
+          "type": "action_failure",
+          "summary": "One upload timed out after five consecutive chunks succeeded through the same approved endpoint.",
+          "source_refs": ["event-000003", "event-000004"]
+        },
+        "recent_evidence": [
+          {"kind": "action_result", "text": "Chunks one through five uploaded successfully through the approved endpoint."},
+          {"kind": "action_failure", "text": "Chunk six timed out once; no retry or endpoint-health check has occurred."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "Six validated chunks must use the approved upload endpoint."},
+        {"event_id": "event-000002", "event_type": "TOOL_RESULT", "text": "Chunks one through four uploaded successfully."},
+        {"event_id": "event-000003", "event_type": "TOOL_RESULT", "text": "Chunk five uploaded successfully."},
+        {"event_id": "event-000004", "event_type": "TOOL_FAILED", "text": "Chunk six timed out once."}
+      ],
+      "case_sha256": "b8fdd243ea6ffd9622fbc229d5a50226dc5c70ae1c84164e18991d7f29a373de"
+    },
+    {
+      "case_id": "e4-10-transient-checksum-service",
+      "coverage": "direction_sound_after_local_failure",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Validate the prepared archives with the approved checksum service.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Validate the prepared archives with the approved checksum service.",
+        "status": "running",
+        "recent_outcome": "The latest checksum validation did not return a result.",
+        "failure": "An objective execution failure requires review."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Validate the prepared archives with the approved checksum service.",
+          "status": "running",
+          "recent_outcome": "The latest checksum validation did not return a result.",
+          "failure": "An objective execution failure requires review."
+        },
+        "trigger": {
+          "type": "action_failure",
+          "summary": "The approved validation path had three successes before one isolated service-unavailable response.",
+          "source_refs": ["event-000003", "event-000004"]
+        },
+        "recent_evidence": [
+          {"kind": "action_result", "text": "Three archives were validated successfully by the same checksum service."},
+          {"kind": "action_failure", "text": "The fourth validation received service_unavailable once and has not been retried."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The approved checksum service was selected."},
+        {"event_id": "event-000002", "event_type": "TOOL_RESULT", "text": "The first two archive checks passed."},
+        {"event_id": "event-000003", "event_type": "TOOL_RESULT", "text": "The third archive check passed."},
+        {"event_id": "event-000004", "event_type": "TOOL_FAILED", "text": "The fourth check returned service_unavailable once."}
+      ],
+      "case_sha256": "3b51e4913caca9a4d2fef0acf3cccef3dfbfeca6760025d0606e03e848ab4388"
+    },
+    {
+      "case_id": "e4-11-ambiguous-worker-exit",
+      "coverage": "ambiguous_failure",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Generate the monthly summary using the approved local worker.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Generate the monthly summary using the approved local worker.",
+        "status": "running",
+        "recent_outcome": "The worker ended before returning a monthly summary.",
+        "failure": "An objective execution failure requires review."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Generate the monthly summary using the approved local worker.",
+          "status": "running",
+          "recent_outcome": "The worker ended before returning a monthly summary.",
+          "failure": "An objective execution failure requires review."
+        },
+        "trigger": {
+          "type": "action_failure",
+          "summary": "The worker exited once without an exit code or diagnostic output, so the cause is unresolved.",
+          "source_refs": ["event-000002", "event-000003"]
+        },
+        "recent_evidence": [
+          {"kind": "action_failure", "text": "The worker returned no summary, no exit code, and no diagnostic output."},
+          {"kind": "observation", "text": "No retry, input check, or independent worker-health check has occurred."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The approved local worker was selected for the monthly summary."},
+        {"event_id": "event-000002", "event_type": "TOOL_CALL_STARTED", "text": "The local worker was invoked once."},
+        {"event_id": "event-000003", "event_type": "TOOL_FAILED", "text": "It returned no output, exit code, or diagnostic."}
+      ],
+      "case_sha256": "f47ef595dbaa89683d4a02d16d15d71d338eac11befe34fd398bfdf4b6f9b0fd"
+    },
+    {
+      "case_id": "e4-12-ambiguous-parser-exception",
+      "coverage": "ambiguous_failure",
+      "activation": {
+        "trigger": "Objective Execution supervision was mechanically triggered.",
+        "execution_goal_snapshot": "Extract the approved fields from the supplied event batch.",
+        "execution_status": "running"
+      },
+      "execution_observation": {
+        "goal": "Extract the approved fields from the supplied event batch.",
+        "status": "running",
+        "recent_outcome": "The first extraction attempt ended with an exception.",
+        "failure": "An objective execution failure requires review."
+      },
+      "supervisor_evidence": {
+        "execution_observation": {
+          "goal": "Extract the approved fields from the supplied event batch.",
+          "status": "running",
+          "recent_outcome": "The first extraction attempt ended with an exception.",
+          "failure": "An objective execution failure requires review."
+        },
+        "trigger": {
+          "type": "action_failure",
+          "summary": "A single extraction attempt raised an unclassified exception before any input or environment check.",
+          "source_refs": ["event-000002", "event-000003"]
+        },
+        "recent_evidence": [
+          {"kind": "action_failure", "text": "The first extraction attempt raised RuntimeError with no bounded diagnostic detail."},
+          {"kind": "observation", "text": "The input format, parser configuration, and runtime health have not yet been independently checked."}
+        ]
+      },
+      "execution_prefix": [
+        {"event_id": "event-000001", "event_type": "EXECUTION_STARTED", "text": "The supplied event batch and approved fields were frozen."},
+        {"event_id": "event-000002", "event_type": "IPYTHON_EXECUTION_STARTED", "text": "The extraction code ran once."},
+        {"event_id": "event-000003", "event_type": "IPYTHON_EXECUTION_FAILED", "text": "It raised an unclassified RuntimeError without diagnostic detail."}
+      ],
+      "case_sha256": "625e701ddf324b8bf59caa70c6aa900b6165816fd270704fcdacede7bf9213bb"
+    }
+  ]
+}

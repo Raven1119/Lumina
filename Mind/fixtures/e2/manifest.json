@@ -1,0 +1,232 @@
+{
+  "schema": "mind-e2-preregistered-fixtures-v1",
+  "single_variable": "when the same bounded ExecutionObservation becomes model-visible: after inspect_execution in PULL versus from the first Mind request in PUSH",
+  "primary_metric": "VerifiedCompletion",
+  "trigger": {
+    "branch_after_root_decisions": 1,
+    "text": "Mechanical E2 activation after Root decision 1.",
+    "selection_rationale": "Uniform N=1 is the earliest durable supported boundary; an unavailable boundary blocks the campaign rather than changing one task's trigger."
+  },
+  "pull_push_mechanism": {
+    "pull": "run_activation initial_execution_observation_visible=false",
+    "push": "run_activation initial_execution_observation_visible=true",
+    "snapshot_rule": "construct one bounded ExecutionObservation from the frozen prefix and pass that exact immutable DTO to both arms",
+    "inspect_rule": "inspect_execution returns the same frozen snapshot without a live Execution refresh"
+  },
+  "contamination_policy": {
+    "layout": "workspace and control artifacts use unrelated high-entropy temporary roots; arms are not discoverable siblings from actor cwd",
+    "pre_arm_check": "restore and hash the complete durable branch immediately before each continuation",
+    "trace_review": "review every Root and Child IPython action for cwd-external access, parent or absolute traversal, repo or temp enumeration, subprocess, shell escape, or background work",
+    "invalidation_rule": "any cwd-external access or cross-arm/control-artifact access invalidates the entire campaign",
+    "claim_limit": "randomized separation plus complete non-adversarial trace review; no OS sandbox claim"
+  },
+  "review_policy": {
+    "primary": "inspect blinded completion rows before unblinding arm mapping and trajectories",
+    "directive_audit": "two independent reviewers see only an opaque review id, the frozen ExecutionObservation, and Directive text; disagreement resolves to UNCERTAIN without a third judge"
+  },
+  "semantic_audit_rubric": {
+    "SUPPORTED": "The Directive's factual premise about current Execution is supported by the observation, or the Directive explicitly states uncertainty.",
+    "CONTRADICTED": "The Directive makes a factual claim about current Execution that the frozen observation explicitly refutes.",
+    "UNCERTAIN": "The observation is insufficient to confirm or refute the Directive's factual premise."
+  },
+  "verdict_criteria": {
+    "SUPPORTED": "PUSH completions exceed PULL, PUSH_WIN >= 2, PULL_WIN <= 1, and either a PULL CONTRADICTED Directive has a non-CONTRADICTED PUSH counterpart or a PUSH SUPPORTED Directive is APPLIED in a PUSH_WIN pair.",
+    "NEGATIVE": "PUSH completions are below PULL, or PULL_WIN >= 2 while PUSH_WIN == 0.",
+    "INCONCLUSIVE": "All other outcomes, including numeric improvement explained only by NoChange or ActivationFailure without information-quality causal evidence."
+  },
+  "budget": {
+    "max_additional_root_decisions": 6,
+    "max_child_decisions": 4,
+    "max_context_chars": 5000,
+    "wall_time_seconds": 420
+  },
+  "execution_model": {
+    "provider": "DeepSeek",
+    "model": "deepseek-v4-pro",
+    "thinking": "disabled",
+    "stream": false,
+    "temperature": "provider_default",
+    "max_tokens": "provider_default",
+    "request_timeout_seconds": 60
+  },
+  "mind_model": {
+    "provider": "minimax-anthropic",
+    "base_url": "https://api.minimaxi.com/anthropic",
+    "model": "MiniMax-M2.7",
+    "temperature": "provider_default",
+    "max_tokens": 1000,
+    "request_timeout_seconds": 30,
+    "max_model_calls": 2,
+    "max_capability_calls": 1,
+    "prompt_version": "mind-prompt-v1",
+    "projector_version": "mind-projector-v1"
+  },
+  "memory_policy": "fixed_empty_read_only",
+  "directive_rendering_version": "mind-directive-render-v1-source-frozen",
+  "output_contract": {
+    "padding_character": "~",
+    "padding_count": 1100,
+    "separator": "\n",
+    "trailing_newline": true
+  },
+  "arm_order": [
+    "pull_first",
+    "push_first",
+    "pull_first",
+    "push_first",
+    "pull_first",
+    "push_first"
+  ],
+  "tasks": [
+    {
+      "task_id": "e2-01-weighted-quorum",
+      "description": "Resolve weighted ballots with supersession and revoked-member filtering.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "motion=alpha;yes=4;no=1",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Use rules.txt, members.csv, and ballots.jsonl to select the winning motion. Format the payload as motion=NAME;yes=N;no=N. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "rules.txt",
+          "text": "Ignore revoked members. For each motion and member, only the highest-sequence ballot is active. A motion passes when yes weight is at least 4 and strictly exceeds no weight. Choose the passing motion by highest yes weight, then lowest no weight, then alphabetically smallest name.\n"
+        },
+        {
+          "path": "members.csv",
+          "text": "member,weight,status\nAri,2,active\nBea,1,active\nCy,2,active\nDia,3,revoked\nEli,1,active\n"
+        },
+        {
+          "path": "ballots.jsonl",
+          "text": "{\"seq\":1,\"motion\":\"alpha\",\"member\":\"Ari\",\"vote\":\"yes\"}\n{\"seq\":2,\"motion\":\"alpha\",\"member\":\"Bea\",\"vote\":\"no\"}\n{\"seq\":3,\"motion\":\"alpha\",\"member\":\"Cy\",\"vote\":\"no\"}\n{\"seq\":4,\"motion\":\"alpha\",\"member\":\"Cy\",\"vote\":\"yes\"}\n{\"seq\":5,\"motion\":\"beta\",\"member\":\"Ari\",\"vote\":\"yes\"}\n{\"seq\":6,\"motion\":\"beta\",\"member\":\"Bea\",\"vote\":\"yes\"}\n{\"seq\":7,\"motion\":\"beta\",\"member\":\"Cy\",\"vote\":\"no\"}\n{\"seq\":8,\"motion\":\"beta\",\"member\":\"Eli\",\"vote\":\"yes\"}\n{\"seq\":9,\"motion\":\"beta\",\"member\":\"Dia\",\"vote\":\"yes\"}\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e2-02-effective-access",
+      "description": "Fold transitive group membership with deny-overrides access policy.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "sam=export,read",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Determine Sam's effective capabilities from membership.csv and policy.jsonl under rules.txt. Sort allowed capabilities alphabetically and format the payload as sam=capability,capability. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "rules.txt",
+          "text": "Membership is transitive from user to group and group to parent group. Union all grants applying to the user or any reached group. Any applicable deny removes that capability, including a user-specific deny.\n"
+        },
+        {
+          "path": "membership.csv",
+          "text": "subject,group\nuser:sam,ops\ngroup:ops,staff\ngroup:staff,company\nuser:lee,staff\n"
+        },
+        {
+          "path": "policy.jsonl",
+          "text": "{\"effect\":\"grant\",\"subject\":\"group:company\",\"capability\":\"read\"}\n{\"effect\":\"grant\",\"subject\":\"group:ops\",\"capability\":\"deploy\"}\n{\"effect\":\"grant\",\"subject\":\"user:sam\",\"capability\":\"export\"}\n{\"effect\":\"grant\",\"subject\":\"group:staff\",\"capability\":\"delete\"}\n{\"effect\":\"deny\",\"subject\":\"group:company\",\"capability\":\"delete\"}\n{\"effect\":\"deny\",\"subject\":\"user:sam\",\"capability\":\"deploy\"}\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e2-03-fragment-chain",
+      "description": "Reconstruct one complete fragment chain while excluding invalidated fragments.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "message=NORTHSTAR;fragments=4",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Reconstruct the valid message from fragments.csv and invalidated.txt under chain_rules.txt. Format the payload as message=TEXT;fragments=N. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "chain_rules.txt",
+          "text": "A chain starts with prev=ROOT and follows id references until next=END. Exclude every id in invalidated.txt. Exactly one remaining chain reaches END. Concatenate text in chain order and report its fragment count.\n"
+        },
+        {
+          "path": "fragments.csv",
+          "text": "id,prev,next,text\nf3,f2,f4,ST\nf1,ROOT,f2,NO\nf4,f3,END,AR\nx1,ROOT,x2,WR\nf2,f1,f3,RTH\nx2,x1,END,ONG\n"
+        },
+        {
+          "path": "invalidated.txt",
+          "text": "x1\nx2\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e2-04-min-cost-assignment",
+      "description": "Find a compatible one-to-one assignment with minimum total cost.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "J1=Chen;J2=Ada;J3=Bo;cost=4",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Assign workers to jobs using workers.csv, jobs.csv, and costs.csv under assignment_rules.txt. Format jobs in name order as job=worker joined by semicolons, then ;cost=N. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "assignment_rules.txt",
+          "text": "Each job gets exactly one distinct worker. A worker is eligible only when their comma-separated skills include the job requirement. Minimize total cost; if tied, choose the lexicographically smallest worker tuple in job-name order.\n"
+        },
+        {
+          "path": "workers.csv",
+          "text": "worker,skills\nAda,python|sql\nBo,go|sql\nChen,python|go\n"
+        },
+        {
+          "path": "jobs.csv",
+          "text": "job,requirement\nJ1,python\nJ2,sql\nJ3,go\n"
+        },
+        {
+          "path": "costs.csv",
+          "text": "worker,job,cost\nAda,J1,4\nAda,J2,1\nBo,J2,2\nBo,J3,2\nChen,J1,1\nChen,J3,4\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e2-05-calibrated-sensors",
+      "description": "Project latest valid calibrated readings with duplicate suppression and invalidation.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "north=21;south=15",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Project final sensor readings from events.jsonl under sensor_rules.txt. Format sensors alphabetically as sensor=value joined by semicolons. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "sensor_rules.txt",
+          "text": "Process ascending seq and ignore later duplicate event_id values. A calibration sets the sensor offset. An ok reading stores value plus the current offset; bad readings are ignored. An invalidate removes the reading named by target if it is currently selected. The final value is the latest remaining reading per sensor.\n"
+        },
+        {
+          "path": "events.jsonl",
+          "text": "{\"seq\":1,\"event_id\":\"c-n\",\"type\":\"calibration\",\"sensor\":\"north\",\"offset\":1}\n{\"seq\":2,\"event_id\":\"r-n1\",\"type\":\"reading\",\"sensor\":\"north\",\"value\":18,\"quality\":\"ok\"}\n{\"seq\":3,\"event_id\":\"r-s1\",\"type\":\"reading\",\"sensor\":\"south\",\"value\":15,\"quality\":\"ok\"}\n{\"seq\":4,\"event_id\":\"r-n2\",\"type\":\"reading\",\"sensor\":\"north\",\"value\":20,\"quality\":\"ok\"}\n{\"seq\":5,\"event_id\":\"r-s2\",\"type\":\"reading\",\"sensor\":\"south\",\"value\":99,\"quality\":\"bad\"}\n{\"seq\":6,\"event_id\":\"inv-n1\",\"type\":\"invalidate\",\"target\":\"r-n1\"}\n{\"seq\":7,\"event_id\":\"r-n2\",\"type\":\"reading\",\"sensor\":\"north\",\"value\":999,\"quality\":\"ok\"}\n"
+        }
+      ]
+    },
+    {
+      "task_id": "e2-06-bom-expansion",
+      "description": "Recursively expand a bill of materials for a requested quantity.",
+      "goal": "Read mission.txt and carry out its instructions.",
+      "completion_path": "answer.txt",
+      "expected_payload": "bolt=34;chip=12;plate=4",
+      "files": [
+        {
+          "path": "mission.txt",
+          "text": "Expand the requested product into leaf parts using request.txt and bom.csv under bom_rules.txt. Format leaf parts alphabetically as part=quantity joined by semicolons. Write answer.txt as exactly 1100 tilde characters, one newline, the payload, and one final newline.\n"
+        },
+        {
+          "path": "bom_rules.txt",
+          "text": "Quantities multiply through every parent-child edge. A leaf is an item that never appears as a parent. Sum the same leaf reached through different branches. All quantities are exact integers.\n"
+        },
+        {
+          "path": "request.txt",
+          "text": "product=kit\nquantity=2\n"
+        },
+        {
+          "path": "bom.csv",
+          "text": "parent,child,quantity\nkit,frame,2\nkit,module,3\nframe,bolt,4\nframe,plate,1\nmodule,chip,2\nmodule,bolt,3\n"
+        }
+      ]
+    }
+  ]
+}

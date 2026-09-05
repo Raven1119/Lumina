@@ -28,7 +28,7 @@ from statistics import median
 ROOT = Path(__file__).resolve().parents[1]
 CM_ROOT = ROOT / "Conversation_Memory"
 
-_GATE_MODEL_NAME = "MiniMax-M3"
+_GATE_MODEL_NAME = "deepseek-v4-pro"
 _GATE_MAX_TOKENS = 8
 _GATE_TEMPERATURE = 0.0
 _MAX_ADDED_LATENCY_MEDIAN_MS = 3000.0
@@ -245,11 +245,11 @@ def _run_variant(template: Path, work_dir: Path, name: str, gate) -> dict:
 
 
 def _check_fail_open(work_dir: Path) -> dict:
-    from core.model_client import MiniMaxAnthropicModelClient
+    from core.model_client import DeepSeekAnthropicModelClient
     from Mind.llm_gate import LlmMindGate
 
     sandbox = _guard_sandbox(work_dir / "fail_open")
-    failing_client = MiniMaxAnthropicModelClient(
+    failing_client = DeepSeekAnthropicModelClient(
         api_key="invalid",
         base_url="https://provider.invalid/anthropic",
         model=_GATE_MODEL_NAME,

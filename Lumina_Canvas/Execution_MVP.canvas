@@ -1,0 +1,24 @@
+{
+	"nodes":[
+		{"id":"d2cf34338c296542","type":"text","text":"Single goal","x":-125,"y":-30,"width":250,"height":60},
+		{"id":"8bf43e7c49535c9a","type":"text","text":"Root agentprocess","x":-125,"y":100,"width":250,"height":60},
+		{"id":"d709a464cdbd3412","type":"text","text":"Bounded context","x":-125,"y":240,"width":250,"height":60},
+		{"id":"b2c1c33481d4b8f4","type":"text","text":"Model","x":-125,"y":380,"width":250,"height":60},
+		{"id":"43141c7d911440f4","type":"text","text":"Generated python","x":-125,"y":520,"width":250,"height":60},
+		{"id":"e458593429abe70d","type":"text","text":"IPython","x":-125,"y":660,"width":250,"height":60},
+		{"id":"db94f1a1e73deb34","type":"text","text":"Typed capability call","x":-125,"y":820,"width":250,"height":60},
+		{"id":"c7d2f05a5075e897","type":"file","file":"Execution_runtime.canvas","x":-200,"y":980,"width":400,"height":400},
+		{"id":"e3ed2b7989bfaf1a","x":-200,"y":2240,"width":250,"height":60,"type":"text","text":""},
+		{"id":"fcee4c03340bfb92","x":-125,"y":1510,"width":250,"height":60,"type":"text","text":"wake Root again"}
+	],
+	"edges":[
+		{"id":"5d0b3507cf718f3d","fromNode":"d2cf34338c296542","fromSide":"bottom","toNode":"8bf43e7c49535c9a","toSide":"top"},
+		{"id":"acc9a2de8b2da92d","fromNode":"8bf43e7c49535c9a","fromSide":"bottom","toNode":"d709a464cdbd3412","toSide":"top"},
+		{"id":"b0c5be0e3a3a61f9","fromNode":"d709a464cdbd3412","fromSide":"bottom","toNode":"b2c1c33481d4b8f4","toSide":"top"},
+		{"id":"b06102e86b3174a4","fromNode":"b2c1c33481d4b8f4","fromSide":"bottom","toNode":"43141c7d911440f4","toSide":"top"},
+		{"id":"8e7f9e213fdeb24d","fromNode":"43141c7d911440f4","fromSide":"bottom","toNode":"e458593429abe70d","toSide":"top"},
+		{"id":"bc90d3fc0b41a9a0","fromNode":"e458593429abe70d","fromSide":"bottom","toNode":"db94f1a1e73deb34","toSide":"top"},
+		{"id":"fa90d6227774bbe6","fromNode":"db94f1a1e73deb34","fromSide":"bottom","toNode":"c7d2f05a5075e897","toSide":"top"},
+		{"id":"1ec24934e00a5ec3","fromNode":"c7d2f05a5075e897","fromSide":"bottom","toNode":"fcee4c03340bfb92","toSide":"top"}
+	]
+}

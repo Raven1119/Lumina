@@ -46,7 +46,7 @@ FAISS never cross the facade.
 ## Ingestion conversion
 
 Configured real-model Dream sends one bounded Cold segment to dedicated
-MiniMax-M3 Grounded Formation in non-thinking mode with `max_tokens=2000`.
+DeepSeek-V4-Pro Grounded Formation in non-thinking mode with `max_tokens=2000`.
 Accepted atomic `GroundedMemoryUnit` values pass the deterministic grounding
 validator, bounded semantic fallback, and value-only guard before checkpointing
 and MAGMA writes. Mock/legacy ingestion deterministically builds exact

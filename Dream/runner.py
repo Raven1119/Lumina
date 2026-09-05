@@ -20,7 +20,6 @@ from .models import DreamRunPolicy, DreamRunReport, SegmentDigestResult
 _ROOT = Path(__file__).resolve().parents[1]
 _CONVERSATION_MEMORY_ROOT = _ROOT / "Conversation_Memory"
 _LEGACY_INGESTION_VERSION = "grounded-span-v2"
-_FORMATION_MODEL_NAME = "MiniMax-M3"
 _FORMATION_MAX_TOKENS = 2000
 if str(_CONVERSATION_MEMORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_CONVERSATION_MEMORY_ROOT))
@@ -106,7 +105,6 @@ class DreamRunner:
 
 def build_formation_model_client() -> ModelClient:
     return build_model_client_from_env(
-        model_name_override=_FORMATION_MODEL_NAME,
         max_tokens_override=_FORMATION_MAX_TOKENS,
     )
 

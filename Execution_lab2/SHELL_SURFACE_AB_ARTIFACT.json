@@ -1,0 +1,533 @@
+{
+  "evidence_notes": {
+    "b3_control_batch_shape_backfilled_from_completed_audit": true,
+    "full_per_decision_action_shape_projection_added_after_run": false,
+    "raw_event_logs_retained": false,
+    "repeated_observations_definition": "v1 semantic-target count; distinct same-category shell requests may be conflated",
+    "trajectory_classification_source": "post-run EventLog audit completed before transient logs expired"
+  },
+  "runs": [
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 1,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "condition": "A_CURRENT",
+      "classification_rationale": "repeated task and Shell-local-search trajectory",
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 2
+      },
+      "failed_actions": 4,
+      "input_tokens": 6945,
+      "ipython_actions": 0,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 8,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 1202,
+          "sum": 5697
+        }
+      },
+      "model_visible_tool_views": [
+        [
+          "read",
+          "write",
+          "shell",
+          "wait",
+          "spawn_child",
+          "claim_complete"
+        ]
+      ],
+      "output_match": false,
+      "output_tokens": 571,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "read_actions": 5,
+      "repeated_observations": 7,
+      "required_leaf_evidence_reached": false,
+      "root_failure": "decision_limit_reached",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "shell_actions": 6,
+      "shell_visible": true,
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "spawn_intent_count": 0,
+      "task_rereads": 2,
+      "tool_actions_by_actor": {
+        "depth0-1": 11
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "trajectory_classification": "REPETITIVE_LOCAL_SEARCH",
+      "unique_irrelevant_observations": 1,
+      "unique_relevant_observations": 3,
+      "wall_seconds": 12.914
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 2,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "condition": "A_CURRENT",
+      "classification_rationale": "repeated task and Shell-local-search trajectory",
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 1
+      },
+      "failed_actions": 4,
+      "input_tokens": 5389,
+      "ipython_actions": 0,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 6,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 1610,
+          "sum": 4906
+        }
+      },
+      "model_visible_tool_views": [
+        [
+          "read",
+          "write",
+          "shell",
+          "wait",
+          "spawn_child",
+          "claim_complete"
+        ]
+      ],
+      "output_match": false,
+      "output_tokens": 564,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [
+        {
+          "ordered_calls": [
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 0,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 1,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 2,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 3,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 4,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 5,
+              "tool_name": "read"
+            }
+          ],
+          "tool_call_count": 6
+        }
+      ],
+      "read_actions": 2,
+      "repeated_observations": 5,
+      "required_leaf_evidence_reached": false,
+      "root_failure": "model_protocol:too_many_tool_calls",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "shell_actions": 5,
+      "shell_visible": true,
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "spawn_intent_count": 0,
+      "task_rereads": 1,
+      "tool_actions_by_actor": {
+        "depth0-1": 7
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "trajectory_classification": "REPETITIVE_LOCAL_SEARCH",
+      "unique_irrelevant_observations": 1,
+      "unique_relevant_observations": 1,
+      "wall_seconds": 10.614
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 3,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "condition": "A_CURRENT",
+      "classification_rationale": "repeated task and Shell-local-search trajectory",
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 3
+      },
+      "failed_actions": 3,
+      "input_tokens": 7700,
+      "ipython_actions": 0,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 8,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 1611,
+          "sum": 6747
+        }
+      },
+      "model_visible_tool_views": [
+        [
+          "read",
+          "write",
+          "shell",
+          "wait",
+          "spawn_child",
+          "claim_complete"
+        ]
+      ],
+      "output_match": false,
+      "output_tokens": 519,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "read_actions": 6,
+      "repeated_observations": 6,
+      "required_leaf_evidence_reached": false,
+      "root_failure": "decision_limit_reached",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "shell_actions": 4,
+      "shell_visible": true,
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "spawn_intent_count": 0,
+      "task_rereads": 3,
+      "tool_actions_by_actor": {
+        "depth0-1": 10
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "trajectory_classification": "REPETITIVE_LOCAL_SEARCH",
+      "unique_irrelevant_observations": 1,
+      "unique_relevant_observations": 3,
+      "wall_seconds": 12.77
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 1,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "condition": "B_SHELL_HIDDEN",
+      "classification_rationale": "productive dependency reads followed by repeated invalid and prior-target reads",
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 4
+      },
+      "failed_actions": 4,
+      "input_tokens": 6740,
+      "ipython_actions": 0,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 8,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 1086,
+          "sum": 5903
+        }
+      },
+      "model_visible_tool_views": [
+        [
+          "read",
+          "write",
+          "wait",
+          "spawn_child",
+          "claim_complete"
+        ]
+      ],
+      "output_match": false,
+      "output_tokens": 542,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "read_actions": 12,
+      "repeated_observations": 4,
+      "required_leaf_evidence_reached": true,
+      "root_failure": "decision_limit_reached",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "shell_actions": 0,
+      "shell_visible": false,
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "spawn_intent_count": 0,
+      "task_rereads": 1,
+      "tool_actions_by_actor": {
+        "depth0-1": 12
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "trajectory_classification": "REPETITIVE_LOCAL_SEARCH",
+      "unique_irrelevant_observations": 3,
+      "unique_relevant_observations": 5,
+      "wall_seconds": 13.741
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 2,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "condition": "B_SHELL_HIDDEN",
+      "classification_rationale": "required_leaf_evidence_reached=true before cardinality rejection",
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 0
+      },
+      "failed_actions": 0,
+      "input_tokens": 2970,
+      "ipython_actions": 0,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 4,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 970,
+          "sum": 2082
+        }
+      },
+      "model_visible_tool_views": [
+        [
+          "read",
+          "write",
+          "wait",
+          "spawn_child",
+          "claim_complete"
+        ]
+      ],
+      "output_match": false,
+      "output_tokens": 426,
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [
+        {
+          "ordered_calls": [
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 0,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 1,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 2,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 3,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 4,
+              "tool_name": "read"
+            },
+            {
+              "arguments_is_json_object": true,
+              "arguments_schema_valid": true,
+              "call_id_present": true,
+              "call_id_unique": true,
+              "classification": "ordinary",
+              "index": 5,
+              "tool_name": "read"
+            }
+          ],
+          "tool_call_count": 6
+        }
+      ],
+      "read_actions": 5,
+      "repeated_observations": 0,
+      "required_leaf_evidence_reached": true,
+      "root_failure": "model_protocol:too_many_tool_calls",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "shell_actions": 0,
+      "shell_visible": false,
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "spawn_intent_count": 0,
+      "task_rereads": 0,
+      "tool_actions_by_actor": {
+        "depth0-1": 5
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "trajectory_classification": "PRODUCTIVE",
+      "unique_irrelevant_observations": 0,
+      "unique_relevant_observations": 5,
+      "wall_seconds": 6.556
+    },
+    {
+      "actors_by_depth": {
+        "depth0": 1,
+        "depth1": 0,
+        "depth2": 0
+      },
+      "case": 3,
+      "child_failed_count": 0,
+      "child_returned_count": 0,
+      "completion_verified": false,
+      "condition": "B_SHELL_HIDDEN",
+      "classification_rationale": "two-Spawn intent rejected by the frozen one-Child admission bound",
+      "duplicate_read_observations_by_actor": {
+        "depth0-1": 0
+      },
+      "failed_actions": 0,
+      "input_tokens": 1522,
+      "ipython_actions": 0,
+      "ipython_actions_by_actor": {
+        "depth0-1": 0
+      },
+      "max_depth_reached": 0,
+      "model_calls": 2,
+      "model_visible_request_chars_by_actor": {
+        "depth0-1": {
+          "max": 970,
+          "sum": 1579
+        }
+      },
+      "model_visible_tool_views": [
+        [
+          "read",
+          "write",
+          "wait",
+          "spawn_child",
+          "claim_complete"
+        ]
+      ],
+      "output_match": false,
+      "output_tokens": 186,
+      "observed_control_batch": {
+        "call_count": 2,
+        "ordered_tool_names": [
+          "spawn_child",
+          "spawn_child"
+        ],
+        "provider_call_ids_present_unique": true
+      },
+      "parent_child_edges": [],
+      "pre_admission_call_shapes": [],
+      "read_actions": 1,
+      "repeated_observations": 0,
+      "required_leaf_evidence_reached": false,
+      "root_failure": "child_limit_reached",
+      "root_spawn_count": 0,
+      "root_status": "failed",
+      "shape": "NESTED",
+      "shell_actions": 0,
+      "shell_visible": false,
+      "source_bytes": 1200,
+      "source_file_count": 6,
+      "spawn_intent_count": 2,
+      "task_rereads": 0,
+      "tool_actions_by_actor": {
+        "depth0-1": 1
+      },
+      "topology": "LINEAR",
+      "total_actor_count": 1,
+      "trajectory_classification": "OTHER",
+      "unique_irrelevant_observations": 0,
+      "unique_relevant_observations": 1,
+      "wall_seconds": 3.606
+    }
+  ],
+  "schema": "shell-surface-ab-v1"
+}

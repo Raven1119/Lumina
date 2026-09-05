@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> None:
             return "control answer"
 
     gate_client = build_model_client_from_env(
-        model_name_override="MiniMax-M3",
+        model_name_override="deepseek-v4-pro",
         max_tokens_override=8,
         temperature_override=0.0,
     )

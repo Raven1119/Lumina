@@ -1,9 +1,7 @@
 import gc
 import json
-import os
 import threading
 import time
-from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -170,81 +168,6 @@ def _tool_calls_response(*calls):
     return response
 
 
-def _plain(value):
-    if isinstance(value, Mapping):
-        return {key: _plain(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(item) for item in value]
-    return value
-
-
-def _usage(result):
-    totals = {"input_tokens": 0, "output_tokens": 0}
-    for frame in result.decision_frames:
-        response = frame.raw_provider_response
-        if not isinstance(response, Mapping):
-            continue
-        usage = response.get("usage")
-        if not isinstance(usage, Mapping):
-            continue
-        for source, target in (
-            ("prompt_tokens", "input_tokens"),
-            ("completion_tokens", "output_tokens"),
-        ):
-            value = usage.get(source)
-            if isinstance(value, int):
-                totals[target] += value
-    return totals
-
-
-def _ab_metrics(result, elapsed_seconds, expected_path, expected_content):
-    requests = [
-        _plain(frame.provider_wire_request)
-        for frame in result.decision_frames
-        if frame.provider_wire_request is not None
-    ]
-    serialized_requests = [
-        json.dumps(request, ensure_ascii=False, separators=(",", ":"))
-        for request in requests
-    ]
-    tool_result_chars = sum(
-        len(message.get("content", ""))
-        for request in requests
-        for message in request.get("messages", [])
-        if isinstance(message, dict)
-        and message.get("role") == "tool"
-        and isinstance(message.get("content"), str)
-    )
-    output_path = expected_path
-    return {
-        "verified_success": (
-            result.status == "completed"
-            and output_path.is_file()
-            and output_path.read_text(encoding="utf-8") == expected_content
-        ),
-        "provider_calls": len(result.decision_frames),
-        "model_decisions": len(result.decision_frames),
-        **_usage(result),
-        "wall_seconds": round(elapsed_seconds, 3),
-        "model_visible_result_chars": tool_result_chars,
-        "max_request_chars": max(map(len, serialized_requests), default=0),
-        "ipython_executions": sum(
-            event.event_type == "IPYTHON_EXECUTION_STARTED"
-            for event in result.events
-        ),
-        "native_tool_calls": sum(
-            event.event_type == "TOOL_CALL_STARTED"
-            for event in result.events
-        ),
-        "python_runtime_failures": sum(
-            event.event_type == "IPYTHON_EXECUTION_FAILED"
-            for event in result.events
-        ),
-        "runtime_status": result.status,
-        "runtime_failure": result.failure,
-    }
-
-
 def test_ipython_namespace_persists_across_model_decisions(tmp_path):
     control = PersistentIPython(tmp_path)
     try:
@@ -265,6 +188,37 @@ def test_ipython_kernel_starts_in_the_shared_workspace(tmp_path):
 
         assert result.ok is True
         assert Path(result.output.strip()).resolve() == tmp_path.resolve()
+    finally:
+        control.close()
+
+
+def test_ipython_retains_workspace_and_process_capabilities(tmp_path):
+    (tmp_path / "a.txt").write_text("ALPHA", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("BETA", encoding="utf-8")
+    control = PersistentIPython(tmp_path)
+    try:
+        result = control.execute(
+            "from pathlib import Path\n"
+            "import subprocess, sys\n"
+            "paths = sorted(Path('.').glob('*.txt'))\n"
+            "combined = '|'.join("
+            "path.read_text(encoding='utf-8') for path in paths)\n"
+            "process = subprocess.run("
+            "[sys.executable, '-c', \"print('PROCESS')\"], "
+            "capture_output=True, text=True, check=True)\n"
+            "Path('result.txt').write_text("
+            "combined + '|' + process.stdout.strip(), encoding='utf-8')"
+        )
+
+        assert result.ok is True
+        assert sorted(path.name for path in tmp_path.iterdir()) == [
+            "a.txt",
+            "b.txt",
+            "result.txt",
+        ]
+        assert (tmp_path / "result.txt").read_text(encoding="utf-8") == (
+            "ALPHA|BETA|PROCESS"
+        )
     finally:
         control.close()
 
@@ -542,7 +496,7 @@ def test_restart_preserves_execution_but_starts_a_fresh_namespace(tmp_path):
     assert second_control.is_alive is False
 
 
-def test_deepseek_ipython_mode_exposes_only_the_programmable_surface():
+def test_deepseek_default_exposes_only_the_programmable_surface():
     payloads = []
 
     def transport(payload):
@@ -553,10 +507,9 @@ def test_deepseek_ipython_mode_exposes_only_the_programmable_surface():
             json.dumps({"code": "print(42)"}),
         )
 
-    decision = DeepSeekModel(
-        tool_mode="ipython",
-        transport=transport,
-    ).decide(ModelRequest("{}", IPYTHON_TOOL_CONTRACTS, ("event-1",)))
+    decision = DeepSeekModel(transport=transport).decide(
+        ModelRequest("{}", IPYTHON_TOOL_CONTRACTS, ("event-1",))
+    )
 
     assert isinstance(decision, NativeModelDecision)
     assert decision.action == IPythonCode("print(42)")
@@ -567,8 +520,8 @@ def test_deepseek_ipython_mode_exposes_only_the_programmable_surface():
         "claim_complete",
     ]
     assert payloads[0]["messages"][0]["content"] == (
-        "Use the persistent IPython environment to inspect and modify the "
-        "workspace. Use claim_complete when the task is finished."
+        "Use the provided functions to act on the environment. "
+        "Claim completion only through claim_complete."
     )
     assert decision.provider_wire_request == payloads[0]
 
@@ -600,7 +553,7 @@ def test_runtime_preserves_ipython_call_id_into_native_continuation(tmp_path):
 
     control = PersistentIPython(tmp_path)
     result = RootAgentProcess(
-        DeepSeekModel(tool_mode="ipython", transport=transport),
+        DeepSeekModel(transport=transport),
         ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=2,
         ipython_control=control,
@@ -661,7 +614,7 @@ def test_ipython_siblings_share_one_kernel_and_return_in_model_order(tmp_path):
 
     control = PersistentIPython(tmp_path)
     result = RootAgentProcess(
-        DeepSeekModel(tool_mode="ipython", transport=transport),
+        DeepSeekModel(transport=transport),
         ToolHost(SharedEnvironment(tmp_path)),
         max_decisions=2,
         ipython_control=control,
@@ -699,180 +652,3 @@ def test_ipython_siblings_share_one_kernel_and_return_in_model_order(tmp_path):
     ]
     assert result.state == fold_execution_state(result.events)
     assert control.is_alive is False
-
-
-_RUN_REAL = (
-    os.environ.get("RUN_DEEPSEEK_REAL_TESTS") == "1"
-    and bool(os.environ.get("DEEPSEEK_API_KEY"))
-)
-
-
-def _conditional_fixture(workspace):
-    (workspace / "config.txt").write_text("mode=A", encoding="utf-8")
-    (workspace / "a.txt").write_text("ALPHA", encoding="utf-8")
-    (workspace / "b.txt").write_text("BETA", encoding="utf-8")
-    return (
-        "Read config.txt. If it contains mode=A, copy the exact content of "
-        "a.txt to output.txt; if it contains mode=B, copy b.txt instead.",
-        FileContentEquals("output.txt", "ALPHA"),
-        workspace / "output.txt",
-        "ALPHA",
-    )
-
-
-def _aggregation_fixture(workspace):
-    for number in range(1, 19):
-        (workspace / f"data-{number:02d}.txt").write_text(
-            str(number),
-            encoding="utf-8",
-        )
-    return (
-        "Among data-*.txt, sum the integers from files whose integer is "
-        "divisible by 3. Write only the decimal total to answer.txt.",
-        FileContentEquals("answer.txt", "63"),
-        workspace / "answer.txt",
-        "63",
-    )
-
-
-@pytest.mark.skipif(
-    not _RUN_REAL,
-    reason="set RUN_DEEPSEEK_REAL_TESTS=1 and DEEPSEEK_API_KEY",
-)
-def test_real_deepseek_historical_multi_tool_blocker_three_runs(tmp_path):
-    summaries = []
-    for run_number in range(1, 4):
-        workspace = tmp_path / f"multi-tool-{run_number}"
-        workspace.mkdir()
-        goal, spec, expected_path, expected_content = _aggregation_fixture(
-            workspace
-        )
-        result = RootAgentProcess(
-            DeepSeekModel(),
-            ToolHost(SharedEnvironment(workspace)),
-            max_decisions=10,
-            max_context_chars=2_000,
-        ).run(goal, spec)
-        decision_events = [
-            event
-            for event in result.events
-            if event.event_type == "MODEL_DECISION"
-        ]
-        multi_decisions = []
-        for index, frame in enumerate(result.decision_frames):
-            response = frame.raw_provider_response
-            if not isinstance(response, Mapping):
-                continue
-            calls = response["choices"][0]["message"].get("tool_calls", [])
-            if len(calls) <= 1:
-                continue
-            call_ids = [call["id"] for call in calls]
-            decision_event = decision_events[index]
-            started_ids = [
-                event.payload["provider_tool_call_id"]
-                for event in result.events
-                if event.event_type
-                in ("TOOL_CALL_STARTED", "IPYTHON_EXECUTION_STARTED")
-                and event.source_event_refs == (decision_event.event_id,)
-            ]
-            settled_ids = [
-                event.payload["observation"].provider_tool_call_id
-                for event in result.events
-                if event.event_type
-                in (
-                    "TOOL_RESULT",
-                    "TOOL_FAILED",
-                    "IPYTHON_EXECUTION_RESULT",
-                    "IPYTHON_EXECUTION_FAILED",
-                )
-                and event.payload["observation"].provider_tool_call_id
-                in call_ids
-            ]
-            assert started_ids == call_ids
-            assert settled_ids == call_ids
-            multi_decisions.append(
-                {
-                    "tool_count": len(calls),
-                    "call_ids": call_ids,
-                    "tools": [
-                        call["function"]["name"] for call in calls
-                    ],
-                    "arguments": [
-                        json.loads(call["function"]["arguments"])
-                        for call in calls
-                    ],
-                    "execution_order": started_ids,
-                }
-            )
-        summaries.append(
-            {
-                "run": run_number,
-                "multi_decisions": multi_decisions,
-                "status": result.status,
-                "failure": result.failure,
-                "completion_verified": (
-                    result.status == "completed"
-                    and expected_path.is_file()
-                    and expected_path.read_text(encoding="utf-8")
-                    == expected_content
-                ),
-            }
-        )
-        assert result.state == fold_execution_state(result.events)
-        assert result.failure != "model_protocol:multiple_tool_calls"
-
-    print("MULTI_TOOL_FRESH " + json.dumps(summaries, sort_keys=True))
-
-
-@pytest.mark.skipif(
-    not _RUN_REAL,
-    reason="set RUN_DEEPSEEK_REAL_TESTS=1 and DEEPSEEK_API_KEY",
-)
-def test_real_deepseek_native_vs_persistent_ipython_three_runs_each(tmp_path):
-    summaries = []
-    for task_name, fixture in (
-        ("conditional", _conditional_fixture),
-        ("aggregation", _aggregation_fixture),
-    ):
-        for arm in ("native", "ipython"):
-            for run_number in range(1, 4):
-                workspace = tmp_path / f"{task_name}-{arm}-{run_number}"
-                workspace.mkdir()
-                goal, spec, expected_path, expected_content = fixture(workspace)
-                control = (
-                    PersistentIPython(workspace)
-                    if arm == "ipython"
-                    else None
-                )
-                process = RootAgentProcess(
-                    DeepSeekModel(tool_mode=arm),
-                    ToolHost(SharedEnvironment(workspace)),
-                    max_decisions=10,
-                    max_context_chars=2_000,
-                    ipython_control=control,
-                )
-                started = time.perf_counter()
-                try:
-                    result = process.run(goal, spec)
-                    elapsed = time.perf_counter() - started
-                finally:
-                    process.close()
-                assert result.state == fold_execution_state(result.events)
-                if control is not None:
-                    assert control.is_alive is False
-                summaries.append(
-                    {
-                        "task": task_name,
-                        "arm": arm,
-                        "run": run_number,
-                        **_ab_metrics(
-                            result,
-                            elapsed,
-                            expected_path,
-                            expected_content,
-                        ),
-                    }
-                )
-
-    print("DEEPSEEK_IPYTHON_AB=" + json.dumps(summaries, sort_keys=True))
-    assert len(summaries) == 12
