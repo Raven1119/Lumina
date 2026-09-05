@@ -456,6 +456,7 @@ def freeze_prefix(
     model: Model,
     output_dir: str | Path,
     config: E1Config,
+    ipython_control_factory=None,
 ) -> FrozenPrefix:
     """Create one settled, suspended prefix after exactly N real decisions."""
     if type(task) is not FrozenTaskSpec or type(config) is not E1Config:
@@ -479,6 +480,8 @@ def freeze_prefix(
         ),
         max_context_chars=config.max_context_chars,
         model=gated,
+        ipython_control=(ipython_control_factory(workspace)
+                         if ipython_control_factory is not None else None),
     )
 
     try:

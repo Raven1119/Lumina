@@ -79,6 +79,7 @@ class ExecutionOrgan:
         max_context_chars: int = 2_000,
         checkpoint_path: str | Path | None = None,
         max_depth: int = 1,
+        ipython_control=None,
         _child_ref: ChildRef | None = None,
     ) -> None:
         self._workspace = Path(workspace).resolve()
@@ -96,7 +97,9 @@ class ExecutionOrgan:
 
         environment = SharedEnvironment(self._workspace)
         event_log = self._load_or_create_event_log(self._event_log_path)
-        ipython = PersistentIPython(self._workspace)
+        # The host may supply the same execute/interrupt/close control interface
+        # with an isolated kernel. Normal production construction is unchanged.
+        ipython = ipython_control if ipython_control is not None else PersistentIPython(self._workspace)
         process_options = {
             "model": self._model,
             "tools": ToolHost(environment),
@@ -466,8 +469,12 @@ class ExecutionOrgan:
     def accept_child(self, child_result: ExecutionResult) -> ExecutionResult:
         return self._remember(self._process.accept_child(child_result))
 
-    def deliver_event(self, event_type: str, data: str = "") -> ExecutionResult:
-        return self._remember(self._process.deliver_event(event_type, data))
+    def deliver_event(self, event_type: str, data: str = "", *,
+                      decision_advisory: tuple[str, str] | None = None) -> ExecutionResult:
+        if self._child_ref is not None and decision_advisory is not None:
+            raise ValueError("Child execution cannot accept a decision advisory")
+        return self._remember(self._process.deliver_event(
+            event_type, data, decision_advisory=decision_advisory))
 
     def interrupt(self) -> ExecutionResult:
         return self._remember(self._process.interrupt())

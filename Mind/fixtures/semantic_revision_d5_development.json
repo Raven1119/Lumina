@@ -1,0 +1,218 @@
+[
+  {
+    "id": "archived_proposition",
+    "goal": "Prepare a publication release satisfying the current policy.json and catalog.json. Write release.json with exactly catalog_revision, policy_revision and sorted selected_ids. approval_time eligibility means approved assets; release_time additionally requires license active. First stage: prepare the release for revision 1, then Wait for catalog_update because external inputs are pending. After that event, complete the release against the current inputs, write verified to .lumina-complete, and ClaimComplete. Policy/catalog are read-only input. The marker is not the owner acceptance check. Use ordinary Python in the isolated workspace; no network or child delegation. Choose implementation yourself.",
+    "archive_origin": {
+      "campaign": "D4 immutable",
+      "case": "license_change",
+      "seed_after_event": 1,
+      "continuation_event": 2
+    },
+    "seed": {
+      "items": [
+        {
+          "basis": [
+            {
+              "quote": "alpha: approved=True, license=active; beta: approved=True, license=active",
+              "ref": "execution-cd1ca1ec78054d5fb912236876241c5e:owner-event-1"
+            }
+          ],
+          "claim": "The staged release.json is consistent with approval_time eligibility: both alpha and beta are approved and have active licenses, so selected_ids [alpha, beta] is valid under the current inputs.",
+          "discriminator": "A catalog_update event changing approval or license status of alpha or beta would require re-evaluation.",
+          "id": "item-b748eae35662f48cce50",
+          "kind": "belief",
+          "status": "supported"
+        },
+        {
+          "basis": [
+            {
+              "quote": "approval_time admits approved assets; release_time additionally requires an active license at release",
+              "ref": "execution-cd1ca1ec78054d5fb912236876241c5e:owner-event-1"
+            }
+          ],
+          "id": "item-1af4532f8e804426d474",
+          "kind": "question",
+          "status": "open",
+          "text": "Does the current policy basis approval_time require any additional release_time license check beyond what is already satisfied?"
+        }
+      ],
+      "evidence": [
+        {
+          "origin": "execution",
+          "ref": "execution-cd1ca1ec78054d5fb912236876241c5e:owner-event-1",
+          "text": "Execution status: waiting. Catalog revision: 1. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 1. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 1,\n  \"policy_revision\": 1,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}"
+        }
+      ]
+    },
+    "events": [
+      {
+        "trigger": "Owner evidence arrived; reconsider the current understanding and direction.",
+        "kind": "execution.outcome",
+        "status": "waiting",
+        "facts": "Execution status: waiting. Catalog revision: 2. Assets: alpha: approved=True, license=revoked; beta: approved=True, license=active.\nPolicy revision: 2. Eligibility basis: release_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 1,\n  \"policy_revision\": 1,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}",
+        "expected_output": "directive"
+      }
+    ]
+  },
+  {
+    "id": "archived_condition",
+    "goal": "Prepare a publication release satisfying the current policy.json and catalog.json. Write release.json with exactly catalog_revision, policy_revision and sorted selected_ids. approval_time eligibility means approved assets; release_time additionally requires license active. First stage: prepare the release for revision 1, then Wait for catalog_update because external inputs are pending. After that event, complete the release against the current inputs, write verified to .lumina-complete, and ClaimComplete. Policy/catalog are read-only input. The marker is not the owner acceptance check. Use ordinary Python in the isolated workspace; no network or child delegation. Choose implementation yourself.",
+    "archive_origin": {
+      "campaign": "D4 immutable",
+      "case": "normal_control",
+      "seed_after_event": 2,
+      "continuation_event": 3
+    },
+    "seed": {
+      "items": [
+        {
+          "basis": [
+            {
+              "quote": "alpha: approved=True, license=active; beta: approved=True, license=active",
+              "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+            }
+          ],
+          "id": "item-64652993d4c50b954b23",
+          "kind": "question",
+          "status": "closed",
+          "text": "After catalog_update, will any asset change approval or license status such that selected_ids must change?"
+        },
+        {
+          "basis": [
+            {
+              "quote": "Catalog revision: 2",
+              "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+            },
+            {
+              "quote": "\"catalog_revision\": 1",
+              "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+            }
+          ],
+          "claim": "The staged release.json still references catalog_revision 1 and policy_revision 1, but the current inputs are now catalog revision 2 and policy revision 2; the staged file is stale and must be regenerated against revision 2.",
+          "discriminator": "Whether the final release.json records catalog_revision 2 and policy_revision 2 rather than 1.",
+          "id": "item-8f219ce5542f02d6a4bf",
+          "kind": "belief",
+          "status": "supported"
+        },
+        {
+          "basis": [
+            {
+              "quote": "alpha: approved=True, license=active; beta: approved=True, license=active",
+              "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+            }
+          ],
+          "claim": "At catalog revision 2 both alpha and beta remain approved=True and license=active, so selected_ids [alpha, beta] is still correct under approval_time basis.",
+          "discriminator": "Any asset at revision 2 with approved=False or license not active would require removal from selected_ids.",
+          "id": "item-41a76b6ca666f1bc7257",
+          "kind": "belief",
+          "status": "supported"
+        }
+      ],
+      "evidence": [
+        {
+          "origin": "execution",
+          "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-1",
+          "text": "Execution status: waiting. Catalog revision: 1. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 1. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 1,\n  \"policy_revision\": 1,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}"
+        },
+        {
+          "origin": "execution",
+          "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2",
+          "text": "Execution status: waiting. Catalog revision: 2. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 2. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 1,\n  \"policy_revision\": 1,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}"
+        }
+      ]
+    },
+    "events": [
+      {
+        "trigger": "Owner evidence arrived; reconsider the current understanding and direction.",
+        "kind": "execution.outcome",
+        "status": "completed",
+        "facts": "Execution status: completed. Catalog revision: 2. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 2. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 2,\n  \"policy_revision\": 2,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}",
+        "expected_output": "no_change"
+      }
+    ]
+  },
+  {
+    "id": "thermal_scope",
+    "goal": "Keep the shipment decision within the applicable storage rules.",
+    "seed": {
+      "evidence": [
+        {
+          "ref": "prior:thermal",
+          "origin": "execution",
+          "text": "Chilled lots require a temperature from 2 to 5 Celsius. Labels use Celsius."
+        }
+      ],
+      "items": [
+        {
+          "kind": "belief",
+          "claim": "Every shipment lot requires a temperature from 2 to 5 Celsius.",
+          "status": "supported",
+          "basis": [
+            {
+              "ref": "prior:thermal",
+              "quote": "Chilled lots require a temperature from 2 to 5 Celsius."
+            }
+          ],
+          "discriminator": "Any temperature above 5 requires exclusion in every storage mode."
+        },
+        {
+          "kind": "belief",
+          "claim": "Temperature labels use Celsius.",
+          "status": "supported",
+          "basis": [
+            {
+              "ref": "prior:thermal",
+              "quote": "Labels use Celsius."
+            }
+          ],
+          "discriminator": "An authoritative change to the label unit."
+        }
+      ]
+    },
+    "events": [
+      {
+        "kind": "execution.input_changed",
+        "trigger": "The storage owner supplied a scoped rule and a recorded inspection.",
+        "status": "waiting",
+        "facts": "Current rule: chilled lots require 2 to 5 Celsius inclusive. Ambient lots require intact packaging; their eligibility has no temperature limit. Recorded inspection: ambient lot T is at 9 Celsius with intact packaging and is accepted under the ambient rule. The proposed shipment excludes T because it is above 5 Celsius. Labels still use Celsius.",
+        "expected_output": "directive"
+      }
+    ]
+  },
+  {
+    "id": "temporal_threshold",
+    "goal": "Keep the sensor decision compliant with the effective tolerance.",
+    "seed": {
+      "evidence": [
+        {
+          "ref": "prior:tolerance",
+          "origin": "execution",
+          "text": "At 08:00 rule R1 permits drift up to 0.5 units. The drift is 0.4 units and passes R1."
+        }
+      ],
+      "items": [
+        {
+          "kind": "belief",
+          "claim": "At 08:00 the drift of 0.4 complies with R1 limit 0.5.",
+          "status": "supported",
+          "basis": [
+            {
+              "ref": "prior:tolerance",
+              "quote": "The drift is 0.4 units and passes R1."
+            }
+          ],
+          "discriminator": "An independent measurement above 0.5 at 08:00 would refute this historical assessment."
+        }
+      ]
+    },
+    "events": [
+      {
+        "kind": "execution.input_changed",
+        "trigger": "A new effective rule and measurement arrived.",
+        "status": "waiting",
+        "facts": "At 09:00 rule R2 takes effect with drift limit 0.2 units. The current drift remains 0.4. The 08:00 measurement and R1 rule remain valid historical records. The current decision still reports compliance using the old limit.",
+        "expected_output": "directive"
+      }
+    ]
+  }
+]

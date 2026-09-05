@@ -6,6 +6,7 @@ routing, a scheduler, a second factual memory store, or an Execution Actor.
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping
+from jsonschema import Draft202012Validator
 
 from Mind.directive import DirectiveApplication, prepare_for_execution_decision
 from Mind.experiment_a import (
@@ -27,7 +29,7 @@ from Mind.trace import (
     COGNITIVE_STEP_PROJECTOR_VERSION,
     CAPABILITY_OBSERVED, CAPABILITY_REQUESTED, MODEL_OUTPUT_RECORDED, MindTrace, TraceError,
     _canonical_json, _freeze, _reject_json_constant, _strict_json_object,
-    _thaw, replay_activation,
+    _thaw, replay_activation, MAX_MODEL_OUTPUT_CHARS, MAX_DIRECTIVE_CHARS, MAX_DECISION_INTENT_CHARS,
 )
 from Mind.world_model import _fields as _model_fields, _request as _model_request, verify_run
 
@@ -37,6 +39,78 @@ MAX_JOURNAL_BYTES = 4 * 1024 * 1024
 BUDGET_VERSION = "cognition-minimal-v1:2-model-calls:1-read:2000-output-chars"
 MODEL_BUDGET_VERSION = "cognition-minimal-v2:2-model-calls:1-capability:2000-output-chars"
 EVENT_BUDGET_VERSION = "cognition-events-v1:2-model-calls:1-result:2000-output-chars"
+CHAIN_CONTRACT_VERSION = "cognitive-submit-d6-v1"
+REVISED_CHAIN_CONTRACT_VERSION = "cognitive-submit-d6-v2"
+CHAIN_CONTRACT_VERSIONS = (CHAIN_CONTRACT_VERSION, REVISED_CHAIN_CONTRACT_VERSION)
+MAX_UPDATES = 4
+MAX_EVIDENCE_CHARS = 1000
+
+
+def _schema_object(properties):
+    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+
+
+def _schema_text(limit):
+    return {"type": "string", "minLength": 1, "maxLength": limit, "pattern": r"\S"}
+
+
+_BASIS_SCHEMA = {"type": "array", "maxItems": 3, "items": _schema_object({
+    "ref": _schema_text(128), "quote": _schema_text(300)})}
+_UPDATE_SCHEMAS = {
+    "belief": _schema_object({"kind": {"enum": ["belief"]}, "id": _schema_text(64),
+        "claim": _schema_text(400), "status": {"enum": ["open", "supported", "contradicted", "archived"]},
+        "basis": _BASIS_SCHEMA, "discriminator": _schema_text(300)}),
+    "question": _schema_object({"kind": {"enum": ["question"]}, "id": _schema_text(64),
+        "text": _schema_text(300), "status": {"enum": ["open", "closed", "archived"]}, "basis": _BASIS_SCHEMA}),
+    "scenario": _schema_object({"kind": {"enum": ["scenario"]}, "id": _schema_text(64),
+        "status": {"enum": ["active", "archived"]},
+        "assumptions": {"type": "array", "minItems": 1, "maxItems": 3, "items": _schema_text(64)},
+        "steps": {"type": "array", "minItems": 1, "maxItems": 3, "items": _schema_object({
+            name: _schema_text(200) for name in ("state", "actors", "action", "external", "outcome")})},
+        "unknowns": {"type": "array", "maxItems": 3, "items": _schema_text(200)}}),
+}
+_UPDATE_SCHEMAS["belief"]["allOf"] = [{
+    "if": {"properties": {"status": {"enum": ["supported", "contradicted"]}}},
+    "then": {"properties": {"basis": {"minItems": 1}}}}]
+_UPDATE_VALIDATORS = {kind: Draft202012Validator(schema) for kind, schema in _UPDATE_SCHEMAS.items()}
+
+
+def cognitive_step_schema(sources, items=(), capabilities=(), *, contract=CHAIN_CONTRACT_VERSION):
+    """Active native shape shares the reducer definitions; grounding remains owner-checked."""
+    variants = copy.deepcopy(list(_UPDATE_SCHEMAS.values()))
+    for variant in variants:
+        props = variant["properties"]
+        if contract == REVISED_CHAIN_CONTRACT_VERSION and "claim" in props:
+            props["claim"]["description"] = "The literal assertion, including relevant policy and time. A statement that an artifact is defective can itself be true."
+            props["status"]["description"] = "Evaluate the literal claim: supported = evidence warrants this sentence; contradicted = evidence warrants its negation; open = undecided. This is NOT an artifact pass/fail label or a record that an old belief changed."
+            props["discriminator"]["description"] = "A conditional observation that would distinguish this claim from its negation, under its stated scope. It is unobserved, not an additional rule. Re-derive it from sources rather than copying a prior test."
+        props["id"]["anyOf"] = [{"pattern": r"^new:[A-Za-z0-9_-]{1,32}$"}]
+        if items:
+            props["id"]["anyOf"].append({"enum": [item["id"] for item in items]})
+        if "basis" in props:
+            if sources:
+                props["basis"]["items"]["properties"]["ref"]["enum"] = list(sources)
+            else:
+                props["basis"]["maxItems"] = 0
+    next_options = [_schema_object({"type": {"enum": ["no_change"]}}),
+        _schema_object({"type": {"enum": ["directive"]}, "text": _schema_text(MAX_DIRECTIVE_CHARS)}),
+        _schema_object({"type": {"enum": ["decision_intent"]}, "intent": _schema_text(MAX_DECISION_INTENT_CHARS)})]
+    if "inspect_execution" in capabilities:
+        next_options.append(_schema_object({"type": {"enum": ["capability_request"]},
+            "capability": {"enum": ["inspect_execution"]}}))
+    return _schema_object({"type": {"enum": ["cognitive_step"]},
+        "updates": {"type": "array", "maxItems": MAX_UPDATES, "items": {"oneOf": variants}},
+        "next": {"oneOf": next_options}})
+
+
+def observation_source_text(observation, contract=None):
+    """One owner-authorized logical text for both citation catalogue and grounding."""
+    if observation["capability"] == "recall_memory":
+        return observation["rendered_evidence"]
+    if contract in CHAIN_CONTRACT_VERSIONS:
+        return "\n".join(name + ":\n" + ("[absent]" if value is None else value)
+            for name, value in observation.items())
+    return _canonical_json(observation)  # Historical source identity is unchanged.
 
 
 @dataclass(frozen=True)
@@ -146,7 +220,7 @@ def _input_document(value: MindInput) -> dict:
         if type(evidence) is not Evidence or evidence.origin not in {"memory", "execution"}:
             raise ValueError("invalid_evidence")
         _text(evidence.ref, 128)
-        _text(evidence.text, 1000)
+        _text(evidence.text, MAX_EVIDENCE_CHARS)
         if evidence.ref in seen or evidence.ref == "activation:observation":
             raise ValueError("evidence_identity_conflict")
         seen.add(evidence.ref)
@@ -199,7 +273,7 @@ def _basis(basis: object, sources: dict[str, dict]) -> None:
 
 def _apply_updates(items: dict, updates: object, sources: dict, event_id: str,
                    artifact: dict | None = None) -> dict:
-    if type(updates) is not list or len(updates) > 4:
+    if type(updates) is not list or len(updates) > MAX_UPDATES:
         raise ValueError("update_budget_exceeded")
     candidate = _json(_canonical_json(items))
     labels: dict[str, str] = {}
@@ -226,45 +300,17 @@ def _apply_updates(items: dict, updates: object, sources: dict, event_id: str,
         if identity in items and kind != items[identity]["kind"]:
             raise ValueError("item_kind_conflict")
         common = {"kind", "id", "status"}
-        if kind == "belief":
-            if set(value) != common | {"claim", "basis", "discriminator"}:
-                raise ValueError("invalid_belief")
-            _text(value["claim"], 400)
-            _text(value["discriminator"], 300)
-            _basis(value["basis"], sources)
-            if value["status"] not in {"open", "supported", "contradicted", "archived"}:
-                raise ValueError("invalid_belief_status")
-            if value["status"] in {"supported", "contradicted"} and not value["basis"]:
+        if kind in _UPDATE_VALIDATORS and not _UPDATE_VALIDATORS[kind].is_valid(value):
+            if kind == "belief" and value.get("status") in {"supported", "contradicted"} and value.get("basis") == []:
                 raise ValueError("assessment_needs_evidence")
-        elif kind == "question":
-            if set(value) != common | {"text", "basis"}:
-                raise ValueError("invalid_question")
-            _text(value["text"], 300)
+            raise ValueError("invalid_" + kind)
+        if kind == "belief":
             _basis(value["basis"], sources)
-            if value["status"] not in {"open", "closed", "archived"}:
-                raise ValueError("invalid_question_status")
+        elif kind == "question":
+            _basis(value["basis"], sources)
         elif kind == "scenario":
-            if set(value) != common | {"assumptions", "steps", "unknowns"}:
-                raise ValueError("invalid_scenario")
-            if value["status"] not in {"active", "archived"}:
-                raise ValueError("invalid_scenario_status")
             assumptions = value["assumptions"]
-            if type(assumptions) is not list or not 1 <= len(assumptions) <= 3:
-                raise ValueError("invalid_scenario_assumptions")
-            for assumption in assumptions:
-                _text(assumption, 64)
             value["assumptions"] = [labels.get(ref, ref) for ref in assumptions]
-            if type(value["steps"]) is not list or not 1 <= len(value["steps"]) <= 3:
-                raise ValueError("invalid_scenario_steps")
-            for step in value["steps"]:
-                if type(step) is not dict or set(step) != {"state", "actors", "action", "external", "outcome"}:
-                    raise ValueError("invalid_scenario_step")
-                for text in step.values():
-                    _text(text, 200)
-            if type(value["unknowns"]) is not list or len(value["unknowns"]) > 3:
-                raise ValueError("invalid_scenario_unknowns")
-            for text in value["unknowns"]:
-                _text(text, 200)
             value["analysis_status"] = "QUALITATIVE"
         elif kind == "model":
             if set(value) != common | {"scope", "basis", "artifact_ref", "unknowns"}:
@@ -402,9 +448,7 @@ class MindOrgan:
                     observation = _thaw(event.payload["observation"])
                     if observation["capability"] in {"run_world_model", "evaluate_model"}:
                         continue  # Computed predictions are never admitted as reality evidence.
-                    text = (observation["rendered_evidence"]
-                            if observation["capability"] == "recall_memory"
-                            else _canonical_json(observation))
+                    text = observation_source_text(observation, start["context"].get("contract_version"))
                     if text:
                         sources["activation:observation"] = {
                             "ref": "activation:observation", "text": text,
@@ -595,6 +639,11 @@ class MindOrgan:
             context = {"revision": state["revision"], "event_id": value.event_id,
                        "intention_ref": value.intention_ref, "intention_revision": value.intention_revision,
                        "items": list(state["items"].values()), "evidence": list(sources.values())}
+            contract = getattr(self._model, "cognitive_contract_version", None)
+            if contract is not None:
+                if contract not in CHAIN_CONTRACT_VERSIONS:
+                    raise ValueError("unsupported_cognitive_contract")
+                context["contract_version"] = contract
             if "model_probe" in document:
                 context["model_probe"] = document["model_probe"]
                 for previous in starts.values():
@@ -627,6 +676,7 @@ class MindOrgan:
                 allow_information_acquisition=True, trace=trace,
                 supervisor_evidence=None, cognitive_context=context,
                 allow_model_computation=self._allow_model_computation,
+                native_protocol=getattr(self._model, "native_protocol_version", None),
                 defer_capabilities=(*self._capabilities,
                     *(["evaluate_model" if value.model_probe is not None else "run_world_model"]
                       if self._allow_model_computation else [])),
@@ -688,6 +738,24 @@ class MindOrgan:
             return self._finish(start, state)
 
     def _finish(self, start: dict, state: dict, *, recovering: bool = False) -> MindReceipt:
+        if recovering and getattr(self._model, "native_protocol_version", None):
+            try:
+                native_trace = MindTrace.reopen_for_native(self._trace_path(start))
+            except TraceError as error:
+                if str(error) not in {'native_protocol_not_enabled', 'event_prefix_has_no_model_request', 'native_result_unknown'}:
+                    end = {"kind": "failed", "event_id": start["event_id"], "error": "trace_failed"}
+                    self._append(end)
+                    return self._receipt(start, end)
+                # No resampling of a call whose outcome is unknown.
+            else:
+                from Mind.experiment_a import _resume_native_activation
+                result = _resume_native_activation(native_trace, self._model)
+                if isinstance(result, _CapabilityRequest):
+                    return self._waiting(start)
+                if isinstance(result, ActivationFailure):
+                    end = {"kind": "failed", "event_id": start["event_id"], "error": result.code}
+                    self._append(end)
+                    return self._receipt(start, end)
         try:
             trace = MindTrace.reopen(self._trace_path(start))
             try:

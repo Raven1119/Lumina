@@ -366,6 +366,124 @@ or execution-provenance system is implied by this boundary.
 Rejected experiments and their quantitative consequences are consolidated in
 `docs/MEMORY_EXPERIMENT_HISTORY.md`.
 
+## Isolated Mind D2 protocol evidence (2026-09-05)
+
+The persistent Mind/Nervous/Execution experiment reused existing cognitive
+commit, request/result continuation, qualified Directive routing and E1 forks.
+A native Anthropic cognitive-return adapter and isolated ordinary-Python
+control were added under `Mind/event_loop.py`; the Execution facade has an
+optional control injection with its default production path unchanged.
+
+D2 P0 completed once: 27 DeepSeek-V4-Pro non-thinking calls, 6/8 accepted
+activities, reopened cognition in all four cells, three read/result round-trips,
+and **zero qualified real Directive deliveries**. Its preregistered gate failed;
+the formal multi-event campaign did not start. Value verdict: **INCONCLUSIVE**.
+This is experimental evidence, not production Mind wiring or proof of long-range
+planning. See `Mind/docs/EVENT_LOOP_RESULT.md` and its immutable P0 artifacts.
+Earlier D1 and E/W/S verdicts remain unchanged.
+
+## Isolated Mind D3 contract calibration (2026-09-05)
+
+D3 reuses the persistent Mind/Nervous/Trace and existing native/isolated-Python
+adapters. An opt-in contract aligns high-level direction semantics, existing
+field bounds and exact source references. Execution event wake accepts the
+existing qualified advisory through a small optional parameter; its default
+behavior is unchanged. The scripted three-event test covers delivery, actions,
+owner feedback and reopened cognitive continuity.
+
+Real development passed 5/5 on five calls; the separate once-only acceptance
+passed 4/5 on five calls. Its normal control returned native `input={}` and was
+truthfully rejected, with no NoChange substitution. The real multi-event stage
+did not start. Comparison eligibility remains **NO**, value **INCONCLUSIVE**.
+See `Mind/docs/COGNITIVE_CONTRACT_RESULT.md`. This does not change the historical
+D1/P0 verdicts or establish production Mind wiring.
+
+## Isolated Mind D4 bounded protocol recovery (2026-09-05)
+
+D4 extends the existing native contract with one durable correction for known,
+uncommitted parameter errors per activity (at most three physical calls, two
+logical steps, one read). Qualitative scenario schema now matches the existing
+prompt/reducer. Unknown outcomes and storage/source/semantic failures do not
+receive free retries. Legacy activities retain their previous Trace semantics.
+
+The frozen campaign used 34/60 real DeepSeek-V4-Pro non-thinking calls: 12 Mind
+activities, 9 completed without repair, three natural empty inputs recovered
+on their sole correction, 12 structurally accepted. Development passed 2/2 and
+independent interface acceptance 4/4. The actual three-event loop completed both
+workspace tasks, but only 1/2 cases met all frozen criteria. One original
+Directive was delivered to a qualified Execution decision, followed by matching
+actions and owner feedback to the same nonempty, reopened Mind. Execution already
+had correct policy branches before guidance; no comparative benefit is established.
+
+The normal control proposed redundant revision guidance and retained an incorrect
+policy discriminator after feedback. Developer semantic review withheld its
+Directive but did not erase accepted cognition. A claim/status ambiguity also
+remains in the positive trace. This is a supervised experimental chain, not
+autonomous semantic acceptance or production wiring. Comparison eligibility is
+**NOT_YET**, independent-Mind value **INCONCLUSIVE**. See
+`Mind/docs/PROTOCOL_RECOVERY_RESULT.md` and `PROTOCOL_RECOVERY_REVIEW.md`.
+The 38-test safety gate and root regression (347 passed, 24 skipped) passed;
+D1/P0/D3 records and verdicts remain unchanged.
+
+## Isolated Mind D5 semantic revision (2026-09-05)
+
+D5 reuses the local D4 owners, event/Trace path, bounded recovery and steering
+bridge. Opt-in semantic contract d5-v2 clarifies current-claim status, conditional
+scope, historical truth and revision of affected old discriminators. Two bounded
+development passes improved a new condition variant, but the archived D4
+discriminator error persists. The original D4 normal case had a real revision
+metadata gap; its Directive cannot by itself be called harmful. Its historical
+verdict remains unchanged.
+
+The once-only independent campaign used 16 calls (9 Mind, 7 Execution), within
+29/75 calls for all D5 stages. Seven of nine cognitive activities were accepted.
+The actual workspace case corrected two explicitly scripted prior errors at its
+first event, but subsequent guidance and final feedback were rejected for exact
+quote mismatches: the experiment had JSON-escaped task-file text a second time.
+No Directive was delivered; Execution completed independently. The complete
+handoff control kept NoChange on all three events, and the ambiguous-recovery
+control correctly retained open competing causes. Frozen aggregate is 1/3;
+both controls pass semantic review, but the latter misses the extra fresh-source
+citation gate. This is recorded as an evaluation limitation, not a semantic error.
+
+After the campaign, task-files-d5-v2 fixes only the evidence projection to bounded
+literal file text. Three original failed quotes now pass exact matching in
+deterministic regression; no real acceptance rerun occurred. Targeted validation
+passes 46 tests; root regression passes 347 with 24 skipped. Semantic repair is
+partial, comparison eligibility **NOT_YET**, Mind value **INCONCLUSIVE**.
+See `Mind/docs/SEMANTIC_REVISION_RESULT.md` and `SEMANTIC_REVISION_REVIEW.md`.
+No production wiring, new Mind module, provider change or history rewrite.
+
+## Isolated Mind D6 cognitive-chain calibration (2026-09-06)
+
+D6 reuses the local D5 post-fix baseline. Shared owner/native field definitions
+fix empty-basis schema drift; three separately bounded task-file Evidence
+records fix the latent aggregate overflow. D6 versions share owner-authorized
+logical citation text and permit valid older evidence in evaluation. Strict
+grounding, atomic commits, D4 recovery/permissions and historical wires remain.
+The declared jsonschema dependency and D6 unknown-outcome hard stop have regression
+coverage; no production wiring or new Mind module was added.
+
+Four diagnostic calls show erroneous prior cognition is not necessary for the
+condition/test error to appear. Two bounded semantic candidates each pass 1/4
+development cases; one scope error persists and three outputs exceed the unchanged
+2000-character bound. This does not establish general semantic repair.
+
+The once-only independent campaign uses 16 calls (9 Mind, 7 Execution), within
+28/75 for all D6 stages. Whole-state semantic review passes 9/9 accepted activities;
+both complete-delivery and insufficient-evidence controls keep NoChange on all
+three events. Aggregate is 2/3: the workspace Directive includes marker-writing
+and ClaimComplete operations and is withheld unchanged, so delivery is 0.
+Execution completes independently; owner feedback is accepted by the same reopened
+Mind with consistent scoped cognition. No Mind adoption or causal behavioral gain
+is established. Qualification **NOT_YET**, value **INCONCLUSIVE**.
+
+Final Mind/Nervous coverage is 528 passing tests across scoped runs, 5 skipped;
+10 Docker tests required an unchanged rerun with Docker access after the restricted
+run failed to open its named pipe. Root regression is 347 passed / 24 skipped.
+See `Mind/docs/COGNITIVE_CHAIN_RESULT.md`, `COGNITIVE_CHAIN_REVIEW.md` and
+`Mind/fixtures/cognitive_chain_d6/analysis.json`. D1–D5 records/verdicts are preserved.
+
 ## Not Started / Not Authorized by This Goal Alone
 
 - automatic/startup/background/chat-time Dream;

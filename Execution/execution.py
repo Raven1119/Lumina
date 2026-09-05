@@ -3637,7 +3637,8 @@ class RootAgentProcess:
             source_refs,
         )
 
-    def deliver_event(self, event_type: str, data: str = "") -> ExecutionResult:
+    def deliver_event(self, event_type: str, data: str = "", *,
+                      decision_advisory: DecisionAdvisory | None = None) -> ExecutionResult:
         if not isinstance(event_type, str) or not event_type:
             raise ValueError("event_type must be a non-empty string")
         if not isinstance(data, str):
@@ -3664,7 +3665,7 @@ class RootAgentProcess:
             {"event": external_event},
             (received.event_id,),
         )
-        return self._drive()
+        return self._drive(decision_advisory=decision_advisory)
 
     def _resume_spawn_suffix(self, steps: list[ExecutionStep]) -> None:
         events = self._event_log.events

@@ -86,3 +86,32 @@ docs/experiments/legacy_entity_backfill/results.json
 
 # Frozen Execution V1 research evidence / artifacts
 /Execution_Lab/
+
+# Mind D1-D6: keep full campaigns locally; publish only selected evidence.
+# Exceptions preserve the exact historical files used by maintained tests.
+/Mind/fixtures/decoupling_d1/**
+!/Mind/fixtures/decoupling_d1/manifest.json
+/Mind/fixtures/event_loop_d2/**
+/Mind/fixtures/cognitive_contract_d3/**
+!/Mind/fixtures/cognitive_contract_d3/acceptance/
+!/Mind/fixtures/cognitive_contract_d3/acceptance/calls/
+!/Mind/fixtures/cognitive_contract_d3/acceptance/calls/004.json
+/Mind/fixtures/protocol_recovery_d4/**
+!/Mind/fixtures/protocol_recovery_d4/loop/
+!/Mind/fixtures/protocol_recovery_d4/loop/license_change/
+!/Mind/fixtures/protocol_recovery_d4/loop/license_change/result.json
+/Mind/fixtures/semantic_revision_d5/**
+!/Mind/fixtures/semantic_revision_d5/acceptance/
+!/Mind/fixtures/semantic_revision_d5/acceptance/net_summary_revision/
+!/Mind/fixtures/semantic_revision_d5/acceptance/net_summary_revision/result.json
+/Mind/fixtures/cognitive_chain_d6/**
+!/Mind/fixtures/cognitive_chain_d6/registration.json
+!/Mind/fixtures/cognitive_chain_d6/acceptance-cases.json
+!/Mind/fixtures/cognitive_chain_d6/analysis.json
+!/Mind/fixtures/cognitive_chain_d6/engineering_reproduction.json
+!/Mind/fixtures/cognitive_chain_d6/validation.json
+!/Mind/fixtures/cognitive_chain_d6/development-1/
+!/Mind/fixtures/cognitive_chain_d6/development-1/result.json
+!/Mind/fixtures/cognitive_chain_d6/acceptance/
+!/Mind/fixtures/cognitive_chain_d6/acceptance/reverse_scope_summary/
+!/Mind/fixtures/cognitive_chain_d6/acceptance/reverse_scope_summary/result.json

@@ -192,6 +192,7 @@ def _run_activation(
     cognitive_context: dict[str, object] | None = None,
     allow_model_computation: bool = False,
     defer_capabilities: tuple[str, ...] | None = None,
+    native_protocol: str | None = None,
 ) -> NoChange | Directive | DecisionIntent | ActivationFailure:
     if (
         not _valid_activation(activation)
@@ -250,6 +251,7 @@ def _run_activation(
             cognitive_context=cognitive_context,
             allow_model_computation=allow_model_computation,
             defer_capabilities=defer_capabilities,
+            native_protocol=native_protocol,
         )
 
     try:
@@ -272,6 +274,7 @@ def _run_activation(
                 cognitive_context=cognitive_context,
                 allow_model_computation=allow_model_computation,
                 defer_capabilities=defer_capabilities,
+                native_protocol=native_protocol,
             )
     except (OSError, TraceError):
         return ActivationFailure("trace_failed")
@@ -290,6 +293,7 @@ def _run_valid_activation(
     cognitive_context: dict[str, object] | None = None,
     allow_model_computation: bool = False,
     defer_capabilities: tuple[str, ...] | None = None,
+    native_protocol: str | None = None,
 ) -> NoChange | Directive | DecisionIntent | ActivationFailure:
     probe = cognitive_context.get("model_probe") if cognitive_context else None
     started = _append_event(
@@ -321,6 +325,7 @@ def _run_valid_activation(
                       if allow_model_computation else []),
                 ] if allow_information_acquisition else [])}
                if cognitive_context is not None else {}),
+            **({"native_protocol": native_protocol} if native_protocol else {}),
         },
         (),
     )
@@ -526,25 +531,51 @@ def _project_and_call(
         projection = project_model_request(trace.events)
     except TraceError:
         return ActivationFailure("trace_failed")
-    return _call_model(model, projection)
+    return _call_model(model, projection, trace=trace)
 
 
 def _call_model(
     model: ModelClient,
     projection: ModelRequestProjection,
+    *, trace: MindTrace | None = None,
 ) -> str | ActivationFailure:
     call = projection.as_model_call()
     try:
-        raw = model.generate(
+        raw = model.generate_from_trace(trace, projection) if trace and trace.events[0].payload.get("native_protocol") else model.generate(
             call["recent_context"],  # type: ignore[arg-type]
             call["user_message"],  # type: ignore[arg-type]
             system_prompt=call["system_prompt"],  # type: ignore[arg-type]
         )
+    except TraceError:
+        return ActivationFailure("trace_failed")
     except Exception:
         return ActivationFailure("model_failed")
     if not isinstance(raw, str) or len(raw) > MAX_MODEL_OUTPUT_CHARS:
         return ActivationFailure("invalid_model_output")
     return raw
+
+
+def _resume_native_activation(trace, model):
+    """Finish an uncommitted logical step from its durable native annex."""
+    first = not any(e.event_type == CAPABILITY_OBSERVED for e in trace.events)
+    initial = next((e for e in trace.events if e.event_type == INITIAL_EXECUTION_OBSERVED), None)
+    dependencies = (0, *([initial.seq] if initial else []), *(
+        [e.seq for e in trace.events if e.event_type in {CAPABILITY_REQUESTED, CAPABILITY_OBSERVED}]
+        if not first else []))
+    raw = _project_and_call(model, trace)
+    if isinstance(raw, ActivationFailure):
+        return _record_failure(trace, raw, dependencies)
+    event = _append_event(trace, MODEL_OUTPUT_RECORDED, {"call_index": 1 if first else 2, "text": raw}, dependencies)
+    if event is None:
+        return ActivationFailure("trace_failed")
+    parsed = _parse_output(raw, unified=True)
+    if isinstance(parsed, _CapabilityRequest):
+        if not first or parsed.capability not in trace.events[0].payload["available_capabilities"]:
+            return _record_failure(trace, ActivationFailure("capability_limit_exceeded"), (event.seq,))
+        if _append_event(trace, CAPABILITY_REQUESTED, _request_payload(parsed), (event.seq,)) is None:
+            return ActivationFailure("trace_failed")
+        return parsed
+    return _record_terminal(trace, parsed, (event.seq,))
 
 
 def _append_event(

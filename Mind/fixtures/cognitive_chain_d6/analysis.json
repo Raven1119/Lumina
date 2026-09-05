@@ -1,0 +1,181 @@
+{
+  "registration_sha256": "856153aaf24150fe0abc9a96f27331a8f43d4abc38daec8afdd67af04d6d2aad",
+  "stages": {
+    "diagnostic": {
+      "result_sha256": "a454d769f782562e4f3df81a6f7029a821134999f9a0b56f42c91706fbb0f5d3",
+      "contract": "cognitive-submit-d5-v2",
+      "physical_calls": 4,
+      "mind_calls": 4,
+      "execution_calls": 0,
+      "usage_raw": {
+        "input_tokens": 7357,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 8704,
+        "output_tokens": 1340
+      },
+      "activities": 4,
+      "accepted": 4,
+      "protocol_failed": 0,
+      "whole_cognition_correct": 0,
+      "boundary_allowed": 4,
+      "no_change": 4,
+      "directives": 0,
+      "delivered": 0,
+      "protocol_corrections": 0,
+      "reads": 0,
+      "passed_cases": 0,
+      "cases": 4,
+      "transport_errors": 0,
+      "serialized_overflow": 0
+    },
+    "development-1": {
+      "result_sha256": "6849a41690ada9e7c59e9e404406564dce7f38304b1d9b64090c71c95effffa0",
+      "contract": "cognitive-submit-d6-v1",
+      "physical_calls": 4,
+      "mind_calls": 4,
+      "execution_calls": 0,
+      "usage_raw": {
+        "input_tokens": 10529,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 1664,
+        "output_tokens": 1963
+      },
+      "activities": 4,
+      "accepted": 3,
+      "protocol_failed": 1,
+      "whole_cognition_correct": 1,
+      "boundary_allowed": 3,
+      "no_change": 1,
+      "directives": 2,
+      "delivered": 0,
+      "protocol_corrections": 0,
+      "reads": 0,
+      "passed_cases": 1,
+      "cases": 4,
+      "transport_errors": 0,
+      "serialized_overflow": 1
+    },
+    "development-2": {
+      "result_sha256": "44c547f0efe34357cb7c07bac3150ecb554af2d3b076a823e0ff02fe76cbbb8c",
+      "contract": "cognitive-submit-d6-v2",
+      "physical_calls": 4,
+      "mind_calls": 4,
+      "execution_calls": 0,
+      "usage_raw": {
+        "input_tokens": 10985,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 1792,
+        "output_tokens": 2240
+      },
+      "activities": 4,
+      "accepted": 2,
+      "protocol_failed": 2,
+      "whole_cognition_correct": 1,
+      "boundary_allowed": 2,
+      "no_change": 1,
+      "directives": 1,
+      "delivered": 0,
+      "protocol_corrections": 0,
+      "reads": 0,
+      "passed_cases": 1,
+      "cases": 4,
+      "transport_errors": 0,
+      "serialized_overflow": 2
+    },
+    "acceptance": {
+      "result_sha256": "306bd54848b6b5c27cebad1fd289bbf5fac6291f51a7c79a1c963781c5245e73",
+      "contract": "cognitive-submit-d6-v2",
+      "physical_calls": 16,
+      "mind_calls": 9,
+      "execution_calls": 7,
+      "usage_raw": {
+        "input_tokens": 25886,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 11136,
+        "output_tokens": 4904
+      },
+      "activities": 9,
+      "accepted": 9,
+      "protocol_failed": 0,
+      "whole_cognition_correct": 9,
+      "boundary_allowed": 8,
+      "no_change": 8,
+      "directives": 1,
+      "delivered": 0,
+      "protocol_corrections": 0,
+      "reads": 0,
+      "passed_cases": 2,
+      "cases": 3,
+      "transport_errors": 0,
+      "serialized_overflow": 0
+    }
+  },
+  "usage_raw": {
+    "input_tokens": 54757,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 23296,
+    "output_tokens": 10447
+  },
+  "physical_calls": 28,
+  "allocated_call_budget": 75,
+  "independent": {
+    "reverse_scope_summary": {
+      "passed": false,
+      "reopened_equal": true,
+      "final_view_sha256": "27f8847eb2411122c882499b6c15e265e8dc938b7a059c52bada511bb1248ac9",
+      "final_owner_source_used": true,
+      "final_items": 4,
+      "objective_success": true,
+      "initial_objective_success": true,
+      "behavior_consistent": false,
+      "semantic_fields": {
+        "condition_correct": true,
+        "proposition_consistent": true,
+        "affected_errors_resolved": true,
+        "knowledge_preserved": true
+      }
+    },
+    "complete_offline_receipt": {
+      "passed": true,
+      "reopened_equal": true,
+      "final_view_sha256": "694bd76b7f36255d95d8912851df6606455072f26408bcf8741db1f1a2a87289",
+      "final_owner_source_used": true,
+      "final_items": 2,
+      "objective_success": null,
+      "initial_objective_success": null,
+      "behavior_consistent": null,
+      "semantic_fields": {
+        "condition_correct": true,
+        "proposition_consistent": true,
+        "affected_errors_resolved": true,
+        "knowledge_preserved": true
+      }
+    },
+    "confounded_preview_recovery": {
+      "passed": true,
+      "reopened_equal": true,
+      "final_view_sha256": "e8fcbd9fb5ba4b5826be2ecb39f3c521a3ebb0394381b8988eeb63d90c60449e",
+      "final_owner_source_used": false,
+      "final_items": 3,
+      "objective_success": null,
+      "initial_objective_success": null,
+      "behavior_consistent": null,
+      "semantic_fields": {
+        "condition_correct": true,
+        "proposition_consistent": true,
+        "affected_errors_resolved": true,
+        "knowledge_preserved": true
+      }
+    }
+  },
+  "usage_note": "Provider fields reported separately, without interpreting cache accounting or monetary cost.",
+  "history_verified": true,
+  "historical_d5": {
+    "Mind/fixtures/semantic_revision_d5/acceptance/result.json": "cecc722de0519056957b63413017d1b52a8ffef4d20518aa672b4bcc9de2961b",
+    "Mind/fixtures/semantic_revision_d5/analysis.json": "b6541f7e4f694a229640f013daef62c4f147c1f0c95bd955848f133145f8cd18"
+  },
+  "acceptance_source_unchanged": true,
+  "qualification": "NOT_YET",
+  "value_verdict": "INCONCLUSIVE",
+  "sha256": "9ad008174563f3ad1ce62308264b4e871e50de17eca075a3e4c62ae826f50eb9"
+}

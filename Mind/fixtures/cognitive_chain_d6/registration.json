@@ -1,0 +1,236 @@
+{
+  "version": "cognitive-chain-d6-registration-v1",
+  "created_at": "2026-09-05T15:27:12.806842+00:00",
+  "baseline_head": "9d63da7311baa7611782cc8079fb09e9d81f4e25",
+  "development": [
+    {
+      "id": "license_seeded",
+      "goal": "Prepare a publication release satisfying the current policy.json and catalog.json. Write release.json with exactly catalog_revision, policy_revision and sorted selected_ids. approval_time eligibility means approved assets; release_time additionally requires license active. First stage: prepare the release for revision 1, then Wait for catalog_update because external inputs are pending. After that event, complete the release against the current inputs, write verified to .lumina-complete, and ClaimComplete. Policy/catalog are read-only input. The marker is not the owner acceptance check. Use ordinary Python in the isolated workspace; no network or child delegation. Choose implementation yourself.",
+      "seed": {
+        "items": [
+          {
+            "basis": [
+              {
+                "quote": "alpha: approved=True, license=active; beta: approved=True, license=active",
+                "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+              }
+            ],
+            "id": "item-64652993d4c50b954b23",
+            "kind": "question",
+            "status": "closed",
+            "text": "After catalog_update, will any asset change approval or license status such that selected_ids must change?"
+          },
+          {
+            "basis": [
+              {
+                "quote": "Catalog revision: 2",
+                "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+              },
+              {
+                "quote": "\"catalog_revision\": 1",
+                "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+              }
+            ],
+            "claim": "The staged release.json still references catalog_revision 1 and policy_revision 1, but the current inputs are now catalog revision 2 and policy revision 2; the staged file is stale and must be regenerated against revision 2.",
+            "discriminator": "Whether the final release.json records catalog_revision 2 and policy_revision 2 rather than 1.",
+            "id": "item-8f219ce5542f02d6a4bf",
+            "kind": "belief",
+            "status": "supported"
+          },
+          {
+            "basis": [
+              {
+                "quote": "alpha: approved=True, license=active; beta: approved=True, license=active",
+                "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+              }
+            ],
+            "claim": "At catalog revision 2 both alpha and beta remain approved=True and license=active, so selected_ids [alpha, beta] is still correct under approval_time basis.",
+            "discriminator": "Any asset at revision 2 with approved=False or license not active would require removal from selected_ids.",
+            "id": "item-41a76b6ca666f1bc7257",
+            "kind": "belief",
+            "status": "supported"
+          }
+        ],
+        "evidence": [
+          {
+            "origin": "execution",
+            "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-1",
+            "text": "Execution status: waiting. Catalog revision: 1. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 1. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 1,\n  \"policy_revision\": 1,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}"
+          },
+          {
+            "origin": "execution",
+            "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2",
+            "text": "Execution status: waiting. Catalog revision: 2. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 2. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 1,\n  \"policy_revision\": 1,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}"
+          }
+        ]
+      },
+      "events": [
+        {
+          "trigger": "Owner requested a policy-scope review after its completion report. Assess whether current eligibility conditions warrant any direction change.",
+          "kind": "execution.outcome",
+          "status": "completed",
+          "facts": "Execution status: completed. Catalog revision: 2. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 2. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 2,\n  \"policy_revision\": 2,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}",
+          "expected_output": "no_change"
+        }
+      ]
+    },
+    {
+      "id": "license_absent",
+      "goal": "Prepare a publication release satisfying the current policy.json and catalog.json. Write release.json with exactly catalog_revision, policy_revision and sorted selected_ids. approval_time eligibility means approved assets; release_time additionally requires license active. First stage: prepare the release for revision 1, then Wait for catalog_update because external inputs are pending. After that event, complete the release against the current inputs, write verified to .lumina-complete, and ClaimComplete. Policy/catalog are read-only input. The marker is not the owner acceptance check. Use ordinary Python in the isolated workspace; no network or child delegation. Choose implementation yourself.",
+      "seed": {
+        "items": [
+          {
+            "basis": [
+              {
+                "quote": "alpha: approved=True, license=active; beta: approved=True, license=active",
+                "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+              }
+            ],
+            "id": "item-64652993d4c50b954b23",
+            "kind": "question",
+            "status": "closed",
+            "text": "After catalog_update, will any asset change approval or license status such that selected_ids must change?"
+          },
+          {
+            "basis": [
+              {
+                "quote": "Catalog revision: 2",
+                "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+              },
+              {
+                "quote": "\"catalog_revision\": 1",
+                "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2"
+              }
+            ],
+            "claim": "The staged release.json still references catalog_revision 1 and policy_revision 1, but the current inputs are now catalog revision 2 and policy revision 2; the staged file is stale and must be regenerated against revision 2.",
+            "discriminator": "Whether the final release.json records catalog_revision 2 and policy_revision 2 rather than 1.",
+            "id": "item-8f219ce5542f02d6a4bf",
+            "kind": "belief",
+            "status": "supported"
+          }
+        ],
+        "evidence": [
+          {
+            "origin": "execution",
+            "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-1",
+            "text": "Execution status: waiting. Catalog revision: 1. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 1. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 1,\n  \"policy_revision\": 1,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}"
+          },
+          {
+            "origin": "execution",
+            "ref": "execution-8c161e4ddd7d49938ea954f90d03fb79:owner-event-2",
+            "text": "Execution status: waiting. Catalog revision: 2. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 2. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 1,\n  \"policy_revision\": 1,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}"
+          }
+        ]
+      },
+      "events": [
+        {
+          "trigger": "Owner requested a policy-scope review after its completion report. Assess whether current eligibility conditions warrant any direction change.",
+          "kind": "execution.outcome",
+          "status": "completed",
+          "facts": "Execution status: completed. Catalog revision: 2. Assets: alpha: approved=True, license=active; beta: approved=True, license=active.\nPolicy revision: 2. Eligibility basis: approval_time.\napproval_time admits approved assets; release_time additionally requires an active license at release.\nObserved staged release.json: {\n  \"catalog_revision\": 2,\n  \"policy_revision\": 2,\n  \"selected_ids\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}",
+          "expected_output": "no_change"
+        }
+      ],
+      "diagnostic_intervention": "Only erroneous prior item omitted; evidence and event unchanged. Not a production repair."
+    },
+    {
+      "id": "snapshot_seeded",
+      "goal": "Keep the delivered snapshot eligible under the selected policy and preserve accurate policy understanding.",
+      "seed": {
+        "provenance": "SCRIPTED prior with correct claim and erroneous discriminator; not a natural D6 model error.",
+        "evidence": [
+          {
+            "ref": "prior:snapshot",
+            "text": "The current cached_snapshot policy admits validated records. live_snapshot additionally requires reachability at delivery. Record R is validated=True and reachable=True; the cached_snapshot includes R.",
+            "origin": "execution"
+          }
+        ],
+        "items": [
+          {
+            "kind": "belief",
+            "claim": "Validated record R is eligible under cached_snapshot.",
+            "status": "supported",
+            "basis": [
+              {
+                "ref": "prior:snapshot",
+                "quote": "The current cached_snapshot policy admits validated records."
+              }
+            ],
+            "discriminator": "Any record that is unvalidated or unreachable must be removed from cached_snapshot."
+          },
+          {
+            "kind": "question",
+            "text": "Does a reachability change affect eligibility under the current cached_snapshot policy?",
+            "status": "open",
+            "basis": [
+              {
+                "ref": "prior:snapshot",
+                "quote": "live_snapshot additionally requires reachability at delivery."
+              }
+            ]
+          }
+        ]
+      },
+      "events": [
+        {
+          "trigger": "Owner requested a policy-scope review after its completion report. Assess whether current eligibility conditions warrant any direction change.",
+          "kind": "execution.outcome",
+          "status": "completed",
+          "facts": "The current cached_snapshot policy admits validated records. live_snapshot additionally requires reachability at delivery. Record R is validated=True and reachable=False; the completed cached_snapshot includes R. Current revision fields and all delivery acknowledgements are correct. No other acceptance condition is missing."
+        }
+      ]
+    },
+    {
+      "id": "snapshot_absent",
+      "goal": "Keep the delivered snapshot eligible under the selected policy and preserve accurate policy understanding.",
+      "seed": {
+        "provenance": "SCRIPTED prior with correct claim and erroneous discriminator; not a natural D6 model error.",
+        "evidence": [
+          {
+            "ref": "prior:snapshot",
+            "text": "The current cached_snapshot policy admits validated records. live_snapshot additionally requires reachability at delivery. Record R is validated=True and reachable=True; the cached_snapshot includes R.",
+            "origin": "execution"
+          }
+        ],
+        "items": [
+          {
+            "kind": "question",
+            "text": "Does a reachability change affect eligibility under the current cached_snapshot policy?",
+            "status": "open",
+            "basis": [
+              {
+                "ref": "prior:snapshot",
+                "quote": "live_snapshot additionally requires reachability at delivery."
+              }
+            ]
+          }
+        ]
+      },
+      "events": [
+        {
+          "trigger": "Owner requested a policy-scope review after its completion report. Assess whether current eligibility conditions warrant any direction change.",
+          "kind": "execution.outcome",
+          "status": "completed",
+          "facts": "The current cached_snapshot policy admits validated records. live_snapshot additionally requires reachability at delivery. Record R is validated=True and reachable=False; the completed cached_snapshot includes R. Current revision fields and all delivery acknowledgements are correct. No other acceptance condition is missing."
+        }
+      ],
+      "diagnostic_intervention": "Only erroneous prior item omitted; evidence and event unchanged. Not a production repair."
+    }
+  ],
+  "stage_limits": {
+    "diagnostic": 12,
+    "development-1": 12,
+    "development-2": 12,
+    "acceptance": 39
+  },
+  "model": "deepseek-v4-pro",
+  "thinking": "disabled",
+  "temperature": 0,
+  "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+  "image_id": "sha256:7644dc7bb9f65189e87555f507254b7c772e3d27a4d138e0ca50e0a7e55056c2",
+  "total_max_calls": 75,
+  "max_output_tokens_per_call": 2000,
+  "task_file_sha256": "e927d163eebebe96a8af16431aa3de4f2af82cd17a124a68ef27557871070062",
+  "discipline": "New D6 campaign. Frozen diagnostic pairs; at most two evidenced candidate passes; independent cases frozen afterwards and run once. No runtime audit feedback.",
+  "sha256": "856153aaf24150fe0abc9a96f27331a8f43d4abc38daec8afdd67af04d6d2aad"
+}

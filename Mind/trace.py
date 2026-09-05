@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,9 +29,11 @@ COGNITIVE_COMPACT_PROMPT_VERSION = "mind-cognitive-prompt-v4"
 COGNITIVE_PROBE_PROJECTOR_VERSION = "mind-cognitive-projector-v5"
 COGNITIVE_PROBE_PROMPT_VERSION = "mind-cognitive-prompt-v5"
 MAX_COGNITIVE_CONTEXT_CHARS = 8_000
+NATIVE_PROTOCOL_VERSION = "cognition-native-d4:3-calls:1-repair:1-read"
 
 ACTIVATION_STARTED = "ACTIVATION_STARTED"
 MODEL_OUTPUT_RECORDED = "MODEL_OUTPUT_RECORDED"
+NATIVE_REPAIR_RESERVED = "NATIVE_REPAIR_RESERVED"
 CAPABILITY_REQUESTED = "CAPABILITY_REQUESTED"
 CAPABILITY_OBSERVED = "CAPABILITY_OBSERVED"
 INITIAL_EXECUTION_OBSERVED = "INITIAL_EXECUTION_OBSERVED"
@@ -225,6 +228,7 @@ claim checks were passed merely because an artifact was accepted.
 _EVENT_TYPES = {
     ACTIVATION_STARTED,
     MODEL_OUTPUT_RECORDED,
+    NATIVE_REPAIR_RESERVED,
     CAPABILITY_REQUESTED,
     CAPABILITY_OBSERVED,
     INITIAL_EXECUTION_OBSERVED,
@@ -406,6 +410,103 @@ class MindTrace:
             raise TraceError("trace_not_waiting_for_result")
         return cls(target, events[0].activation_id, fixed_timestamp=None, events=events, read_only=False)
 
+    @classmethod
+    def reopen_for_native(cls, path: str | Path) -> MindTrace:
+        """Resume a known native result, never an uncertain dispatched call."""
+        trace = cls.reopen(path)
+        if trace.events[0].payload.get("native_protocol") != NATIVE_PROTOCOL_VERSION:
+            raise TraceError("native_protocol_not_enabled")
+        project_model_request(trace.events)  # Must still be awaiting cognition.
+        records = trace.native_records()
+        if not records or records[-1]["kind"] != "result":
+            raise TraceError("native_result_unknown")
+        phase = 2 if any(e.event_type == CAPABILITY_OBSERVED for e in trace.events) else 1
+        if records[-2]["phase"] != phase:
+            # A lost phase-2 tail is indistinguishable from a crash just before
+            # its reservation. Preserve the conservative no-resampling rule.
+            raise TraceError("native_result_unknown")
+        trace._read_only = False
+        return trace
+
+    def native_records(self) -> list[dict]:
+        """Bounded wire annex to this activation; legacy logical Trace is unchanged."""
+        path = self._path.with_suffix(".native.jsonl")
+        try:
+            if path.stat().st_size > 6 * 65536:
+                raise TraceError("native_trace_too_large")
+            records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+            self._validate_native(records)
+        except FileNotFoundError:
+            records = []
+        except OSError as exc:
+            raise TraceError("native_persistence_failed") from exc
+        except (ValueError, KeyError, TypeError) as exc:
+            raise TraceError("invalid_native_trace") from exc
+        fence = next((e for e in self.events if e.event_type == NATIVE_REPAIR_RESERVED), None)
+        if fence is not None:
+            size = fence.payload["record_count"]
+            if (len(records) < size or hashlib.sha256(_canonical_json(records[:size]).encode()).hexdigest()
+                    != fence.payload["prefix_sha256"]):
+                raise TraceError("native_prefix_lost")
+        return records
+
+    def reserve_native_repair(self):
+        records = self.native_records()
+        self.append(NATIVE_REPAIR_RESERVED,
+            {"record_count": len(records), "prefix_sha256": hashlib.sha256(_canonical_json(records).encode()).hexdigest()},
+            source_event_seqs=(self.events[-1].seq,))
+
+    def _validate_native(self, records):
+        if len(records) > 6:
+            raise TraceError("native_call_budget")
+        repairs = 0
+        for index, record in enumerate(records):
+            if (record.get("activation_id") != self._activation_id or record.get("seq") != index
+                    or record.get("version") != NATIVE_PROTOCOL_VERSION):
+                raise TraceError("native_identity_conflict")
+            if index % 2 == 0:
+                if set(record) != {"activation_id", "seq", "version", "kind", "phase", "repair", "wire"}:
+                    raise TraceError("invalid_native_call")
+                if (record["kind"] != "call" or type(record["repair"]) is not bool
+                        or type(record["phase"]) is not int or record["phase"] not in {1, 2}):
+                    raise TraceError("invalid_native_call")
+                previous = records[index-1] if index else None
+                same_phase = bool(index and record["phase"] == records[index-2]["phase"])
+                if record["repair"] != same_phase or (same_phase and not previous["recoverable"]):
+                    raise TraceError("invalid_native_repair")
+                if not same_phase and (record["phase"] != (2 if index else 1)
+                                       or (index and not previous["accepted"])):
+                    raise TraceError("invalid_native_phase")
+                repairs += record["repair"]
+                if repairs > 1:
+                    raise TraceError("native_repair_budget")
+            else:
+                if set(record) != {"activation_id", "seq", "version", "kind", "response", "errors", "accepted", "recoverable"}:
+                    raise TraceError("invalid_native_result")
+                if (record["kind"] != "result" or type(record["accepted"]) is not bool
+                        or type(record["recoverable"]) is not bool
+                        or (record["accepted"] and (record["recoverable"] or record["errors"]))):
+                    raise TraceError("invalid_native_result")
+
+    def append_native(self, **payload) -> None:
+        if self._read_only or self.events[0].payload.get("native_protocol") != NATIVE_PROTOCOL_VERSION:
+            raise TraceError("native_trace_not_writable")
+        records = self.native_records()
+        record = {"activation_id": self._activation_id, "seq": len(records),
+                  "version": NATIVE_PROTOCOL_VERSION, **payload}
+        self._validate_native([*records, record])
+        encoded = (_canonical_json(record) + "\n").encode("utf-8")
+        if len(encoded) > 65536:
+            raise TraceError("native_record_too_large")
+        try:
+            with self._path.with_suffix(".native.jsonl").open("ab") as stream:
+                if stream.write(encoded) != len(encoded):
+                    raise OSError("partial native append")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            raise TraceError("native_persistence_failed") from exc
+
     @property
     def events(self) -> tuple[MindEvent, ...]:
         return self._events
@@ -522,8 +623,8 @@ def project_model_request(events: Sequence[MindEvent]) -> ModelRequestProjection
             ],
         }
     elif state == "awaiting_model_2":
-        request_event = prefix[-2]
-        observation_event = prefix[-1]
+        request_event = next(e for e in reversed(prefix) if e.event_type == CAPABILITY_REQUESTED)
+        observation_event = next(e for e in reversed(prefix) if e.event_type == CAPABILITY_OBSERVED)
         user_payload = {
             "activation": activation,
             "capability_request": _thaw(request_event.payload),
@@ -647,7 +748,8 @@ def _validate_sequence(
 ) -> str:
     if not events:
         raise TraceError("empty_trace")
-    if len(events) > MAX_TRACE_EVENTS:
+    native = events[0].payload.get("native_protocol") == NATIVE_PROTOCOL_VERSION
+    if len(events) > MAX_TRACE_EVENTS + int(native):
         raise TraceError("too_many_events")
 
     activation_id = events[0].activation_id
@@ -658,9 +760,21 @@ def _validate_sequence(
     supervisor_evidence_event: MindEvent | None = None
     last_model_event: MindEvent | None = None
     issue_event: MindEvent | None = None
+    repair_reserved = False
 
     for index, event in enumerate(events):
         _validate_common_event(event, expected_seq=index, activation_id=activation_id)
+
+        if event.event_type == NATIVE_REPAIR_RESERVED:
+            if (not native or repair_reserved or state not in {"awaiting_model_1", "awaiting_model_1_with_initial", "awaiting_model_2"}):
+                raise TraceError("invalid_native_repair_reservation")
+            _require_keys(event.payload, {"record_count", "prefix_sha256"})
+            if (type(event.payload["record_count"]) is not int or event.payload["record_count"] not in {2, 4}
+                    or type(event.payload["prefix_sha256"]) is not str or len(event.payload["prefix_sha256"]) != 64):
+                raise TraceError("invalid_native_repair_reservation")
+            _require_refs(event, (index-1,))
+            repair_reserved = True
+            continue
 
         if state == "empty":
             if event.event_type != ACTIVATION_STARTED:
@@ -951,8 +1065,12 @@ def _validate_started(payload: Mapping[str, object]) -> None:
             "projector_version",
             "prompt_version",
         } | ({"cognitive_context"} if cognitive else set())
-        | ({"available_capabilities"} if unified else set()),
+        | ({"available_capabilities"} if unified else set())
+        | ({"native_protocol"} if "native_protocol" in payload else set()),
     )
+    if "native_protocol" in payload and (payload["native_protocol"] != NATIVE_PROTOCOL_VERSION
+                                         or version != COGNITIVE_STEP_PROJECTOR_VERSION):
+        raise TraceError("unsupported_native_protocol")
     if (
         type(payload["projector_version"]) is not str
         or payload["projector_version"]
@@ -1419,7 +1537,7 @@ def _read_events(path: Path) -> tuple[MindEvent, ...]:
                 except (RecursionError, TypeError, UnicodeDecodeError, ValueError):
                     raise TraceError("invalid_jsonl_record") from None
                 events.append(_event_from_document(document))
-                if len(events) > MAX_TRACE_EVENTS:
+                if len(events) > MAX_TRACE_EVENTS + int(events[0].payload.get("native_protocol") == NATIVE_PROTOCOL_VERSION):
                     raise TraceError("too_many_events")
     except TraceError:
         raise

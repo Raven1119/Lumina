@@ -1,0 +1,40 @@
+{
+  "date": "2026-09-06",
+  "baseline": "local D5 post-fix on Execution_lab2@9d63da7311baa7611782cc8079fb09e9d81f4e25",
+  "early_full_mind_nervous": {
+    "passed": 522,
+    "skipped": 5,
+    "seconds": 318.02
+  },
+  "final_mind_nervous_sandbox": {
+    "passed": 518,
+    "failed": 10,
+    "skipped": 5,
+    "seconds": 334.91,
+    "failure_reason": "Docker named-pipe permission denied; every failure is a Docker test or consequence of isolated kernel startup failure."
+  },
+  "same_failed_docker_tests_with_access": {
+    "passed": 10,
+    "deselected": 16,
+    "seconds": 13.96,
+    "command": "pytest Mind/test_event_loop.py Mind/test_semantic_revision.py -q -k \"normal_python or supported_facade or protocol_case or guidance_on_natural or d3_three_event or d5_real_execution\"; LUMINA_D2_DOCKER=1"
+  },
+  "final_covered": {
+    "passed_across_scoped_runs": 528,
+    "skipped": 5,
+    "note": "Do not describe the restricted run itself as a clean pass."
+  },
+  "targeted_after_v2": {
+    "passed": 44,
+    "skipped": 4,
+    "seconds": 6.31
+  },
+  "root_regression": {
+    "passed": 347,
+    "skipped": 24,
+    "seconds": 17.48
+  },
+  "history": "D4 integrity historical file hashes plus D5 analysis and acceptance checksums verified by analyze.py; D4/D5/D6 v1 wires reconstructed exactly.",
+  "scope": "No provider call in scripted tests. Real campaign performed separately once per frozen stage. No production wiring, commit or push.",
+  "workspace_cleanup": "acceptance/reverse_scope_summary/workspace-final contains all four verified final files; exact TEMP parent removed after path-bound check."
+}
