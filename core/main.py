@@ -177,7 +177,7 @@ def _default_mind_gate(chat_model: ModelClient) -> MindGate:
     if mode == "constant":
         return ConstantMindGate()
     # Default: promoted stage-2 gate, exactly as validated in
-    # docs/experiments/mind_stage2_promotion/ (mind-gate-v2, non-thinking,
+    # docs/MEMORY_EXPERIMENT_HISTORY.md (mind-gate-v2, non-thinking,
     # 8 output tokens, temperature 0). Gate-client construction failure
     # falls back to the constant gate so chat stays available.
     try:

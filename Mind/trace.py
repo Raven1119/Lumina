@@ -12,8 +12,9 @@ from types import MappingProxyType
 from typing import Mapping, Sequence
 
 from Mind.task_view import (EXPRESSION_CONTRACT_VERSIONS, CONTINUITY_CONTRACT_VERSION,
-                           context_limit, output_limit, project_observation, fingerprint)
+                           context_limit, output_limit, project_observation, fingerprint, evidence_read_limits, execution_view_limits, analysis_question_limit)
 from Mind.world_model import _request as _model_request, verify_run
+from Mind.task_view import directive_limit
 
 
 TRACE_FORMAT_VERSION = 1
@@ -31,6 +32,65 @@ COGNITIVE_COMPACT_PROMPT_VERSION = "mind-cognitive-prompt-v4"
 COGNITIVE_PROBE_PROJECTOR_VERSION = "mind-cognitive-projector-v5"
 COGNITIVE_PROBE_PROMPT_VERSION = "mind-cognitive-prompt-v5"
 NATIVE_PROTOCOL_VERSION = "cognition-native-d4:3-calls:1-repair:1-read"
+CONTINUED_NATIVE_PROTOCOL_VERSION = "cognition-native-v33:4-calls:1-repair:2-consults"
+REFERENCE_REPAIR_NATIVE_PROTOCOL_VERSION = "cognition-native-v52:4-calls:1-repair:2-consults"
+GROUNDED_REPAIR_NATIVE_PROTOCOL_VERSION = "cognition-native-v54:4-calls:1-repair:2-consults"
+ACTIVITY_NATIVE_PROTOCOL_VERSION = "cognition-native-v56:6-calls"
+TOOL_NAME_REPAIR_NATIVE_PROTOCOL_VERSION = "cognition-native-v64:6-calls:tool-name-repair"
+CONSULTATION_NATIVE_PROTOCOL_VERSION = "cognition-native-v65:6-calls:direct-consultation"
+ACTIVITY_NATIVE_PROTOCOL_VERSIONS = (ACTIVITY_NATIVE_PROTOCOL_VERSION, TOOL_NAME_REPAIR_NATIVE_PROTOCOL_VERSION,
+                                    CONSULTATION_NATIVE_PROTOCOL_VERSION)
+ACTIVITY_CALLS = 6
+CONTINUED_NATIVE_PROTOCOL_VERSIONS = (CONTINUED_NATIVE_PROTOCOL_VERSION, REFERENCE_REPAIR_NATIVE_PROTOCOL_VERSION,
+                                    GROUNDED_REPAIR_NATIVE_PROTOCOL_VERSION, *ACTIVITY_NATIVE_PROTOCOL_VERSIONS)
+NATIVE_PROTOCOL_VERSIONS = (NATIVE_PROTOCOL_VERSION, *CONTINUED_NATIVE_PROTOCOL_VERSIONS)
+
+
+def activity_steps(events):
+    """Limits follow the persisted activity version, never a restart default."""
+    if unified_activity(events):
+        return ACTIVITY_CALLS
+    return 3 if events[0].payload.get("native_protocol") in CONTINUED_NATIVE_PROTOCOL_VERSIONS else 2
+
+
+def unified_activity(events):
+    return events[0].payload.get('native_protocol') in ACTIVITY_NATIVE_PROTOCOL_VERSIONS
+
+
+def native_call_limit(events):
+    return ACTIVITY_CALLS if unified_activity(events) else activity_steps(events) + 1
+
+
+def consultation_allowed(events):
+    """Reserve a subsequent call to interpret a consultation; repairs also spend it."""
+    spent = cognitive_phase(events)
+    if unified_activity(events):
+        spent += sum(e.event_type == NATIVE_REPAIR_RESERVED for e in events)
+    return spent < activity_steps(events)
+
+
+def cognitive_phase(events):
+    return 1 + sum(e.event_type == CAPABILITY_OBSERVED for e in events)
+
+
+def model_dependencies(events):
+    return (0, *(e.seq for e in events if e.event_type in {
+        INITIAL_EXECUTION_OBSERVED, SUPERVISOR_EVIDENCE_OBSERVED,
+        CAPABILITY_REQUESTED, CAPABILITY_OBSERVED}))
+
+
+def observation_ref(events, event):
+    first = next(e for e in events if e.event_type == CAPABILITY_OBSERVED)
+    return "activation:observation" + (f":{event.seq}" if event.seq != first.seq else "")
+
+
+def trace_event_limit(events):
+    if unified_activity(events):
+        # Start, optional initial observation, consultations, result and finish.
+        # A repair consumes a call in place of a three-event consultation.
+        return 3 * ACTIVITY_CALLS + 3
+    native = events[0].payload.get("native_protocol") in NATIVE_PROTOCOL_VERSIONS
+    return MAX_TRACE_EVENTS + int(native) + 3 * (activity_steps(events) - 2)
 
 ACTIVATION_STARTED = "ACTIVATION_STARTED"
 MODEL_OUTPUT_RECORDED = "MODEL_OUTPUT_RECORDED"
@@ -48,6 +108,7 @@ MAX_TRACE_EVENTS = 8
 MAX_EVENT_BYTES = 16_384
 EXPRESSION_EVENT_BYTES = 32_768
 CONTINUITY_EVENT_BYTES = 98_304  # 16k Unicode context plus activation/Trace envelope.
+OWNER_CONDITION_EVENT_BYTES = 4 * 64000 + MAX_EVENT_BYTES  # v49 Unicode context plus the existing envelope.
 MAX_ACTIVATION_ID_CHARS = 128
 MAX_DECISION_ID_CHARS = 128
 
@@ -417,13 +478,13 @@ class MindTrace:
     def reopen_for_native(cls, path: str | Path) -> MindTrace:
         """Resume a known native result, never an uncertain dispatched call."""
         trace = cls.reopen(path)
-        if trace.events[0].payload.get("native_protocol") != NATIVE_PROTOCOL_VERSION:
+        if trace.events[0].payload.get("native_protocol") not in NATIVE_PROTOCOL_VERSIONS:
             raise TraceError("native_protocol_not_enabled")
         project_model_request(trace.events)  # Must still be awaiting cognition.
         records = trace.native_records()
         if not records or records[-1]["kind"] != "result":
             raise TraceError("native_result_unknown")
-        phase = 2 if any(e.event_type == CAPABILITY_OBSERVED for e in trace.events) else 1
+        phase = cognitive_phase(trace.events)
         if records[-2]["phase"] != phase:
             # A lost phase-2 tail is indistinguishable from a crash just before
             # its reservation. Preserve the conservative no-resampling rule.
@@ -439,7 +500,7 @@ class MindTrace:
         """Bounded wire annex to this activation; legacy logical Trace is unchanged."""
         path = self._path.with_suffix(".native.jsonl")
         try:
-            if path.stat().st_size > 6 * self._native_record_limit():
+            if path.stat().st_size > 2 * native_call_limit(self.events) * self._native_record_limit():
                 raise TraceError("native_trace_too_large")
             records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
             self._validate_native(records)
@@ -449,8 +510,7 @@ class MindTrace:
             raise TraceError("native_persistence_failed") from exc
         except (ValueError, KeyError, TypeError) as exc:
             raise TraceError("invalid_native_trace") from exc
-        fence = next((e for e in self.events if e.event_type == NATIVE_REPAIR_RESERVED), None)
-        if fence is not None:
+        for fence in (e for e in self.events if e.event_type == NATIVE_REPAIR_RESERVED):
             size = fence.payload["record_count"]
             if (len(records) < size or hashlib.sha256(_canonical_json(records[:size]).encode()).hexdigest()
                     != fence.payload["prefix_sha256"]):
@@ -459,33 +519,36 @@ class MindTrace:
 
     def reserve_native_repair(self):
         records = self.native_records()
+        if any(e.event_type == NATIVE_REPAIR_RESERVED and e.payload['record_count'] == len(records)
+               for e in self.events):
+            return  # Crash after reservation, before dispatch.
         self.append(NATIVE_REPAIR_RESERVED,
             {"record_count": len(records), "prefix_sha256": hashlib.sha256(_canonical_json(records).encode()).hexdigest()},
             source_event_seqs=(self.events[-1].seq,))
 
     def _validate_native(self, records):
-        if len(records) > 6:
+        if len(records) > 2 * native_call_limit(self.events):
             raise TraceError("native_call_budget")
         repairs = 0
         for index, record in enumerate(records):
             if (record.get("activation_id") != self._activation_id or record.get("seq") != index
-                    or record.get("version") != NATIVE_PROTOCOL_VERSION):
+                    or record.get("version") != self.events[0].payload.get("native_protocol")):
                 raise TraceError("native_identity_conflict")
             if index % 2 == 0:
                 if set(record) != {"activation_id", "seq", "version", "kind", "phase", "repair", "wire"}:
                     raise TraceError("invalid_native_call")
                 if (record["kind"] != "call" or type(record["repair"]) is not bool
-                        or type(record["phase"]) is not int or record["phase"] not in {1, 2}):
+                        or type(record["phase"]) is not int or record["phase"] not in range(1, activity_steps(self.events) + 1)):
                     raise TraceError("invalid_native_call")
                 previous = records[index-1] if index else None
                 same_phase = bool(index and record["phase"] == records[index-2]["phase"])
                 if record["repair"] != same_phase or (same_phase and not previous["recoverable"]):
                     raise TraceError("invalid_native_repair")
-                if not same_phase and (record["phase"] != (2 if index else 1)
+                if not same_phase and (record["phase"] != (records[index-2]["phase"] + 1 if index else 1)
                                        or (index and not previous["accepted"])):
                     raise TraceError("invalid_native_phase")
                 repairs += record["repair"]
-                if repairs > 1:
+                if repairs > 1 and not unified_activity(self.events):
                     raise TraceError("native_repair_budget")
             else:
                 if set(record) != {"activation_id", "seq", "version", "kind", "response", "errors", "accepted", "recoverable"}:
@@ -496,11 +559,11 @@ class MindTrace:
                     raise TraceError("invalid_native_result")
 
     def append_native(self, **payload) -> None:
-        if self._read_only or self.events[0].payload.get("native_protocol") != NATIVE_PROTOCOL_VERSION:
+        if self._read_only or self.events[0].payload.get("native_protocol") not in NATIVE_PROTOCOL_VERSIONS:
             raise TraceError("native_trace_not_writable")
         records = self.native_records()
         record = {"activation_id": self._activation_id, "seq": len(records),
-                  "version": NATIVE_PROTOCOL_VERSION, **payload}
+                  "version": self.events[0].payload["native_protocol"], **payload}
         self._validate_native([*records, record])
         encoded = (_canonical_json(record) + "\n").encode("utf-8")
         if len(encoded) > self._native_record_limit():
@@ -579,9 +642,10 @@ class MindTrace:
 
         return event
 
-    def preview_capability_result(self, observation, error: str | None = None) -> MindEvent:
+    def preview_capability_result(self, observation, error: str | None = None, *, request_seq=None) -> MindEvent:
         """Validate an external result against its actual request and snapshot."""
-        request = next((event for event in self._events if event.event_type == CAPABILITY_REQUESTED), None)
+        request = next((event for event in reversed(self._events) if event.event_type == CAPABILITY_REQUESTED
+                        and (request_seq is None or event.seq == request_seq)), None)
         if request is None or (error is not None and observation is not None):
             raise TraceError("invalid_capability_result")
         initial = next((event for event in self._events if event.event_type == INITIAL_EXECUTION_OBSERVED), None)
@@ -635,7 +699,7 @@ def project_model_request(events: Sequence[MindEvent]) -> ModelRequestProjection
         user_payload = {
             "activation": activation,
             "capability_request": _thaw(request_event.payload),
-            "further_capability_allowed": False,
+            "further_capability_allowed": consultation_allowed(prefix),
             "observation": _thaw(observation_event.payload["observation"]),
         }
     else:
@@ -655,6 +719,19 @@ def project_model_request(events: Sequence[MindEvent]) -> ModelRequestProjection
     if cognitive:
         user_payload["cognition"] = _thaw(start.payload["cognitive_context"])
         task_view = user_payload["cognition"].get("task_view")
+        if activity_steps(prefix) > 2:
+            user_payload["observations"] = [
+                {"ref": observation_ref(prefix, e), "observation": project_observation(
+                    _thaw(e.payload["observation"]), task_view)}
+                for e in prefix if e.event_type == CAPABILITY_OBSERVED]
+            user_payload["activity_budget"] = {"steps": activity_steps(prefix),
+                "phase": cognitive_phase(prefix), "consultations_remaining": activity_steps(prefix) - cognitive_phase(prefix),
+                "protocol_repairs": 1}
+            if unified_activity(prefix):
+                spent = cognitive_phase(prefix) - 1 + sum(e.event_type == NATIVE_REPAIR_RESERVED for e in prefix)
+                user_payload['activity_budget'] = {'mind_calls_total': ACTIVITY_CALLS,
+                    'mind_calls_remaining': ACTIVITY_CALLS - spent,
+                    'consultations_and_corrections_share_this_budget': True}
         if task_view is not None:
             if fingerprint(activation["execution_goal_snapshot"]) != task_view["execution_goal_sha256"]:
                 raise TraceError("execution_task_view_conflict")
@@ -668,10 +745,10 @@ def project_model_request(events: Sequence[MindEvent]) -> ModelRequestProjection
     if version in {COGNITIVE_STEP_PROJECTOR_VERSION, COGNITIVE_MODEL_PROJECTOR_VERSION,
                    COGNITIVE_COMPACT_PROJECTOR_VERSION, COGNITIVE_PROBE_PROJECTOR_VERSION}:
         user_payload["available_capabilities"] = (
-            [] if state == "awaiting_model_2" else _thaw(start.payload["available_capabilities"])
+            [] if not consultation_allowed(prefix) else _thaw(start.payload["available_capabilities"])
         )
         if state == "awaiting_model_2":
-            first = next(event for event in prefix if event.event_type == MODEL_OUTPUT_RECORDED)
+            first = next(event for event in reversed(prefix) if event.event_type == MODEL_OUTPUT_RECORDED)
             proposal = json.loads(first.payload["text"], object_pairs_hook=_strict_json_object,
                                   parse_constant=_reject_json_constant)
             user_payload["pending_updates"] = proposal["updates"]
@@ -708,12 +785,9 @@ def replay_activation(events: Sequence[MindEvent]) -> ActivationReplay:
     requests: list[ModelRequestProjection] = [
         project_model_request(history[:first_request_prefix_length])
     ]
-    observed = next(
-        (event for event in history if event.event_type == CAPABILITY_OBSERVED),
-        None,
-    )
-    if observed is not None:
-        requests.append(project_model_request(history[: observed.seq + 1]))
+    observed = next((event for event in history if event.event_type == CAPABILITY_OBSERVED), None)
+    for result_event in (event for event in history if event.event_type == CAPABILITY_OBSERVED):
+        requests.append(project_model_request(history[: result_event.seq + 1]))
 
     model_outputs = tuple(
         str(event.payload["text"])
@@ -766,8 +840,8 @@ def _validate_sequence(
 ) -> str:
     if not events:
         raise TraceError("empty_trace")
-    native = events[0].payload.get("native_protocol") == NATIVE_PROTOCOL_VERSION
-    if len(events) > MAX_TRACE_EVENTS + int(native):
+    native = events[0].payload.get("native_protocol") in NATIVE_PROTOCOL_VERSIONS
+    if len(events) > trace_event_limit(events):
         raise TraceError("too_many_events")
 
     activation_id = events[0].activation_id
@@ -778,20 +852,22 @@ def _validate_sequence(
     supervisor_evidence_event: MindEvent | None = None
     last_model_event: MindEvent | None = None
     issue_event: MindEvent | None = None
-    repair_reserved = False
+    repair_reserved = 0
 
     for index, event in enumerate(events):
         _validate_common_event(event, expected_seq=index, activation_id=activation_id)
 
         if event.event_type == NATIVE_REPAIR_RESERVED:
-            if (not native or repair_reserved or state not in {"awaiting_model_1", "awaiting_model_1_with_initial", "awaiting_model_2"}):
+            if (not native or (repair_reserved and not unified_activity(events))
+                    or state not in {"awaiting_model_1", "awaiting_model_1_with_initial", "awaiting_model_2"}):
                 raise TraceError("invalid_native_repair_reservation")
             _require_keys(event.payload, {"record_count", "prefix_sha256"})
-            if (type(event.payload["record_count"]) is not int or event.payload["record_count"] not in {2, 4}
+            if (type(event.payload["record_count"]) is not int or event.payload["record_count"] not in range(2, 2 * native_call_limit(events), 2)
+                    or event.payload['record_count'] <= repair_reserved
                     or type(event.payload["prefix_sha256"]) is not str or len(event.payload["prefix_sha256"]) != 64):
                 raise TraceError("invalid_native_repair_reservation")
             _require_refs(event, (index-1,))
-            repair_reserved = True
+            repair_reserved = event.payload['record_count']
             continue
 
         if state == "empty":
@@ -804,7 +880,7 @@ def _validate_sequence(
 
         if state == "awaiting_model_1":
             if event.event_type == INITIAL_EXECUTION_OBSERVED:
-                _validate_initial_execution_observed(event.payload)
+                _validate_initial_execution_observed(event.payload, events[0].payload.get("cognitive_context"))
                 _require_refs(event, (0,))
                 initial_execution_event = event
                 state = "awaiting_model_1_with_initial"
@@ -884,9 +960,10 @@ def _validate_sequence(
                 continue
             raise TraceError("invalid_event_order")
 
-        if state == "after_model_1":
+        if state == "after_model_1" or (state == "after_model_2" and event.event_type == CAPABILITY_REQUESTED
+                and consultation_allowed(events[:index])):
             if event.event_type == CAPABILITY_REQUESTED:
-                _validate_capability_request(event.payload)
+                _validate_capability_request(event.payload, contract=events[0].payload.get("cognitive_context", {}).get("contract_version"))
                 if (event.payload["capability"] == "run_world_model"
                         and events[0].payload["projector_version"] not in {
                             COGNITIVE_MODEL_PROJECTOR_VERSION, COGNITIVE_COMPACT_PROJECTOR_VERSION,
@@ -907,7 +984,7 @@ def _validate_sequence(
                 state = "terminal"
                 continue
             if event.event_type == MIND_DIRECTIVE_ISSUED:
-                _validate_directive_issued(event)
+                _validate_directive_issued(event, events=events)
                 assert last_model_event is not None
                 _require_refs(event, (last_model_event.seq,))
                 issue_event = event
@@ -927,6 +1004,8 @@ def _validate_sequence(
                 _validate_capability_observation(
                     event.payload,
                     requested_capability=str(request_event.payload["capability"]),
+                    contract=events[0].payload.get("cognitive_context", {}).get("contract_version"),
+                    cognitive_context=events[0].payload.get("cognitive_context"),
                 )
                 if request_event.payload["capability"] in {"run_world_model", "evaluate_model"}:
                     observation = _thaw(event.payload["observation"])
@@ -970,23 +1049,9 @@ def _validate_sequence(
 
         if state == "awaiting_model_2":
             assert request_event is not None and observation_event is not None
-            dependencies = (
-                (0, request_event.seq, observation_event.seq)
-                if initial_execution_event is None
-                else (
-                    0,
-                    initial_execution_event.seq,
-                    *(
-                        (supervisor_evidence_event.seq,)
-                        if supervisor_evidence_event is not None
-                        else ()
-                    ),
-                    request_event.seq,
-                    observation_event.seq,
-                )
-            )
+            dependencies = model_dependencies(events[:index])
             if event.event_type == MODEL_OUTPUT_RECORDED:
-                _validate_model_output(event.payload, expected_call_index=2, limit=output_limit(events[0].payload.get("cognitive_context", {})))
+                _validate_model_output(event.payload, expected_call_index=cognitive_phase(events[:index]), limit=output_limit(events[0].payload.get("cognitive_context", {})))
                 _require_refs(event, dependencies)
                 last_model_event = event
                 state = "after_model_2"
@@ -1006,7 +1071,7 @@ def _validate_sequence(
                 state = "terminal"
                 continue
             if event.event_type == MIND_DIRECTIVE_ISSUED:
-                _validate_directive_issued(event)
+                _validate_directive_issued(event, events=events)
                 _require_refs(event, (last_model_event.seq,))
                 issue_event = event
                 state = "directive_pending"
@@ -1086,7 +1151,7 @@ def _validate_started(payload: Mapping[str, object]) -> None:
         | ({"available_capabilities"} if unified else set())
         | ({"native_protocol"} if "native_protocol" in payload else set()),
     )
-    if "native_protocol" in payload and (payload["native_protocol"] != NATIVE_PROTOCOL_VERSION
+    if "native_protocol" in payload and (payload["native_protocol"] not in NATIVE_PROTOCOL_VERSIONS
                                          or version != COGNITIVE_STEP_PROJECTOR_VERSION):
         raise TraceError("unsupported_native_protocol")
     if (
@@ -1116,6 +1181,11 @@ def _validate_started(payload: Mapping[str, object]) -> None:
     if unified:
         available = payload["available_capabilities"]
         permitted = {"recall_memory", "inspect_execution"}
+        if "execution_ref" in context and context["execution_ref"] is None:
+            permitted.discard("inspect_execution")
+        from Mind.task_view import INTEGRATION_CONTRACT_VERSIONS
+        if context.get("contract_version") in INTEGRATION_CONTRACT_VERSIONS:
+            permitted.update({"read_evidence", "analyze_world_model"})
         if version in {COGNITIVE_MODEL_PROJECTOR_VERSION, COGNITIVE_COMPACT_PROJECTOR_VERSION, COGNITIVE_PROBE_PROJECTOR_VERSION}:
             permitted.add("run_world_model")
         if version == COGNITIVE_PROBE_PROJECTOR_VERSION and "model_probe" in context:
@@ -1143,8 +1213,15 @@ def _validate_started(payload: Mapping[str, object]) -> None:
         {"execution_goal_snapshot", "execution_status", "trigger"},
     )
     _validate_required_text(activation["trigger"], MAX_TRIGGER_CHARS)
-    _validate_required_text(activation["execution_goal_snapshot"], MAX_GOAL_CHARS)
-    _validate_required_text(activation["execution_status"], MAX_STATUS_CHARS)
+    _validate_required_text(activation["execution_goal_snapshot"], execution_view_limits(payload.get("cognitive_context"))[0])
+    context = payload.get("cognitive_context", {})
+    if "execution_ref" in context and context["execution_ref"] is None:
+        if activation["execution_status"] is not None:
+            raise TraceError("invalid_execution_context")
+    else:
+        if "execution_ref" in context:
+            _validate_required_text(context["execution_ref"], 128)
+        _validate_required_text(activation["execution_status"], MAX_STATUS_CHARS)
 
 
 def _validate_model_output(
@@ -1165,14 +1242,18 @@ def _validate_model_output(
 
 def _validate_initial_execution_observed(
     payload: Mapping[str, object],
+    cognitive_context=None,
 ) -> None:
+    if (isinstance(cognitive_context, Mapping) and "execution_ref" in cognitive_context
+            and cognitive_context["execution_ref"] is None):
+        raise TraceError("execution_observation_without_execution")
     _require_keys(payload, {"failure", "goal", "recent_outcome", "status"})
-    _validate_required_text(payload["goal"], MAX_GOAL_CHARS)
+    _validate_required_text(payload["goal"], execution_view_limits(cognitive_context)[0])
     _validate_required_text(payload["status"], MAX_STATUS_CHARS)
     _validate_optional_text(payload["recent_outcome"], MAX_OUTCOME_CHARS)
     _validate_optional_text(payload["failure"], MAX_FAILURE_CHARS)
     if len(_canonical_json(_initial_execution_projection(payload))) > (
-        MAX_OBSERVATION_CHARS
+        execution_view_limits(cognitive_context)[1]
     ):
         raise TraceError("observation_too_large")
 
@@ -1275,8 +1356,27 @@ def _supervisor_evidence_projection(
     }
 
 
-def _validate_capability_request(payload: Mapping[str, object]) -> None:
+def _validate_capability_request(payload: Mapping[str, object], *, contract=None) -> None:
     capability = payload.get("capability")
+    if capability in {"read_evidence", "analyze_world_model"}:
+        bound_observation = capability == "analyze_world_model" and contract in {"cognitive-chain-v16", "cognitive-chain-v20", "cognitive-chain-v49", "cognitive-chain-v51", "cognitive-chain-v53", "cognitive-chain-v55", "cognitive-chain-v56", "cognitive-chain-v57", "cognitive-chain-v58", "cognitive-chain-v59", "cognitive-chain-v60", "cognitive-chain-v61", "cognitive-chain-v62", "cognitive-chain-v64", "cognitive-chain-v65", "cognitive-chain-v66", "cognitive-chain-v67"}
+        if contract in {'cognitive-chain-v56', 'cognitive-chain-v57', 'cognitive-chain-v58', 'cognitive-chain-v59', 'cognitive-chain-v60', 'cognitive-chain-v61', 'cognitive-chain-v62', 'cognitive-chain-v64', 'cognitive-chain-v65', 'cognitive-chain-v66', 'cognitive-chain-v67'}:
+            bound_observation = capability == 'analyze_world_model' and 'observation_file' in payload
+        _require_keys(payload, {"capability", "refs"} |
+                      ({"question", "model_ref"} if capability == "analyze_world_model" else set()) |
+                      ({"observation_file"} if bound_observation else set()))
+        if bound_observation:
+            _validate_required_text(payload["observation_file"], 128, normalized=True)
+        refs = payload["refs"]
+        if not isinstance(refs, (tuple, list)) or not 1 <= len(refs) <= 3:
+            raise TraceError("invalid_analysis_refs")
+        for ref in refs:
+            _validate_required_text(ref, 128, normalized=True)
+        if capability == "analyze_world_model":
+            _validate_required_text(payload["question"], analysis_question_limit(contract))
+            if type(payload["model_ref"]) is not str or len(payload["model_ref"]) > 128:
+                raise TraceError("invalid_model_ref")
+        return
     if capability == "evaluate_model":
         _require_keys(payload, {"capability", "source", "probe_ref"})
         _validate_required_text(payload["source"], MAX_MODEL_OUTPUT_CHARS)
@@ -1303,6 +1403,8 @@ def _validate_capability_observation(
     payload: Mapping[str, object],
     *,
     requested_capability: str,
+    contract=None,
+    cognitive_context=None,
 ) -> None:
     _require_keys(payload, {"capability", "observation"})
     if payload["capability"] != requested_capability:
@@ -1310,8 +1412,20 @@ def _validate_capability_observation(
     observation = payload["observation"]
     if not isinstance(observation, Mapping):
         raise TraceError("invalid_capability_observation")
-    if len(_canonical_json(_thaw(observation))) > MAX_OBSERVATION_CHARS:
+    text_limit, observation_limit = (evidence_read_limits(contract) if requested_capability == "read_evidence"
+                                     else execution_view_limits(cognitive_context) if requested_capability == "inspect_execution"
+                                     else (2700, MAX_OBSERVATION_CHARS))
+    if len(_canonical_json(_thaw(observation))) > observation_limit:
         raise TraceError("observation_too_large")
+
+    if requested_capability in {"read_evidence", "analyze_world_model"}:
+        _require_keys(observation, {"capability", "text", "origin"})
+        if observation["capability"] != requested_capability:
+            raise TraceError("invalid_analysis_observation")
+        if observation["origin"] not in {"execution", "computation"} or (requested_capability == "analyze_world_model" and observation["origin"] != "computation"):
+            raise TraceError("invalid_analysis_origin")
+        _validate_required_text(observation["text"], text_limit)
+        return
 
     if requested_capability in {"run_world_model", "evaluate_model"}:
         _require_keys(observation, {"capability", "status", "result", "safe_error_code"})
@@ -1371,7 +1485,7 @@ def _validate_capability_observation(
     )
     if observation["capability"] != "inspect_execution":
         raise TraceError("invalid_execution_observation")
-    _validate_required_text(observation["goal"], MAX_GOAL_CHARS)
+    _validate_required_text(observation["goal"], execution_view_limits(cognitive_context)[0])
     _validate_required_text(observation["status"], MAX_STATUS_CHARS)
     _validate_optional_text(observation["recent_outcome"], MAX_OUTCOME_CHARS)
     _validate_optional_text(observation["failure"], MAX_FAILURE_CHARS)
@@ -1391,28 +1505,29 @@ def _validate_finished(payload: Mapping[str, object]) -> None:
     raise TraceError("invalid_activation_result")
 
 
-def directive_id_for(activation_id: object, issuing_seq: object) -> str:
+def directive_id_for(activation_id: object, issuing_seq: object, *, events=None) -> str:
     """Derive the inspectable Directive ID from already durable trace facts."""
     _validate_activation_id(activation_id)
     if (
         type(issuing_seq) is not int
         or issuing_seq < 0
-        or issuing_seq >= MAX_TRACE_EVENTS
+        or issuing_seq >= (trace_event_limit(events) if events is not None else MAX_TRACE_EVENTS + 3)
     ):
         raise TraceError("invalid_directive_sequence")
     return f"{activation_id}:directive:{issuing_seq}"
 
 
-def _validate_directive_issued(event: MindEvent) -> None:
+def _validate_directive_issued(event: MindEvent, *, events=None) -> None:
     _require_keys(event.payload, {"directive_id", "text"})
-    expected_id = directive_id_for(event.activation_id, event.seq)
+    expected_id = directive_id_for(event.activation_id, event.seq, events=events)
     if type(event.payload["directive_id"]) is not str or (
         event.payload["directive_id"] != expected_id
     ):
         raise TraceError("invalid_directive_id")
     _validate_required_text(
         event.payload["text"],
-        MAX_DIRECTIVE_CHARS,
+        directive_limit(events[0].payload.get("cognitive_context", {}).get("contract_version")
+                        if events else None),
         normalized=True,
     )
 
@@ -1537,7 +1652,10 @@ def _event_document(event: MindEvent) -> dict[str, object]:
 
 def _event_byte_limit(start):
     contract = start.payload.get("cognitive_context", {}).get("contract_version")
-    return (CONTINUITY_EVENT_BYTES if contract == CONTINUITY_CONTRACT_VERSION else
+    from Mind.task_view import INTEGRATION_CONTRACT_VERSIONS
+    if contract in {"cognitive-chain-v49", "cognitive-chain-v51", "cognitive-chain-v53", "cognitive-chain-v55", "cognitive-chain-v56", "cognitive-chain-v57", "cognitive-chain-v58", "cognitive-chain-v59", "cognitive-chain-v60", "cognitive-chain-v61", "cognitive-chain-v62", "cognitive-chain-v64", "cognitive-chain-v65", "cognitive-chain-v66", "cognitive-chain-v67"}:
+        return OWNER_CONDITION_EVENT_BYTES
+    return (CONTINUITY_EVENT_BYTES if contract in {CONTINUITY_CONTRACT_VERSION, *INTEGRATION_CONTRACT_VERSIONS} else
             EXPRESSION_EVENT_BYTES if contract in EXPRESSION_CONTRACT_VERSIONS else MAX_EVENT_BYTES)
 
 
@@ -1546,10 +1664,10 @@ def _read_events(path: Path) -> tuple[MindEvent, ...]:
     try:
         with path.open("rb") as handle:
             while True:
-                raw = handle.readline(CONTINUITY_EVENT_BYTES + 2)
+                raw = handle.readline(OWNER_CONDITION_EVENT_BYTES + 2)
                 if not raw:
                     break
-                if len(raw) > CONTINUITY_EVENT_BYTES + 1 or not raw.endswith(b"\n"):
+                if len(raw) > OWNER_CONDITION_EVENT_BYTES + 1 or not raw.endswith(b"\n"):
                     raise TraceError("invalid_jsonl_record")
                 if raw == b"\n":
                     raise TraceError("empty_jsonl_record")
@@ -1564,7 +1682,7 @@ def _read_events(path: Path) -> tuple[MindEvent, ...]:
                 events.append(_event_from_document(document))
                 if len(raw) > _event_byte_limit(events[0]) + 1:
                     raise TraceError("invalid_jsonl_record")
-                if len(events) > MAX_TRACE_EVENTS + int(events[0].payload.get("native_protocol") == NATIVE_PROTOCOL_VERSION):
+                if len(events) > trace_event_limit(events):
                     raise TraceError("too_many_events")
     except TraceError:
         raise

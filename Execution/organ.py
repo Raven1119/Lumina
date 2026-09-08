@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import InitVar, asdict, dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Callable, Literal, Mapping
 
 from Execution.deepseek_model import DeepSeekModel
 from Execution.execution import (
@@ -80,6 +80,8 @@ class ExecutionOrgan:
         checkpoint_path: str | Path | None = None,
         max_depth: int = 1,
         ipython_control=None,
+        max_decisions_per_advance: int | None = None,
+        completion_review_required: Callable[[], bool] | None = None,
         _child_ref: ChildRef | None = None,
     ) -> None:
         self._workspace = Path(workspace).resolve()
@@ -90,6 +92,7 @@ class ExecutionOrgan:
             else None
         )
         self._max_decisions = max_decisions
+        self._max_decisions_per_advance = max_decisions_per_advance
         self._max_context_chars = max_context_chars
         self._model = model if model is not None else DeepSeekModel()
         self._child_ref = _child_ref
@@ -104,6 +107,7 @@ class ExecutionOrgan:
             "model": self._model,
             "tools": ToolHost(environment),
             "max_decisions": max_decisions,
+            "max_decisions_per_advance": max_decisions_per_advance,
             "max_context_chars": max_context_chars,
             "event_log": event_log,
             "checkpoint_path": self._checkpoint_path,
@@ -113,6 +117,7 @@ class ExecutionOrgan:
             self._process = AgentProcess(
                 **process_options,
                 max_depth=max_depth,
+                completion_review_required=completion_review_required,
             )
         else:
             self._process = AgentProcess.for_child(
@@ -120,6 +125,11 @@ class ExecutionOrgan:
                 **process_options,
             )
         self._event_log = event_log
+
+    def completion_review_pending(self) -> bool:
+        """A real completion claim yielded for host review; no business Wait was invented."""
+        events = self._event_log.events
+        return bool(events and events[-1].event_type == "COMPLETION_DEFERRED")
 
     @staticmethod
     def _load_or_create_event_log(path: Path) -> EventLog:
@@ -155,6 +165,51 @@ class ExecutionOrgan:
             return None
         decision_count = state.decision_count if state is not None else 0
         return f"decision-{decision_count + 1:06d}"
+
+    def has_unhandled_external_event(self) -> bool:
+        """Whether a durable wake awaits its first committed model decision.
+
+        Reading does not consume it; equal text in a later wake is a new event.
+        """
+        for event in reversed(self._event_log.events):
+            if event.event_type == "MODEL_DECISION":
+                return False
+            if event.event_type == "ROOT_WOKEN":
+                return True
+        return False
+
+    def committed_tool_calls(self) -> tuple[tuple[str, str], ...]:
+        """Last six committed tool-batch digests; not proof of task success."""
+        result = []
+        for event in reversed(self._event_log.events):
+            if event.event_type != "MODEL_DECISION":
+                continue
+            frame = event.payload["frame"]
+            if frame.provider_tool_call_id is not None:
+                calls = frame.raw_provider_response['choices'][0]['message']['tool_calls']
+                value = [(c['id'], c['function']['name'], c['function']['arguments']) for c in calls]
+                digest = hashlib.sha256(json.dumps(value, ensure_ascii=False,
+                    separators=(',', ':')).encode('utf-8')).hexdigest()
+                result.append((frame.decision_id, digest))
+            if len(result) == 6:
+                break
+        return tuple(reversed(result))
+
+    def latest_transport_failure(self) -> tuple[str, str] | None:
+        """Stable owner evidence for the latest IPython transport outcome."""
+        for event in reversed(self._event_log.events):
+            if event.event_type in {"IPYTHON_EXECUTION_RESULT", "IPYTHON_EXECUTION_FAILED"}:
+                result = event.payload["observation"].result
+                if result.error_code in {"isolated_kernel_failed", "kernel_closed"}:
+                    return event.event_id, result.error_code
+                return None
+        return None
+
+    def cognitive_requests(self) -> tuple[tuple[str, str], ...]:
+        """Committed actor requests and their causal result IDs; reading consumes nothing."""
+        return tuple((event.event_id, event.payload['observation'].result.cognitive_request)
+            for event in self._event_log.events if event.event_type == 'IPYTHON_EXECUTION_RESULT'
+            and event.payload['observation'].result.cognitive_request is not None)
 
     def reality_evidence(
         self,
@@ -416,11 +471,16 @@ class ExecutionOrgan:
         completion_spec: CompletionSpec,
         *,
         decision_advisory: tuple[str, str] | None = None,
+        defer_actions: bool = False,
     ) -> ExecutionResult:
+        if type(defer_actions) is not bool:
+            raise ValueError("defer_actions must be a bool")
         if self._child_ref is not None:
             raise ValueError("Child execution must use run_child")
         state = self.state
         if state is not None:
+            if defer_actions:
+                raise ValueError("deferred start requires a new execution")
             if state.goal != goal or state.completion_spec != completion_spec:
                 raise ValueError(
                     "goal and completion spec must match durable execution"
@@ -433,6 +493,7 @@ class ExecutionOrgan:
                 goal,
                 completion_spec,
                 decision_advisory=decision_advisory,
+                defer_actions=defer_actions,
             )
         )
 
@@ -462,6 +523,7 @@ class ExecutionOrgan:
             max_decisions=max_decisions,
             model=model,
             max_context_chars=self._max_context_chars,
+            max_decisions_per_advance=self._max_decisions_per_advance,
             checkpoint_path=checkpoint_path,
             _child_ref=child_ref,
         )
@@ -470,11 +532,12 @@ class ExecutionOrgan:
         return self._remember(self._process.accept_child(child_result))
 
     def deliver_event(self, event_type: str, data: str = "", *,
-                      decision_advisory: tuple[str, str] | None = None) -> ExecutionResult:
+                      decision_advisory: tuple[str, str] | None = None,
+                      defer_actions: bool = False) -> ExecutionResult:
         if self._child_ref is not None and decision_advisory is not None:
             raise ValueError("Child execution cannot accept a decision advisory")
         return self._remember(self._process.deliver_event(
-            event_type, data, decision_advisory=decision_advisory))
+            event_type, data, decision_advisory=decision_advisory, defer_actions=defer_actions))
 
     def interrupt(self) -> ExecutionResult:
         return self._remember(self._process.interrupt())
@@ -482,8 +545,9 @@ class ExecutionOrgan:
     def resume(
         self,
         *,
-        decision_advisory: tuple[str, str] | None = None,
+        decision_advisory: tuple[str, str | None] | None = None,
     ) -> ExecutionResult:
+        """None recovers guidance; (next_id, None) withdraws it without advancing."""
         if self._child_ref is not None and decision_advisory is not None:
             raise ValueError("Child execution cannot accept a decision advisory")
         return self._remember(

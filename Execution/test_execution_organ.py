@@ -10,11 +10,14 @@ import pytest
 
 from Execution import ExecutionOrgan, FileContentEquals, RealityEvidence
 from Execution.execution import (
+    ChildRef,
     ClaimComplete,
+    ExecutionEvent,
     IPythonCode,
     NativeModelDecision,
     Return,
     Wait,
+    fold_execution_state,
 )
 
 
@@ -80,6 +83,446 @@ def test_root_ipython_completion_uses_the_frozen_production_surface(tmp_path):
     assert organ.result == result
     assert tuple(model.received_requests[0].available_tools) == ROOT_SURFACE
     assert (tmp_path / "workspace" / "answer.txt").read_text(encoding="utf-8") == "42"
+
+
+def test_finite_advance_preserves_kernel_and_is_not_a_business_event(tmp_path):
+    model = _ScriptedModel([
+        IPythonCode("value = 41"),
+        IPythonCode("open('answer.txt', 'w').write(str(value + 1))"),
+        ClaimComplete(),
+    ])
+    organ = _organ(tmp_path, model, max_decisions_per_advance=1)
+    try:
+        first = organ.run_goal("Write the answer.", FileContentEquals("answer.txt", "42"))
+        assert first.status == "running" and first.state.decision_count == 1
+        second = organ.resume()
+        assert second.status == "running" and second.state.decision_count == 2
+        assert second.state.execution_id == first.state.execution_id
+        third = organ.resume()
+        assert third.status == "completed"
+        assert not {"ROOT_WAITING", "EXTERNAL_EVENT", "ACTOR_SUSPENDED"}.intersection(
+            e.event_type for e in third.events)
+    finally:
+        organ.shutdown()
+
+
+def test_completion_handoff_survives_restart_without_finishing_or_replaying(tmp_path):
+    pending = [True]
+    model = _ScriptedModel([ClaimComplete()])
+    organ = _organ(tmp_path, model, completion_review_required=lambda: pending[0])
+    (tmp_path/'workspace'/'answer.txt').write_text('42', encoding='utf-8')
+    first = organ.run_goal('Deliver the answer.', FileContentEquals('answer.txt', '42'))
+    assert first.status == 'running' and organ.completion_review_pending()
+    assert first.state.latest_observation.status == 'review_pending'
+    assert first.state.latest_observation.evidence.matched
+    run_id = first.state.execution_id
+    organ.shutdown()
+    resumed_model = _ScriptedModel([ClaimComplete()])
+    organ = _organ(tmp_path, resumed_model, completion_review_required=lambda: pending[0])
+    try:
+        assert organ.completion_review_pending()
+        assert len(resumed_model.received_requests) == 0
+        pending[0] = False  # The trusted host accepted its result review.
+        result = organ.resume()
+        assert result.status == 'completed' and result.state.execution_id == run_id
+        assert sum(e.event_type == 'COMPLETION_DEFERRED' for e in result.events) == 1
+        assert sum(e.event_type == 'COMPLETION_CLAIMED' for e in result.events) == 2
+        assert not any(e.event_type == 'ROOT_WAITING' for e in result.events)
+    finally:
+        organ.shutdown()
+
+
+def test_failed_completion_policy_read_leaves_a_recoverable_decision(tmp_path):
+    def unavailable():
+        raise ValueError('policy_source_unavailable')
+    model = _ScriptedModel([ClaimComplete()])
+    organ = _organ(tmp_path, model, completion_review_required=unavailable)
+    (tmp_path/'workspace'/'answer.txt').write_text('42', encoding='utf-8')
+    try:
+        with pytest.raises(ValueError, match='policy_source_unavailable'):
+            organ.run_goal('Deliver the answer.', FileContentEquals('answer.txt', '42'))
+        assert not model.received_requests
+        assert organ.state.decision_count == 0
+    finally:
+        organ.shutdown()
+    organ = _organ(tmp_path, model, completion_review_required=lambda: False)
+    try:
+        assert organ.resume().status == 'completed'
+        assert len(model.received_requests) == 1
+    finally:
+        organ.shutdown()
+
+
+def test_finite_advance_settles_native_batch_before_returning(tmp_path):
+    actions = (
+        IPythonCode("value = 40\nprint(value)"),
+        IPythonCode("value += 1\nprint(value)"),
+    )
+    call_ids = ("call_set", "call_increment")
+    model = _ScriptedModel([
+        NativeModelDecision(
+            action=actions,
+            provider_wire_request={},
+            raw_provider_response={"role": "assistant", "content": [
+                {"type": "tool_use", "id": call_id, "name": "ipython",
+                 "input": {"code": action.code}}
+                for call_id, action in zip(call_ids, actions, strict=True)
+            ]},
+            provider_tool_call_id=call_ids,
+        ),
+        IPythonCode("value += 1\nopen('answer.txt', 'w').write(str(value))"),
+        ClaimComplete(),
+    ])
+    organ = _organ(tmp_path, model, max_decisions_per_advance=1)
+    try:
+        first = organ.run_goal("Write the answer.", FileContentEquals("answer.txt", "42"))
+        assert first.status == "running" and first.state.decision_count == 1
+        assert len(model.received_requests) == 1
+        assert tuple(step.action for step in first.steps) == actions
+        assert all(step.observation.ok for step in first.steps)
+        assert tuple(step.observation.provider_tool_call_id for step in first.steps) == call_ids
+        assert tuple(step.observation.result.output for step in first.steps) == ("40\n", "41\n")
+        assert first.events[-1].event_type == "IPYTHON_EXECUTION_RESULT"
+
+        second = organ.resume()
+        assert second.status == "running" and second.state.decision_count == 2
+        assert second.state.execution_id == first.state.execution_id
+        assert (tmp_path / "workspace" / "answer.txt").read_text(encoding="utf-8") == "42"
+        request = model.received_requests[1]
+        assert request.native_tool_continuation.provider_tool_call_id == call_ids
+        observations = json.loads(request.context)["observations"]
+        assert [item["result"]["output"]["text"] for item in observations] == ["40\n", "41\n"]
+
+        completed = organ.resume()
+        assert completed.status == "completed"
+        assert sum(event.event_type == "IPYTHON_EXECUTION_STARTED" for event in completed.events) == 3
+        assert not {"ROOT_WAITING", "ROOT_WOKEN", "EXTERNAL_EVENT_RECEIVED",
+                    "INTERRUPT_REQUESTED", "ACTOR_SUSPENDED"}.intersection(
+            event.event_type for event in completed.events)
+    finally:
+        organ.shutdown()
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5])
+def test_finite_advance_rejects_invalid_host_budget(tmp_path, limit):
+    with pytest.raises(ValueError, match="max_decisions_per_advance"):
+        _organ(tmp_path, _ScriptedModel([]), max_decisions_per_advance=limit)
+
+
+def test_external_wake_is_consumed_by_decision_and_new_equal_text_survives_restart(tmp_path):
+    first_model = _ScriptedModel([Wait("evidence")])
+    first = _organ(tmp_path, first_model, max_decisions=6, max_decisions_per_advance=1)
+    try:
+        assert not first.has_unhandled_external_event()
+        first.run_goal("Review each new observation.", FileContentEquals("answer.txt", "done"))
+        assert not first.has_unhandled_external_event()
+        first.deliver_event("unrelated", "same text", defer_actions=True)
+        assert not first.has_unhandled_external_event()
+        woken = first.deliver_event("evidence", "same text", defer_actions=True)
+        first_wake = woken.events[-1]
+        assert first.has_unhandled_external_event()
+        assert len(first_model.received_requests) == 1
+    finally:
+        first.shutdown()
+
+    model = _ScriptedModel([
+        IPythonCode("value = 7"), IPythonCode("print(value)"), Wait("evidence"),
+    ])
+    restored = _organ(tmp_path, model, max_decisions=6, max_decisions_per_advance=1)
+    try:
+        before = restored.state
+        assert restored.has_unhandled_external_event()
+        assert restored.has_unhandled_external_event()
+        assert restored.state == before and not model.received_requests
+        restored.resume()
+        assert not restored.has_unhandled_external_event()
+        second = restored.resume()
+        assert second.steps[0].observation.result.output == "7\n"
+        assert not restored.has_unhandled_external_event()
+        restored.resume()
+        assert restored.state.status == "waiting"
+        assert not restored.has_unhandled_external_event()
+        woken = restored.deliver_event("evidence", "same text", defer_actions=True)
+        assert woken.events[-1].payload == first_wake.payload
+        assert woken.events[-1].event_id != first_wake.event_id
+        assert restored.has_unhandled_external_event()
+    finally:
+        restored.shutdown()
+
+    final_model = _ScriptedModel([Wait("finished")])
+    final = _organ(tmp_path, final_model, max_decisions=6, max_decisions_per_advance=1)
+    try:
+        assert final.has_unhandled_external_event()
+        final.resume()
+        assert not final.has_unhandled_external_event()
+        assert len(final_model.received_requests) == 1
+    finally:
+        final.shutdown()
+
+
+@pytest.mark.parametrize("guidance", ["Use the existing evidence to finish the answer.", ("Sourced condition. " * 300).strip()], ids=["short", "long"])
+def test_waiting_root_redirect_keeps_context_and_consumes_guidance_once(tmp_path, guidance):
+    model = _ScriptedModel([
+        IPythonCode("value = 41"), Wait("original_evidence"),
+        IPythonCode("open('answer.txt', 'w').write(str(value + 1))"), Wait("later"),
+    ])
+    organ = _organ(tmp_path, model, max_decisions=6, max_decisions_per_advance=1, max_context_chars=16000)
+    advisory = ("decision-000003", guidance)
+    try:
+        started = organ.run_goal("Write the answer.", FileContentEquals("answer.txt", "42"))
+        waiting = organ.resume()
+        assert waiting.status == "waiting"
+        assert organ.resume().events == waiting.events
+        advanced = organ.resume(decision_advisory=advisory)
+        assert advanced.state.execution_id == started.state.execution_id
+        assert advanced.state.root_actor_id == started.state.root_actor_id
+        assert advanced.state.goal == started.state.goal
+        assert advanced.state.decision_count == 3
+        assert (tmp_path / "workspace" / "answer.txt").read_text() == "42"
+        redirected = advanced.events[len(waiting.events)]
+        assert redirected.event_type == "ROOT_REDIRECTED"
+        assert redirected.payload == {"advisory": advisory}
+        assert redirected.source_event_refs == (waiting.events[-1].event_id,)
+        request = model.received_requests[2]
+        assert request.source_event_refs == (redirected.event_id,)
+        assert json.loads(request.context)["mind_supervisor_directive"] == advisory[1]
+        assert json.loads(request.context)["incoming_event"] is None
+        assert not organ.has_unhandled_external_event()
+        assert not {"ROOT_WOKEN", "EXTERNAL_EVENT_RECEIVED"}.intersection(
+            event.event_type for event in advanced.events)
+        assert organ.resume().status == "waiting"
+        assert "mind_supervisor_directive" not in json.loads(model.received_requests[3].context)
+        settled = organ.state
+        assert organ.resume(decision_advisory=advisory).state == settled
+        assert len(model.received_requests) == 4
+    finally:
+        organ.shutdown()
+
+
+@pytest.mark.parametrize("advisory", [
+    None, ("decision-000001", "Old direction"), ("decision-000003", "Future direction"),
+    ("another-run:decision-000002", "Wrong target"), ("decision-000002", ""),
+    ("decision-000002", " padded "), ("decision-000002", "x" * 6201),
+    ["decision-000002", "Wrong shape"],
+])
+def test_invalid_waiting_redirect_never_appends_or_calls_model(tmp_path, advisory):
+    model = _ScriptedModel([Wait("original_evidence")])
+    organ = _organ(tmp_path, model)
+    try:
+        waiting = organ.run_goal("Wait.", FileContentEquals("answer.txt", "42"))
+        before = (tmp_path / "state" / "execution.jsonl").read_bytes()
+        result = organ.resume(decision_advisory=advisory)
+        assert result.state == waiting.state and result.events == waiting.events
+        assert (tmp_path / "state" / "execution.jsonl").read_bytes() == before
+        assert len(model.received_requests) == 1
+    finally:
+        organ.shutdown()
+
+
+@pytest.mark.parametrize("interrupt_before_restart", [False, True])
+def test_waiting_redirect_replays_after_restart_before_its_decision(tmp_path, interrupt_before_restart):
+    unavailable = [False]
+
+    def completion_policy():
+        if unavailable[0]:
+            raise ValueError("policy_unavailable")
+        return False
+
+    first_model = _ScriptedModel([Wait("original_evidence")])
+    organ = _organ(tmp_path, first_model, completion_review_required=completion_policy)
+    advisory = ("decision-000002", "Reconsider the direction using current evidence.")
+    try:
+        waiting = organ.run_goal("Reconsider.", FileContentEquals("answer.txt", "42"))
+        unavailable[0] = True
+        with pytest.raises(ValueError, match="policy_unavailable"):
+            organ.resume(decision_advisory=advisory)
+        assert organ.state.status == "running"
+        assert len(first_model.received_requests) == 1
+        if interrupt_before_restart:
+            assert organ.interrupt().status == "suspended"
+    finally:
+        organ.shutdown()
+
+    model = _ScriptedModel([IPythonCode("print('reconsidered')"), Wait("later")])
+    restored = _organ(tmp_path, model, max_decisions_per_advance=1)
+    try:
+        result = restored.resume()
+        assert result.state.execution_id == waiting.state.execution_id
+        assert json.loads(model.received_requests[0].context)["mind_supervisor_directive"] == advisory[1]
+        assert sum(event.event_type == "ROOT_REDIRECTED" for event in result.events) == 1
+        assert result.events[:len(waiting.events)] == waiting.events
+        assert restored.resume().status == "waiting"
+        assert "mind_supervisor_directive" not in json.loads(model.received_requests[1].context)
+        assert len(model.received_requests) == 2
+    finally:
+        restored.shutdown()
+
+
+def test_redirect_validator_and_reducer_reject_a_wrong_decision(tmp_path):
+    organ = _organ(tmp_path, _ScriptedModel([Wait("original_evidence")]))
+    try:
+        waiting = organ.run_goal("Wait.", FileContentEquals("answer.txt", "42"))
+        payload = {"advisory": ("decision-000001", "Old direction")}
+        refs = (waiting.events[-1].event_id,)
+        with pytest.raises(ValueError, match="redirect"):
+            organ._event_log.append("ROOT_REDIRECTED", payload, refs)
+        sequence = len(waiting.events) + 1
+        forged = ExecutionEvent(f"event-{sequence:06d}", sequence, "ROOT_REDIRECTED", payload, refs)
+        with pytest.raises(ValueError, match="redirect"):
+            fold_execution_state((*waiting.events, forged))
+        assert organ.state == waiting.state
+    finally:
+        organ.shutdown()
+
+
+def test_waiting_child_rejects_root_redirect_at_facade_and_trace(tmp_path):
+    child_ref = ChildRef("child-run", "child-actor", "root-actor", "Local task.", None)
+    model = _ScriptedModel([Wait("local_evidence")], tool_contracts=CHILD_SURFACE)
+    child = _organ(tmp_path, model, _child_ref=child_ref)
+    try:
+        waiting = child.run_child()
+        advisory = ("decision-000002", "Change the direction.")
+        with pytest.raises(ValueError, match="Child execution"):
+            child.resume(decision_advisory=advisory)
+        with pytest.raises(ValueError, match="redirect"):
+            child._event_log.append("ROOT_REDIRECTED", {"advisory": advisory},
+                                    (waiting.events[-1].event_id,))
+        assert child.state == waiting.state
+        assert len(model.received_requests) == 1
+    finally:
+        child.shutdown()
+
+
+def test_redirect_preserves_an_unmatched_external_event_without_certifying_it(tmp_path):
+    model = _ScriptedModel([Wait("original_evidence"), Wait("different_dependency")])
+    organ = _organ(tmp_path, model)
+    try:
+        organ.run_goal("Review direction.", FileContentEquals("answer.txt", "42"))
+        waiting = organ.deliver_event("unrelated", "A real unrelated observation.")
+        result = organ.resume(decision_advisory=(organ.next_root_decision_id, "Reassess direction."))
+        redirected = result.events[len(waiting.events)]
+        assert redirected.source_event_refs == (waiting.events[-1].event_id,)
+        assert redirected.event_type == "ROOT_REDIRECTED"
+        assert not any(event.event_type == "ROOT_WOKEN" for event in result.events)
+        context = json.loads(model.received_requests[-1].context)
+        assert context["incoming_event"]["event_type"]["text"] == "unrelated"
+        assert result.state.waiting_for == "different_dependency"
+    finally:
+        organ.shutdown()
+
+
+def test_redirect_never_calls_model_if_accepted_guidance_would_be_omitted(tmp_path):
+    model = _ScriptedModel([Wait("original_evidence")])
+    organ = _organ(tmp_path, model, max_context_chars=1000)
+    try:
+        organ.run_goal("Wait.", FileContentEquals("answer.txt", "42"))
+        with pytest.raises(ValueError, match="guidance exceeds"):
+            organ.resume(decision_advisory=("decision-000002", "x" * 1200))
+        assert len(model.received_requests) == 1
+        assert organ.state.decision_count == 1
+        with pytest.raises(ValueError, match="guidance exceeds"):
+            organ.resume()
+        assert len(model.received_requests) == 1
+    finally:
+        organ.shutdown()
+
+
+@pytest.mark.parametrize("withdraw", [False, True])
+@pytest.mark.parametrize("suspended", [False, True])
+@pytest.mark.parametrize("restart", [False, True])
+def test_pending_redirect_replacement_and_withdrawal_are_durable(tmp_path, withdraw, suspended, restart):
+    unavailable = [False]
+
+    def policy():
+        if unavailable[0]:
+            raise ValueError("policy_unavailable")
+        return False
+
+    model = _ScriptedModel([Wait("original_evidence"), Wait("later")])
+    organ = _organ(tmp_path, model, completion_review_required=policy)
+    old = ("decision-000002", "Continue the old direction.")
+    revised = ("decision-000002", None if withdraw else "Use the revised direction.")
+    try:
+        started = organ.run_goal("Review direction.", FileContentEquals("answer.txt", "42"))
+        unavailable[0] = True
+        with pytest.raises(ValueError, match="policy_unavailable"):
+            organ.resume(decision_advisory=old)
+        if suspended:
+            assert organ.interrupt().status == "suspended"
+        if withdraw:
+            cancelled = organ.resume(decision_advisory=revised)
+            assert cancelled.status == ("suspended" if suspended else "waiting")
+            assert cancelled.state.waiting_for == "original_evidence"
+        else:
+            with pytest.raises(ValueError, match="policy_unavailable"):
+                organ.resume(decision_advisory=revised)
+        assert len(model.received_requests) == 1
+        redirects = [e for e in organ._event_log.events if e.event_type == "ROOT_REDIRECTED"]
+        assert [e.payload["advisory"] for e in redirects] == [old, revised]
+        unavailable[0] = False
+        if restart:
+            organ.shutdown()
+            model = _ScriptedModel([Wait("later")])
+            organ = _organ(tmp_path, model)
+        before = len(model.received_requests)
+        result = organ.resume()
+        assert result.state.execution_id == started.state.execution_id
+        if withdraw:
+            assert result.status == "waiting" and result.state.waiting_for == "original_evidence"
+            assert len(model.received_requests) == before
+            # Only the actual outside event may now satisfy the restored wait.
+            result = organ.deliver_event("original_evidence", "The original dependency arrived.")
+            assert "mind_supervisor_directive" not in json.loads(model.received_requests[-1].context)
+        else:
+            assert json.loads(model.received_requests[-1].context)["mind_supervisor_directive"] == revised[1]
+        assert result.status == "waiting" and result.state.waiting_for == "later"
+        assert len(model.received_requests) == before + 1
+        assert sum(e.event_type == "ROOT_REDIRECTED" for e in result.events) == 2
+    finally:
+        organ.shutdown()
+
+
+@pytest.mark.parametrize("invalid", [
+    ("decision-000001", None), ("decision-000003", "Wrong target"),
+    ("decision-000002", ""), ("decision-000002", "x" * 6201),
+])
+def test_invalid_pending_redirect_change_does_not_advance(tmp_path, invalid):
+    unavailable = [False]
+    def policy():
+        if unavailable[0]:
+            raise ValueError("policy_unavailable")
+        return False
+    model = _ScriptedModel([Wait("original_evidence")])
+    organ = _organ(tmp_path, model, completion_review_required=policy)
+    try:
+        organ.run_goal("Wait.", FileContentEquals("answer.txt", "42"))
+        unavailable[0] = True
+        with pytest.raises(ValueError, match="policy_unavailable"):
+            organ.resume(decision_advisory=("decision-000002", "Original guidance."))
+        before = organ.state
+        raw = (tmp_path / "state" / "execution.jsonl").read_bytes()
+        assert organ.resume(decision_advisory=invalid).state == before
+        assert (tmp_path / "state" / "execution.jsonl").read_bytes() == raw
+        assert len(model.received_requests) == 1
+    finally:
+        organ.shutdown()
+
+
+def test_withdrawal_without_pending_direction_cannot_recreate_an_old_wait(tmp_path):
+    model = _ScriptedModel([Wait("original_evidence")])
+    organ = _organ(tmp_path, model)
+    try:
+        organ.run_goal("Wait.", FileContentEquals("answer.txt", "42"))
+        woken = organ.deliver_event("original_evidence", "Arrived.", defer_actions=True)
+        result = organ.resume(decision_advisory=("decision-000002", None))
+        assert result.events == woken.events and result.state == woken.state
+        assert result.status == "running" and result.state.waiting_for is None
+        assert len(model.received_requests) == 1
+        with pytest.raises(ValueError, match="redirect"):
+            organ._event_log.append("ROOT_REDIRECTED", {"advisory": ("decision-000002", None)},
+                                   (result.events[-1].event_id,))
+    finally:
+        organ.shutdown()
 
 
 def test_reality_projection_is_execution_owned_and_immutable(tmp_path):
@@ -403,3 +846,42 @@ def test_ipython_child_return_is_driven_through_the_same_organ_seam(tmp_path):
     assert tuple(child_model.received_requests[0].available_tools) == CHILD_SURFACE
     assert "spawn_child(goal)" in root_model.received_requests[0].context
     assert "spawn_child" not in child_model.received_requests[0].context
+
+
+def test_custom_ipython_control_does_not_advertise_unbound_child_helper(tmp_path):
+    class IsolatedControl:
+        def close(self): pass
+        def interrupt(self): return True
+        def execute(self,code): raise AssertionError('No action expected')
+    workspace=tmp_path/'workspace';workspace.mkdir()
+    model=_ScriptedModel([Wait('OWNER_EVIDENCE')])
+    organ=ExecutionOrgan(workspace=workspace,model=model,max_decisions=2,ipython_control=IsolatedControl(),
+        event_log_path=tmp_path/'events.jsonl',checkpoint_path=tmp_path/'checkpoint.json')
+    try:
+        organ.run_goal('Wait for authorized evidence.',FileContentEquals('result','done'))
+        assert 'spawn_child' not in model.received_requests[0].context
+    finally:organ.shutdown()
+
+
+def test_deferred_start_never_calls_model_without_its_accepted_guidance(tmp_path):
+    model = _ScriptedModel([Wait("outside")])
+    advisory = ("decision-000001", "sourced condition " * 200 + "end")
+    organ = _organ(tmp_path, model, max_context_chars=1000)
+    try:
+        started = organ.run_goal("Wait.", FileContentEquals("answer.txt", "42"), defer_actions=True)
+        with pytest.raises(ValueError, match="guidance exceeds"):
+            organ.resume(decision_advisory=advisory)
+        assert not model.received_requests
+        assert organ.state.decision_count == 0
+        assert organ.state.execution_id == started.state.execution_id
+    finally:
+        organ.shutdown()
+    # The trusted caller retains the original advisory and can retry before any action.
+    restored = _organ(tmp_path, model, max_context_chars=16000)
+    try:
+        result = restored.resume(decision_advisory=advisory)
+        assert result.state.execution_id == started.state.execution_id
+        assert len(model.received_requests) == 1
+        assert json.loads(model.received_requests[0].context)["mind_supervisor_directive"] == advisory[1]
+    finally:
+        restored.shutdown()

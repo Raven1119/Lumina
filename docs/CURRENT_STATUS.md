@@ -1,521 +1,65 @@
-# Current Status
-
-## Complete
-
-### Chat and Draft continuity
-
-- same-origin FastAPI browser chat with `/api/status` and `/api/chat`;
-- the browser chat input sends on `Enter`, inserts a newline on
-  `Shift+Enter`, and never sends during IME composition
-  (`edge/static/app.js`);
-- deterministic mock mode and explicit DeepSeek Anthropic-compatible real-model
-  mode;
-- safe provider fallback;
-- append-only restart-persistent Hot Draft source storage;
-- Draft Turn Provenance V2 with stable per-turn IDs, distinct aware UTC
-  timestamps, validated IANA source timezone, and truthful timezone source;
-- pair-aware Cold-first logical compaction;
-- immutable Cold source records with owner-controlled `pending_digest ->
-  consumed` state;
-- restart recovery and idempotent Cold-first compaction behavior.
-
-### Dream and memory write path
-
-- manual, synchronous, serial, bounded Dream;
-- no startup/background/chat-time Dream;
-- configured real-model Dream uses one bounded `grounded-formation-v1`
-  DeepSeek-V4-Pro call in non-thinking mode with a Formation-only 2000-token output
-  budget per newly seen Cold segment;
-- minimal atomic `GroundedMemoryUnit` values carry source-grounded
-  subject/relation/value and exact source refs;
-- deterministic validation plus the bounded semantic fallback and value-only
-  guard rejects ungrounded details, ambiguous spans, epistemic inversion, and
-  unauthorized assistant assertions;
-- a deterministic, LLM-free self-identity coverage guard runs inside Formation
-  after model-call validation: when an explicit user self-identification
-  (我叫X / 我的名字是X / 你可以叫我X) was omitted, exactly one source-grounded
-  identity unit (exact-span value) is constructed from the raw source,
-  admitted only through the unchanged strict validator, and never duplicates
-  an equivalent accepted unit (`Conversation_Memory/adapter/identity_coverage.py`;
-  shadow: `docs/experiments/identity_coverage_guard/`; regression:
-  `tests/test_identity_coverage.py`);
-- mock/legacy ingestion retains deterministic `grounded-span-v2` projection;
-- stable grounded unit IDs derived from canonical unit content, exact source
-  refs, optional referenced time, and Formation version;
-- pinned, unmodified upstream MAGMA;
-- durable `(segment_id, ingestion_version)` checkpoints;
-- formed units are checkpointed before MAGMA writes and reused without another
-  Formation call after a downstream write failure;
-- memory persistence/checkpoint success before Cold consume;
-- retry convergence without duplicate logical memory;
-- app Dream and memory adapter reuse the same owner/backend boundaries.
-- structured SRV is persisted as private MAGMA metadata; production Recall
-  admission and ranking remain unchanged.
-- the Lumina-owned MAGMA backend enforces an EVENT-only temporal-link
-  boundary: non-event graph nodes never participate in temporal ordering,
-  while pinned upstream MAGMA remains unchanged
-  (`Conversation_Memory/adapter/backend.py`, regression:
-  `Conversation_Memory/tests/test_temporal_boundary.py`).
-
-### Production Recall and Answer injection
-
-- Recall is wired into production chat and enabled by source default;
-- `LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false` explicitly disables it;
-- current user text is the Recall query;
-- MAGMA TRG keyword-enriched dense anchors plus bounded lexical anchors;
-- deterministic RRF fusion (dense + lexical, plus the entity-conditioned
-  subset list described below when the query carries a `target_entity_ref`);
-- fixed production graph traversal at `max_graph_depth=1`, `max_nodes=20`;
-- fail-open controlled relation compatibility when a structured caller supplies
-  relation surfaces; normal Chat supplies none and keeps existing behavior;
-- fixed `BAAI/bge-reranker-v2-m3`, revision
-  `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e`;
-- BGE loads lazily only for non-empty candidate Recall and is reused within the
-  adapter;
-- BGE failure or invalid output returns safe `recall_unavailable` rather than
-  silently falling back to raw MAGMA order;
-- Hindsight-style post-rerank scoring uses a deterministic persisted-state time
-  reference rather than process wall clock;
-- production `final_min_score=0.144`, inclusive `>=`;
-- stable final ordering and bounded `max_evidence_items=3`, `max_chars=5000`;
-- `MemoryContext.rendered_text` is injected into a fixed internal historical
-  evidence block in the system prompt when non-empty;
-- empty/unavailable Recall does not block normal chat;
-- BGE/backend scores, embeddings, graph objects, MAGMA IDs, paths, credentials,
-  provider bodies, tracebacks, and raw Draft records are not injected.
-
-### Current-user entity binding (promoted)
-
-- validated GroundedMemoryUnit subjects are classified after the unchanged
-  Grounded Formation validator; detection first resolves the contextual
-  `CURRENT_USER` role, and when the grounded source establishes the subject is
-  the current user, the unit persists generic metadata
-  `subject_entity_ref="E_001"` (retrieval metadata only — it never authorizes
-  a fact);
-- recognized subject surfaces: first-person pronouns, self-naming binding,
-  assistant naming + user acceptance, segment-level self-name binding, and
-  Formation speaker-normalized `用户` / `user` / `the user` surfaces gated by
-  first-person evidence in cited user-role spans;
-- a current-user-bound event gets one graph-only EntityNode
-  (`entity:e_001`) and a single
-  `Event --ENTITY/REFERS_TO(role=subject)--> EntityNode` edge; find-or-create
-  is idempotent across ingestion retry, node/edge/metadata persist across
-  restart, and the EntityNode is never vector-indexed
-  (`Conversation_Memory/tests/test_entity_node_write_path.py`);
-- ordinary named subjects use deterministic write-side exact-surface binding:
-  one bounded persisted candidate with the same canonical surface is reused,
-  no match receives a stable new EntityRef, and duplicate-surface candidates
-  remain unbound rather than guessed; these bindings are checkpointed before
-  MAGMA writes and include the current-run overlay, without an LLM, fuzzy
-  matching, aliases, or query-side entity lookup;
-- grounded mention bindings (Production Slice 1): on a new formation segment,
-  each unique `(turn_id, supporting_span)` of validator-accepted units gets
-  one bounded entity-only extraction call through the same FormationModel
-  seam (span text only — never unit.text, never the Cold store), an
-  exact-span gate, and — only when a span backs more than one unit — one
-  subset-enforced selector call per unit; grounded surfaces are bound by
-  exact canonical-surface match against persisted candidates plus the
-  same-run overlay, with unbound mentions receiving a stable EntityRef seeded
-  from `(unit.id, surface)`, except that a mention surface equal to the same
-  unit's already-bound subject canonical surface reuses that unit's
-  `subject_entity_ref` directly (one explicit entity never gets two refs); the five-key records (`unit_id`, `entity_ref`,
-  `canonical_surface`, `turn_id`, `supporting_span`) are checkpointed before
-  any MAGMA write, reused with zero provider calls on retry/restart, carried
-  into event metadata as `mention_entity_refs` / `mention_entity_surfaces`
-  (consumed by the Slice 2 write path below); extraction/selector
-  failure after one bounded retry leaves the segment pending without a
-  checkpoint, and malformed persisted bindings fail as `state_corrupt`
-  (`Conversation_Memory/tests/test_entity_node_write_path.py`; shadow
-  evidence: `docs/experiments/grounded_mention_selection/RESULT.md`);
-- event-centric multi-entity REFERS_TO (Production Slice 2): at
-  `create_relationships` time, each event's `mention_entity_refs` adds one
-  generic role-less `Event --ENTITY/REFERS_TO--> EntityNode` edge per
-  mentioned ref — properties carry only `sub_type`, never a `role` key —
-  skipping a mention ref equal to the event's `subject_entity_ref` because
-  the role=subject edge already covers that pair; EntityNodes are
-  find-or-created graph-only exactly as in the subject path (never
-  vector-indexed, never on the temporal chain), node/edge dedup makes
-  ingestion retry and reload converge, and non-entity attribute values never
-  produce EntityNodes (`Conversation_Memory/tests/test_entity_node_write_path.py`;
-  shadow evidence: `docs/experiments/multi_entity_recall_gain/RESULT_CROWDED.md`);
-- at Recall time a self-referential query is classified to
-  `target_entity_ref="E_001"` before candidate generation; MAGMA
-  anchor/lexical/traversal always use the original normalized query;
-- when that classification finds no self reference, the adapter asks the
-  backend for a deterministic exact-surface lookup over persisted EntityNode
-  `canonical_surface` attributes (subject and mention EntityNodes alike):
-  exactly one distinct ref whose surface is contained in the query resolves
-  to that ref, while 0 hits or hits mapping to more than one distinct ref
-  (two Alexes) resolve None — no LLM, embedding, fuzzy, alias, or
-  coreference matching, and no general query entity parser;
-  `LUMINA_USER_SELF_BINDING_ENABLED=false` still disables the whole entity
-  channel, lookup included
-  (`Conversation_Memory/tests/test_entity_conditioned_recall.py`,
-  `tests/test_user_self_binding.py`);
-- a query carrying a `target_entity_ref` additionally runs an
-  entity-conditioned candidate channel: the EntityNode's full `REFERS_TO`
-  adjacency (role=subject and role-less mention edges) yields that entity's
-  event IDs, FAISS
-  `IDSelectorBatch` subset search ranks a bounded top-k over only those
-  events, and the result joins RRF as a third list — it adds candidates only
-  and leaves BGE / Hindsight / admission untouched; a query without a
-  `target_entity_ref` takes the byte-identical pre-existing path, and
-  `list_entity_candidates` still projects role=subject edges only
-  (`Conversation_Memory/tests/test_entity_conditioned_recall.py`);
-- the constant `[SAME_ENTITY] ` marker enters only the BGE scoring projection
-  of a (query, candidate) pair when both sides carry the same entity ref;
-  stored factual text and user-visible evidence never contain the marker;
-- BGE / Hindsight / `final_min_score=0.144` are unchanged;
-- `LUMINA_USER_SELF_BINDING_ENABLED=false` rolls back to pre-binding scoring
-  exactly; legacy memories without the field read as unbound;
-- evidence: `docs/experiments/user_self_production_wiring/RESULT.md`
-  (mini-shadow + fresh-session E2E gate) and
-  `docs/experiments/context_role_entityref/RESULT.md` (role/ref separation).
-
-### Mind gate (stage 2 promoted)
-
-- every chat message passes a Mind gate before the Recall guard
-  (`User -> Mind -> Memory`);
-- the production default for real model configuration is the promoted
-  `LlmMindGate` (`mind-gate-v2`, DeepSeek-V4-Pro non-thinking, 8 output tokens,
-  temperature 0); the gate mechanism was previously validated with MiniMax-M3
-  by shadow + holdout + operational + regression evidence
-  (`docs/experiments/mind_stage2_promotion/RESULT.md`), while the provider
-  migration itself is not attributed to that historical evidence;
-- mock mode always uses the stage-1 `ConstantMindGate`
-  (`MindDecision(recall=True)`), regardless of mode setting;
-- `LUMINA_MIND_GATE_MODE=constant` rolls back to the stage-1 constant-allow
-  gate; gate-client construction failure also falls back to it, so chat
-  availability never depends on gate provider configuration;
-- Mind wiring is independent of Recall wiring: the gate still runs (and is
-  audited) when Recall is disabled or unavailable;
-- each decision is appended to an append-only JSONL audit log
-  (`LUMINA_MIND_DECISION_LOG_PATH`, default `data/mind/decisions.jsonl`),
-  recording `{turn_id, recall, decided_at}`;
-- decision failure and audit-log failure fail open as separate events
-  (`mind_gate_failed` / `mind_decision_log_failed`); an unauditable rejection
-  never takes effect silently;
-- the gate contract remains `MindDecision {recall: bool}`; further Mind
-  responsibilities require separate approval
-  (`docs/plan/MIND_DEFINITION_V1.md`).
-
-### Manual explicit Execution entry
-
-- `POST /api/execution` accepts only a bounded non-blank `goal` and invokes the
-  supported `ExecutionOrgan` facade; it does not enter `MessageRuntime` or the
-  Mind gate;
-- each request gets a unique Lumina-controlled run directory with an isolated
-  `workspace/`; IPython starts in that workspace, while durable Execution state
-  is stored in the sibling `state/` directory;
-- the endpoint preserves the frozen Root surface
-  `IPython + Wait + ClaimComplete`; eligible `spawn_child(goal)` remains an
-  IPython bridge rather than a provider-facing tool schema;
-- completion is the existing typed `FileContentEquals` check over the reserved
-  `.lumina-complete == "verified"` workspace marker. `verified=true` reports
-  only that mechanical evidence, not natural-language Goal verification;
-- the response exposes only `execution_id`, status, the bounded verified
-  result, and `verified`; EventLog, DecisionFrame, provider data, code, paths,
-  and failure detail remain internal;
-- automatic Mind routing, Chat-triggered execution, Execution Memory writes,
-  and frontend integration are **NOT IMPLEMENTED**. Ordinary `/api/chat`
-  behavior is unchanged.
-
-### Validation and audit
-
-Latest reported local validation:
-
-```text
-root tests:                 338 passed, 24 skipped
-Execution production tests: 5 passed
-manual Execution API tests: 5 passed
-Execution_lab2 regression:  147 passed
-Conversation_Memory tests: 163 passed, 45 skipped
-Dream tests:                36 passed, 1 skipped
-real MAGMA Recall E2E:      PASS (10 / 10 queries)
-Mind production-seam controls: PASS (9 / 9)
-USER_SELF fresh-session E2E: PASS (promoted, docs/experiments/user_self_production_wiring/RESULT.md)
-production depth-1 required evidence: 11 / 11
-restart Recall:             PASS
-idempotency:                PASS
-git diff --check:           PASS
-pinned MAGMA changed by consolidation: NO
-pinned MAGMA worktree:      clean at 467cb70b67ac337b22fdb42194d37c04ad701b62
-```
-
-A local source audit of pinned MAGMA established:
-
-```text
-MAGMA_NATIVE_RECALL: PARTIAL
-MAGMA_ADAPTIVE_QUERY_POLICY: NOT_USED
-MAGMA_FOUR_GRAPH_TRAVERSAL: PARTIALLY_USED
-```
-
-Lumina reuses MAGMA TRG/storage/vector/graph primitives and generic traversal,
-but production does not call upstream `QueryEngine.query()`.
-
-## Partial / Current Quality Gaps
-
-### Recall quality
-
-The current `final_min_score=0.144` is development-calibrated, not a blinded
-holdout result and not a real-user Answer-quality guarantee.
-
-On the current 60-case synthetic development set:
-
-```text
-positive required-source complete: 17 / 30
-negative empty evidence:           20 / 30
-combined:                          37 / 60
-```
-
-Per-stratum:
-
-```text
-ordinary positive:           13 / 18 correct
-temporal positive:            4 / 12 correct
-public closed-form negative: 12 / 12 correct
-missing-private negative:     4 / 9 correct
-wrong-relation negative:      4 / 9 correct
-```
-
-The current-contract reevaluation excludes 24 assistant-utterance-only
-positive cases that lack verified fact/self-action provenance:
-
-```text
-aligned subset:                    36 cases
-raw-turn baseline:                 26 / 36
-Grounded Write:                    29 / 36
-positive completeness:              6 / 6  (both)
-negative correctness:              20 / 30 -> 23 / 30
-unsupported negative evidence:     10 / 30 ->  7 / 30
-authorized required facts:         24 / 24 contract-valid
-Formation losses:                   0 omission / validator / grounding / protocol
-```
-
-The dominant remaining current-contract failure is insufficient evidence on
-negative queries. Assistant utterance alone remains outside the authorized
-memory contract until Execution Trace or tool-result provenance exists.
-
-### MAGMA query behavior
-
-Production currently uses fixed one-hop BFS. Upstream MAGMA query
-classification and adaptive parameters are not
-active in production. The pinned upstream's active semantic-gated adaptive
-traversal, third scan-anchor list, query-type heuristic reranking, multi-hop,
-QA/session expansion, and AnswerFormatter are also bypassed/replaced.
-
-The upstream probabilistic beam helper exists in source but has no active caller
-in the pinned QueryEngine; it must not be described as current upstream query
-behavior.
-
-### Graph coverage
-
-Lumina's production MAGMA graph is a subset of what upstream benchmark
-`MemoryBuilder` can construct. Current ingestion primarily provides:
-
-- sequential temporal links;
-- dense semantic relations;
-- exact shared-entity links;
-- little/no causal structure in the current synchronous no-LLM configuration.
-
-The pinned MAGMA uses one `MultiDiGraph` with temporal, semantic, causal, and
-entity link types; it is not four physically independent graph stores.
-
-### Other implementation limits
-
-- Hot physical storage remains append-only;
-- local JSONL stores and Dream/checkpoint paths assume single-writer operation;
-- deployment is single-user / single continuous session / single process-worker;
-- no real conversation/thread identity isolation;
-- no global application-level context token budget;
-- no reliable current-state/supersession truth layer;
-- no reliable evidence-sufficiency/no-answer mechanism independent of the
-  current global score floor;
-- Hot/Cold reads remain file scans rather than indexed stores.
-
-## Current Development Stage
-
-The Memory stage is complete and currently has no blocking todos. In
-production: the Memory MVP, Grounded Write, the Mind Recall gate stage 2
-(`LlmMindGate` as the real-model default;
-`docs/experiments/mind_stage2_promotion/`), the generic multi-entity Entity
-graph (`CURRENT_USER` → `E_001` plus ordinary persisted entities, graph-only
-EntityNodes, exact-surface query-side ref lookup, entity-conditioned
-retrieval, `[SAME_ENTITY]` ranking cue;
-`docs/experiments/entity_production_acceptance/RESULT.md`), and the self-name
-coverage guard (`Conversation_Memory/adapter/identity_coverage.py`;
-`tests/test_identity_coverage.py`).
-
-Execution V1 is frozen as isolated experimental history at tag
-`execution-organ-v1-final`; it was never connected to production Chat,
-Memory, Dream, or Mind. The frozen and audited Execution V2 substrate is now a
-supported production package under `Execution/`, owned through the minimal
-`ExecutionOrgan` facade. Its Root surface is `IPython + Wait + ClaimComplete`;
-eligible delegation remains `await spawn_child(goal)` inside IPython, and a
-Child sees `IPython + Wait + Return`. `Execution_lab2` remains the evidence and
-regression history and aliases the supported modules rather than carrying a
-second active implementation. Execution is not wired into Chat, Mind, Memory,
-or Dream, so existing production conversations make no Execution provider
-calls.
-
-`ControlledRelationResolver` remains a fail-open Memory-side capability for
-explicit structured callers; normal Chat provides no relation surfaces. No
-free-text query parser, entity resolver, assistant self-action authorization,
-or execution-provenance system is implied by this boundary.
-
-Rejected experiments and their quantitative consequences are consolidated in
-`docs/MEMORY_EXPERIMENT_HISTORY.md`.
-
-## Isolated Mind D2 protocol evidence (2026-09-05)
-
-The persistent Mind/Nervous/Execution experiment reused existing cognitive
-commit, request/result continuation, qualified Directive routing and E1 forks.
-A native Anthropic cognitive-return adapter and isolated ordinary-Python
-control were added under `Mind/event_loop.py`; the Execution facade has an
-optional control injection with its default production path unchanged.
-
-D2 P0 completed once: 27 DeepSeek-V4-Pro non-thinking calls, 6/8 accepted
-activities, reopened cognition in all four cells, three read/result round-trips,
-and **zero qualified real Directive deliveries**. Its preregistered gate failed;
-the formal multi-event campaign did not start. Value verdict: **INCONCLUSIVE**.
-This is experimental evidence, not production Mind wiring or proof of long-range
-planning. See `Mind/docs/EVENT_LOOP_RESULT.md` and its immutable P0 artifacts.
-Earlier D1 and E/W/S verdicts remain unchanged.
-
-## Isolated Mind D3 contract calibration (2026-09-05)
-
-D3 reuses the persistent Mind/Nervous/Trace and existing native/isolated-Python
-adapters. An opt-in contract aligns high-level direction semantics, existing
-field bounds and exact source references. Execution event wake accepts the
-existing qualified advisory through a small optional parameter; its default
-behavior is unchanged. The scripted three-event test covers delivery, actions,
-owner feedback and reopened cognitive continuity.
-
-Real development passed 5/5 on five calls; the separate once-only acceptance
-passed 4/5 on five calls. Its normal control returned native `input={}` and was
-truthfully rejected, with no NoChange substitution. The real multi-event stage
-did not start. Comparison eligibility remains **NO**, value **INCONCLUSIVE**.
-See `Mind/docs/COGNITIVE_CONTRACT_RESULT.md`. This does not change the historical
-D1/P0 verdicts or establish production Mind wiring.
-
-## Isolated Mind D4 bounded protocol recovery (2026-09-05)
-
-D4 extends the existing native contract with one durable correction for known,
-uncommitted parameter errors per activity (at most three physical calls, two
-logical steps, one read). Qualitative scenario schema now matches the existing
-prompt/reducer. Unknown outcomes and storage/source/semantic failures do not
-receive free retries. Legacy activities retain their previous Trace semantics.
-
-The frozen campaign used 34/60 real DeepSeek-V4-Pro non-thinking calls: 12 Mind
-activities, 9 completed without repair, three natural empty inputs recovered
-on their sole correction, 12 structurally accepted. Development passed 2/2 and
-independent interface acceptance 4/4. The actual three-event loop completed both
-workspace tasks, but only 1/2 cases met all frozen criteria. One original
-Directive was delivered to a qualified Execution decision, followed by matching
-actions and owner feedback to the same nonempty, reopened Mind. Execution already
-had correct policy branches before guidance; no comparative benefit is established.
-
-The normal control proposed redundant revision guidance and retained an incorrect
-policy discriminator after feedback. Developer semantic review withheld its
-Directive but did not erase accepted cognition. A claim/status ambiguity also
-remains in the positive trace. This is a supervised experimental chain, not
-autonomous semantic acceptance or production wiring. Comparison eligibility is
-**NOT_YET**, independent-Mind value **INCONCLUSIVE**. See
-`Mind/docs/PROTOCOL_RECOVERY_RESULT.md` and `PROTOCOL_RECOVERY_REVIEW.md`.
-The 38-test safety gate and root regression (347 passed, 24 skipped) passed;
-D1/P0/D3 records and verdicts remain unchanged.
-
-## Isolated Mind D5 semantic revision (2026-09-05)
-
-D5 reuses the local D4 owners, event/Trace path, bounded recovery and steering
-bridge. Opt-in semantic contract d5-v2 clarifies current-claim status, conditional
-scope, historical truth and revision of affected old discriminators. Two bounded
-development passes improved a new condition variant, but the archived D4
-discriminator error persists. The original D4 normal case had a real revision
-metadata gap; its Directive cannot by itself be called harmful. Its historical
-verdict remains unchanged.
-
-The once-only independent campaign used 16 calls (9 Mind, 7 Execution), within
-29/75 calls for all D5 stages. Seven of nine cognitive activities were accepted.
-The actual workspace case corrected two explicitly scripted prior errors at its
-first event, but subsequent guidance and final feedback were rejected for exact
-quote mismatches: the experiment had JSON-escaped task-file text a second time.
-No Directive was delivered; Execution completed independently. The complete
-handoff control kept NoChange on all three events, and the ambiguous-recovery
-control correctly retained open competing causes. Frozen aggregate is 1/3;
-both controls pass semantic review, but the latter misses the extra fresh-source
-citation gate. This is recorded as an evaluation limitation, not a semantic error.
-
-After the campaign, task-files-d5-v2 fixes only the evidence projection to bounded
-literal file text. Three original failed quotes now pass exact matching in
-deterministic regression; no real acceptance rerun occurred. Targeted validation
-passes 46 tests; root regression passes 347 with 24 skipped. Semantic repair is
-partial, comparison eligibility **NOT_YET**, Mind value **INCONCLUSIVE**.
-See `Mind/docs/SEMANTIC_REVISION_RESULT.md` and `SEMANTIC_REVISION_REVIEW.md`.
-No production wiring, new Mind module, provider change or history rewrite.
-
-## Isolated Mind D6 cognitive-chain calibration (2026-09-06)
-
-D6 reuses the local D5 post-fix baseline. Shared owner/native field definitions
-fix empty-basis schema drift; three separately bounded task-file Evidence
-records fix the latent aggregate overflow. D6 versions share owner-authorized
-logical citation text and permit valid older evidence in evaluation. Strict
-grounding, atomic commits, D4 recovery/permissions and historical wires remain.
-The declared jsonschema dependency and D6 unknown-outcome hard stop have regression
-coverage; no production wiring or new Mind module was added.
-
-Four diagnostic calls show erroneous prior cognition is not necessary for the
-condition/test error to appear. Two bounded semantic candidates each pass 1/4
-development cases; one scope error persists and three outputs exceed the unchanged
-2000-character bound. This does not establish general semantic repair.
-
-The once-only independent campaign uses 16 calls (9 Mind, 7 Execution), within
-28/75 for all D6 stages. Whole-state semantic review passes 9/9 accepted activities;
-both complete-delivery and insufficient-evidence controls keep NoChange on all
-three events. Aggregate is 2/3: the workspace Directive includes marker-writing
-and ClaimComplete operations and is withheld unchanged, so delivery is 0.
-Execution completes independently; owner feedback is accepted by the same reopened
-Mind with consistent scoped cognition. No Mind adoption or causal behavioral gain
-is established. Qualification **NOT_YET**, value **INCONCLUSIVE**.
-
-Final Mind/Nervous coverage is 528 passing tests across scoped runs, 5 skipped;
-10 Docker tests required an unchanged rerun with Docker access after the restricted
-run failed to open its named pipe. Root regression is 347 passed / 24 skipped.
-See `Mind/docs/COGNITIVE_CHAIN_RESULT.md`, `COGNITIVE_CHAIN_REVIEW.md` and
-`Mind/fixtures/cognitive_chain_d6/analysis.json`. D1–D5 records/verdicts are preserved.
-
-## Isolated Mind D7 input/expression repair (2026-09-06)
-
-D7 reuses persistent Mind/Nervous/Trace, strict sources, D4 recovery and the existing
-Execution Directive seam. One owner task now supports bound business/Execution
-role views; discriminator is optional on explicitly revised D7 items, with old
-history retained. Real thinking continuation and a 6000-character / 8192-token
-submission profile were verified. No production wiring changed.
-
-The once-only independent acceptance is 1/3 cases, 7/9 accepted activities: one
-original Directive was delivered and Execution completed the workspace, but a
-correct outcome update exceeded the old 8000-character context cap; a separate
-uncertainty activity exhausted 8192 output tokens. The complete negative control
-kept NoChange on all three events. D7-v3 now consistently permits 16000 context
-characters. A separately registered one-call restored-history continuation
-corrected the old missing-artifact claim and accepted the actual outcome with
-whole-state restart equality. Its 7669-character response would also fit the old
-cap, so its semantic success is not a causal proof of the capacity increase.
-
-Original acceptance remains failed; qualification NOT_YET, behavioral value
-INCONCLUSIVE. Total 38 calls including the engineering follow-up. Execution had
-already computed the relevant net result before guidance, so adoption is not
-independent Mind benefit. Detailed D7 task/result/review reports and campaign
-artifacts remain local and are excluded from code publication. Regression tests
-construct their D7 fixtures in temporary paths and do not require those records.
-
-## Not Started / Not Authorized by This Goal Alone
-
-- automatic/startup/background/chat-time Dream;
-- separate Conversation Graph production system;
-- PostgreSQL/Neo4j memory;
-- generalized ContextBuilder or ToolRuntime;
-- schedulers, workers, autonomous agents, or other organs;
-- global contradiction/current-state resolution;
-- forgetting/decay/consolidation;
-- new model-training infrastructure.
+# Mind—Nervous—Execution 当前状态
+
+当前保留版本：`cognitive-chain-v73`；认知提交契约保持 V67。
+这是可运行的单目标、前台、受界工作区认知执行链。它与生产 Chat 的
+Recall gate、手动 Execution API 分别存在，尚未接入 Chat 或 Memory。
+
+## 当前能力
+
+| 部分 | 已实现职责 |
+| --- | --- |
+| Mind | 接收用户目标及后续事件；承接持久理解、条件、假设和开放问题；按需取证与分析；原子提交受影响的修订；选择 NoChange 或高层 Directive。 |
+| Nervous | 持久邮箱、请求／结果关联、幂等确认、重启续接。传递事件，不判断语义。 |
+| Execution | 独立上下文中的 Python/IPython 实施、局部判断、等待与恢复；在合格决策接收指导原文，向同一 Mind 返回重要结果。 |
+| 世界模型分析 | Mind 按需咨询独立 Builder；可以直接分析，也可生成、复用、修订隔离程序。返回结论、条件、未知与运行引用，过程外置。 |
+| 预测反馈 | 已登记预测可以绑定行动、条件、对象、时点和量纲；后续对应观察触发比较与 Mind 重评。是否修模和改向由 Mind 决定。 |
+
+初始用户消息先经 Nervous 进入 Mind；没有固定的额外改写调用或第二个决策 Agent。
+指导持续可见不等于重复投递。NoChange 可以接受正确的结果反馈并结束认知活动。
+模型可以犯错；宿主不会把私有 belief 自动变成指导，也不会代写正确答案。
+
+## 可用程度与证据
+
+V70–V73 在保留错误历史的会话中修正了命题／状态错配并停止重复派工。
+三个明确标为开发者种子的跨事件样本完成了语义修订，并以 NoChange 结束；
+它们没有要求业务行动。另一个实际文件清单任务完成了指导投递、实际执行、
+结果回流、认知修订和静默恢复。
+该轮共 28 次新调用尝试，包含 6 次无效验收脚本调用和 1 次连接失败。
+
+新任务中的 Builder 实际进行了哈希计算；这证明给定字节串的计算一致性，
+不等于未来环境预测或 Builder 独立观察文件。任务初期产生过错误猜测，
+后续由 Mind 修订；开发者仍进行过接口修复与显式恢复。
+这些是限定任务的功能证据，不能宣称普遍无人监管可靠性、独立上下文优势
+或通用自主纠错已经成立。
+
+## 限制
+
+- 当前是单目标前台运行；没有常驻调度、自主目标生成或跨 Intention 切换。
+- 世界模型只对声明且可对应的观察进行机械比较；任意现实异常发现尚未实现。
+- 字段合法、程序可运行、指导送达、完成标记均不证明语义正确。
+- 文本文件投影以 UTF-8-sig 解码，字符数不是通用原始字节证明，BOM 会被剥离。
+- 未知副作用与未确认的已发请求保留阻塞；不能盲目重放。
+- 推理、工具和引用预算有界。资源不足或认知失败保持可恢复事项，不伪装 NoChange。
+
+## 入口与文档
+
+启动、状态、后续证据、恢复及权限说明见
+[运行契约](../Mind/docs/INTEGRATED_CHAIN.md)。
+历史结论压缩为 [认知与执行历史](../Mind/docs/EXPERIMENT_HISTORY.md)；
+Memory 历史见 [简要索引](MEMORY_EXPERIMENT_HISTORY.md)。
+北极星仍是 [持续理解、判断与行动协调](NORTH_STAR.md)。
+
+生产 Chat 保持 Cold-first、受界 Recall 和手动 Dream；
+本轮清理没有改变 Memory 算法、Chat 路由或真实用户数据。
+
+本次仓库清理将原始实验输出、逐轮记录和无当前调用方的历史实验程序移出项目，
+保留仓库外的恢复副本。
+保留当前实现、兼容与回归测试、必要静态输入、设计及许可证。
+仓库内仅保留历史失败／INCONCLUSIVE 的摘要；摘要不等于可重放的原始证据。
+删除作用于最新 Git 文件树，旧提交未改写。
+
+2026-09-09 清理后回归：`pytest Mind Nervous Execution tests -q`，
+1242 passed, 40 skipped (16 opt-in Docker checks; 24 Memory-environment E2E checks).
+Execution 的 8 份核心回归已从旧 Lab 迁入 `Execution/tests/`。
+历史协议回归使用明确标注的合成输入，旧版本按旧契约解释。
+本轮没有新增真实模型调用；测试通过不扩大上述语义能力结论。

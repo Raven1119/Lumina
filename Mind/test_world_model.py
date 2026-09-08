@@ -201,3 +201,30 @@ def test_actual_timeout_removes_owned_container_and_child(monkeypatch):
     remaining = subprocess.run(["docker", "ps", "--all", "--filter", f"name=^{names[0]}$", "--format", "{{.Names}}"],
                                capture_output=True, text=True, timeout=8, check=True)
     assert remaining.stdout.strip() == ""
+
+
+@pytest.mark.parametrize('change,expected', [
+    ({}, 'compared'), ({'version':'v3'}, 'not_applicable'),
+    ({'platform':None}, 'unverified'), ({'status':None}, 'incomparable'),
+    ({'observation_time':'before_promotion'}, 'not_applicable')])
+def test_forecast_alignment_precedes_quantity_comparison(monkeypatch, change, expected):
+    monkeypatch.setattr(wm, '_compute', lambda _: json.dumps(PREDICTION).encode())
+    run = wm.run_model(SERVICE_MODEL, INITIAL, ACTIONS)
+    contract = {'action':{'version':'v2'}, 'conditions':{'platform':'test'},
+        'object':'service', 'when':'after_promotion',
+        'quantities':{'status':{'meaning':'Reported deployment state','unit':'state'}}}
+    observed = {'version':'v2','platform':'test','observation_object':'service',
+        'observation_time':'after_promotion','status':'live', **change}
+    result = wm.compare_observation_contract(run, contract, observed)
+    assert result['status'] == expected
+    assert (result['comparison'] is not None) == (expected == 'compared')
+    if expected == 'compared':
+        assert result['comparison']['status'] == 'matched'
+        observed['status'] = 'failed'
+        mismatch = wm.compare_observation_contract(run, contract, observed)
+        assert mismatch['status'] == 'compared'
+        assert mismatch['comparison']['status'] == 'mismatch'
+    assert wm.compare_observation_contract(run, contract, observed, fresh=False)['status'] == 'unverified'
+    contract['conditions']['version'] = 'v2'
+    with pytest.raises(ValueError, match='ambiguous_observation_contract'):
+        wm.compare_observation_contract(run, contract, None)

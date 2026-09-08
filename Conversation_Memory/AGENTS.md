@@ -171,9 +171,9 @@ Do not change the following without an explicit task and supporting evidence:
   remain private;
 - pinned upstream MAGMA revision.
 
-A narrow change is permitted only for a reproducible bug, a real failure sample,
-or a minimal caller-contract requirement from an explicitly designed Mind
-System.
+Justify behavior changes with a reproducible bug, a real failure sample, or an
+explicit caller-contract requirement. Follow the root task-scope and validation
+rules; routine repairs do not require a separate Mind design or a new experiment.
 
 ## Not authorized by default
 
@@ -205,12 +205,20 @@ the production path.
 Use synthetic data and temporary/marker-owned paths. Never use real user Draft
 or memory data in committed tests.
 
-Run:
+Choose relevant tests for the affected behavior under the root validation
+rules. Ordinary fixes may use focused cases; Markdown-only changes use static
+checks. Broader memory regression uses:
 
 ```bash
 python -m pytest Conversation_Memory/tests -q
-python -m pytest -q
-python -m scripts.recall_e2e_test
+```
+
+Recall behavior changes also require the existing isolated real-MAGMA E2E.
+From the repository root, use its required environment and the isolation
+contract in `docs/RECALL_E2E_ACCEPTANCE.md`:
+
+```powershell
+.\Conversation_Memory\.venv\Scripts\python.exe -m scripts.recall_e2e_test
 git diff --check
 git -C Conversation_Memory/upstream/MAGMA status --short
 git -C Conversation_Memory/upstream/MAGMA diff --stat

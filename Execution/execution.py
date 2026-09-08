@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Iterable, Literal, Mapping, Protocol, TypeAlias
+from typing import Callable, Iterable, Literal, Mapping, Protocol, TypeAlias
 
 from Execution.ipython_control import IPythonResult, PersistentIPython
 
@@ -40,7 +40,9 @@ class FileContentEquals:
 
 
 CompletionSpec: TypeAlias = FileContentEquals
-DecisionAdvisory: TypeAlias = tuple[str, str]
+# Outer None resumes a durable direction; (decision_id, None) explicitly
+# withdraws it without advancing. A string supplies/replaces bounded guidance.
+DecisionAdvisory: TypeAlias = tuple[str, str | None]
 
 
 @dataclass(frozen=True)
@@ -220,7 +222,7 @@ class CompletionEvidence:
 
 @dataclass(frozen=True)
 class CompletionObservation:
-    status: Literal["rejected"]
+    status: Literal["rejected", "review_pending"]
     evidence: CompletionEvidence
 
     @property
@@ -588,9 +590,11 @@ EventType: TypeAlias = Literal[
     "COMPLETION_CLAIMED",
     "COMPLETION_VERIFIED",
     "COMPLETION_REJECTED",
+    "COMPLETION_DEFERRED",
     "ROOT_WAITING",
     "EXTERNAL_EVENT_RECEIVED",
     "ROOT_WOKEN",
+    "ROOT_REDIRECTED",
     "INTERRUPT_REQUESTED",
     "ACTOR_SUSPENDED",
     "ACTOR_RESUMED",
@@ -739,6 +743,8 @@ def _encode_value(value: object) -> object:
             "fields": {
                 field.name: _encode_value(getattr(value, field.name))
                 for field in fields(value)
+                if not (isinstance(value, IPythonResult) and field.name == 'cognitive_request'
+                        and value.cognitive_request is None)
             },
         }
     raise TypeError(f"unsupported durable event value: {type(value).__name__}")
@@ -793,6 +799,8 @@ def _decode_value(value: object) -> object:
         encoded_fields = {"depth": 1, "max_depth": 1, **encoded_fields}
     elif value_type == "ExecutionState":
         encoded_fields = {"depth": 0, "max_depth": 1, **encoded_fields}
+    elif value_type == 'IPythonResult':
+        encoded_fields = {'cognitive_request': None, **encoded_fields}
     expected_fields = {field.name for field in fields(value_class)}
     if set(encoded_fields) != expected_fields:
         raise ValueError(f"invalid fields for durable {value_type}")
@@ -945,9 +953,11 @@ class EventLog:
             "COMPLETION_CLAIMED": {"claim"},
             "COMPLETION_VERIFIED": {"evidence"},
             "COMPLETION_REJECTED": {"observation"},
+            "COMPLETION_DEFERRED": {"observation"},
             "ROOT_WAITING": {"condition"},
             "EXTERNAL_EVENT_RECEIVED": {"event"},
             "ROOT_WOKEN": {"event"},
+            "ROOT_REDIRECTED": {"advisory"},
             "INTERRUPT_REQUESTED": {"status"},
             "ACTOR_SUSPENDED": {"status"},
             "ACTOR_RESUMED": {"status"},
@@ -1369,7 +1379,9 @@ class EventLog:
                     "IPYTHON_EXECUTION_FAILED",
                     "ACTION_RECONCILED",
                     "COMPLETION_REJECTED",
+                    "COMPLETION_DEFERRED",
                     "ROOT_WOKEN",
+                    "ROOT_REDIRECTED",
                     "ACTOR_RESUMED",
                     "CHILD_SPAWNED",
                     "CHILD_RETURNED",
@@ -1420,6 +1432,19 @@ class EventLog:
                 or state.waiting_for != external_event.event_type
             ):
                 raise ValueError("Root wakes only for its matching external event")
+        elif event_type == "ROOT_REDIRECTED":
+            state = fold_execution_state(self.events)
+            decision_id = f"decision-{state.decision_count + 1:06d}"
+            pending = _pending_root_redirect(self.events)
+            withdrawal = _advisory_withdrawal_for(payload["advisory"], decision_id)
+            if (
+                state.actor_role != "root"
+                or (withdrawal and pending is None)
+                or (not withdrawal and _decision_advisory_for(payload["advisory"], decision_id) is None)
+                or (state.status != "waiting" and not (
+                    state.status in ("running", "suspended") and pending is not None))
+            ):
+                raise ValueError("Root redirect requires guidance for its next waiting decision")
         elif event_type == "TOOL_CALL_STARTED":
             decision_event = next(
                 (
@@ -1750,16 +1775,17 @@ class EventLog:
                 raise ValueError(
                     "completion verification must match the execution-start spec"
                 )
-        elif event_type == "COMPLETION_REJECTED":
+        elif event_type in {"COMPLETION_REJECTED", "COMPLETION_DEFERRED"}:
             observation = payload["observation"]
+            deferred = event_type == "COMPLETION_DEFERRED"
             if (
                 previous.event_type != "COMPLETION_CLAIMED"
                 or not isinstance(observation, CompletionObservation)
-                or observation.status != "rejected"
+                or observation.status != ("review_pending" if deferred else "rejected")
                 or not _evidence_matches_spec(
                     observation.evidence,
                     self._events[0].payload.get("completion_spec"),
-                    matched=False,
+                    matched=deferred,
                 )
             ):
                 raise ValueError(
@@ -1780,7 +1806,9 @@ class EventLog:
                 "IPYTHON_EXECUTION_FAILED",
                 "ACTION_RECONCILED",
                 "COMPLETION_REJECTED",
+                "COMPLETION_DEFERRED",
                 "ROOT_WOKEN",
+                "ROOT_REDIRECTED",
             ):
                 raise ValueError("failure requires the latest execution cause")
 
@@ -1930,6 +1958,7 @@ class EventLog:
                 error=cls._freeze(value.error),
                 truncated=cls._freeze(value.truncated),
                 original_output_chars=cls._freeze(value.original_output_chars),
+                cognitive_request=cls._freeze(value.cognitive_request),
             )
         if isinstance(value, IPythonObservation):
             return IPythonObservation(
@@ -2135,7 +2164,7 @@ def fold_execution_state(
             raise ValueError("execution must begin with EXECUTION_STARTED")
         if state.status in ("completed", "failed"):
             raise ValueError("terminal execution state cannot accept more events")
-        waiting_event_types = ("EXTERNAL_EVENT_RECEIVED", "ROOT_WOKEN")
+        waiting_event_types = ("EXTERNAL_EVENT_RECEIVED", "ROOT_WOKEN", "ROOT_REDIRECTED")
         child_wake = (
             state.status == "waiting"
             and state.waiting_for == "CHILD_RESULT"
@@ -2146,12 +2175,13 @@ def fold_execution_state(
             and event.event_type not in waiting_event_types
             and not child_wake
         ):
-            raise ValueError("waiting execution accepts only external wake events")
-        if state.status == "running" and event.event_type in waiting_event_types:
+            raise ValueError("waiting execution accepts only wake events or Root guidance")
+        if state.status == "running" and event.event_type in ("EXTERNAL_EVENT_RECEIVED", "ROOT_WOKEN"):
             raise ValueError("running execution cannot receive a wait-only event")
         if state.status == "suspended" and event.event_type not in (
             "EXTERNAL_EVENT_RECEIVED",
             "ACTOR_RESUMED",
+            "ROOT_REDIRECTED",
         ):
             raise ValueError(
                 "suspended execution accepts only durable events or explicit resume"
@@ -2247,7 +2277,7 @@ def fold_execution_state(
                 state.last_provider_tool_call_id,
             )
             values["last_result"] = result
-        elif event.event_type == "COMPLETION_REJECTED":
+        elif event.event_type in {"COMPLETION_REJECTED", "COMPLETION_DEFERRED"}:
             observation = event.payload.get("observation")
             if not isinstance(observation, CompletionObservation):
                 raise ValueError(
@@ -2275,13 +2305,28 @@ def fold_execution_state(
             values["status"] = "running"
             values["waiting_for"] = None
             values["latest_external_event"] = external_event
+        elif event.event_type == "ROOT_REDIRECTED":
+            decision_id = f"decision-{state.decision_count + 1:06d}"
+            withdrawal = _advisory_withdrawal_for(event.payload.get("advisory"), decision_id)
+            if (
+                state.actor_role != "root"
+                or not isinstance(state.last_action, Wait)
+                or state.status not in ("waiting", "running", "suspended")
+                or (withdrawal and state.status == "waiting")
+                or (not withdrawal and _decision_advisory_for(event.payload.get("advisory"), decision_id) is None)
+            ):
+                raise ValueError("Root redirect requires guidance for its next waiting decision")
+            if state.status != "suspended":
+                values["status"] = "waiting" if withdrawal else "running"
+            values["waiting_for"] = state.last_action.event_type if withdrawal else None
         elif event.event_type == "INTERRUPT_REQUESTED":
             values["lifecycle_notice"] = "interrupt_requested"
         elif event.event_type == "ACTOR_SUSPENDED":
             values["status"] = "suspended"
             values["lifecycle_notice"] = "suspended"
         elif event.event_type == "ACTOR_RESUMED":
-            values["status"] = "running"
+            # A withdrawn direction can restore its real wait while suspended.
+            values["status"] = "waiting" if state.waiting_for is not None else "running"
             values["lifecycle_notice"] = "resumed"
         elif event.event_type == "CHILD_SPAWNED":
             child_ref = event.payload.get("child_ref")
@@ -2580,6 +2625,7 @@ def _action_projection(action: object | None) -> dict[str, object] | None:
 
 def _observation_projection(
     observation: RuntimeObservation | None,
+    output_limit: int = 1_024,
 ) -> dict[str, object] | None:
     if observation is None:
         return None
@@ -2617,7 +2663,7 @@ def _observation_projection(
             "type": "ipython_execution",
             "result": {
                 "ok": result.ok,
-                "output": _text_projection(result.output),
+                "output": _text_projection(result.output, output_limit),
                 "error_code": result.error_code,
                 "error": (
                     _text_projection(result.error)
@@ -2633,7 +2679,7 @@ def _observation_projection(
         "request": _request_projection(observation.request),
         "result": {
             "ok": result.ok,
-            "output": _text_projection(result.output),
+            "output": _text_projection(result.output, output_limit),
             "error_code": result.error_code,
             "error": (
                 _text_projection(result.error) if result.error is not None else None
@@ -2646,6 +2692,7 @@ def _observation_projection(
 
 def _sibling_observation_projection(
     observation: Observation | IPythonObservation | ChildObservation,
+    output_limit: int = 1_024,
 ) -> dict[str, object]:
     if isinstance(observation, ChildObservation):
         projection: dict[str, object] = {
@@ -2666,7 +2713,7 @@ def _sibling_observation_projection(
         "ok": result.ok,
     }
     if result.output:
-        projection["output"] = _text_projection(result.output)
+        projection["output"] = _text_projection(result.output, output_limit)
     if result.error_code is not None:
         projection["error_code"] = result.error_code
     if result.error is not None:
@@ -2689,6 +2736,9 @@ def _bounded_context(
     sibling_observations: tuple[RuntimeObservation, ...] = (),
     capability_declarations: tuple[str, ...] = (),
 ) -> str:
+    # Spend the caller's existing context allocation on ordinary tool output.
+    # Four native siblings can share it; the final renderer still enforces the total.
+    output_limit = max(1_024, max_chars // 4)
     document: dict[str, object] = {
         "goal": _text_projection(state.goal),
         "completion_spec": (
@@ -2719,7 +2769,7 @@ def _bounded_context(
         "observation": (
             None
             if sibling_observations
-            else _observation_projection(state.latest_observation)
+            else _observation_projection(state.latest_observation, output_limit)
         ),
         "incoming_event": (
             {
@@ -2780,7 +2830,7 @@ def _bounded_context(
                 (Observation, IPythonObservation),
             ):
                 observation = _sibling_observation_projection(
-                    state.latest_observation
+                    state.latest_observation, output_limit
                 )
                 if isinstance(state.latest_observation, IPythonObservation):
                     observation["type"] = "ipython"
@@ -2833,9 +2883,11 @@ def _bounded_context(
                 if state_projection[key] is None:
                     state_projection.pop(key)
     if sibling_observations:
-        document.clear()
+        # Keep current owner identity/constraints when projecting a native batch.
+        # The adapter still needs the current decision, not only prior outcomes.
+        document.pop("observation", None)
         document["observations"] = [
-            _sibling_observation_projection(observation)
+            _sibling_observation_projection(observation, output_limit)
             for observation in sibling_observations
             if isinstance(
                 observation,
@@ -2942,7 +2994,21 @@ def _has_pending_spawn_batch(
 
 
 _DECISION_ADVISORY_CONTEXT_KEY = "mind_supervisor_directive"
-_MAX_DECISION_ADVISORY_CHARS = 1_200
+_MAX_DECISION_ADVISORY_CHARS = 6_200  # Bounded 6000-char cognitive commit plus inert wrapper.
+
+
+def _advisory_withdrawal_for(advisory: object, decision_id: str) -> bool:
+    return (type(advisory) is tuple and len(advisory) == 2
+            and type(advisory[0]) is str and advisory[0] == decision_id and advisory[1] is None)
+
+
+def _pending_root_redirect(events: tuple[ExecutionEvent, ...]) -> ExecutionEvent | None:
+    for event in reversed(events):
+        if event.event_type == "MODEL_DECISION":
+            break
+        if event.event_type == "ROOT_REDIRECTED":
+            return event if event.payload["advisory"][1] is not None else None
+    return None
 
 
 def _decision_advisory_for(
@@ -3074,6 +3140,7 @@ def _build_model_request(
 @dataclass(frozen=True)
 class ExecutionResult:
     status: Literal[
+        "running",
         "waiting",
         "suspended",
         "child_pending",
@@ -3106,10 +3173,18 @@ class RootAgentProcess:
         checkpoint_path: str | Path | None = None,
         ipython_control: PersistentIPython | None = None,
         max_depth: int = 1,
+        max_decisions_per_advance: int | None = None,
+        completion_review_required: Callable[[], bool] | None = None,
         _child_ref: ChildRef | None = None,
     ) -> None:
         if max_decisions < 1:
             raise ValueError("max_decisions must be positive")
+        if max_decisions_per_advance is not None and (
+            type(max_decisions_per_advance) is not int or max_decisions_per_advance < 1
+        ):
+            raise ValueError("max_decisions_per_advance must be a positive integer or None")
+        self._max_decisions_per_advance = max_decisions_per_advance
+        self._completion_review_required = completion_review_required
         if max_context_chars < 768:
             raise ValueError("max_context_chars must be at least 768")
         if type(max_depth) is not int or max_depth not in (1, 2):
@@ -3192,6 +3267,7 @@ class RootAgentProcess:
         )
         self._ipython_child_delegation = bool(
             self._child_limit and "ipython" in model_tool_names
+            and isinstance(ipython_control, PersistentIPython)
         )
         self._active_ipython_event: ExecutionEvent | None = None
         self._active_ipython_batch_size = 0
@@ -3247,9 +3323,11 @@ class RootAgentProcess:
                 "TOOL_CALL_STARTED",
                 "ACTION_RECONCILED",
                 "COMPLETION_REJECTED",
+                "COMPLETION_DEFERRED",
                 "ROOT_WAITING",
                 "EXTERNAL_EVENT_RECEIVED",
                 "ROOT_WOKEN",
+                "ROOT_REDIRECTED",
                 "INTERRUPT_REQUESTED",
                 "ACTOR_SUSPENDED",
                 "ACTOR_RESUMED",
@@ -3282,6 +3360,7 @@ class RootAgentProcess:
         event_log: EventLog | None = None,
         checkpoint_path: str | Path | None = None,
         ipython_control: PersistentIPython | None = None,
+        max_decisions_per_advance: int | None = None,
     ) -> RootAgentProcess:
         if not isinstance(child_ref, ChildRef):
             raise TypeError("child_ref must be a ChildRef")
@@ -3300,6 +3379,7 @@ class RootAgentProcess:
             event_log=event_log,
             checkpoint_path=checkpoint_path,
             ipython_control=ipython_control,
+            max_decisions_per_advance=max_decisions_per_advance,
             _child_ref=child_ref,
         )
 
@@ -3309,7 +3389,10 @@ class RootAgentProcess:
         completion_spec: CompletionSpec,
         *,
         decision_advisory: DecisionAdvisory | None = None,
+        defer_actions: bool = False,
     ) -> ExecutionResult:
+        if type(defer_actions) is not bool or (defer_actions and decision_advisory is not None):
+            raise ValueError("invalid deferred-action request")
         if self._actor_role != "root":
             raise ValueError("Child execution must use run_child")
         if self._event_log.events:
@@ -3325,7 +3408,7 @@ class RootAgentProcess:
                 "max_depth": self._max_depth,
             },
         )
-        return self._drive(decision_advisory=decision_advisory)
+        return self._result([]) if defer_actions else self._drive(decision_advisory=decision_advisory)
 
     def run_child(self) -> ExecutionResult:
         if self._actor_role != "child" or self._child_ref is None:
@@ -3437,12 +3520,30 @@ class RootAgentProcess:
         *,
         decision_advisory: DecisionAdvisory | None = None,
     ) -> ExecutionResult:
+        """Resume, replace next-decision guidance, or withdraw it without advancing."""
         if self._actor_role != "root" and decision_advisory is not None:
             raise ValueError("Child execution cannot accept a decision advisory")
         if not self._event_log.events:
             raise ValueError("execution has not started")
         steps: list[ExecutionStep] = []
         state = self._current_state()
+        decision_id = f"decision-{state.decision_count + 1:06d}"
+        pending_redirect = _pending_root_redirect(self._event_log.events)
+        withdrawal_request = (type(decision_advisory) is tuple
+                              and len(decision_advisory) == 2 and decision_advisory[1] is None)
+        if withdrawal_request:
+            if pending_redirect is not None and _advisory_withdrawal_for(decision_advisory, decision_id):
+                if state.status != "suspended" and self._interrupt_requested:
+                    self._settle_recovered_interrupt(steps)
+                self._event_log.append("ROOT_REDIRECTED", {"advisory": decision_advisory},
+                                       (self._event_log.events[-1].event_id,))
+            return self._result(steps)
+        if pending_redirect is not None and decision_advisory is not None:
+            if _decision_advisory_for(decision_advisory, decision_id) is None:
+                return self._result(steps)
+            if pending_redirect.payload["advisory"] != decision_advisory:
+                self._event_log.append("ROOT_REDIRECTED", {"advisory": decision_advisory},
+                                       (self._event_log.events[-1].event_id,))
         if state.status != "suspended" and self._interrupt_requested:
             return self._settle_recovered_interrupt(steps)
         if state.status == "suspended":
@@ -3461,6 +3562,17 @@ class RootAgentProcess:
             self._reconcile_interrupted_call(last_event)
         state = self._current_state()
         last_event = self._event_log.events[-1]
+        if state.status == "waiting" and _decision_advisory_for(
+            decision_advisory, f"decision-{state.decision_count + 1:06d}"
+        ) is not None:
+            # Direction changes the next decision; it does not certify that the
+            # original external dependency arrived. Persist it before advancing.
+            self._event_log.append(
+                "ROOT_REDIRECTED",
+                {"advisory": decision_advisory},
+                (last_event.event_id,),
+            )
+            return self._drive()
         if state.status == "waiting" and last_event.event_type == "EXTERNAL_EVENT_RECEIVED":
             external_event = last_event.payload.get("event")
             if (
@@ -3638,7 +3750,10 @@ class RootAgentProcess:
         )
 
     def deliver_event(self, event_type: str, data: str = "", *,
-                      decision_advisory: DecisionAdvisory | None = None) -> ExecutionResult:
+                      decision_advisory: DecisionAdvisory | None = None,
+                      defer_actions: bool = False) -> ExecutionResult:
+        if type(defer_actions) is not bool or (defer_actions and decision_advisory is not None):
+            raise ValueError("invalid deferred-action request")
         if not isinstance(event_type, str) or not event_type:
             raise ValueError("event_type must be a non-empty string")
         if not isinstance(data, str):
@@ -3665,7 +3780,7 @@ class RootAgentProcess:
             {"event": external_event},
             (received.event_id,),
         )
-        return self._drive(decision_advisory=decision_advisory)
+        return self._result([]) if defer_actions else self._drive(decision_advisory=decision_advisory)
 
     def _resume_spawn_suffix(self, steps: list[ExecutionStep]) -> None:
         events = self._event_log.events
@@ -3973,9 +4088,15 @@ class RootAgentProcess:
     ) -> ExecutionResult:
         if steps is None:
             steps = []
+        starting_decisions = self._current_state().decision_count
         while True:
             state = self._current_state()
             if state.status == "suspended":
+                return self._result(steps)
+            # Host control handoff after a whole settled decision, with no new
+            # business event, no failure, and no kernel teardown.
+            if (self._max_decisions_per_advance is not None
+                    and state.decision_count - starting_decisions >= self._max_decisions_per_advance):
                 return self._result(steps)
             if state.decision_count >= self._max_decisions:
                 with self._lifecycle:
@@ -3989,6 +4110,15 @@ class RootAgentProcess:
                 return self._finish(steps)
             decision = state.decision_count + 1
             decision_id = f"decision-{decision:06d}"
+            # Freeze the host's control requirement before a provider decision or
+            # claim is committed. A failed policy read leaves a resumable tail.
+            review_completion = (self._completion_review_required is not None
+                                 and self._completion_review_required())
+            redirected = _pending_root_redirect(self._event_log.events)
+            if redirected is not None:
+                # The latest accepted direction survives a crash or suspension,
+                # and is consumed by exactly one committed model decision.
+                decision_advisory = redirected.payload["advisory"]
             advisory_context = (
                 _decision_advisory_for(
                     decision_advisory,
@@ -4015,6 +4145,10 @@ class RootAgentProcess:
                 else (),
                 advisory_context,
             )
+            if advisory_context is not None and json.loads(request.context).get(
+                _DECISION_ADVISORY_CONTEXT_KEY
+            ) != advisory_context:
+                raise ValueError("Root redirect guidance exceeds the available decision context")
             with self._lifecycle:
                 if self._suspend_if_requested_locked():
                     return self._result(steps)
@@ -4227,6 +4361,16 @@ class RootAgentProcess:
                         self._tools.environment,
                     )
                     if evidence.matched:
+                        if review_completion:
+                            observation = CompletionObservation("review_pending", evidence)
+                            self._event_log.append(
+                                "COMPLETION_DEFERRED", {"observation": observation},
+                                (claim_event.event_id,),
+                            )
+                            steps.append(ExecutionStep(decision, action, observation))
+                            if self._checkpoint_path is not None:
+                                Checkpoint.capture(self._event_log.events).save(self._checkpoint_path)
+                            return self._result(steps)
                         verified_event = self._event_log.append(
                             "COMPLETION_VERIFIED",
                             {"evidence": evidence},

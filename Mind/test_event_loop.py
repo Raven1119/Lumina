@@ -98,6 +98,58 @@ def test_execution_native_wire_keeps_advice_and_accepts_normal_lambda():
 docker = pytest.mark.skipif(os.environ.get('LUMINA_D2_DOCKER') != '1', reason='Explicit isolated Docker validation')
 
 
+@pytest.mark.parametrize(('stdout', 'reason'), [
+    (b'', 'container_output_unavailable_or_oversized'),
+    (b'not-json\n', 'container_output_protocol'),
+])
+def test_kernel_transport_failure_keeps_bounded_host_diagnostic_without_replay(tmp_path, monkeypatch, stdout, reason):
+    import io
+    from dataclasses import asdict
+    stderr = b'x' * 12000 + b'\nSYNTHETIC_PRIVATE_HOST_DIAGNOSTIC\n'
+    starts = []
+    class Process:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(stdout)
+            self.stderr = io.BytesIO(stderr)
+        def poll(self): return 125
+        def wait(self, **kwargs): return 125
+    def start(*args, **kwargs):
+        starts.append(args)
+        return Process()
+    monkeypatch.setattr(subprocess, 'Popen', start)
+    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: None)
+    kernel = DockerIPython(tmp_path)
+    result = kernel.execute('print(1)')
+    assert result.error_code == 'isolated_kernel_failed'
+    diagnostic = kernel.failure_diagnostic
+    assert diagnostic['phase'] == 'reply_wait'
+    assert diagnostic['reason'] == reason
+    assert diagnostic['exception_type'] == 'RuntimeError'
+    assert diagnostic['exit_code_before_cleanup'] == diagnostic['exit_code_after_cleanup'] == 125
+    assert diagnostic['stderr_tail'] == stderr[-4096:].decode()
+    assert diagnostic['stderr_bytes'] == len(stderr)
+    assert diagnostic['stderr_truncated'] is True
+    assert 'SYNTHETIC_PRIVATE' not in json.dumps(asdict(result))
+    assert kernel.execute('print(2)').error_code == 'kernel_closed'
+    assert len(starts) == 1 and kernel.failure_diagnostic == diagnostic
+
+
+def test_kernel_launch_failure_retains_sanitized_host_diagnostic(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    def missing(*args, **kwargs):
+        raise FileNotFoundError('SYNTHETIC_PRIVATE_HOST_PATH')
+    monkeypatch.setattr(subprocess, 'Popen', missing)
+    kernel = DockerIPython(tmp_path)
+    result = kernel.execute('print(1)')
+    assert result.error_code == 'isolated_kernel_failed'
+    assert kernel.failure_diagnostic['phase'] == 'start'
+    assert kernel.failure_diagnostic['exception_type'] == 'FileNotFoundError'
+    assert kernel.failure_diagnostic['exit_code_before_cleanup'] is None
+    assert kernel.failure_diagnostic['stderr_bytes'] == 0
+    assert 'SYNTHETIC_PRIVATE' not in json.dumps(asdict(result))
+
+
 @docker
 def test_normal_python_persists_and_cannot_read_owner_state(tmp_path):
     workspace = tmp_path / 'task'
@@ -310,3 +362,125 @@ def test_d3_three_event_loop_reuses_persistent_mind_and_real_wake(tmp_path, cont
     assert outcome['causation_id'] == 'wake'
     feedback = next(e for e in state['events'] if e['event_id'] == 'cognition-3')
     assert feedback['causation_id'] == outcome['event_id']
+
+
+@pytest.mark.parametrize('prior_thinking',[False,True])
+def test_execution_thinking_native_content_survives_restart_without_replaying_actions(tmp_path,prior_thinking):
+    from Execution.organ import ExecutionOrgan
+    from Execution.execution import FileContentEquals
+    from Execution.ipython_control import IPythonResult
+    seen=[]; actions=[]
+    class Python:
+        def execute(self,code):
+            actions.append(code); return IPythonResult(True,output='Real test observation '+code)
+        def close(self): pass
+    envelopes=[]
+    def transport(wire):
+        seen.append(wire)
+        answer=reply('ipython',{'code':str(len(seen))}) if len(seen)<3 else reply('wait',{'event_type':'DONE'})
+        if wire['thinking']['type']=='enabled':
+            assert wire['output_config']=={'effort':'low'} and 'temperature' not in wire
+            answer['content'].insert(0,{'type':'thinking','thinking':'opaque local analysis','signature':'signature-'+str(len(seen))})
+        envelopes.append(answer)
+        return answer
+    workspace=tmp_path/'workspace';workspace.mkdir()
+    opts=dict(workspace=workspace,event_log_path=tmp_path/'execution.jsonl',max_decisions=5,
+              max_context_chars=12000,max_decisions_per_advance=1,ipython_control=Python())
+    first=ExecutionOrgan(model=ExecutionModel(transport,thinking=prior_thinking),**opts)
+    try:
+        first.run_goal('Preserve evidence and finish the scoped result.',FileContentEquals('result.txt','done'))
+        run=first.state.execution_id
+    finally:first.shutdown()
+    second=ExecutionOrgan(model=ExecutionModel(transport,thinking=True),**opts)
+    try:
+        second.resume();assert second.state.execution_id==run
+        messages=seen[-1]['messages']
+        assistants=[m for m in messages if m['role']=='assistant']
+        if prior_thinking: assert assistants[0]['content']==envelopes[0]['content']
+        else:
+            assert assistants==[]
+            assert all(b.get('type')!='tool_result' for m in messages for b in m['content'])
+        assert 'Real test observation 1' in json.dumps(messages)
+    finally:second.shutdown()
+    third=ExecutionOrgan(model=ExecutionModel(transport,thinking=True),**opts)
+    try:
+        third.resume()
+        assistant=next(m for m in seen[-1]['messages'] if m['role']=='assistant')
+        assert assistant['content']==envelopes[1]['content']
+        assert third.state.execution_id==run and third.state.decision_count==3
+        assert actions==['1','2']
+    finally:third.shutdown()
+
+
+def test_execution_thinking_rejects_an_envelope_with_changed_tool_arguments():
+    from Execution.execution import ModelRequest,NativeToolContinuation
+    from Mind.decoupling_value import _native
+    original=reply('ipython',{'code':'print(1)'})
+    raw=_native(original)
+    raw['anthropic_response']={'content':[{'type':'thinking','thinking':'opaque','signature':'sig'},
+        {**original['content'][0],'input':{'code':'different()'}}]}
+    model=ExecutionModel(lambda _:pytest.fail('invalid continuation dispatched'),thinking=True)
+    request=ModelRequest('{"goal":"Preserve facts","observation":{"text":"1"}}',model.tool_contracts,(),
+        NativeToolContinuation('{"goal":"Preserve facts"}',raw,'response'),16000)
+    with pytest.raises(ValueError,match='execution_native_envelope_mismatch'): model.decide(request)
+
+
+@pytest.mark.parametrize('thinking',[False,True])
+@pytest.mark.parametrize('native_batches',[False,True])
+@pytest.mark.parametrize('tool_shape',['complete','empty','partial'])
+def test_truncated_execution_response_never_dispatches_its_parseable_tool(tmp_path,thinking,native_batches,tool_shape):
+    from Execution.organ import ExecutionOrgan
+    from Execution.execution import FileContentEquals
+    class Python:
+        def execute(self,code): pytest.fail('incomplete provider response executed')
+        def close(self): pass
+    value=reply('ipython',{'code':'write_business_result()'});value['stop_reason']='max_tokens'
+    if tool_shape=='empty':value['content']=[]
+    if tool_shape=='partial':value['content']=[{'type':'tool_use','id':'unfinished'}]
+    if thinking:value['content'].insert(0,{'type':'thinking','thinking':'unfinished','signature':'sig'})
+    model=ExecutionModel(lambda _:value,thinking=thinking,native_batches=native_batches)
+    workspace=tmp_path/'workspace';workspace.mkdir()
+    organ=ExecutionOrgan(workspace=workspace,event_log_path=tmp_path/'execution.jsonl',
+        max_decisions=2,model=model,ipython_control=Python())
+    try:
+        result=organ.run_goal('Deliver the result.',FileContentEquals('result.txt','done'))
+        assert result.status=='failed'
+        assert 'incomplete_response' in str(result.failure)
+        assert model.calls[0]['response']==value
+        assert not list(workspace.iterdir())
+    finally:organ.shutdown()
+    reopened=ExecutionOrgan(workspace=workspace,event_log_path=tmp_path/'execution.jsonl',max_decisions=2,
+        model=ExecutionModel(lambda _:pytest.fail('failed native response resampled'),thinking=thinking),
+        ipython_control=Python())
+    try: assert reopened.resume().status=='failed'
+    finally: reopened.shutdown()
+
+
+@pytest.mark.parametrize('thinking', [False, True])
+def test_latest_native_round_over_context_limit_stops_before_another_call(tmp_path, thinking):
+    from Execution.organ import ExecutionOrgan
+    from Execution.execution import FileContentEquals
+    from Execution.ipython_control import IPythonResult
+    from Mind.task_view import execution_goal
+    task = {'business_goal':'Retain the observed source.', 'execution_protocol':'Use the scoped workspace.'}
+    seen, actions = [], []
+    def transport(wire):
+        seen.append(wire)
+        answer = reply('ipython', {'code':'read_source'})
+        block = {'type':'thinking','thinking':'x'*60001,'signature':'opaque'} if thinking else {'type':'text','text':'x'*60001}
+        answer['content'].insert(0, block)
+        return answer
+    class Python:
+        def execute(self, code): actions.append(code); return IPythonResult(True, output='owner observation')
+        def close(self): pass
+    workspace=tmp_path/'workspace'; workspace.mkdir()
+    model=ExecutionModel(transport, owner_task=task, execution_context=lambda _: {
+        'version': 'test', 'rounds': [], 'owner_inputs': [], 'received_guidance': [], 'guidance_scope': ''}, thinking=thinking)
+    organ=ExecutionOrgan(workspace=workspace, event_log_path=tmp_path/'execution.jsonl',
+                         max_decisions=3,max_decisions_per_advance=1,model=model,ipython_control=Python())
+    try:
+        organ.run_goal(execution_goal(task), FileContentEquals('result','done'))
+        with pytest.raises(ValueError,match='execution_native_context_bound'):
+            organ.resume()
+        assert len(seen)==1 and actions==['read_source']
+    finally: organ.shutdown()

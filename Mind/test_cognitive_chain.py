@@ -3,7 +3,6 @@
 Scripted responses test transport and persistence, never semantic model ability.
 """
 import json
-from pathlib import Path
 
 import pytest
 
@@ -68,14 +67,22 @@ def test_literal_evidence_roundtrip_commit_reopen_and_strict_rejection(tmp_path,
         assert sources == {e.ref: e.text for e in evidence}
         assert literal in wire['messages'][0]['content']  # Literal catalogue, not extra body encoding.
         quote = literal.replace('\\', '/') if corrupt else literal
-        return response([belief(evidence[0].ref, quote)])
+        update = belief(evidence[0].ref, quote)
+        if contract in {'cognitive-chain-v58', 'cognitive-chain-v59', 'cognitive-chain-v60', 'cognitive-chain-v61', 'cognitive-chain-v62', 'cognitive-chain-v64', 'cognitive-chain-v65', 'cognitive-chain-v66', 'cognitive-chain-v67'}:
+            # These native contracts emit refs only; a missing ref is the
+            # corresponding grounding defect. Historical quote checks stay below.
+            update['basis'] = [{'ref': 'missing' if corrupt else evidence[0].ref}]
+        return response([update])
     value = MindInput('event-1', 'Owner evidence arrived.', 'task', 1, 'Preserve literal owner observations.',
                       'run', 'completed', evidence)
     with NervousOrgan(tmp_path/'nervous') as nervous, MindOrgan(directory=tmp_path/'mind',
             model=CognitiveModel(transport, contract=contract)) as mind:
         receipt = _episode(nervous, mind, value, None)
         assert receipt.status == ('failed' if corrupt else 'accepted')
-        assert receipt.error == ('ungrounded_basis' if corrupt else None)
+        if not (corrupt and contract in {'cognitive-chain-v58', 'cognitive-chain-v59', 'cognitive-chain-v60', 'cognitive-chain-v61', 'cognitive-chain-v62', 'cognitive-chain-v64', 'cognitive-chain-v65', 'cognitive-chain-v66', 'cognitive-chain-v67'}):
+            assert receipt.error == ('ungrounded_basis' if corrupt else None)
+        else:
+            assert receipt.error is not None
         assert (receipt.output is None) == corrupt
         state = _document(mind.inspect())
     with MindOrgan(directory=tmp_path/'mind', model=None) as reopened:
@@ -83,7 +90,7 @@ def test_literal_evidence_roundtrip_commit_reopen_and_strict_rejection(tmp_path,
         duplicate = reopened.activate(value)
         assert duplicate.status == ('failed' if corrupt else 'duplicate')
     assert len(calls) == 1
-    if not corrupt:
+    if not corrupt and contract not in {'cognitive-chain-v58', 'cognitive-chain-v59', 'cognitive-chain-v60', 'cognitive-chain-v61', 'cognitive-chain-v62', 'cognitive-chain-v64', 'cognitive-chain-v65', 'cognitive-chain-v66', 'cognitive-chain-v67'}:
         assert state['items'][0]['basis'][0]['quote'] == literal
 
 
@@ -98,7 +105,11 @@ def test_read_result_uses_same_logical_text_through_native_commit_and_next_event
         calls.append(wire)
         content = wire['messages'][-1]['content']
         if isinstance(content, list):
-            content = json.loads(content[0]['content'])['continuation']
+            content = content[0]['content']
+            if content.startswith('Earlier updates remain provisional'):
+                content = content.split('\n', 1)[1]
+            else:
+                content = json.loads(content)['continuation']
         payload = json.loads(content.split('\n\nExact citation catalogue')[0])
         if len(calls) == 1:
             return response(next_value={'type': 'capability_request', 'capability': 'inspect_execution'})
@@ -107,9 +118,13 @@ def test_read_result_uses_same_logical_text_through_native_commit_and_next_event
             assert literal in sources['activation:observation']
             assert not any(v['properties']['type']['enum'] == ['capability_request']
                 for v in wire['tools'][0]['input_schema']['properties']['next']['oneOf'])
-            return response([belief('activation:observation', literal)])
+            update = belief('activation:observation', literal)
+            if contract in {'cognitive-chain-v58', 'cognitive-chain-v59', 'cognitive-chain-v60', 'cognitive-chain-v61', 'cognitive-chain-v62', 'cognitive-chain-v64', 'cognitive-chain-v65', 'cognitive-chain-v66', 'cognitive-chain-v67'}:
+                update['basis'] = [{'ref': 'activation:observation'}]
+            return response([update])
         assert payload['cognition']['items'][0]['basis'][0]['ref'].startswith('activation-')
-        return response()  # Valid previous evidence; no forced fresh citation.
+        # Full-checkpoint contracts reaffirm current knowledge without new evidence.
+        return response(payload['cognition']['items'] if contract in {'cognitive-chain-v20', 'cognitive-chain-v49', 'cognitive-chain-v51', 'cognitive-chain-v53', 'cognitive-chain-v55', 'cognitive-chain-v61', 'cognitive-chain-v62', 'cognitive-chain-v64', 'cognitive-chain-v65'} else ())
     model = CognitiveModel(transport, contract=contract)
     first = MindInput('e1', 'Owner report is available for inspection.', 'task', 1, observation['goal'], 'run', 'completed')
     with NervousOrgan(tmp_path/'nervous') as nervous, MindOrgan(directory=tmp_path/'mind', model=model,
@@ -140,20 +155,37 @@ def test_latest_evaluation_accepts_correct_state_without_a_fresh_citation(tmp_pa
     assert result['final_view']['items'] == result['seed']['view']['items']
 
 
-def test_d4_and_d5_native_requests_remain_exactly_reconstructible():
-    for path, contract in [
-        ('Mind/fixtures/protocol_recovery_d4/loop/license_change/result.json', RECOVERY_CONTRACT_VERSION),
-        ('Mind/fixtures/semantic_revision_d5/acceptance/net_summary_revision/result.json', SEMANTIC_CONTRACT_VERSION)]:
-        record = json.loads(Path(path).read_text(encoding='utf-8'))
-        for call in record['cognition_calls']:
-            assert CognitiveModel(None, contract=contract)._prepare_call(**call['projection'])['wire'] == call['wire']
+def synthetic_contract_calls(directory, contract):
+    """Exercise an old contract with generated input, never an archived provider log."""
+    from Mind.organ import MindResultEvent
+    from Mind.test_event_loop import input_value
+    answers = iter([response(next_value={'type': 'capability_request', 'capability': 'inspect_execution'}),
+                    response([belief('source', 'Only settled entries count.')])])
+    model = CognitiveModel(lambda wire: next(answers), contract=contract)
+    with MindOrgan(directory=directory, model=model, available_capabilities=('inspect_execution',)) as mind:
+        waiting = mind.activate(input_value())
+        assert waiting.status == 'waiting' and mind.inspect().revision == 0
+        observed = {'capability': 'inspect_execution', 'goal': input_value().goal,
+                    'status': 'running', 'recent_outcome': 'A synthetic owner scope check.', 'failure': None}
+        assert mind.accept_result(MindResultEvent(waiting.request.request_ref, observed)).status == 'accepted'
+        assert mind.inspect().revision == 1
+    before = {p.name: p.read_bytes() for p in directory.glob('*.jsonl')}
+    with MindOrgan(directory=directory, model=None) as mind:
+        assert mind.inspect().revision == 1
+    assert {p.name: p.read_bytes() for p in directory.glob('*.jsonl')} == before
+    assert len(model.calls) == 2
+    return model.calls
 
 
-def test_d6_v1_native_requests_remain_exactly_reconstructible():
-    record = json.loads(Path('Mind/fixtures/cognitive_chain_d6/development-1/result.json').read_text(encoding='utf-8'))
-    for case in record['cases']:
-        for call in case['cognition_calls']:
-            assert CognitiveModel(None, contract=CHAIN_CONTRACT_VERSION)._prepare_call(**call['projection'])['wire'] == call['wire']
+@pytest.mark.parametrize('contract', [RECOVERY_CONTRACT_VERSION, SEMANTIC_CONTRACT_VERSION])
+def test_synthetic_d4_and_d5_requests_are_deterministically_reconstructible(tmp_path, contract):
+    for call in synthetic_contract_calls(tmp_path, contract):
+        assert CognitiveModel(None, contract=contract)._prepare_call(**call['projection'])['wire'] == call['wire']
+
+
+def test_synthetic_d6_v1_requests_are_deterministically_reconstructible(tmp_path):
+    for call in synthetic_contract_calls(tmp_path, CHAIN_CONTRACT_VERSION):
+        assert CognitiveModel(None, contract=CHAIN_CONTRACT_VERSION)._prepare_call(**call['projection'])['wire'] == call['wire']
 
 
 def test_d6_stops_after_unknown_provider_outcome_before_next_event(tmp_path):

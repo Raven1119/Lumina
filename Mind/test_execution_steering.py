@@ -442,9 +442,10 @@ def test_e0_9_mind_bridge_has_only_inert_data_and_no_execution_authority() -> No
             "spawn_child",
         }
     )
-    assert set(inspect.signature(decision_advisory_from).parameters) == {
-        "application"
-    }
+    parameters = inspect.signature(decision_advisory_from).parameters
+    assert set(parameters) == {"application", "contract"}
+    assert parameters["contract"].kind == inspect.Parameter.KEYWORD_ONLY
+    assert parameters["contract"].default is None
     application = DirectiveApplication(
         "experiment-e0-activation:directive:2",
         "decision-000001",
@@ -499,7 +500,7 @@ def test_e0_10_none_advisory_is_byte_exact_existing_execution_path(
         ("wrong-decision", "advisory"),
         ("decision-000001", ""),
         ("decision-000001", " advisory "),
-        ("decision-000001", "x" * 1_201),
+        ("decision-000001", "x" * 6_201),
         ["decision-000001", "advisory"],
         object(),
     ],
@@ -537,21 +538,9 @@ def test_e0_11_unavailable_or_malformed_application_projects_no_authority() -> N
     ) is None
 
 
-def test_e0_11_valid_but_over_budget_advisory_fails_soft_to_baseline(
+def test_valid_over_budget_advisory_stops_before_action_and_resumes_without_loss(
     tmp_path: Path,
 ) -> None:
-    baseline_model = CaptureModel([ClaimComplete()])
-    baseline_organ = _organ(
-        tmp_path,
-        "budget-baseline",
-        baseline_model,
-        max_context_chars=768,
-    )
-    try:
-        baseline_organ.run_goal(GOAL, COMPLETION_SPEC)
-    finally:
-        baseline_organ.shutdown()
-
     application = DirectiveApplication(
         "experiment-e0-activation:directive:2",
         "decision-000001",
@@ -565,16 +554,31 @@ def test_e0_11_valid_but_over_budget_advisory_fails_soft_to_baseline(
         max_context_chars=768,
     )
     try:
-        candidate = candidate_organ.run_goal(
-            GOAL,
-            COMPLETION_SPEC,
-            decision_advisory=decision_advisory_from(application),
-        )
+        before = candidate_organ.state
+        with pytest.raises(ValueError, match="guidance exceeds the available decision context"):
+            candidate_organ.run_goal(
+                GOAL, COMPLETION_SPEC, decision_advisory=decision_advisory_from(application),
+            )
+        assert candidate_model.received_requests == []
+        assert candidate_organ.state == before
+        assert candidate_organ.next_root_decision_id == application.decision_id
     finally:
         candidate_organ.shutdown()
 
+    recovered = ExecutionOrgan(
+        workspace=tmp_path / "budget-candidate" / "workspace",
+        event_log_path=tmp_path / "budget-candidate" / "state" / "execution.jsonl",
+        max_decisions=1, model=candidate_model, max_context_chars=4_000,
+    )
+    try:
+        candidate = recovered.run_goal(
+            GOAL, COMPLETION_SPEC, decision_advisory=decision_advisory_from(application),
+        )
+    finally:
+        recovered.shutdown()
     assert candidate.status == "completed"
-    assert candidate_model.received_requests == baseline_model.received_requests
+    assert len(candidate_model.received_requests) == 1
+    assert json.loads(candidate_model.received_requests[0].context)["mind_supervisor_directive"] == application.as_model_context()
 
 
 def test_e0_9_child_resume_rejects_root_decision_advisory() -> None:

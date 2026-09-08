@@ -29,7 +29,7 @@ from Mind.decoupling_value import _messages, _native, _save, _jsonl, _high_level
 from Mind.task_view import (EXPRESSION_CONTRACT_VERSIONS, THINKING_CONTRACT_VERSION,
                            CONTINUITY_CONTRACT_VERSION, output_limit)
 from Mind.organ import (CHAIN_CONTRACT_VERSION, REVISED_CHAIN_CONTRACT_VERSION, CHAIN_CONTRACT_VERSIONS, MAX_UPDATES, MAX_ACTIVE_ITEMS,
-    MAX_MODEL_OUTPUT_CHARS, cognitive_step_schema, observation_source_text)
+    MAX_MODEL_OUTPUT_CHARS, cognitive_step_schema, observation_source_text, observation_sources, _basis)
 
 MODEL = 'deepseek-v4-pro'
 IMAGE_TAG = 'lumina-execution-ipython:d2'
@@ -41,8 +41,25 @@ import contextlib, json, os, sys, tempfile
 from IPython.core.interactiveshell import InteractiveShell
 sys.path.insert(0, '/workspace')
 shell=InteractiveShell.instance(user_ns={})
+requests=[]
+def request_mind(question, evidence_files=(), model_ref=''):
+    if requests: raise ValueError('Only one Mind request per completed cell.')
+    if not isinstance(question,str) or not question.strip() or len(question)>1000:
+        raise ValueError('A Mind question must contain 1..1000 characters.')
+    if not isinstance(evidence_files,(list,tuple)) or len(evidence_files)>3:
+        raise ValueError('Supply at most three evidence files.')
+    if any(not isinstance(f,str) or not f or len(f)>128 or f.startswith(('/', '\\')) or ':' in f
+           or '..' in f.replace('\\','/').split('/') for f in evidence_files):
+        raise ValueError('Evidence files must be bounded relative paths.')
+    if not isinstance(model_ref,str) or len(model_ref)>128: raise ValueError('Invalid model ref.')
+    text=json.dumps(dict(question=question,evidence_files=list(evidence_files),model_ref=model_ref),ensure_ascii=False)
+    if len(text)>2000: raise ValueError('Mind request exceeds 2000 characters.')
+    requests.append(text)
+    return {'status':'queued_until_cell_commits'}
+shell.user_ns['request_mind']=request_mind
 for line in sys.stdin:
     request=json.loads(line)
+    requests.clear()
     saved_out, saved_err = os.dup(1), os.dup(2)
     with tempfile.TemporaryFile(mode='w+',encoding='utf-8',errors='replace') as output:
         try:
@@ -63,7 +80,10 @@ for line in sys.stdin:
               'error_code':'execution_error' if error is not None else None,
               'error':(type(error).__name__+': '+str(error))[:500] if error is not None else None,
               'truncated':char_count>10000,'original_output_chars':char_count}
-    sys.stdout.write(json.dumps(response,ensure_ascii=True)+'\n'); sys.stdout.flush()
+    if requests and error is None: response['cognitive_request']=requests[0]
+    encoded=json.dumps(response,ensure_ascii=False)+'\n'
+    if len(encoded.encode('utf-8'))>65536: raise ValueError('Correlated reply exceeds transport capacity.')
+    sys.stdout.write(encoded); sys.stdout.flush()
 '''
 
 
@@ -80,6 +100,9 @@ class DockerIPython:
         self.process = None
         self.replies = queue.Queue(maxsize=1)
         self.closed = False
+        self.failure_diagnostic = None  # Trusted host only; never part of IPythonResult.
+        self._stderr_tail, self._stderr_bytes = b'', 0
+        self._stderr_done = threading.Event()
 
     def command(self):
         return ['docker', 'run', '--rm', '--pull', 'never', '--name', self.name,
@@ -112,8 +135,14 @@ class DockerIPython:
                 if 'transport_error' in value:
                     return
         def drain():
-            while self.process.stderr.read(8192):
-                pass  # Bound host storage even if task code bypasses redirection.
+            try:
+                while chunk := self.process.stderr.read(8192):
+                    self._stderr_bytes += len(chunk)
+                    self._stderr_tail = (self._stderr_tail + chunk)[-4096:]
+            except (OSError, ValueError):
+                pass  # The owner may close a stream while stopping the container.
+            finally:
+                self._stderr_done.set()
         threading.Thread(target=receive, daemon=True).start()
         threading.Thread(target=drain, daemon=True).start()
 
@@ -122,20 +151,37 @@ class DockerIPython:
             return IPythonResult(False, error_code='kernel_closed')
         if not isinstance(code, str) or not code or len(code) > 20000:
             return IPythonResult(False, error_code='invalid_or_oversized_code')
+        phase, reason = 'start', 'transport_exception'
         try:
             if self.process is None:
                 self._start()
             request_id = uuid.uuid4().hex
+            phase = 'request_write'
             self.process.stdin.write((canonical({'request_id': request_id, 'code': code}) + '\n').encode())
             self.process.stdin.flush()
+            phase = 'reply_wait'
             value = self.replies.get(timeout=self.timeout)
             if 'transport_error' in value:
-                raise RuntimeError(value['transport_error'])
+                reason = value['transport_error'] if value['transport_error'] in {
+                    'container_output_unavailable_or_oversized', 'container_output_protocol'} else 'container_output_protocol'
+                raise RuntimeError(reason)
+            phase = 'reply_decode'
             if value.pop('request_id', None) != request_id:
-                raise RuntimeError('isolated_reply_identity_mismatch')
+                reason = 'isolated_reply_identity_mismatch'
+                raise RuntimeError(reason)
             return IPythonResult(**value)
         except (OSError, ValueError, TypeError, RuntimeError, queue.Empty) as error:
-            self.close()
+            self.failure_diagnostic = {'phase': phase,
+                'reason': 'reply_timeout' if isinstance(error, queue.Empty) else reason,
+                'exception_type': type(error).__name__,
+                'exit_code_before_cleanup': self.process.poll() if self.process is not None else None}
+            try:
+                self.close()
+            finally:
+                self.failure_diagnostic.update(
+                    exit_code_after_cleanup=self.process.poll() if self.process is not None else None,
+                    stderr_tail=self._stderr_tail.decode('utf-8', errors='replace'),
+                    stderr_bytes=self._stderr_bytes, stderr_truncated=self._stderr_bytes > len(self._stderr_tail))
             return IPythonResult(False, error_code='isolated_kernel_failed', error=type(error).__name__)
 
     def interrupt(self):
@@ -152,6 +198,7 @@ class DockerIPython:
             if self.process.poll() is None:
                 self.process.kill()
             self.process.wait(timeout=5)
+            self._stderr_done.wait(timeout=.2)
             for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
                 stream.close()
 
@@ -294,11 +341,12 @@ def citation_sources(user_message):
     """Exact same text/ref map as MindOrgan._sources, no inferred replacements."""
     payload = json.loads(user_message)
     sources = {e['ref']: e['text'] for e in payload['cognition']['evidence']}
-    if 'observation' in payload:
-        observation = payload['observation']
-        if observation['capability'] == 'inspect_execution':
-            sources['activation:observation'] = observation_source_text(
-                observation, payload['cognition'].get('contract_version'))
+    observations = payload.get('observations', [{'ref': 'activation:observation', 'observation': payload['observation']}] if 'observation' in payload else [])
+    for item in observations:
+        observation = item['observation']
+        if observation['capability'] in {'inspect_execution', 'read_evidence', 'analyze_world_model'}:
+            sources.update({ref: record['text'] for ref, record in observation_sources(
+                observation, item['ref'], payload['cognition'].get('contract_version')).items()})
     return sources
 
 
@@ -317,23 +365,37 @@ def recovery_schema(sources):
 def parameter_errors(value, schema):
     """Select tagged variants so feedback names actual fields, not other branches."""
     base = copy.deepcopy(schema)
-    base['properties']['next'] = {'type': 'object'}
-    base['properties']['updates']['items'] = {'type': 'object'}
     checks = [((), value, base)]
-    if isinstance(value, dict):
-        entries = [(('next',), value.get('next'), schema['properties']['next']['oneOf'], 'type')]
-        if isinstance(value.get('updates'), list):
-            entries += [(('updates', i), item, schema['properties']['updates']['items']['oneOf'], 'kind')
-                        for i, item in enumerate(value['updates'])]
-        for path, item, variants, tag in entries:
-            if isinstance(item, dict):
-                if tag not in item:
-                    checks.append((path, item, {'required': [tag]}))
-                    continue
-                selected = next((v for v in variants if item.get(tag) in v['properties'][tag]['enum']), None)
-                checks.append((path, item, selected or {'oneOf': variants}))
-    return [{'path': list(path) + list(e.absolute_path), 'validator': e.validator, 'message': e.message}
-            for path, item, selected in checks for e in Draft202012Validator(selected).iter_errors(item)]
+    if 'updates' in base['properties']:
+        base['properties']['next'] = {'type': 'object'}
+        base['properties']['updates']['items'] = {'type': 'object'}
+        if isinstance(value, dict):
+            entries = [(('next',), value.get('next'), schema['properties']['next']['oneOf'], 'type')]
+            if isinstance(value.get('updates'), list):
+                entries += [(('updates', i), item, schema['properties']['updates']['items']['oneOf'], 'kind')
+                            for i, item in enumerate(value['updates'])]
+            for path, item, variants, tag in entries:
+                if isinstance(item, dict):
+                    if tag not in item:
+                        checks.append((path, item, {'required': [tag]}))
+                        continue
+                    candidates = [v for v in variants if item.get(tag) in v['properties'][tag]['enum']]
+                    if len(candidates) > 1 and 'capability' in item:
+                        candidates = [v for v in candidates if item['capability'] in
+                                      v['properties'].get('capability', {}).get('enum', ())]
+                    selected = candidates[0] if len(candidates) == 1 else None
+                    checks.append((path, item, selected or {'oneOf': variants}))
+    errors = []
+    for path, item, selected in checks:
+        for error in Draft202012Validator(selected).iter_errors(item):
+            missing = (error.validator_value.get('properties', {}).get('id', {}).get('const')
+                       if error.validator == 'contains' and isinstance(error.validator_value, dict) else None)
+            message = 'Final checkpoint is missing item ' + missing if missing else error.message
+            if error.validator == 'maxLength':
+                message = f'String has {len(error.instance)} characters; maximum allowed is {error.validator_value}.'
+            errors.append({'path': list(path) + list(error.absolute_path), 'validator': error.validator,
+                'message': message})
+    return errors
 
 
 EXPRESSION_SYSTEM_PROMPT = (
@@ -362,6 +424,38 @@ EXPRESSION_SYSTEM_PROMPT = (
     "permits two cognitive steps, one read and three physical calls including one protocol repair. "
     "Updates before a read are provisional: resubmit the intended updates after the observation. "
     "Return concise cognitive results, not a reasoning transcript.")
+
+
+def _decode_native_response(response, wire, protocol):
+    """Validate the declared native tool, then adapt consultation to the existing owner input."""
+    from Mind.trace import TOOL_NAME_REPAIR_NATIVE_PROTOCOL_VERSION, CONSULTATION_NATIVE_PROTOCOL_VERSION
+    direct = protocol == CONSULTATION_NATIVE_PROTOCOL_VERSION
+    tools = ({tool['name']: tool for tool in wire['tools']
+              if tool['name'] in {'cognitive_step', 'read_evidence', 'analyze_world_model', 'inspect_execution'}} if direct
+             else {'cognitive_step': wire['tools'][0]})
+    blocks = [block for block in response.get('content', []) if block.get('type') == 'tool_use']
+    complete = (len(blocks) == 1 and isinstance(blocks[0].get('id'), str)
+                and bool(blocks[0]['id'].strip()) and response.get('stop_reason') == 'tool_use')
+    if complete and isinstance(blocks[0].get('name'), str) and blocks[0]['name'] in tools:
+        block = blocks[0]
+        value = block.get('input')
+        errors = parameter_errors(value, tools[block['name']]['input_schema'])
+        if not errors and direct and block['name'] != 'cognitive_step':
+            value = {'type': 'cognitive_step', 'updates': [],
+                     'next': {**value, 'type': 'capability_request', 'capability': block['name']}}
+        return value, errors, True
+    if (complete and protocol in {TOOL_NAME_REPAIR_NATIVE_PROTOCOL_VERSION, CONSULTATION_NATIVE_PROTOCOL_VERSION}
+            and isinstance(blocks[0].get('name'), str) and bool(blocks[0]['name'].strip())
+            and isinstance(blocks[0].get('input'), dict)):
+        message = ('The native tool name must be cognitive_step. Return its complete input using the supplied schema; '
+                   'next is an input field, not a separate tool. No input was interpreted or committed.')
+        if direct:
+            message = ('Use a native tool declared in this request: ' + ', '.join(tools) +
+                       '. Return its complete input using the supplied schema. No input was interpreted or committed.')
+        return None, [{'validator': 'native_tool_name', 'path': ['name'], 'message': message}], True
+    return None, [{'validator': 'native_envelope', 'path': [], 'message':
+        'Expected one complete declared native tool return.' if direct else
+        'Expected one complete cognitive_step tool return.'}], False
 
 
 class CognitiveModel:
@@ -465,29 +559,39 @@ class CognitiveModel:
         record['serialized_return'] = value
         return value  # Existing Mind parser/reducer owns validation and commit.
 
+    def continuation_content(self, trace, record):
+        content = record['wire']['messages'][-1]['content']
+        if self.contract in {'cognitive-chain-v11', 'cognitive-chain-v12', 'cognitive-chain-v13', 'cognitive-chain-v14', 'cognitive-chain-v15', 'cognitive-chain-v16', 'cognitive-chain-v20', 'cognitive-chain-v49', 'cognitive-chain-v51', 'cognitive-chain-v53', 'cognitive-chain-v55', 'cognitive-chain-v56', 'cognitive-chain-v57', 'cognitive-chain-v58', 'cognitive-chain-v59', 'cognitive-chain-v60', 'cognitive-chain-v61', 'cognitive-chain-v62', 'cognitive-chain-v64', 'cognitive-chain-v65', 'cognitive-chain-v66', 'cognitive-chain-v67'}:
+            return 'Earlier updates remain provisional until the final cognitive_step.\n' + content
+        return canonical({'submission_status': 'provisional_until_final_step', 'continuation': content})
+
     def generate_from_trace(self, trace, projection):
-        """One durable repair credit across both cognitive steps of an activity."""
-        from Mind.trace import CAPABILITY_OBSERVED, NATIVE_REPAIR_RESERVED
+        """Resume the recorded activity; consultations and repairs spend its budget."""
+        from Mind.trace import (CAPABILITY_OBSERVED, NATIVE_REPAIR_RESERVED, cognitive_phase,
+                                unified_activity, native_call_limit, CONSULTATION_NATIVE_PROTOCOL_VERSION)
+        protocol = trace.events[0].payload.get('native_protocol')
+        unified = unified_activity(trace.events)
         record = self._prepare_call(**projection.as_model_call())
         base_wire = record['wire']
-        phase = 2 if any(e.event_type == CAPABILITY_OBSERVED for e in trace.events) else 1
-        if phase == 2 and self.contract in EXPRESSION_CONTRACT_VERSIONS:
+        phase = cognitive_phase(trace.events)
+        if phase > 1 and self.contract in EXPRESSION_CONTRACT_VERSIONS:
             # Same-activity continuation preserves complete provider content, including
             # thinking blocks. It is transport state, never accepted cognitive evidence.
             prior = trace.native_records()
             pair = next(i for i in range(len(prior)-1, 0, -1)
                 if prior[i]['kind'] == 'result' and prior[i]['accepted']
-                and prior[i-1]['phase'] == 1)
+                and prior[i-1]['phase'] == phase - 1)
             response, previous_wire = prior[pair]['response'], prior[pair-1]['wire']
             block = next(b for b in response['content'] if b['type'] == 'tool_use')
             base_wire = {**base_wire, 'messages': [*previous_wire['messages'],
                 {'role': 'assistant', 'content': response['content']},
                 {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': block['id'],
-                    'content': canonical({'submission_status': 'provisional_until_final_step',
-                        'continuation': record['wire']['messages'][-1]['content']})}]}]}
+                    'content': self.continuation_content(trace, record)}]}]}
         while True:
             history = trace.native_records()
             phase_calls = [r for r in history if r['kind'] == 'call' and r['phase'] == phase]
+            if unified and phase_calls:
+                base_wire = phase_calls[0]['wire']  # Persisted request is the restart contract.
             if phase_calls and phase_calls[0]['wire'] != base_wire:
                 raise ValueError('native_request_changed_on_restart')
             wire, repair = base_wire, False
@@ -496,21 +600,49 @@ class CognitiveModel:
                     raise ValueError('native_result_unknown')
                 result = history[-1]
                 if result['accepted']:
-                    value = canonical(next(b['input'] for b in result['response']['content'] if b['type'] == 'tool_use'))
+                    if protocol == CONSULTATION_NATIVE_PROTOCOL_VERSION:
+                        submission, errors, _ = _decode_native_response(result['response'], history[-2]['wire'], protocol)
+                        if errors:
+                            raise ValueError('native_accepted_response_invalid')
+                        value = canonical(submission)
+                    else:
+                        value = canonical(next(b['input'] for b in result['response']['content'] if b['type'] == 'tool_use'))
                     self.calls.append({**record, 'response': result['response'], 'serialized_return': value, 'replayed': True})
                     return value
-                if (not result['recoverable'] or any(r.get('repair') for r in history)
-                        or any(e.event_type == NATIVE_REPAIR_RESERVED for e in trace.events)):
+                if (not result['recoverable'] or (not unified and (any(r.get('repair') for r in history)
+                        or any(e.event_type == NATIVE_REPAIR_RESERVED for e in trace.events)))):
                     raise ValueError('native_repair_unavailable')
                 response = result['response']
                 block = next(b for b in response['content'] if b['type'] == 'tool_use')
                 feedback = {'submission_status': 'rejected_before_commit', 'field_errors': result['errors'],
                     'contract': 'Correct the indicated submission fields. No cognition or guidance was committed. This is the only protocol correction for this activity; the substantive judgment remains yours.'}
-                wire = {**base_wire, 'messages': [*base_wire['messages'],
+                if unified:
+                    feedback['contract'] = 'Correct the specified structural or source error. No cognition or guidance was committed. This consumes the same activity call budget; substantive judgment remains yours.'
+                    # Preserve each prior response/error in this activity, including thinking blocks.
+                prior_messages = history[-2]['wire']['messages'] if unified else base_wire['messages']
+                wire = {**base_wire, 'messages': [*prior_messages,
                     {'role': 'assistant', 'content': response['content']},
                     {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': block['id'],
                         'is_error': True, 'content': canonical(feedback)}]}]}
                 repair = True
+            if unified:
+                remaining = native_call_limit(trace.events) - sum(r['kind'] == 'call' for r in history)
+                if remaining <= 0:
+                    raise ValueError('native_call_budget')
+                if remaining == 1:
+                    # Last call must commit a judgment, not initiate work with no return slot.
+                    wire = json.loads(canonical(wire))
+                    if protocol == CONSULTATION_NATIVE_PROTOCOL_VERSION:
+                        wire['tools'] = [tool for tool in wire['tools'] if tool['name'] == 'cognitive_step']
+                    options = wire['tools'][0]['input_schema']['properties']['next']['oneOf']
+                    options[:] = [o for o in options if o['properties']['type']['enum'] != ['capability_request']]
+                    note = '\nThis is the last Mind call in this activity. Submit a final bounded judgment; unresolved questions may remain open.'
+                    if not wire['system'].endswith(note):
+                        wire['system'] += note
+            preflight = getattr(self, 'preflight', None)
+            if preflight is not None:
+                preflight(wire)
+            if repair:
                 trace.reserve_native_repair()
             # A durable reservation precedes dispatch; an uncertain call is never retried.
             trace.append_native(kind='call', phase=phase, repair=repair, wire=wire)
@@ -523,18 +655,50 @@ class CognitiveModel:
                                     accepted=False, recoverable=False)
                 raise
             actual['response'] = response
-            blocks = [b for b in response.get('content', []) if b.get('type') == 'tool_use']
-            valid_envelope = (len(blocks) == 1 and blocks[0].get('name') == 'cognitive_step'
-                and isinstance(blocks[0].get('id'), str) and bool(blocks[0]['id'].strip())
-                and response.get('stop_reason') == 'tool_use')
-            errors = (parameter_errors(blocks[0].get('input'), wire['tools'][0]['input_schema']) if valid_envelope
-                      else [{'validator': 'native_envelope', 'path': [], 'message': 'Expected one complete cognitive_step tool return.'}])
-            value = canonical(blocks[0].get('input')) if valid_envelope else ''
+            submission, errors, repairable_envelope = _decode_native_response(response, wire, protocol)
+            value = canonical(submission) if submission is not None else ''
             limit = output_limit(trace.events[0].payload.get("cognitive_context", {}))
             if not errors and len(value) > limit:
                 errors = [{'validator': 'serialized_limit', 'path': [], 'message': f'Cognitive step exceeds {limit} characters.'}]
-            recoverable = bool(errors and all(e['validator'] in {'required', 'type'}
-                and 'basis' not in e['path'] for e in errors))
+            from Mind.trace import REFERENCE_REPAIR_NATIVE_PROTOCOL_VERSION, GROUNDED_REPAIR_NATIVE_PROTOCOL_VERSION
+            if (not errors and (protocol == GROUNDED_REPAIR_NATIVE_PROTOCOL_VERSION or unified)
+                    and submission['next']['type'] != 'capability_request'):
+                # Preview the reducer's exact grounding rule before native acceptance.
+                # Consult-step candidates remain provisional; no state is changed here.
+                sources = {ref: {'text': text} for ref, text in citation_sources(projection.user_message).items()}
+                for i, update in enumerate(submission['updates']):
+                    for j, citation in enumerate(update.get('basis', [])):
+                        try:
+                            _basis([citation], sources, contract=self.contract)
+                        except ValueError as error:
+                            if str(error) != 'ungrounded_basis':
+                                raise
+                            errors.append({'validator': 'exact_source_quote', 'path': ['updates', i, 'basis', j, 'quote'],
+                                'message': 'Quote must be an exact substring of the cited source. The host has not changed the quote or source.'})
+                if unified and not errors:
+                    from Mind.organ import _apply_updates
+                    current = json.loads(projection.user_message)['cognition']['items']
+                    try:
+                        _apply_updates({item['id']: item for item in current}, submission['updates'],
+                            sources, trace.events[0].activation_id, contract=self.contract,
+                            current=submission.get('current'))
+                    except ValueError as error:
+                        errors.append({'validator': 'effective_state', 'path': ['updates'],
+                            'message': 'Atomic state update rejected: ' + str(error)})
+            from Mind.task_view import INTEGRATION_RECOVERY_VERSIONS
+            recoverable_validators = ({'required', 'type', 'maxLength', 'serialized_limit'}
+                if self.contract in INTEGRATION_RECOVERY_VERSIONS else {'required', 'type'})
+            if self.contract in {'cognitive-chain-v20', 'cognitive-chain-v49', 'cognitive-chain-v51', 'cognitive-chain-v53', 'cognitive-chain-v55', 'cognitive-chain-v56', 'cognitive-chain-v57', 'cognitive-chain-v58', 'cognitive-chain-v59', 'cognitive-chain-v60', 'cognitive-chain-v61', 'cognitive-chain-v62', 'cognitive-chain-v64', 'cognitive-chain-v65', 'cognitive-chain-v66', 'cognitive-chain-v67'}:
+                recoverable_validators = recoverable_validators | {'contains', 'maxContains'}
+            reference_repair = protocol in {REFERENCE_REPAIR_NATIVE_PROTOCOL_VERSION, GROUNDED_REPAIR_NATIVE_PROTOCOL_VERSION} or unified
+            recoverable = bool(errors and all(
+                (e['validator'] in recoverable_validators and 'basis' not in e['path'])
+                or (reference_repair and e['validator'] == 'enum' and len(e['path']) == 5
+                    and e['path'][::2] == ['updates', 'basis', 'ref'])
+                or ((protocol == GROUNDED_REPAIR_NATIVE_PROTOCOL_VERSION or unified) and e['validator'] == 'exact_source_quote')
+                for e in errors))
+            if unified and repairable_envelope and errors:
+                recoverable = True  # Schema/source failures are explicit; no semantic correction is supplied.
             trace.append_native(kind='result', response=response, errors=errors,
                                 accepted=not errors, recoverable=recoverable)
             actual['errors'] = errors
@@ -543,35 +707,156 @@ class CognitiveModel:
                 return value
 
 
+def _execution_no_tool_response(response):
+    """A received native response proving that no client tool was requested."""
+    return (isinstance(response, dict) and response.get('stop_reason') in {'max_tokens', 'end_turn'}
+        and isinstance(response.get('content'), list) and bool(response['content'])
+        and all(isinstance(block, dict) and block.get('type') in {'text', 'thinking'}
+                for block in response['content']))
+
+
+def _execution_correction_wire(wire, response):
+    return {**wire, 'messages': [*wire['messages'],
+        {'role': 'assistant', 'content': response['content']},
+        {'role': 'user', 'content': 'Protocol rejection: the received response contained no tool_use blocks, '
+            'so no action was dispatched. Return one valid batch using the exposed tools; Wait remains valid. '
+            'This is the only protocol correction for this owner decision. Preserve the current owner task '
+            'and guidance. Do not repeat the prose analysis.'}]}
+
+
 class ExecutionModel:
     """Reuse the supported action parser; actual Anthropic wire is retained."""
     identifier = MODEL
     tool_contracts = ('ipython(code: str)', 'wait(event_type: str)', 'claim_complete()')
 
-    def __init__(self, transport):
+    def __init__(self, transport, *, owner_task=None, execution_context=None, role_prompt="",
+                 native_batches=False, incoming_event_pending=None,
+                 max_output_tokens=2000, thinking=False, no_tool_repair=False):
         self.transport, self.calls = transport, []
+        self.owner_task, self.execution_context = owner_task, execution_context
+        self.role_prompt = role_prompt
+        self.native_batches = native_batches
+        self.incoming_event_pending = incoming_event_pending
+        self.max_output_tokens = max_output_tokens
+        self.thinking = thinking
+        self.no_tool_repair = no_tool_repair
 
     def decide(self, request):
         record = {'context': request.context}
         self.calls.append(record)
         def send(payload):
             messages = _messages(payload['messages'])
+            continuation = request.native_tool_continuation
+            if self.thinking and continuation is not None:
+                from Mind.trace import _thaw
+                envelope = continuation.raw_provider_response.get('anthropic_response')
+                if envelope is not None:
+                    content = _thaw(envelope['content'])
+                    previous = next(m for m in messages if m['role'] == 'assistant')
+                    if ([b for b in content if b.get('type') == 'tool_use']
+                            != [b for b in previous['content'] if b.get('type') == 'tool_use']):
+                        raise ValueError('execution_native_envelope_mismatch')
+                if envelope is not None and any(b.get('type') == 'thinking' for b in content):
+                    previous['content'] = content
+                else:
+                    # Start a legal provider turn from this same owner checkpoint.
+                    # Old nonthinking tools cannot acquire fabricated thinking blocks.
+                    messages = [{'role': 'user', 'content': [{'type': 'text', 'text': request.context}]}]
+                    record['provider_turn_boundary'] = 'prior_response_without_thinking'
+            if self.owner_task is not None:
+                from Mind.task_view import restore_execution_goal_projection
+                # The native pair acknowledges the prior tool, but decision state
+                # and incoming events must come from this request, not its predecessor.
+                first = messages[0]['content'][0]
+                document = restore_execution_goal_projection(json.loads(request.context), self.owner_task)
+                if self.incoming_event_pending is not None and not self.incoming_event_pending():
+                    document['incoming_event'] = None  # Consumed wake remains in the owner history.
+                for message in messages[1:]:
+                    for result in message['content'] if isinstance(message['content'], list) else ():
+                        if result.get('type') == 'tool_result':
+                            value = json.loads(result['content'])
+                            value['incoming_event'] = document.get('incoming_event')
+                            result['content'] = canonical(value)
+                if self.execution_context is not None:
+                    decision_context = self.execution_context(document['state']['decision_count'])
+                    history = decision_context['rounds']
+                    document['owner_inputs'] = decision_context['owner_inputs']
+                    document['received_guidance'] = decision_context['received_guidance']
+                    document['guidance_scope'] = decision_context['guidance_scope']
+                    document['decision_context_version'] = decision_context['version']
+                    document['cognitive_feedback'] = decision_context.get('cognitive_feedback')
+                    current = messages[1:3] if len(messages) >= 3 else None
+                    rounds = [(entry, entry['native_messages']) for entry in history
+                              if entry.get('native_messages') and entry['decision'] + 1 < document['state']['decision_count']]
+                    if current:
+                        latest = next((entry for entry in history
+                            if entry.get('native_messages', False) is not False
+                            and entry['decision'] + 1 == document['state']['decision_count']), {})
+                        rounds.append((latest, current))
+                    elif record.get('provider_turn_boundary'):
+                        rounds = []  # A legacy nonthinking boundary cannot inherit invented thinking.
+                    selected, size = [], 0
+                    for entry, pair in reversed(rounds):
+                        has_thinking = any(b.get('type') == 'thinking' for b in pair[0]['content'])
+                        if has_thinking != self.thinking:
+                            break
+                        length = len(canonical(pair))
+                        if len(selected) == 6 or size + length > 60000:
+                            if not selected:
+                                raise ValueError('execution_native_context_bound')
+                            break  # Omit whole older rounds, never cut a signature or a tool batch.
+                        selected.append((entry, pair)); size += length
+                    selected.reverse()
+                    document['recent_execution_history'] = [
+                        {key: value for key, value in entry.items() if key != 'native_messages'}
+                        for entry, _ in selected if entry]
+                    document['execution_history_scope'] = 'Completed owner rounds; the current checkpoint does not rewrite their historical events or results.'
+                    messages = [messages[0], *(message for _, pair in selected for message in pair)]
+                first['text'] = canonical({k: v for k, v in document.items()
+                    if k not in {'mind_supervisor_directive', 'received_guidance', 'guidance_scope'}})
+                if document.get('received_guidance'):
+                    messages.append({'role': 'user', 'content': canonical({
+                        'received_guidance': document['received_guidance'], 'scope': document['guidance_scope']})})
             context = json.loads(request.context)
             # Carry the existing one-shot advisory through native continuation.
             if context.get('mind_supervisor_directive'):
                 messages.append({'role': 'user', 'content': context['mind_supervisor_directive']})
-            wire = {'model': MODEL, 'system': payload['messages'][0]['content'], 'messages': messages,
+            wire = {'model': MODEL, 'system': payload['messages'][0]['content'] + ('\n\n' + self.role_prompt if self.role_prompt else ''), 'messages': messages,
                 'tools': [{'name': t['function']['name'], 'description': t['function']['description'],
                            'input_schema': t['function']['parameters']} for t in payload['tools']],
-                'max_tokens': 2000, 'temperature': 0, 'thinking': {'type': 'disabled'}}
+                'max_tokens': self.max_output_tokens, 'temperature': 0, 'thinking': {'type': 'disabled'},
+                'tool_choice': {'type': 'any'}}
+            if self.thinking:
+                wire['thinking'] = {'type': 'enabled'}
+                wire['output_config'] = {'effort': 'low'}
+                wire.pop('temperature', None)
             record['wire'] = wire
-            response = self.transport(wire)
+            response = (self.transport(wire, no_tool_repair=True) if self.no_tool_repair
+                        else self.transport(wire))
+            if self.no_tool_repair and _execution_no_tool_response(response):
+                from Mind.task_view import fingerprint
+                record['rejected_attempt'] = {'wire': wire, 'response': response}
+                correction_of = fingerprint(wire)
+                wire = _execution_correction_wire(wire, response)
+                record['wire'] = wire
+                response = self.transport(wire, no_tool_repair=True, correction_of=correction_of)
             record['response'] = response
+            if response.get('stop_reason') != 'tool_use':
+                return response  # Retain the incomplete envelope; never normalize partial tools.
             blocks = [b for b in response.get('content', []) if b.get('type') == 'tool_use']
-            if len(blocks) != 1:
+            if not self.native_batches and len(blocks) != 1:
                 raise ValueError('execution_tool_cardinality')
-            return _native(response)
+            if any(block.get('name') not in {tool['name'] for tool in wire['tools']} for block in blocks):
+                raise ValueError('execution_tool_not_available')
+            # Execution owns bounded batch parsing and validates every action before dispatch.
+            native = _native(response)
+            if self.thinking:
+                native['anthropic_response'] = response
+            return native
         decision = DeepSeekModel(transport=send).decide(request)
+        if 'response' in record and record['response'].get('stop_reason') != 'tool_use':
+            decision = replace(decision, action=None, raw_provider_response=record['response'],
+                               failure='model_native:incomplete_response')
         if 'wire' in record:
             decision = replace(decision, provider_wire_request=record['wire'])
         return decision

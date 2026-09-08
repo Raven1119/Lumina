@@ -1,10 +1,18 @@
 # Lumina Mind Organ Design — MVP
 
-> Status: architecture/design contract for the next Mind implementation and experiments.\
+> Status: original MVP architecture boundary; current standalone behavior is documented separately.\
 > Date: 2026-08-30\
 > Purpose: give Codex a stable reference for **what Mind is, what it may do, what it must not do, and which external implementations should be consulted**.
 
 > 后续设计提案（2026-09-05）：[Mind 认知架构](MIND_COGNITIVE_ARCHITECTURE.md)将 Tycho / MetaWorld 参照与跨活动连续性、关切、情绪及目标形成放入同一目标设计。本文件继续保留 MVP 契约；新文档中的扩展需要逐阶段验证，不表示已经进入生产。
+
+> Current standalone implementation (V73): user goals/messages reach persistent
+> Mind through Nervous before Execution. One owner goal is projected by role;
+> Mind chooses inquiry, cognitive revision and sparse guidance. See the
+> [current chain contract and commands](../Mind/docs/INTEGRATED_CHAIN.md).
+> The original MVP scope and progression below are design history, not a list
+> of components still missing. [Experiment history](../Mind/docs/EXPERIMENT_HISTORY.md)
+> preserves earlier failures and limits. This chain is separate from production Chat.
 
 ---
 
@@ -15,12 +23,12 @@ Before non-trivial Mind work, read in this order:
 1. `AGENTS.md`
 2. `docs/NORTH_STAR.md`
 3. `docs/CURRENT_STATUS.md`
-4. the explicit task card for the current experiment
+4. the current explicit task and, for the standalone chain, Mind/docs/INTEGRATED_CHAIN.md
 5. this document
 
 This document defines the intended **Mind architecture boundary**. It is not permission to implement every future feature mentioned here.
 
-If implementation facts in this document become stale, `docs/CURRENT_STATUS.md` remains the authority for what actually exists. If an explicit task card intentionally narrows the work, the task card wins for that task.
+Use [CURRENT_STATUS](CURRENT_STATUS.md) to locate current evidence, then verify implementation facts against source and tests. The current explicit task governs authorized scope.
 
 Development rule: **do not productize a mechanism merely because it appears elegant or appears in a successful reference system. Validate it with a targeted experiment first, preferably changing one variable at a time.**
 
@@ -145,7 +153,13 @@ Detailed task decomposition belongs inside Execution. A planner may later emerge
 
 ## 3.1 Intention
 
-D7's experimental role views use one owner task: `business_goal` preserves the goal and business acceptance; `execution_protocol` preserves the execution runtime instructions. Their deterministic full rendering is the real Execution goal, retained in MindInput, raw Trace and owner identity checks. Mind's initial request, inspect_execution projection and citation catalogue use the literal business view with shared task fingerprints. Operational completion is evidence, not proof of business acceptance. This opt-in experiment does not change production Chat wiring or implement an Intention switch. See the [cognitive architecture contract](MIND_COGNITIVE_ARCHITECTURE.md#d7-实验提交契约补充).
+The standalone chain uses one owner task: business_goal preserves the goal and
+business acceptance; execution_protocol preserves runtime instructions. Their
+deterministic full rendering remains the actual Execution goal. Mind receives
+the business view with shared task identity and source references. Operational
+completion is evidence, not proof of business acceptance. This does not wire
+production Chat or implement formal Intention switching. See the
+[current role and output contract](../Mind/docs/INTEGRATED_CHAIN.md).
 
 `Intention` is the overall direction that Execution is currently pursuing. Conceptually it is similar to a persistent `/Goal`.
 
@@ -654,7 +668,7 @@ Mind itself remains outside both patterns.
 
 ---
 
-# 12. MVP implementation scope
+# 12. Original MVP implementation scope
 
 The smallest meaningful Mind vertical slice should prove these properties:
 
@@ -673,7 +687,7 @@ Do not implement more merely to make the architecture look complete.
 
 ---
 
-# 13. Explicit non-goals for the MVP
+# 13. Original MVP non-goals
 
 The following are out of scope unless a separate task authorizes them:
 
@@ -700,9 +714,9 @@ The following are out of scope unless a separate task authorizes them:
 
 ---
 
-# 14. Experimental progression
+# 14. Historical experimental progression
 
-This section is guidance, not a replacement for a concrete task card.
+This is the original A-E progression, not current unfinished work. Results are summarized in [experiment history](../Mind/docs/EXPERIMENT_HISTORY.md); current implementation and limits are in the [chain guide](../Mind/docs/INTEGRATED_CHAIN.md). A current task governs further work.
 
 ## Experiment A — bounded cognitive ReAct
 
@@ -1018,7 +1032,7 @@ If the answer to the final two questions is “yes” / “no” respectively, s
               ▼                     ▼
            Nervous               Execution
        wake/schedule/focus     decide how to act
-        (future organ)        recursive AgentProcess
+        (scheduling proposed)   recursive AgentProcess
 ```
 
 Persistence model:

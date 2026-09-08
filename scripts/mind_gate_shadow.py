@@ -2,12 +2,12 @@
 
 Replays the labeled evaluation set through a gate decision callable without
 touching the production chat path, appends per-case records to an append-only
-JSONL shadow log, and summarizes the promotion-gate metrics defined in
-docs/plan/MIND_STAGE2_SHADOW_EXPERIMENT.md.
+JSONL shadow log, and summarizes protocol and decision metrics. Historical scope and
+conclusions: docs/MEMORY_EXPERIMENT_HISTORY.md.
 
 Usage:
-    python -m scripts.mind_gate_shadow --gate constant   # pipeline dry run
-    python -m scripts.mind_gate_shadow                   # real LLM gate, 3 runs
+    python -m scripts.mind_gate_shadow --labels labels.json --gate constant   # pipeline dry run
+    python -m scripts.mind_gate_shadow --labels labels.json # real LLM gate, 3 runs
 """
 
 from __future__ import annotations
@@ -203,7 +203,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--labels",
-        default="docs/experiments/mind_stage2_shadow/recall_needed_labels.json",
+        required=True,
+        help="Path to caller-supplied labelled input; archived datasets are not distributed.",
     )
     parser.add_argument(
         "--log",

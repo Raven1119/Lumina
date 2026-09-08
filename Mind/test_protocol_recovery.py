@@ -1,4 +1,4 @@
-"""D4: real archived failure, durable credit, no partial cognition, no hidden retry."""
+"""D4 synthetic protocol failures, durable credit and atomic cognitive commits."""
 import json
 import os
 from pathlib import Path
@@ -29,8 +29,116 @@ def traces(directory):
     return trace, trace.native_records()
 
 
-def test_archived_empty_return_repairs_with_paired_body_and_no_partial_commit(tmp_path):
-    old = json.loads(Path('Mind/fixtures/cognitive_contract_d3/acceptance/calls/004.json').read_text(encoding='utf-8'))['response']
+@pytest.mark.parametrize('corrected', [True, False])
+def test_directive_length_feedback_counts_characters_without_echoing_text(tmp_path, corrected):
+    direction = '界' * 1008  # JSON Schema length counts characters, not UTF-8 bytes.
+    wires = []
+    def transport(wire):
+        wires.append(wire)
+        if len(wires) == 2 and corrected:
+            return step({'type': 'no_change'})  # The model retains its substantive choice.
+        return step({'type': 'directive', 'text': direction})
+    adapter = CognitiveModel(transport, contract='cognitive-chain-v20', thinking=False)
+    with MindOrgan(directory=tmp_path, model=adapter) as mind:
+        result = mind.activate(input_value())
+        assert result.status == ('accepted' if corrected else 'failed')
+        assert mind.inspect().revision == int(corrected)
+    trace, records = traces(tmp_path)
+    assert len(wires) == 2 and len(records) == 4
+    feedback = json.loads(wires[1]['messages'][-1]['content'][0]['content'])
+    assert feedback['field_errors'] == [{'path': ['next', 'text'], 'validator': 'maxLength',
+        'message': 'String has 1008 characters; maximum allowed is 1000.'}]
+    assert direction not in wires[1]['messages'][-1]['content'][0]['content']
+    assert wires[1]['messages'][-2]['content'] == step({'type': 'directive', 'text': direction})['content']
+    assert sum(bool(record.get('repair')) for record in records) == 1
+    assert records[1]['response'] == step({'type': 'directive', 'text': direction})
+    before = {path.name: path.read_bytes() for path in tmp_path.glob('activation-*.jsonl')}
+    with MindOrgan(directory=tmp_path, model=CognitiveModel(lambda _: pytest.fail('terminal replay called provider'),
+                   contract='cognitive-chain-v20', thinking=False)) as mind:
+        replay = mind.activate(input_value())
+        assert replay.status == ('duplicate' if corrected else 'failed')
+    assert {path.name: path.read_bytes() for path in tmp_path.glob('activation-*.jsonl')} == before
+
+
+@pytest.mark.parametrize('continued', [False, True])
+@pytest.mark.parametrize('completed', [False, True])
+def test_activity_budget_label_must_match_persisted_native_protocol(tmp_path, continued, completed):
+    from Mind.organ import CONTINUED_EVENT_BUDGET_VERSION, INTEGRATION_EVENT_BUDGET_VERSION, _digest
+    from Mind.trace import CONTINUED_NATIVE_PROTOCOL_VERSION
+    adapter = CognitiveModel(lambda wire: step({'type': 'no_change'} if completed else
+        {'type': 'capability_request', 'capability': 'inspect_execution'}), contract='cognitive-chain-v20')
+    if continued:
+        adapter.native_protocol_version = CONTINUED_NATIVE_PROTOCOL_VERSION
+    with MindOrgan(directory=tmp_path, model=adapter, available_capabilities=('inspect_execution',)) as mind:
+        assert mind.activate(input_value()).status == ('accepted' if completed else 'waiting')
+    path = tmp_path / 'cognition.json'
+    document = json.loads(path.read_text(encoding='utf-8'))
+    document['records'][0]['budget_version'] = (INTEGRATION_EVENT_BUDGET_VERSION if continued
+                                               else CONTINUED_EVENT_BUDGET_VERSION)
+    document['sha256'] = _digest(document['records'])
+    path.write_text(json.dumps(document), encoding='utf-8')
+    with MindOrgan(directory=tmp_path, model=adapter) as mind:
+        with pytest.raises(ValueError, match='budget_protocol_conflict'):
+            mind.inspect()
+
+
+@pytest.mark.parametrize('continued', [False, True])
+def test_persisted_activity_budget_survives_consultation_restart(tmp_path, continued):
+    from Mind.trace import CONTINUED_NATIVE_PROTOCOL_VERSION, NATIVE_PROTOCOL_VERSION
+    consultations = 2 if continued else 1
+    request = step({'type': 'capability_request', 'capability': 'inspect_execution'})
+    answers = iter([*[request] * consultations, step({'type': 'no_change'})])
+    calls = []
+    def transport(wire):
+        calls.append(wire)
+        return next(answers)
+    def adapter(new_protocol):
+        result = CognitiveModel(transport, contract='cognitive-chain-v20')
+        if new_protocol:
+            result.native_protocol_version = CONTINUED_NATIVE_PROTOCOL_VERSION
+        return result
+    options = dict(directory=tmp_path, available_capabilities=('inspect_execution',))
+    with MindOrgan(model=adapter(continued), **options) as mind:
+        receipt = mind.activate(input_value())
+    observation = {'capability': 'inspect_execution', 'goal': 'Produce a valid report.',
+                   'status': 'running', 'recent_outcome': 'Owner checked scope.', 'failure': None}
+    for index in range(consultations):
+        with MindOrgan(model=adapter(True), **options) as mind:
+            assert mind.activate(input_value()).request == receipt.request
+            assert mind.inspect().revision == 0
+            receipt = mind.accept_result(MindResultEvent(receipt.request.request_ref, observation))
+            assert receipt.status == ('accepted' if index == consultations - 1 else 'waiting')
+    trace, records = traces(tmp_path)
+    assert trace.events[0].payload['native_protocol'] == (CONTINUED_NATIVE_PROTOCOL_VERSION
+                                                          if continued else NATIVE_PROTOCOL_VERSION)
+    assert len(replay_activation(trace.events).model_requests) == consultations + 1
+    assert len(calls) == consultations + 1
+    assert all(record['version'] == trace.events[0].payload['native_protocol'] for record in records)
+    with MindOrgan(model=adapter(True), **options) as mind:
+        assert mind.activate(input_value()).status == 'duplicate'
+        assert mind.inspect().revision == 1
+    assert len(calls) == consultations + 1
+
+
+def test_budget_binding_preserves_start_before_trace_creation_checkpoint(tmp_path, monkeypatch):
+    from Mind.trace import CONTINUED_NATIVE_PROTOCOL_VERSION
+    adapter = CognitiveModel(lambda wire: pytest.fail('No call before Trace creation'),
+                             contract='cognitive-chain-v20')
+    adapter.native_protocol_version = CONTINUED_NATIVE_PROTOCOL_VERSION
+    def interrupted(*args, **kwargs):
+        raise SystemExit('process exit before Trace creation')
+    with MindOrgan(directory=tmp_path, model=adapter) as mind:
+        with monkeypatch.context() as patch:
+            patch.setattr(MindTrace, 'create', interrupted)
+            with pytest.raises(SystemExit):
+                mind.activate(input_value())
+    with MindOrgan(directory=tmp_path, model=adapter) as mind:
+        assert mind.inspect().revision == 0
+    assert not adapter.calls
+
+
+def test_synthetic_empty_return_repairs_with_paired_body_and_no_partial_commit(tmp_path):
+    old = reply('cognitive_step', {})  # Explicit malformed fixture, not a provider recording.
     direction = 'The current direction omits the settlement condition; reassess eligibility.'
     answers = iter([old, step({'type': 'directive', 'text': direction}, [grounded()])])
     wires = []

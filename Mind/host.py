@@ -91,7 +91,7 @@ def run_computation_once(nervous: NervousOrgan) -> bool:
     if not pending:
         return False
     request, = pending
-    if request.kind != "mind.request" or request.source != "mind":
+    if request.kind != "mind.request" or request.source not in {"mind", "mind.results"}:
         raise ValueError("invalid_computation_request_event")
     payload = _thaw(request.data["payload"])
     if payload["capability"] not in {"run_world_model", "evaluate_model"}:

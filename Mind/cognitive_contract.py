@@ -21,14 +21,15 @@ from Mind.task_view import EXPRESSION_CONTRACT_VERSIONS, THINKING_CONTRACT_VERSI
 from Mind.organ import Evidence, MindInput, MindOrgan, CHAIN_CONTRACT_VERSIONS, MAX_EVIDENCE_CHARS
 from Nervous.organ import NervousOrgan
 
+SOURCE_SET_VERSION = 'retained-regression-sources-v1'
 SOURCES = ('Mind/event_loop.py', 'Mind/cognitive_contract.py', 'Mind/test_event_loop.py',
-    'Mind/docs/COGNITIVE_CONTRACT_TASK.md', 'Mind/organ.py', 'Mind/host.py', 'Mind/trace.py',
+    'Mind/docs/INTEGRATED_CHAIN.md', 'Mind/docs/EXPERIMENT_HISTORY.md', 'Mind/organ.py', 'Mind/host.py', 'Mind/trace.py',
     'Mind/directive.py', 'Mind/experiment_a.py', 'Mind/execution_steering_experiment.py',
     'Mind/decoupling_value.py', 'Execution/organ.py', 'Execution/execution.py',
     'Execution/deepseek_model.py', 'Nervous/organ.py', 'core/env_loader.py')
-D4_SOURCES = (*SOURCES, 'Mind/test_protocol_recovery.py', 'Mind/docs/PROTOCOL_RECOVERY_TASK.md')
-D5_SOURCES = (*D4_SOURCES, 'Mind/test_semantic_revision.py', 'Mind/docs/SEMANTIC_REVISION_TASK.md')
-D6_SOURCES = (*D5_SOURCES, 'Mind/test_cognitive_chain.py', 'Mind/docs/COGNITIVE_CHAIN_TASK.md', 'requirements.txt')
+D4_SOURCES = (*SOURCES, 'Mind/test_protocol_recovery.py')
+D5_SOURCES = (*D4_SOURCES, 'Mind/test_semantic_revision.py')
+D6_SOURCES = (*D5_SOURCES, 'Mind/test_cognitive_chain.py', 'requirements.txt')
 SEMANTIC_FIELDS = ('condition_correct', 'proposition_consistent', 'affected_errors_resolved', 'knowledge_preserved')
 TELEMETRY_PROJECTION_VERSION = 'task-files-d5-v2'
 
@@ -187,7 +188,7 @@ def _start_stage(root, stage, limit, transport=None, *, source_files=None, cases
         raise FileExistsError('stage_already_reserved')
     sources = source_files or (D4_SOURCES if registration['version'] == RECOVERY_CONTRACT_VERSION else SOURCES)
     frozen = {'registration_sha256': registration['sha256'], 'stage': stage, 'call_limit': limit,
-        'created_at': datetime.now(timezone.utc).isoformat(), 'source_hashes': {
+        'created_at': datetime.now(timezone.utc).isoformat(), 'source_set_version': SOURCE_SET_VERSION, 'source_hashes': {
             name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources}}
     if cases is not None:
         frozen['cases'] = cases
@@ -555,6 +556,7 @@ def freeze_semantic_acceptance(root, case_file):
         raise ValueError('development_missing')
     value = {'cases': json.loads(Path(case_file).read_text(encoding='utf-8')),
         'contract': SEMANTIC_CONTRACT_VERSION, 'created_at': datetime.now(timezone.utc).isoformat(),
+        'source_set_version': SOURCE_SET_VERSION,
         'source_hashes': {n: hashlib.sha256((ROOT / n).read_bytes()).hexdigest() for n in D5_SOURCES}}
     value['sha256'] = digest(value)
     _save(root / 'acceptance-cases.json', value, exclusive=True)

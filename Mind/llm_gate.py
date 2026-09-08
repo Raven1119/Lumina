@@ -3,7 +3,7 @@
 Wired into the production chat path as the default gate for real model
 configuration (see ``core.main._default_mind_gate`` and
 ``LUMINA_MIND_GATE_MODE``); validation evidence lives in
-``docs/experiments/mind_stage2_promotion/``. Unparseable output raises
+``docs/MEMORY_EXPERIMENT_HISTORY.md``. Unparseable output raises
 ValueError and provider failures propagate so the caller can apply the
 fail-open policy (production: core MessageRuntime; shadow: harness
 protocol-failure counting).

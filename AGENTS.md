@@ -1,504 +1,205 @@
-# AGENTS.md
-
-## 1. Repository state
-
-Lumina is a local-first conversational runtime built around a Cold-first
-continuity invariant.
-
-Production chat path:
-
-```text
-Browser -> FastAPI -> MessageRuntime
--> Mind gate (stage 2: LlmMindGate by default with a real model;
-   ConstantMindGate in mock/constant mode)
--> source-default-on bounded Recall
-   -> MAGMA bounded candidates
-      (+ entity-conditioned FAISS subset list when the query carries a
-      target_entity_ref)
-   -> fixed BGE reranker ([SAME_ENTITY] per-pair projection on equal refs)
-   -> Hindsight post-rerank score
-   -> final_min_score >= 0.144
-   -> bounded MemoryContext
--> ModelClient
--> Hot Draft -> Cold-first compaction -> Cold Draft
-```
-
-Offline memory path:
-
-```text
-manual Dream
--> pending Cold Draft segments
--> one bounded Grounded Formation call when a real model is configured
--> deterministic source-grounding validation
-   (+ deterministic LLM-free self-name coverage guard)
--> durable grounded-formation-v1 unit checkpoint
--> span-grounded entity mention extraction + durable mention-binding checkpoint
--> Lumina Conversation Memory adapter
--> unmodified upstream MAGMA
--> durable checkpoint
--> Cold Draft segment consumed
-```
-
-Recall is already injected into production chat. It is enabled by source default
-and may be explicitly disabled with
-`LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false`.
-
-The Memory MVP, the Mind Recall gate stage 2, and the generic Entity
-CURRENT_USER vertical slice are in production. Do not rebuild already working
-Chat, Draft, Dream, persistence, or memory injection behavior.
-
-Lumina's long-term form remains defined by `docs/NORTH_STAR.md`. The North Star
-is a design compass, not authorization to expand the current task.
-
-## 2. Existing capabilities
-
-Treat these as completed behavior unless a task identifies a verified defect:
-
-- same-origin browser chat, `/api/status`, and `/api/chat`;
-- mock mode plus one explicit DeepSeek Anthropic-compatible real-model adapter;
-- safe provider fallback;
-- restart-persistent Hot Draft and Cold-first logical compaction;
-- Draft Turn Provenance V2 with stable IDs and truthful aware time provenance;
-- immutable Cold source records with owner-controlled pending/consumed state;
-- manual, synchronous, bounded Dream;
-- configured real-model Dream uses DeepSeek-V4-Pro in non-thinking mode with a
-  Formation-only 2000-token output budget;
-- deterministic `grounded-span-v2` projection from eligible Cold source spans
-  remains for mock/legacy ingestion;
-- real-model manual Dream uses one bounded `grounded-formation-v1` call per
-  Cold segment, validates atomic SRV units against exact source spans, applies
-  the bounded semantic fallback and value-only guard, and checkpoints accepted
-  units before MAGMA writes;
-- a deterministic, LLM-free self-name coverage guard inside Formation restores
-  an omitted explicit self-identification (我叫X / 我的名字是X / 你可以叫我X)
-  as exactly one source-grounded identity unit through the unchanged strict
-  validator — never duplicated, never widening fact authorization;
-- span-grounded entity mention extraction (one bounded call per unique
-  `(turn_id, supporting_span)`, exact-span gated) with durable mention-binding
-  checkpoints before MAGMA writes;
-- pinned, unmodified upstream MAGMA;
-- durable `(segment_id, ingestion_version)` checkpoints and retry convergence;
-- Lumina-owned Recall DTOs and provenance projection;
-- source-default-on production Recall injection into the Answer Model system
-  context;
-- bounded dense + lexical anchor retrieval with RRF fusion, plus a bounded
-  entity-conditioned FAISS subset list when the query carries a
-  `target_entity_ref`;
-- fixed production graph traversal at `max_graph_depth=1`, `max_nodes=20`;
-- fixed `BAAI/bge-reranker-v2-m3` reranking;
-- deterministic Hindsight-style post-rerank scoring with wall-clock-independent
-  reference time;
-- inclusive production `final_min_score=0.144`;
-- bounded top-3 / 5000-character `MemoryContext` rendering;
-- fail-soft empty/unavailable Recall behavior that does not block normal chat;
-- isolated real-MAGMA Recall E2E validation with restart/idempotency coverage;
-- a Mind gate on every chat message before the Recall guard: stage 2
-  `LlmMindGate` (mind-gate-v2, DeepSeek-V4-Pro non-thinking, 8 output tokens,
-  temperature 0) is the real-model default; mock/explicit `constant` mode uses
-  `ConstantMindGate`; decisions are `{recall: bool}`, fail-open, and
-  append-only audited.
-
-Do not duplicate these capabilities or silently replace their boundaries.
-
-Real-model provider policy: DeepSeek-V4-Pro is the only provider/model for all
-new experiments and production paths. Preserve deterministic mock adapters for
-tests and preserve historical artifacts truthfully; do not issue new MiniMax
-calls or rewrite past experiment provenance.
-
-## 3. Current Recall facts
-
-The production Recall path is currently:
-
-```text
-query
--> TRG keyword-enriched dense anchors
--> bounded lexical anchors
--> entity-conditioned FAISS subset channel when the query carries a
-   target_entity_ref (EntityNode REFERS_TO adjacency -> IDSelectorBatch subset
-   top-k; adds candidates only)
--> dense + lexical (+ entity subset) RRF
--> fixed graph BFS from fused anchors
--> projectable bounded candidates
--> fail-open ControlledRelationResolver gate when relation surfaces are supplied
--> BGE rerank
-   (per-pair [SAME_ENTITY] scoring projection when query target and candidate
-   subject carry an equal subject_entity_ref; marker never enters
-   stored/evidence text; LUMINA_USER_SELF_BINDING_ENABLED=false rolls back)
--> Hindsight recency adjustment
--> final_score >= 0.144
--> stable top-3
--> MemoryContext
-```
-
-Current production policy:
-
-```text
-top_k=10
-max_graph_depth=1
-max_nodes=20
-max_evidence_items=3
-max_chars=5000
-final_min_score=0.144
-relation_surfaces=None
-```
-
-The current local MAGMA audit established:
-
-```text
-MAGMA_NATIVE_RECALL: PARTIAL
-MAGMA_ADAPTIVE_QUERY_POLICY: NOT_USED
-MAGMA_FOUR_GRAPH_TRAVERSAL: PARTIALLY_USED
-```
-
-Lumina reuses MAGMA storage, TRG dense retrieval, graph primitives, and generic
-traversal, but does not call upstream `QueryEngine.query()` in production.
-Upstream query classification, adaptive parameters, active semantic-gated
-traversal, third scan-anchor list, benchmark reranking, and QA/session expansion
-are not part of the current production path.
-
-Do not describe upstream MAGMA as four physically separate graphs. The pinned
-implementation uses one `MultiDiGraph` with temporal, semantic, causal, and
-entity link types.
-
-Do not describe upstream MAGMA's probabilistic beam helper as its active query
-path. In the pinned source, that helper has no active caller.
-
-## 4. Current Development Stage
-
-The Memory stage is complete and currently has no blocking todos: the Memory
-MVP, Grounded Write, the Mind Recall gate stage 2 (`LlmMindGate` as the
-real-model production default), the generic multi-entity Entity graph (`E_001`
-CURRENT_USER plus ordinary persisted entities: graph-only EntityNodes,
-subject and role-less mention `REFERS_TO` edges, entity-conditioned
-retrieval, exact-surface query-side ref lookup with a 0/1/many rule,
-`[SAME_ENTITY]` ranking cue), and the self-name coverage guard are in
-production.
-
-Execution V1 is frozen as isolated experimental history at tag
-`execution-organ-v1-final`; it was never connected to the production path.
-The frozen and audited Execution V2 substrate is promoted as the supported
-`Execution/` production package behind the minimal `ExecutionOrgan` facade.
-Its Root model surface is `IPython + Wait + ClaimComplete`; eligible Child
-delegation is available only as `await spawn_child(goal)` inside IPython, and a
-Child sees `IPython + Wait + Return`. `Execution_lab2` remains evidence and
-regression history and must not become a production dependency. The explicit
-`POST /api/execution` entry is available and creates one isolated workspace per
-request through `ExecutionOrgan`; it is not a Chat path and performs no Mind
-routing. Execution remains unwired from Chat, Mind, Memory, and Dream. Any such
-wiring or any new Execution capability requires a separate approved task and
-independent validation.
-Durability, provenance, boundedness, safety, and fail-soft behavior remain
-non-negotiable.
-
-The authorization-aligned 36-case development subset reports raw-turn Recall at
-26/36 and Grounded Write at 29/36, with both retaining all 6 currently
-authorized positive cases. The original 60-case result remains historical: 24
-positive cases depended only on assistant utterances and are outside the
-current fact/self-action authorization contract.
-
-`ControlledRelationResolver` is the existing structured seam. It rejects only
-when both caller-supplied query relations and memory relations resolve and are
-incompatible; either side unresolved fails open. Normal Chat supplies no
-relation surfaces, so this capability remains available to structured callers
-and future Mind rather than acting as a free-text query parser.
-
-Do not add a parser, entity resolver, assistant self-action authorization, or
-execution provenance without a separate explicit task. Rejected experiments
-and quantitative decisions are consolidated in
-`docs/MEMORY_EXPERIMENT_HISTORY.md`.
-
-## 5. Algorithm-development rules
-
-### Copy first
-
-Prefer:
-
-```text
-official source code
-> official package/release
-> official pretrained implementation
-> paper + official code
-> paper-only specification
-> Lumina-specific invention
-```
-
-If a suitable upstream implementation exists, port its behavior instead of
-re-deriving a similar algorithm from the paper.
-
-For each nontrivial Recall mechanism, record:
-
-```text
-SOURCE
-VERSION / COMMIT
-LICENSE
-SOURCE SYMBOL
-ORIGINAL INPUT / OUTPUT
-ORIGINAL DECISION OR TRAVERSAL RULE
-LUMINA ADAPTATION
-```
-
-### Diagnose before changing models
-
-Do not model-hop. BGE is the current fixed reranker. Do not replace it merely
-because a downstream case fails.
-
-A failed experiment must first be classified as one of:
-
-```text
-anchor failure
-routing failure
-traversal failure
-ranking failure
-admission failure
-graph-formation/data failure
-```
-
-Only modify the component implicated by evidence.
-
-### One variable at a time
-
-Do not simultaneously change query routing, traversal, BGE, Hindsight,
-thresholds, graph construction, and admission. An experiment must identify
-which mechanism caused the measured change.
-
-### No benchmark patching
-
-Forbidden:
-
-- case IDs, fixture strings, entity-specific exceptions, or regex patches built
-  from failed cases;
-- threshold fishing on a final regression set;
-- modifying labels/fixtures to obtain PASS;
-- hidden reranking inside an admission gate;
-- adding multiple magic-number features until a small benchmark passes.
-
-## 6. Authority
-
-Active authority:
-
-- `docs/NORTH_STAR.md` — long-term form and direction only;
-- `docs/final_goal.md` — current product direction and next objective;
-- `docs/CURRENT_STATUS.md` — current implementation facts;
-- `docs/COLD_DRAFT.md` — Cold-first persistence contract;
-- `docs/DRAFT_TURN_PROVENANCE_V2.md` — turn provenance contract;
-- `docs/RECALL_E2E_ACCEPTANCE.md` — Recall E2E contract;
-- `docs/MAGMA_RECALL_ALGORITHM_AUDIT.md` — pinned MAGMA/Lumina query-path audit;
-- `Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`;
-- `Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md`;
-- `Conversation_Memory/AGENTS.md` and `Dream/AGENTS.md` where more specific;
-- this file.
-
-Decision order:
-
-1. explicit task card and acceptance criteria;
-2. Cold-first durability and synchronous chat availability;
-3. truthful provenance, idempotency, boundedness, and leak safety;
-4. `docs/CURRENT_STATUS.md` for implementation facts;
-5. the most specific non-stale workspace contract;
-6. source-faithful algorithm reuse;
-7. `docs/NORTH_STAR.md` as a tie-breaker only.
-
-## 7. Ownership
-
-### `core/`
-
-Owns API validation, one `MessageRuntime`, one `ModelClient` protocol, Recall
-invocation/injection, Draft creation, Hot Draft, Cold-first compaction, and the
-thin manual `/api/execution` projection through `ExecutionOrgan`.
-
-Do not put MAGMA traversal, graph internals, BGE implementation, or Dream
-orchestration inside `MessageRuntime`.
-
-### `Execution/`
-
-Owns the supported `ExecutionOrgan` facade, frozen event-sourced Runtime,
-persistent IPython control, ToolHost, and DeepSeek adapter. Production callers
-may use only the package's public facade and DTOs; they must not import
-`Execution_lab2` or Runtime/IPython internals.
-
-### `Conversation_Memory/`
-
-Owns the pinned MAGMA checkout, ingestion adapter, graph-backed retrieval,
-Recall policy execution, BGE/Hindsight scoring, public memory DTOs, provenance,
-fixtures, tests, and memory documentation.
-
-Production code outside this workspace may depend only on Lumina-owned
-interfaces/DTOs, never directly on MAGMA, NetworkX, FAISS, or model internals.
-
-### `Dream/`
-
-Owns manual bounded orchestration from eligible Cold segments through
-the configured ingestion version and memory-complete-before-consumed
-coordination. Real-model manual Dream uses `grounded-formation-v1`;
-mock/legacy callers retain `grounded-span-v2`.
-
-Recall optimization must not move Dream into chat or mutate write-side memory.
-
-### Cold Draft owner
-
-The existing Cold Draft owner remains the only authority for source records and
-`pending_digest -> consumed` transitions.
-
-## 8. Non-negotiable invariants
-
-### Cold-first and provenance
-
-- Cold persistence succeeds before logical compaction advances.
-- Cold source text/provenance is immutable.
-- New turns preserve `turn_id`, `role`, `text`, `created_at`,
-  `source_timezone`, and `timezone_source` through all layers.
-- No Recall optimization may rewrite Cold evidence.
-
-### Dream
-
-- Dream stays manual, synchronous, bounded, and single-writer.
-- No Dream/ingestion work runs during `/api/chat`.
-- Retry remains idempotent through `(segment_id, ingestion_version)`.
-- Grounded Formation makes at most one provider call for a newly seen bounded
-  segment, persists validated units before MAGMA, and reuses that checkpoint
-  on MAGMA retry.
-
-### Recall
-
-- Recall remains behind a Lumina-owned facade.
-- Bound anchors, depth, nodes, evidence count, and rendered size.
-- Preserve stable ordering, evidence IDs, and provenance.
-- Do not scan Cold Draft from Recall.
-- Empty Recall is valid.
-- Recall failure must not block normal chat.
-- Do not expose BGE scores, embeddings, graph objects, MAGMA UUIDs, local paths,
-  credentials, provider bodies, tracebacks, or raw Draft records.
-- Do not modify pinned upstream MAGMA.
-- BGE/Hindsight/threshold changes require explicit evidence and task scope; they
-  must not be side effects of traversal work.
-
-## 9. Minimal-change rule
-
-Default to the smallest vertical change that tests the current hypothesis.
-Unless a task explicitly authorizes more:
-
-- modify at most three existing production modules;
-- add at most one production file and one test file;
-- prefer extending existing tests and E2E harnesses;
-- add no generic `Manager`, `Registry`, `Factory`, framework, service, worker,
-  database, or model-serving layer;
-- do not refactor neighboring modules;
-- do not add future-facing extension points without a current caller;
-- do not update unrelated documents;
-- remove TEMP experiments after extracting the maintained conclusion.
-
-If the minimum correct experiment exceeds this budget, report the smallest
-extra surface required before coding further.
-
-## 10. Not authorized by the current stage alone
-
-Do not add or redesign:
-
-- automatic/startup/background/chat-time Dream;
-- schedulers, workers, agents, or autonomous ingestion;
-- new long-term memory databases;
-- Conversation Graph as a separate production system;
-- ContextBuilder or ToolRuntime;
-- forgetting, decay, global contradiction resolution, or memory rewrite;
-- new providers;
-- new model-training infrastructure;
-- repository-wide package/layout refactors;
-- upstream MAGMA patches;
-- unrelated organs or Mind work.
-
-A Recall experiment may inspect graph formation if evidence points there, but
-write-side changes require a separate explicit task.
-
-## 11. Current known quality evidence
-
-The current 60-case synthetic development set is diagnostic data, not a blinded
-holdout and not real-user Answer quality.
-
-At `final_min_score=0.144` it currently reports:
-
-```text
-positive required-source complete: 17 / 30
-negative empty evidence:           20 / 30
-combined:                          37 / 60
-
-temporal positive:                 4 / 12
-ordinary positive:                13 / 18
-missing-private negative:          4 / 9
-wrong-relation negative:           4 / 9
-public closed-form negative:      12 / 12
-```
-
-The authorization-aligned current-contract subset is:
-
-```text
-currently authorized positive:     6 / 6
-negative empty evidence:           23 / 30
-combined Grounded Write:           29 / 36
-raw-turn comparison:               26 / 36
-```
-
-The original strata remain useful historical diagnostics, but the 24
-assistant-utterance-only positives are not required memories without verified
-Execution Trace or tool-result provenance. Use all synthetic results to locate
-failure modes, not to justify ad-hoc case patches; production claims still
-require independent evidence.
-
-## 12. Validation
-
-Use synthetic data and temporary paths only.
-
-Standard validation:
-
-```bash
-python -m pytest -q
-python -m pytest Conversation_Memory/tests -q
-python -m pytest Dream/tests -q
-git diff --check
+# Working on Lumina
+
+Lumina aims to become an independent digital life with a continuous mind,
+long-term symbiosis with its creator, and the ability to improve itself.
+Today that direction is grounded in a local-first runtime with durable
+conversation evidence, bounded memory, and separately developed cognitive and
+execution capabilities. [NORTH_STAR](docs/NORTH_STAR.md) is the design compass;
+the current task determines what development is authorized.
+
+## Work through to a reviewable result
+
+For an implementation request, complete the relevant investigation, changes,
+validation, and delivery within the authorized scope. A plan is an aid to that
+work, not its completion. For an audit or design request, honor its read-only
+or design-only scope.
+
+Resolve questions from the repository before asking the user. Make routine,
+reversible implementation choices and state material assumptions. Ask only
+when missing information affects correctness or scope and cannot be resolved
+from evidence, or when an irreversible action lacks authorization. Existing
+authorization remains valid; a guideline or old stage label does not create
+another approval gate. If blocked, name the exact action, missing information
+or permission, and the file/rule or tool failure involved. Continue independent
+authorized work.
+
+Use relevant available skills when they help. Explicit task instructions take
+precedence over skill guidelines. If a skill would stop authorized work, check
+whether its requirement actually applies and identify the exact instruction.
+Independent investigations or reviews may use parallel agents when useful and
+supported by the session; simple tasks do not need delegation.
+
+## Find facts and intent
+
+Inspect the working tree, including existing user changes, before editing.
+Follow the affected entry point, public contract, callers, and representative
+tests far enough to understand the behavior being changed. Read documents
+according to the task, rather than treating this navigation as a full reading
+checklist:
+
+- [CURRENT_STATUS](docs/CURRENT_STATUS.md): reported implementation and evidence.
+- [final_goal](docs/final_goal.md): product objectives and previously authorized
+  direction; check the current task and newer design decisions for scope.
+- [CONTEXT](CONTEXT.md): domain vocabulary. For domain or architecture changes,
+  consult relevant ADRs when present as described in
+  [domain guidance](docs/agents/domain.md).
+- [README](README.md): setup and application launch. Its historical stage
+  summaries may lag current work.
+
+Distinguish long-term vision, accepted design, observed implementation, and
+experimental evidence. Code and tests establish what happens; the task and
+applicable design contracts establish what should happen. When they disagree,
+record the exact discrepancy and resolve it from the task and decision history;
+do not silently turn an implementation deviation into the intended design.
+Check current source before repeating status claims, parameters, or scores.
+
+This file supplies repository-wide guidance. Before changing a subtree, read
+its applicable `AGENTS.md` or `AGENTS.override.md`; closer instructions refine
+local work. A Lab's isolation rules govern that Lab, not supported production
+packages elsewhere in the repository.
+
+## Module map
+
+| Area | Entry points, ownership, and reading when affected |
+| --- | --- |
+| Chat and browser | `core/main.py`, `core/message_runtime.py`, `core/model_client.py`, `edge/`. FastAPI composes the app; `MessageRuntime` handles the Mind Recall gate, bounded Recall injection, answer generation, and Draft capture. Keep memory algorithms and Dream orchestration in their owners. |
+| Hot / Cold Draft | `core/draft_store.py`, `core/hot_draft_compactor.py`, `core/cold_draft_store.py`, `core/turn_provenance.py`. Read [Cold contract](docs/COLD_DRAFT.md) for storage/compaction and [turn provenance](docs/DRAFT_TURN_PROVENANCE_V2.md) for identity/time fields; Cold contract governs physical storage. |
+| Conversation Memory | `Conversation_Memory/adapter/interfaces.py` and `Conversation_Memory/adapter/models.py` define Lumina-owned ingestion/Recall contracts; `Conversation_Memory/adapter/magma_adapter.py` implements them. Read [local instructions](Conversation_Memory/AGENTS.md), [provenance/idempotency](Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md), and, for retrieval changes, [algorithm audit](docs/MAGMA_RECALL_ALGORITHM_AUDIT.md). |
+| Dream | `Dream/runner.py`, `Dream/cold_draft_digest.py`. The explicit HTTP/CLI runner coordinates ingestion and Cold consumption. Read [local instructions](Dream/AGENTS.md) and [digestion contract](Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md). |
+| Execution | `Execution/__init__.py`, `Execution/organ.py`: supported `ExecutionOrgan` facade and public DTOs. `core/main.py` exposes a separate `POST /api/execution`. Read [final architecture](docs/LUMINA_EXECUTION_FINAL_ARCHITECTURE.md) and the affected facade tests. Production callers use public interfaces, not Runtime/IPython internals or Lab imports. |
+| Mind | `Mind/constant_gate.py` and `Mind/llm_gate.py` implement the existing Chat Recall gate. `Mind/organ.py`, `Mind/host.py`, and `Mind/chain.py` cover cognitive work and the separate integrated chain. Read [local instructions](Mind/AGENTS.md), [cognitive architecture](docs/MIND_COGNITIVE_ARCHITECTURE.md), and [chain design](Mind/docs/INTEGRATED_CHAIN.md) when working on that chain. |
+| Nervous | `Nervous/organ.py`: event delivery and acknowledgement; semantic judgment belongs to Mind. Read the affected host/organ contracts and tests. |
+
+Production Chat uses the Recall gate; it does not run the standalone cognitive
+Mind/Execution chain. That chain has its own CLI and experiments. Execution's
+manual API is also separate from Chat. Preserve these distinctions: an
+interface, CLI, or successful experiment does not establish Chat wiring or
+authorize promotion.
+
+Historical Execution Labs and superseded campaign outputs were retired by owner
+instruction. [Experiment history](Mind/docs/EXPERIMENT_HISTORY.md) preserves their
+conclusions; supported Execution lives in `Execution/`. `Mind/` contains both
+supported gate code and evolving cognitive work, so classify the actual caller
+and evidence rather than treating the entire directory as one stage. Consult
+relevant experiment reports only for the claim being investigated; preserve
+failed and inconclusive conclusions. Memory history is indexed in
+[MEMORY_EXPERIMENT_HISTORY](docs/MEMORY_EXPERIMENT_HISTORY.md).
+
+## Preserve the real boundaries
+
+- **Cold-first continuity:** durably preserve every raw turn leaving Hot before
+  advancing logical compaction. Cold source text, order, IDs, roles, and time
+  provenance remain immutable. Only the Cold owner changes pending/consumed
+  state. Rolling summaries are context, not replacement source evidence.
+- **Grounded, idempotent writes:** preserve `(segment_id, ingestion_version)`
+  retry convergence. Configured Formation makes at most one call for a newly
+  seen bounded segment; validate and durably checkpoint units and required
+  entity bindings before MAGMA writes. Confirm durable memory completion before
+  consuming Cold. Preserve exact source spans and role authorization;
+  assistant utterances alone do not authorize facts or verified self-actions.
+- **Manual Dream and one writer:** Dream stays explicit, synchronous, serial,
+  and bounded, outside Chat/Recall/startup/background work. In-app Chat and
+  Dream share their existing owners, backend, and writer mutex. The supported
+  service is single-process/single-worker; run the external Dream CLI only
+  while the service is stopped.
+- **Bounded, fail-soft Recall:** use Lumina-owned DTOs; bound anchors, traversal,
+  evidence, and rendered context. Preserve stable ordering, evidence IDs, and
+  provenance. Empty Recall is valid and failure must not block normal chat.
+  Recall does not scan or rewrite Cold or mutate write-side memory. Internal
+  scores, embeddings, graphs, MAGMA IDs, and raw records stay private.
+- **Algorithm ownership:** keep upstream MAGMA pinned and unmodified. Preserve
+  the current BGE/Hindsight/admission policy unless changing that component is
+  in scope and supported by evidence. Reuse the existing structured relation
+  seam; its existence does not authorize a new free-text parser or resolver.
+- **Cognition and action:** runtime Mind models receive bounded cognitive,
+  read-only capabilities and projected data (including isolated pure-computation
+  results), never shell, filesystem, IPython,
+  mutable owner handles, or direct world-action authority. Trusted hosts and
+  owning organs persist state and apply permitted decisions through their
+  interfaces. Keep Trace, State, and Context distinct and preserve causal
+  provenance. A completion claim or mechanical marker proves only what its
+  verifier actually checks. Mind failure must not invent a new direction;
+  explicit stop must not depend on successful model reasoning.
+- **Runtime model policy:** DeepSeek-V4-Pro remains the only provider/model for
+  new Lumina real-model paths and experiments. Preserve deterministic mocks
+  and truthful historical provider provenance. Using Astra as the development
+  agent does not authorize a runtime model migration or new MiniMax calls.
+- **User data and work:** preserve `.env.local`, credentials, `data/`, real
+  memory, and unrelated user changes. Use synthetic inputs and isolated test
+  state. Public outputs must not leak local paths, credentials, provider
+  bodies, tracebacks, or private organ state. Clean up only task-owned temporary
+  artifacts. Commit, push, rebase, hard reset, and history rewriting require
+  explicit authorization.
+
+New cross-organ wiring, autonomous work, data stores, or authority changes must
+be part of the explicit task. Routine repairs to an existing capability need
+no separate stage approval. The North Star and old milestone lists authorize
+neither scope expansion nor rebuilding completed capabilities.
+
+## Make the smallest coherent change
+
+Question the premise objectively; use concrete failures and source evidence.
+Choose the minimum cohesive change needed to complete the current objective,
+without a fixed file-count budget. Reuse existing seams and owners. Avoid
+neighboring refactors, duplicate abstractions, and infrastructure without a
+current caller. If the necessary solution exceeds the authorized objective,
+explain the smallest additional scope; file count alone is not a blocker.
+
+For a new algorithm or architectural mechanism, test the hypothesis in a
+targeted experiment before production promotion. Prefer official source,
+release, or pretrained implementation over re-derivation. Record source,
+version/commit, license, symbol, original input/output and decision rule, and
+the Lumina adaptation. Isolate one mechanism; freeze inputs and verdict rules,
+and hold unrelated ranking, routing, thresholds, and write behavior fixed.
+Diagnose the failing component before changing models. Preserve regressions
+and inconclusive outcomes; never patch case IDs/fixture strings, relabel cases,
+or tune final-regression thresholds to manufacture a pass. Promotion requires
+evidence and relevant regression validation, not a benchmark score alone.
+
+Ordinary fixes use focused regression tests. Documentation changes do not
+require an algorithm experiment or a new evaluation framework.
+
+## Validate and deliver
+
+Choose checks by the affected behavior and acceptance criteria. From the repo
+root, use the prepared Python environment (`.venv/Scripts/python.exe` on this
+Windows workspace) for these test entry points:
+
+| Change | Validation entry point |
+| --- | --- |
+| Chat, Draft, API | `python -m pytest tests -q`, narrowed to relevant tests for a local fix |
+| Execution | `python -m pytest Execution -q`; include `tests/test_execution_api.py` when the API/facade interaction changes |
+| Memory | `python -m pytest Conversation_Memory/tests -q` |
+| Dream | `python -m pytest Dream/tests -q`; include affected memory/API tests for integration changes |
+| Cognitive Mind / Nervous | `python -m pytest Mind Nervous -q`, narrowed to the mechanism being changed |
+| Broad regression | `python -m pytest -q` collects `tests` and `Execution` per `pyproject.toml`; it does not include every module suite above |
+
+Changes affecting Recall behavior also require the existing isolated real-MAGMA
+E2E, using the Conversation Memory environment and isolation rules in
+[RECALL_E2E_ACCEPTANCE](docs/RECALL_E2E_ACCEPTANCE.md):
+
+```powershell
+.\Conversation_Memory\.venv\Scripts\python.exe -m scripts.recall_e2e_test
 git -C Conversation_Memory/upstream/MAGMA status --short
 git -C Conversation_Memory/upstream/MAGMA diff --stat
 ```
 
-Run the existing real-MAGMA Recall E2E whenever a task affects Recall behavior.
-Upstream MAGMA status/diff must remain empty.
+Upstream must remain unchanged. Recall experiments report baseline/candidate,
+strata, resource bounds, held-fixed components, regressions, determinism,
+restart/idempotency, and artifact cleanup. Reuse existing harnesses.
 
-For Recall optimization, report at minimum:
+For Markdown-only changes, check claims, reference paths, command entry points,
+and instruction conflicts; inspect the complete task diff and run
+`git diff --check`. Business test suites are not required solely for Markdown.
+For all tasks, finish necessary checks and review the diff. Once checks pass,
+expand or repeat them only for a new change, failure, or unresolved concern.
+Report unavailable checks and their exact blockers rather than implying a pass.
 
-```text
-baseline vs candidate
-per-stratum results
-candidate count / depth / node budget
-ranking/admission components intentionally held fixed
-regressions
-restart/idempotency
-determinism
-TEMP artifacts removed
-```
+Deliver what changed, why, what was actually validated, and material limitations
+or remaining blockers. Update implementation-status claims only after the
+relevant validation establishes them; distinguish working-tree observations
+from accepted/published evidence.
 
-## 13. Change safety
-
-- Preserve `.env.local`, `data/`, and real runtime memory.
-- Do not commit, push, rebase, hard-reset, or rewrite history unless explicitly
-  authorized.
-- Do not silently patch upstream MAGMA.
-- Do not change unrelated public behavior.
-- Update `docs/CURRENT_STATUS.md` only after tests establish the implementation
-  fact.
-- Never describe an experiment as production behavior before promotion and
-  regression validation.
-
-## Agent skills
-
-### Issue tracker
-
-Issues and specs are tracked in GitHub Issues for `Raven1119/Lumina`. See
-`docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Use the default five-label mattpocock/skills vocabulary. See
-`docs/agents/triage-labels.md`.
-
-### Domain docs
-
-This is a single-context repository using root `CONTEXT.md` and `docs/adr/`,
-created lazily when needed. See `docs/agents/domain.md`.
+For authorized issue/triage work, consult [issue tracker](docs/agents/issue-tracker.md)
+and [labels](docs/agents/triage-labels.md). Those references are not instructions
+to publish issues or messages for every local task.

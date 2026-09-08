@@ -171,13 +171,17 @@ Use temporary production-format Hot/Cold stores and fake memory backends for
 failure tests. Use the real pinned MAGMA only in the isolated project
 environment and marker-owned E2E paths.
 
-Run:
+Choose relevant tests for the affected behavior under the root validation
+rules. Ordinary fixes may use focused cases; Markdown-only changes use static
+checks. Broader Dream regression uses:
 
 ```bash
 python -m pytest Dream/tests -q
-python -m pytest Conversation_Memory/tests -q
-python -m pytest -q
-python -m scripts.recall_e2e_test
 git diff --check
-git -C Conversation_Memory/upstream/MAGMA status --short
 ```
+
+For changed integration contracts, include the affected Memory and API tests.
+Changes affecting Recall behavior also require the existing real-MAGMA E2E
+through the environment and isolation rules in
+`docs/RECALL_E2E_ACCEPTANCE.md`. Check upstream status when working on that
+integration; pinned MAGMA must remain unchanged.

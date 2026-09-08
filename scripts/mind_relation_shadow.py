@@ -5,7 +5,7 @@ surfaces that the existing ControlledRelationResolver canonicalizes, so the
 relation gate can operate in normal Chat. Shadow-only: production code
 (`Mind/llm_gate.py`, `core/`) is never touched.
 
-Design and acceptance thresholds: docs/plan/MIND_RELATION_SHADOW.md.
+Historical scope and conclusions: docs/MEMORY_EXPERIMENT_HISTORY.md.
 The model outputs RAW relation surface text (never canonical IDs); query-side
 canonicalization is performed by the real ControlledRelationResolver.
 Out-of-vocabulary probes must resolve to the resolver's real UNRESOLVED —
@@ -13,7 +13,7 @@ an empty relations list never stands in for UNRESOLVED.
 
 Usage (Conversation_Memory venv, from repository root):
     Conversation_Memory/.venv/Scripts/python.exe -m scripts.mind_relation_shadow \
-        --gate v3rel --runs 3 --delay 3
+        --labels labels.json --gate v3rel --runs 3 --delay 3
 """
 
 from __future__ import annotations
@@ -524,7 +524,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--labels",
-        default="docs/experiments/mind_relation_shadow/relation_labels.json",
+        required=True,
+        help="Path to caller-supplied labelled input; archived datasets are not distributed.",
     )
     parser.add_argument(
         "--log",

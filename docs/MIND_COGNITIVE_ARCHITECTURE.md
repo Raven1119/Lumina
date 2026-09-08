@@ -6,6 +6,27 @@
 
 本次交付是设计文档。现有 [Mind MVP 契约](MIND_DESIGN.md)、生产 Recall gate 和历史实验结论保持原有含义。下文明确标为“拟议”的 interface、计算能力和状态不表示已经接线，也不追认旧实验为 PASS。
 
+## 当前实现与本设计的关系
+
+当前独立链路为 V73，使用一个持续 Mind 和现有 Nervous、Execution、按需 Builder。
+用户目标及后续消息先作为 Nervous 事件进入 Mind；无需另设强制问题重写器，也不要求
+先有 Execution 运行。Mind 可以直接判断、取证或分析，然后原子提交认知修订及
+NoChange / 高层 Directive。Execution 自主落实，重要结果回到同一个 Mind。
+
+当前提交保留未修改条目，退役需要显式选择；旧版本留在运行历史。代码维护结构、
+引用、版本和权限，不替模型判定命题真假。指导原文只投递到适用的运行/决策；
+NoChange 可以接受结果并结束认知活动，不制造新的业务工作。Builder 的分析和
+可选计算保持独立上下文，计算结果不能认证其假设或替代现实观察。
+
+接口、实际预算、使用与恢复命令以 [当前链路契约](../Mind/docs/INTEGRATED_CHAIN.md)
+为准。V73 有受界任务、保留错误历史的修订及反馈收尾证据，仍未证明普遍无人监管
+可靠性或独立 Mind 的比较优势；见 [当前状态](CURRENT_STATUS.md)。
+逐版本进展与失败归入 [实验简史](../Mind/docs/EXPERIMENT_HISTORY.md)，不在本文
+叠加旧快照提交方式、旧活动额度或过期阶段限制。
+
+以下保留长期目标和原始设计选择；标为拟议的多主体、情绪、自主目标与正式目标切换
+不是当前能力。生产 Chat 仍使用单独的 Recall gate，本链路没有接入 Chat 或 Memory。
+
 ## 1. 目标与设计选择
 
 [北极星](NORTH_STAR.md)及创造者本次澄清给出的独立性是：跨时间连续、长程运作、无人持续监管时能够沿自己的目标纠偏并提出新目标。好奇心和情绪需要对这个过程产生持续作用；意见分歧不是独立性的必要条件。
@@ -21,39 +42,38 @@ Tycho 提供可审计的主动建模和验证参照；MetaWorld 提供复杂情�
 
 核心选择是：**外部 interface 小，内部表示可按问题变化；认知的持久接受与现实行动的实际发生分开记录。**
 
-## 2. 现有基础与真实缺口
+## 2. 当前基础与真实缺口
 
-| 项目 | 已有事实 | 本设计需要补足 |
+| 项目 | 已有能力 | 仍须区分的缺口 |
 | --- | --- | --- |
-| Chat / Memory | Cold-first、手动 Dream、受界 Recall 与生产 gate 已有 | Mind 使用已支持的只读 interface；不重建 Memory |
-| 单次 Mind | A–D 已支持有界取证、权限隔离、回放、一次性 Directive | 跨 activation 的认知状态及其更新 |
-| Mind → Execution | E0 已有真实 Root decision 的 advisory seam | 指导是否改善长程行为；正式 Intention 变更协议 |
-| E1–E4 | 既有报告均为 INCONCLUSIVE | 新的长程行为实验；不改旧指标或标签 |
-| W0–W8 | 若干合成域建模/修订机制得到支持；W7/W8 仍 INCONCLUSIVE | 真实证据、跨域适用范围和认知价值 |
-| S0 | 有受界的 Execution PRE/OUTCOME 投影与隔离 shadow | 终态后 PRE 来源重放，以及新预测是否仍有资格 |
-| 好奇 / 情绪 / 自主目标 | 北极星中的目标 | 可操作的机制与独立验收，尚无实现证据 |
+| Chat / Memory | Cold-first、手动 Dream、受界 Recall 与生产 gate | 独立认知链尚未接入 Chat / Memory |
+| 持续 Mind | 事件续接、持久认知、取证、原子修订、只读权限 | 机制可用不等于能可靠发现并修正所有旧错误 |
+| Mind → Execution | 原文指导、一次性绑定、独立执行、结果反馈 | 正式 Intention 切换与普遍长程行为收益未建立 |
+| 世界模型 | 按需独立分析、隔离计算、模型记录和限定观察比较 | 模型适用性、未来预测及跨域正确性不能由计算成功推出 |
+| Nervous | 持久请求/结果、因果关联与幂等确认 | 不是通用后台调度器或语义判定器 |
+| 好奇 / 情绪 / 自主目标 | 北极星和本文的长期设计方向 | 尚无已交付实现或独立验收 |
 
-依据：[当前生产状态](CURRENT_STATUS.md)、[E0](../Mind/docs/EXPERIMENT_E0_RESULT.md)、[E4](../Mind/docs/EXPERIMENT_E4_RESULT.md)、[W0–W8 审计](../Mind/docs/WORLD_MODEL_W0_W8_AUDIT.md)、[S0](../Mind/docs/WORLD_MODEL_SHADOW_S0_RESULT.md)。以上是既有记录，本次未重跑实验。
+已有结果、失败和证据范围见 [当前状态](CURRENT_STATUS.md) 与
+[实验简史](../Mind/docs/EXPERIMENT_HISTORY.md)。此次文档清理没有重跑模型。
 
-### 2.1 可以直接参考的现有 interface
+### 2.1 可直接复用的实现入口
 
-以下名称已经存在；后文其他类型与方法一律是拟议名称。
-
-| Interface / 源文件 | 可以复用的语义 | 不能假定已有的语义 |
+| Interface / 源文件 | 可复用的职责 | 不应据此推断 |
 | --- | --- | --- |
-| `MemoryRetriever.recall(query, policy) -> MemoryContext`，[`interfaces.py`](../Conversation_Memory/adapter/interfaces.py) | 有界、来源明确的 Recall | 任意按 ref 读取原文、写入推测、直接扫描 Cold |
-| `run_activation(...)`，[`experiment_a.py`](../Mind/experiment_a.py) | 单次认知、只读信息、三种输出 | 无限多轮、持久自我、已有原生多工具循环 |
-| `MindTrace.create/reopen`、`project_model_request`、`replay_activation`，[`trace.py`](../Mind/trace.py) | 一个 activation 的真实请求投影与回放 | `reopen` 恢复长期 cognition；它当前是只读回放 |
-| `prepare_for_execution_decision(trace, decision_id, eligible=True)`，[`directive.py`](../Mind/directive.py) | 单一 Directive 对一个 decision 的持久绑定 | 多运行全局 decision ID、目标替换、并发仲裁 |
-| `decision_advisory_from(application)`，[`execution_steering_experiment.py`](../Mind/execution_steering_experiment.py) | 既有纯数据桥 | Mind 直接拥有 Execution |
-| `ExecutionOrgan.run_goal(goal, completion_spec, decision_advisory=...)`、`resume(decision_advisory=...)`，[`organ.py`](../Execution/organ.py) | 通过公共 facade 执行，Root 可接收 advisory | 用新 goal 恢复旧运行；当前会拒绝不一致 goal/spec |
-| `ExecutionOrgan.reality_evidence(after_sequence=0)` | owner-created 不可变 DTO | 通用现实观察、终态历史 PRE 解析、预测登记 receipt |
+| MemoryRetriever.recall，[interfaces.py](../Conversation_Memory/adapter/interfaces.py) | 有界、来源明确的 Recall | 已接入独立链或允许扫描/修改 Cold |
+| MindOrgan.activate / accept_result / inspect，[organ.py](../Mind/organ.py) | 持续认知、活动续接与只读状态 | 任意执行权限或无限活动 |
+| MindTrace、请求投影与回放，[trace.py](../Mind/trace.py) | 实际模型输入、咨询与提交轨迹 | Trace 本身认证自然语言判断 |
+| Directive 绑定，[directive.py](../Mind/directive.py) | 指导与具体 decision 的持久关联 | APPLIED 已证明采纳或任务收益 |
+| decision_advisory_from，[execution_steering_experiment.py](../Mind/execution_steering_experiment.py) | 当前仍使用的纯数据投递桥 | Mind 直接持有 Execution |
+| ExecutionOrgan，[organ.py](../Execution/organ.py) | 公共执行 facade、现实证据投影及限定预测登记 | 通用现实观察、原位换目标或自动证明预测正确 |
+| NervousOrgan，[organ.py](../Nervous/organ.py) | 持久事件投递和确认 | 语义决策或长期自主调度 |
 
-当前 `DecisionIntent` 仍是语义文本。当前 `.lumina-complete == "verified"` 只证明指定机械条件；不得作为通用目标完成的判据。
+具体签名以源文件为准，组合入口见 [chain.py](../Mind/chain.py)。
+DecisionIntent 保留为架构类型；机械完成标记只证明其 verifier 实际检查的条件。
 
 ## 3. 上游能力映射与证据等级
 
-详细检索记录见 [Tycho / MetaWorld 研究笔记](../Mind/docs/TYCHO_METAWORLD_REFERENCE_RESEARCH.md)。
+详细检索记录见 [来源、版本与移植记录](../Mind/docs/REFERENCES.md)。
 
 ### 3.1 Tycho：源代码可审计
 
@@ -120,9 +140,9 @@ flowchart TD
 | 实际行动、工具结果、执行终局 | Execution | 有限 DTO 和来源 receipt |
 | Mind 当前持有的信念、关切、评价 | Mind 的代码实现 | 模型提出更新，代码验证并记录接受 |
 | 当前 Intention | 可信宿主维护的唯一正式承诺记录（拟议） | 只读带版本的快照；模型提出 DecisionIntent |
-| 事件投递 / 等待 / 预算 | 当前实验宿主，未来 Nervous | 明确事件及剩余预算，不能自行扩权 |
+| 事件投递 / 等待 / 预算 | Nervous 负责投递，可信链路宿主管理运行预算 | 明确事件及剩余预算，不能自行扩权 |
 
-将 Intention 放在宿主的正式承诺记录是本设计的选择，当前没有现成实现。Execution 某次运行的 goal 保持不可变，引用该 Intention 的一个版本；Mind 中只持有版本引用与只读快照，不另立权威 goal。
+将可切换的 Intention 放在宿主的正式承诺记录是本设计的选择；当前链路保留单个 owner 目标，尚未实现正式目标切换。Execution 某次运行的 goal 保持不可变，引用该 Intention 的一个版本；Mind 中只持有版本引用与只读快照，不另立权威 goal。
 
 ## 5. 持续认知状态
 
@@ -197,7 +217,7 @@ class MindOrgan:
     def inspect(self, query: MindQuery) -> MindView: ...
 ```
 
-这是设计草图，仓库没有这些类型。构造时注入既有 ModelClient、只读 Memory/证据适配、内部计算执行器、存储位置与预算；生产调用方只认识这两个入口。
+这是原始设计草图，不是当前 API 签名。已有 MindOrgan 的实际入口还包括 accept_result，inspect 的具体参数以第 2.1 节源码为准；MindQuery 等扩展及 Memory 接线仍是提案。构造依赖由可信宿主提供，模型不能取得这些可变句柄。
 
 ### 7.1 输入与输出语义
 
@@ -377,13 +397,16 @@ source_refs / bounded continuation condition
 
 恢复不要求 LLM 再次生成相同文本；要求已接受的记录、实际可见输入与实际应用结果可重建。
 
-### D7 实验提交契约补充
+### 认知提交的兼容语义
 
-D7-v3 仅把完整认知上下文容量版本化为 16000 字符，统一启动、提交与 Trace 回放；旧版本仍为 8000。该调整来自一次 8046 字符合格候选被拒绝的真实证据，不是长期自动压缩机制。一次后续恢复闭环成立，原独立验收仍未通过；状态摘要见 [CURRENT_STATUS](CURRENT_STATUS.md#isolated-mind-d7-inputexpression-repair-2026-09-06)。
+status 判断当前写下的 claim；旧条目不因本轮遗漏而消失。discriminator 按需表达
+尚未观察的区分性检验，已有来源的事实或规则不必另造假设。模型显式重写某条目并
+省略该字段时，才退役该条目的旧检验；历史版本仍可回放。验收检查整个有效状态，
+删除字段不等于修复旧命题。认知失败或超预算不转换成 NoChange。
 
-`cognitive-submit-d7-v2` 沿用持久条目、原子更新、精确引用、事件取证和单次 Directive 投递。`status` 判断当前写下的 claim；旧条目不因本轮遗漏而消失。belief 的 discriminator 改为按需表达未观察的区分性检验，已有来源的事实或规则不必为了填表另造假设。旧 discriminator 继续进入上下文；模型显式重写某条目并省略该字段时，才退役该条目的旧检验，历史版本仍可回放。验收仍检查整个有效状态，删除字段不等于修复旧命题。
-
-D7 每次提交最多 4 个更新、8 个有效条目、6000 序列化字符；每活动最多两步、一次取证和三次物理调用（含既有一次结构修正）。真实验证的 Mind 分配 8192 输出 token。思考模式使用 Anthropic-compatible 的 auto tool choice，并在同活动取证/协议修正续接时保留原始 thinking 内容块；它们属于传输状态，不成为认知事实来源。失败或超预算不转换成 NoChange。旧契约和历史记录保留其原始含义。D7 实验任务、结果报告与原始记录仅保留在本地，不随代码提交；不能由这些接口能力推断长程行为收益。
+当前选择性提交及活动额度见 [链路契约](../Mind/docs/INTEGRATED_CHAIN.md)；
+旧 D7 与后续版本的失败和范围见 [实验简史](../Mind/docs/EXPERIMENT_HISTORY.md)。
+旧记录按原版本解释，不能用当前表示追溯改写历史结论。
 
 ### 11.3 Directive 与 Intention
 
@@ -397,7 +420,7 @@ DecisionIntent 在宿主验证版本与条件后才改变正式 Intention。既�
 
 ### 11.4 S0：历史来源与预测资格分开
 
-当前 S0 为避免事后预测而在终态隐藏历史 PRE，导致原证据无法再解析。本设计选择两个独立契约：
+S0 历史实验因终态隐藏 PRE 而无法再解析原来源，其 INCONCLUSIVE 保留在 [实验简史](../Mind/docs/EXPERIMENT_HISTORY.md)。后续设计将两个契约分开：
 
 1. **历史可解析性**：owner 可在终态重新给出当时的有限 PRE 证据；读取历史不授予预测资格。
 2. **预测资格**：具体预测已持久保存后，由结果 owner 在其有序记录中确认该预测在目标结果出现前登记。
@@ -412,7 +435,7 @@ Mind 持久保存 prediction ID、内容 digest、来源 PRE、目标/条件/期
 → 后续 OUTCOME 通过引用配对
 ```
 
-此 owner 登记能力当前不存在。Mind 模型不直接调用它，宿主与 owner 完成登记；它不暂停、不修改行动。登记等待不得阻塞正常 Execution 推进，错过窗口就标记 ineligible。
+当前 ExecutionOrgan 已有 register_prediction / prediction_receipt，支持限定的终局预测登记；这不表示上述扩展观察语义全部实现。Mind 模型不直接调用 owner 登记接口；宿主与 owner 完成登记，不修改行动。错过资格窗口不能补写成事前预测。当前工作区观察比较的范围见 [链路契约](../Mind/docs/INTEGRATED_CHAIN.md)。
 
 若预测只写入 Mind、尚未登记就崩溃，恢复后 owner 已有 OUTCOME，则保留该预测但不计入前瞻正确率。receipt 已存在而 Mind 尚未收到时，可按预测 ID/digest 查询。真实登记失败不能改写成“本来就预测到了”。
 
@@ -422,7 +445,7 @@ owner 检查还必须绑定同一 execution、目标与仍适用的 PRE revision
 
 不得用墙钟早晚、缓存 PRE、模型自述或单独 Mind fsync 替代 owner 的顺序证据。对无可提供此顺序的外部世界，只报告预测记录时间与证据限制，不宣称同等防事后构造保证。
 
-预测条件中的行动若实际没有发生，或观察无法支持比较，则记为不适用/不可验证；不按失败行动的另一分支评分。S0 先只覆盖已有终局目标，更丰富的观察另做 owner 投影实验。
+预测条件中的行动若实际没有发生，或观察无法支持比较，则记为不适用/不可验证；不按失败行动的另一分支评分。历史 S0 只覆盖已有终局目标；新观察范围须由对应 owner 接口与验证建立。
 
 ## 12. 受界性与失败语义
 
@@ -455,14 +478,14 @@ owner 检查还必须绑定同一 execution、目标与仍适用的 PRE revision
 
 依赖处理：状态投影/规则核验是 in-process；本地日志、Memory 和 owner 观察是 local-substitutable，用真实临时存储和固定 DTO 验收；DeepSeek 是 true external，注入现有 ModelClient 与 deterministic mock。新 adapter 只在实际生产与测试行为都存在时引入。
 
-## 14. 实施顺序与验收
+## 14. 原始分阶段路线与验收
 
-这是后续任务分解。每个阶段单独冻结假设、范围、预算、来源版本与判据；本次不启动模型 campaign，不实现这些运行时能力。历史 E/W 结果保持原 verdict。
+下列保留 2026-09-05 的原始路线，供理解设计依赖与验收意图；P0–P3 的部分能力现已实现，不是要求重建的待办。当前实现和缺口以第 2 节及链路契约为准，后续工作由当前授权任务决定。历史 E/W 结果保持原 verdict；新增行为实验仍需明确范围、预算、来源与判据。
 
 ### P0：补齐来源与登记契约
 
 - 实现内容：在现有 S0 之上分开历史 PRE 解析与预测资格登记；复用已有 `RealityEvidence`、W0 比较和 Trace。
-- 参考：[S0 结果](../Mind/docs/WORLD_MODEL_SHADOW_S0_RESULT.md)、[`Execution/organ.py`](../Execution/organ.py)、[`world_model_shadow_s0.py`](../Mind/world_model_shadow_s0.py)。
+- 参考：[S0 历史结论](../Mind/docs/EXPERIMENT_HISTORY.md)、[Execution/organ.py](../Execution/organ.py)；原 shadow 实验驱动已退休。
 - 验收：终态/重启仍能解析来源；OUTCOME 后新登记被拒绝；登记前后崩溃可恢复；正常执行不受干扰；零模型调用。
 - 限制：先现有终局预测，不扩展任意工具结果或语义状态，不改比较器来获取 PASS。
 
@@ -476,14 +499,14 @@ owner 检查还必须绑定同一 execution、目标与仍适用的 PRE revision
 ### P2：真实证据下的世界理解与纠偏
 
 - 实现内容：在确有需要的事件范围补充 Execution owner 观察，比较有界竞争解释；先定性情景，随后检验高层指导对执行的作用。正式 Intention 变更以单独子任务验证。
-- 参考：[E4](../Mind/docs/EXPERIMENT_E4_RESULT.md)、[`test_execution_steering.py`](../Mind/test_execution_steering.py)、本设计第 5/6/11 节。
+- 参考：[E4 历史结论](../Mind/docs/EXPERIMENT_HISTORY.md)、[`test_execution_steering.py`](../Mind/test_execution_steering.py)、本设计第 5/6/11 节。
 - 验收：观察改变判断；指导改变实际后续轨迹且有收益；原方向正确时不过度干预；目标变化时不发生旧指导串线。
 - 限制：精确引用通过不等于建议正确；保持基础模型、预算及非目标机制相同，不把 APPLIED 当成功。
 
 ### P3：按需可执行模型与主动求证
 
 - 实现内容：先独立验证计算隔离，再移植经过审计的初始化/动态/结果核验思想；把所需分析结果接入同一 Mind 活动。
-- 参考：Tycho 上述 source record、[W0–W8 审计](../Mind/docs/WORLD_MODEL_W0_W8_AUDIT.md)、本设计第 9 节。
+- 参考：Tycho 上述 source record、[W0–W8 历史结论](../Mind/docs/EXPERIMENT_HISTORY.md)、本设计第 9 节。
 - 验收：竞争解释能被新证据区分；历史修模不重写旧预测；未知与覆盖率正确；模型不适用时可退出；真实判断收益与计算成本分别报告。
 - 限制：不复制游戏 schema，不继续增加只验证旧机制的算术 fixture，不把 AST 白名单当生产隔离。
 
@@ -515,7 +538,7 @@ owner 检查还必须绑定同一 execution、目标与仍适用的 PRE revision
 - 验收：独立任务上的收益、关系与目标承接、来源完整性；评价程序与历史预测独立保留，修改实现不同时改成功定义。
 - 限制：不将 Tycho 的人类参与外循环描述为现成自主 RSI；不预设完成此阶段即证明主观体验或数字生命。
 
-P0–P3 是近期可细化的工程路线；P4–P7 是目标能力与准入条件，不预设一次实现全部。P5 的有限研究可在 P2 有真实经历后开展，不必等待 P4 全套求解能力完成。每个实现子任务默认遵守最多三个既有生产模块、一个新生产文件和一个新测试文件的预算，超出时先呈现所需额外 surface。
+P0–P3 是原始工程路线；P4–P7 是长期目标与验收条件，不预设一次实现全部。P5 的有限研究可在 P2 有真实经历后开展，不必等待 P4 全套求解能力完成。具体改动范围遵循当前任务与 AGENTS.md，不以旧阶段或任意文件数量限制阻塞已授权的修复。
 
 ## 15. 共用验收场景与评估纪律
 
@@ -542,3 +565,5 @@ P0–P3 是近期可细化的工程路线；P4–P7 是目标能力与准入条�
 创造者提供一个需持续调查的目标。随后出现一次失败、新资料和一次程序重启；Lumina 能承接之前的理解，指出哪些假设仍成立、哪些需要核实，在已有范围内通过 Execution 获取新证据，修订方向，并保留由这段经历产生的新问题。
 
 第一轮只要求这个行为在受界环境成立。多主体推演、情绪与自主目标分别增加，并证明它们给这一过程带来了什么。这样“大脑”的能力由可持续、可检验的认知过程逐步建立。
+
+当前可运行范围及恢复方式见 [链路契约](../Mind/docs/INTEGRATED_CHAIN.md)，历次结果与失败见 [实验简史](../Mind/docs/EXPERIMENT_HISTORY.md)。

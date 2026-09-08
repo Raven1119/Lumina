@@ -1,5 +1,11 @@
 # Lumina
 
+The separate Mind-Nervous-Execution chain is available through `python -m Mind`.
+See [current capabilities and limits](docs/CURRENT_STATUS.md),
+[start/resume usage](Mind/docs/INTEGRATED_CHAIN.md), and the
+[condensed experiment history](Mind/docs/EXPERIMENT_HISTORY.md).
+
+
 Lumina is a local-first conversational runtime built around a Cold-first
 continuity invariant: conversation evidence must be durably preserved before it
 leaves the live context.

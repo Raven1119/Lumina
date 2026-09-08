@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
 import queue
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from jupyter_client.manager import start_new_kernel
 
@@ -64,6 +65,35 @@ class IPythonResult:
     error: str | None = None
     truncated: bool = False
     original_output_chars: int = 0
+    cognitive_request: str | None = None
+
+    def __post_init__(self):
+        if self.cognitive_request is not None:
+            if not self.ok:
+                raise ValueError('cognitive_request_requires_successful_result')
+            validate_cognitive_request(self.cognitive_request)
+
+
+def validate_cognitive_request(text):
+    """An actor-authored request, never a claim authenticated as reality."""
+    if not isinstance(text, str) or len(text) > 2000:
+        raise ValueError('cognitive_request_bound')
+    value = json.loads(text)
+    if not isinstance(value, dict) or set(value) != {'question', 'evidence_files', 'model_ref'}:
+        raise ValueError('invalid_cognitive_request')
+    if not isinstance(value['question'], str) or not value['question'].strip() or len(value['question']) > 1000:
+        raise ValueError('invalid_cognitive_question')
+    files = value['evidence_files']
+    if not isinstance(files, list) or len(files) > 3:
+        raise ValueError('cognitive_evidence_bound')
+    for file in files:
+        if (not isinstance(file, str) or not file or len(file) > 128
+                or PurePosixPath(file).is_absolute() or PureWindowsPath(file).drive
+                or '..' in PurePosixPath(file.replace('\\', '/')).parts):
+            raise ValueError('cognitive_evidence_requires_relative_path')
+    if not isinstance(value['model_ref'], str) or len(value['model_ref']) > 128:
+        raise ValueError('invalid_cognitive_model_ref')
+    return value
 
 
 class PersistentIPython:

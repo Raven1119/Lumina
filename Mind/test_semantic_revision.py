@@ -1,7 +1,6 @@
 """D5 mechanics; scripted responses are never evidence of model semantics."""
 import json
 import os
-from pathlib import Path
 
 import pytest
 
@@ -17,9 +16,9 @@ def stripped(value):
     return [stripped(v) for v in value] if isinstance(value, list) else value
 
 
-def test_old_d4_wire_is_unchanged_and_d5_only_changes_semantic_instructions():
-    old = json.loads(Path('Mind/fixtures/protocol_recovery_d4/loop/license_change/result.json').read_text(encoding='utf-8'))
-    for call in old['cognition_calls']:
+def test_synthetic_d4_and_d5_differ_only_in_semantic_instructions(tmp_path):
+    from Mind.test_cognitive_chain import synthetic_contract_calls
+    for call in synthetic_contract_calls(tmp_path, RECOVERY_CONTRACT_VERSION):
         d4 = CognitiveModel(None, contract=RECOVERY_CONTRACT_VERSION)._prepare_call(**call['projection'])['wire']
         assert d4 == call['wire']
         d5 = CognitiveModel(None, contract=SEMANTIC_CONTRACT_VERSION)._prepare_call(**call['projection'])['wire']
@@ -95,26 +94,19 @@ def test_semantic_rejection_does_not_erase_structurally_accepted_error(tmp_path)
     assert record['final_view']['items'][0]['claim'] == 'All modes accept unsigned input.'
 
 
-def test_literal_task_projection_preserves_archived_quotes_without_rewriting_them():
+def test_literal_task_projection_preserves_synthetic_source_text_and_excludes_code():
     from Mind.cognitive_contract import _telemetry_facts
     from Mind.event_loop import canonical
-    record = json.loads(Path('Mind/fixtures/semantic_revision_d5/acceptance/net_summary_revision/result.json')
-                        .read_text(encoding='utf-8'))
-    staged = {**record['initial_workspace'], **{name: canonical(value)
-        for name, value in record['case']['workspace']['changed_files'].items()}}
-    repaired_quotes = 0
-    for index, files in ((1, staged), (2, record['final_workspace'])):
-        old = record['episodes'][index]
-        assert old['receipt']['error'] == 'ungrounded_basis'
-        facts = _telemetry_facts({**files, 'helper.py': 'PRIVATE_CODE', 'debug.log': 'PRIVATE_LOG'}, 'waiting')
+    files = {'policy.json': '{ "revision": 2, "mode": "net" }',
+             'samples.json': canonical({'revision': 1, 'samples': [{'value': -2, 'approved': True}]}),
+             'summary.json': '{"count": 1, "total": -2}\n'}
+    original = dict(files)
+    for status in ('waiting', 'completed'):
+        facts = _telemetry_facts({**files, 'helper.py': 'PRIVATE_CODE', 'debug.log': 'PRIVATE_LOG'}, status)
         assert 'PRIVATE_CODE' not in facts and 'PRIVATE_LOG' not in facts
-        raw = record['cognition_calls'][index]['response']['content'][0]['input']
-        for item in raw['updates']:
-            for basis in item.get('basis', []):
-                if basis['ref'] == old['source_ref']:
-                    assert basis['quote'] in facts
-                    repaired_quotes += basis['quote'] not in old['source_facts']
-    assert repaired_quotes == 3
+        for name, body in files.items():
+            assert 'FILE ' + name + ':\n' + body + '\nEND FILE' in facts
+        assert files == original
     bounded = _telemetry_facts({'policy.json': 'x' * 801}, 'waiting')
     assert 'x' * 801 not in bounded and '[truncated;' in bounded
 

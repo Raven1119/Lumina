@@ -87,6 +87,156 @@ def test_owner_view_never_fakes_the_execution_goal(tmp_path):
             mind.activate(replace(input_value(), owner_task={**TASK, 'business_goal': 'Another goal.'}))
 
 
+@pytest.mark.parametrize('contract,accepted', [('cognitive-chain-v20', False), ('cognitive-chain-v51', True), ('cognitive-chain-v53', True)])
+def test_owner_condition_capacity_preserves_literal_sources_and_old_context_limit(tmp_path, contract, accepted):
+    from Mind.chain import ChainMind
+    from Mind.task_view import context_limit
+    from Mind.trace import MindTrace, CONTINUITY_EVENT_BYTES
+    evidence = tuple(Evidence('owner-condition-'+str(i), '\U0001f30d'*1000, 'execution') for i in range(42))
+    assert context_limit({'contract_version':'cognitive-chain-v49'}) == 64000
+    value = replace(input_value(), evidence=evidence, execution_observation=None)
+    wires = []
+    def transport(wire):
+        wires.append(wire)
+        text = wire['messages'][0]['content']
+        assert all('SOURCE '+item.ref+'\n'+item.text in text for item in evidence)
+        return response([belief(evidence[-1].ref, '\U0001f30d', claim='The last owner condition was recorded.')])
+    model = ChainMind(transport) if accepted else CognitiveModel(transport, contract=contract)
+    model.contract = model.cognitive_contract_version = contract
+    with MindOrgan(directory=tmp_path, model=model) as mind:
+        receipt = mind.activate(value)
+        if not accepted:
+            assert receipt.status == 'failed' and receipt.error == 'context_budget_exceeded'
+            assert not wires and mind.inspect().revision == 0
+            assert context_limit({'contract_version': contract}) == 16000
+            return
+        assert receipt.status == 'accepted'
+        state = _document(mind.inspect())
+    journal = json.loads((tmp_path/'cognition.json').read_text(encoding='utf-8'))
+    start = journal['records'][0]
+    assert len(start['input']['evidence']) == 42
+    assert 16000 < len(json.dumps(start['context'], ensure_ascii=False)) < context_limit(start['context']) == 64000
+    trace_path = tmp_path/(start['activation_id']+'.jsonl')
+    assert max(map(len, trace_path.read_bytes().splitlines())) > CONTINUITY_EVENT_BYTES
+    assert MindTrace.reopen(trace_path).events[0].payload['cognitive_context']['contract_version'] == contract
+    original = trace_path.read_bytes()
+    with MindOrgan(directory=tmp_path, model=ChainMind(lambda _: pytest.fail('accepted event resampled'))) as mind:
+        assert _document(mind.inspect()) == state
+        assert mind.activate(value).status == 'duplicate'
+        assert mind.read_source(evidence[-1].ref)['text'] == evidence[-1].text
+        with pytest.raises(ValueError, match='evidence_identity_conflict'):
+            mind.activate(replace(value, event_id='changed', evidence=(replace(evidence[-1], text='Changed text.'),)))
+    assert trace_path.read_bytes() == original
+
+
+def test_owner_condition_evidence_count_is_bounded_without_expanding_legacy_input():
+    from Mind.organ import _input_document
+    evidence = tuple(Evidence('owner-'+str(i), 'A scoped owner condition.', 'execution') for i in range(43))
+    value = replace(input_value(), evidence=evidence[:42], execution_observation=None)
+    assert len(_input_document(value)['evidence']) == 42
+    with pytest.raises(ValueError, match='evidence_budget_exceeded'):
+        _input_document(replace(value, evidence=evidence))
+    with pytest.raises(ValueError, match='evidence_budget_exceeded'):
+        _input_document(replace(value, owner_task=None, evidence=evidence[:4]))
+
+
+@pytest.mark.parametrize('goal_chars', [2300, 4000])
+def test_long_owner_goal_survives_event_inspect_and_restart_without_identity_rewrite(tmp_path, goal_chars):
+    from Mind.host import activation_event, result_event, run_mind_once
+    from Mind.task_view import fingerprint, mind_task_view
+    from Mind.trace import MindTrace, _thaw
+
+    protocol = 'Local completion protocol remains Execution-only. ' * 12
+    business_chars = goal_chars - len(protocol) - len('\n\nExecution protocol:\n')
+    suffix = 'Preserve the signed receipt and its custody evidence.'
+    task = {'business_goal': ('Retain source attribution. ' * 200)[:business_chars-len(suffix)] + suffix,
+            'execution_protocol': protocol}
+    goal = execution_goal(task)
+    assert len(goal) == goal_chars
+    outcome = 'Receipt verification pending. ' + 'x'*960
+    value = replace(input_value(), goal=goal, owner_task=task,
+        execution_observation=ExecutionObservation(goal, 'waiting', outcome, 'f'*500))
+    observation = {'capability': 'inspect_execution', 'goal': goal, 'status': 'waiting',
+                   'recent_outcome': outcome, 'failure': 'f'*500}
+    wires = []
+    def transport(wire):
+        wires.append(copy.deepcopy(wire))
+        content = wire['messages'][-1]['content']
+        if isinstance(content, list):
+            content = content[0]['content'].split('\n', 1)[1]
+        view = json.loads(content.split('\n\nExact citation catalogue')[0])
+        assert view['activation']['execution_goal_snapshot'] == task['business_goal']
+        assert view['initial_execution_observation']['goal'] == task['business_goal']
+        assert protocol not in json.dumps(wire)
+        sources = citation_sources(json.dumps(view))
+        assert sources['owner-task:'+fingerprint(task)] == task['business_goal']
+        if len(wires) == 1:
+            return response(next_value={'type': 'capability_request', 'capability': 'inspect_execution'})
+        assert view['observation']['goal'] == task['business_goal']
+        return response([belief('activation:observation', 'Receipt verification pending.')])
+    def model():
+        return CognitiveModel(transport, contract='cognitive-chain-v53', thinking=False)
+    with NervousOrgan(tmp_path/'nervous') as nervous, MindOrgan(directory=tmp_path/'mind', model=model(),
+            available_capabilities=('inspect_execution',)) as mind:
+        nervous.publish(activation_event(value))
+        waiting = run_mind_once(nervous, mind)
+        assert waiting.status == 'waiting' and len(wires) == 1
+    with NervousOrgan(tmp_path/'nervous') as nervous, MindOrgan(directory=tmp_path/'mind', model=model(),
+            available_capabilities=('inspect_execution',)) as mind:
+        assert len(wires) == 1 and mind.inspect().revision == 0
+        with pytest.raises(ValueError, match='execution_task_view_conflict'):
+            mind.accept_result(MindResultEvent(waiting.request.request_ref, {**observation, 'goal': goal[:-1]+'!'}))
+        request, = nervous.pending('mind.requests', 1)
+        nervous.complete(request.event_id, request.target, emitted=(result_event(request, observation),))
+        assert run_mind_once(nervous, mind).status == 'accepted'
+        state = _document(mind.inspect())
+        assert mind.read_source('owner-task:'+fingerprint(task))['text'] == task['business_goal']
+    with MindOrgan(directory=tmp_path/'mind', model=None) as mind:
+        assert _document(mind.inspect()) == state
+    assert len(wires) == 2
+    journal = json.loads((tmp_path/'mind/cognition.json').read_text(encoding='utf-8'))
+    start = journal['records'][0]
+    assert start['input']['goal'] == goal and start['input']['owner_task'] == task
+    assert start['context']['task_view'] == mind_task_view(task, goal)
+    trace = MindTrace.reopen(tmp_path/'mind'/(start['activation_id']+'.jsonl'))
+    assert trace.events[0].payload['activation']['execution_goal_snapshot'] == goal
+    initial = next(event for event in trace.events if event.event_type == 'INITIAL_EXECUTION_OBSERVED')
+    observed = next(event for event in trace.events if event.event_type == 'CAPABILITY_OBSERVED')
+    assert initial.payload['goal'] == goal
+    assert _thaw(observed.payload['observation']) == observation
+
+
+def test_owner_goal_capacity_preserves_legacy_limits_and_rejects_unbound_or_oversized_goals(tmp_path):
+    from Mind.organ import _input_document
+    from Mind.experiment_a import ActivationInput, _valid_activation, _execution_observation, ActivationFailure
+    from Mind.task_view import execution_view_limits, mind_task_view
+    from Mind.trace import _validate_capability_observation, TraceError
+    task = {'business_goal': 'Retain receipt provenance. '*90, 'execution_protocol': TASK['execution_protocol']}
+    goal = execution_goal(task)
+    value = replace(input_value(), goal=goal, owner_task=task,
+                    execution_observation=ExecutionObservation(goal, 'waiting', 'x'*1000, None))
+    assert len(goal) > 2200
+    with pytest.raises(ValueError):
+        _input_document(replace(value, owner_task=None))
+    with pytest.raises(ValueError, match='owner_task_too_large'):
+        execution_goal({**task, 'business_goal': 'x'*4000})
+    old_context = {'contract_version': 'cognitive-chain-v51', 'task_view': mind_task_view(task, goal)}
+    new_context = {**old_context, 'contract_version': 'cognitive-chain-v53'}
+    assert execution_view_limits(old_context) == execution_view_limits({'contract_version': 'cognitive-chain-v53'}) == (2000, 3000)
+    activation = ActivationInput('Condition changed.', goal, 'waiting')
+    assert _valid_activation(activation, new_context) and not _valid_activation(activation, old_context)
+    assert isinstance(_execution_observation(value.execution_observation, old_context), ActivationFailure)
+    observation = _execution_observation(value.execution_observation, new_context)
+    assert isinstance(observation, dict)
+    with pytest.raises(TraceError):
+        _validate_capability_observation({'capability': 'inspect_execution', 'observation': observation},
+            requested_capability='inspect_execution', contract='cognitive-chain-v51', cognitive_context=old_context)
+    with MindOrgan(directory=tmp_path, model=CognitiveModel(lambda _: pytest.fail('old contract sent a request'),
+            contract='cognitive-chain-v51')) as mind:
+        result = mind.activate(value)
+        assert result.status == 'failed' and result.error == 'invalid_activation_input'
+
+
 def test_optional_test_is_versioned_and_old_errors_remain_until_explicit_update():
     sources = {'owner': {'text': 'Observed condition.', 'origin': 'execution', 'ref': 'owner'}}
     old = belief('owner', 'Observed condition.', discriminator='An old erroneous condition.')

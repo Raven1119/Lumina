@@ -19,7 +19,77 @@ import uuid
 
 IMAGE = "python@sha256:3b3706a90cb23f04fabb0d255824f9a70ceb46177041898133dd5a35f3a50f0a"
 PROTOCOL = "isolated-world-model-v1"
+STATIC_PROTOCOL = 'isolated-world-model-static-v1'
 OUTCOMES = {"ongoing", "complete", "failed", "unknown"}
+
+
+def observation_contract_schema(*, static=False):
+    """A forecast declares observable bindings, not an evaluator's answer."""
+    scalar = {"type": ["string", "number", "boolean", "null"]}
+    text = {"type": "string", "minLength": 1, "maxLength": 200}
+    flat = {"type": "object", "maxProperties": 8, "additionalProperties": scalar}
+    schema = {"type": "object", "additionalProperties": False,
+        "required": ["action", "conditions", "object", "when", "quantities"],
+        "properties": {"action": {**flat, "minProperties": 1}, "conditions": flat,
+            "object": text, "when": text,
+            "quantities": {"type": "object", "minProperties": 1, "maxProperties": 8,
+                "additionalProperties": {"type": "object", "additionalProperties": False,
+                    "required": ["meaning", "unit"], "properties": {"meaning": text, "unit": text}}}}}
+    if static:
+        schema['required'].remove('action')
+        del schema['properties']['action']
+    return schema
+
+
+def compare_observation_contract(run, contract, observed, *, fresh=True):
+    """Mechanical alignment only. Recorded claims still need source assessment."""
+    from jsonschema import validate
+    static = run.get('protocol') == STATIC_PROTOCOL
+    validate(contract, observation_contract_schema(static=static))
+    if static:
+        verify_static_run(run)
+        contract = {**contract, 'action': run['request']['action']}
+    else:
+        verify_run(run, [None] * len(run["request"]["actions"]))
+    groups = [set(contract[key]) for key in ('action', 'conditions', 'quantities')]
+    groups.append({'observation_object', 'observation_time'})
+    if sum(map(len, groups)) != len(set().union(*groups)):
+        raise ValueError("ambiguous_observation_contract")
+    report = {"version": "prediction-observation-v1", "status": "unverified",
+        "scope": "Declared final quantities only; observation-record claims are not independently certified. Semantic applicability belongs to Mind.",
+        "missing": [], "different_conditions": [], "comparison": None}
+    if static:
+        report['version'] = 'prediction-observation-static-v1'
+    if not fresh or observed is None:
+        report["reason"] = "no_new_observation" if not fresh else "not_observed"
+        return report
+    if type(observed) is not dict:
+        report.update(status="incomparable", reason="observation_not_object")
+        return report
+    expected = {**contract['action'], **contract['conditions'],
+        'observation_object': contract['object'], 'observation_time': contract['when']}
+    report['missing'] = sorted(k for k, value in expected.items() if value is None or observed.get(k) is None)
+    report['different_conditions'] = sorted(k for k, value in expected.items()
+        if value is not None and observed.get(k) is not None
+        and (type(value) is not type(observed[k]) or value != observed[k]))
+    if report['different_conditions']:
+        report.update(status='not_applicable', reason='recorded_action_or_conditions_differ')
+        return report
+    if report['missing']:
+        report['reason'] = 'unknown_action_or_conditions'
+        return report
+    predicted = run['prediction']['quantities'] if static else run['prediction']['steps'][-1]['observation']
+    names = contract['quantities']
+    report['missing'] = sorted(k for k in names if predicted.get(k) is None or observed.get(k) is None)
+    if report['missing']:
+        report.update(status='incomparable', reason='quantity_missing')
+        return report
+    report['comparison'] = _compare({k: predicted[k] for k in names}, {k: observed[k] for k in names})
+    report['quantities'] = {k: {'predicted': predicted[k], 'observed': observed[k], **names[k]}
+        for k in names}
+    report['status'] = 'compared'
+    report['reason'] = 'recorded_bindings_match; differences_are_not_automatic_causal_refutations'
+    return report
 
 
 class ModelComputationError(RuntimeError):
@@ -65,6 +135,22 @@ except Exception:
 sys.stdout.write(encoded)
 '''
 
+_STATIC_RUNNER = r'''
+import copy, json, sys
+request=json.load(sys.stdin)
+phase='load'
+try:
+    model={'__name__':'world_model'}
+    exec(compile(request['source'],'<world-model>','exec'),model)
+    phase='prediction'
+    quantities=model['predict'](copy.deepcopy(request['inputs']),copy.deepcopy(request['action']))
+    phase='serialization'
+    encoded=json.dumps({'quantities':quantities},allow_nan=False)
+except Exception:
+    encoded=json.dumps({'error':{'phase':phase}})
+sys.stdout.write(encoded)
+'''
+
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -105,7 +191,7 @@ def _request(source: str, initial_observation: dict, actions: list[dict]) -> dic
     return request
 
 
-def _command(name: str) -> list[str]:
+def _command(name: str, *, static=False) -> list[str]:
     # Restriction flags ported from Tycho PythonSandbox.command. The container
     # has no mounts; only its disposable /tmp is writable. Never fall back to host.
     return [
@@ -116,11 +202,11 @@ def _command(name: str) -> list[str]:
         "--ulimit", "nofile=64:64", "--ulimit", "fsize=1048576:1048576",
         "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777",
         "--user", "65534:65534", "--workdir", "/tmp", "--env", "HOME=/tmp",
-        IMAGE, "python", "-I", "-S", "-B", "-c", _RUNNER,
+        IMAGE, "python", "-I", "-S", "-B", "-c", _STATIC_RUNNER if static else _RUNNER,
     ]
 
 
-def _compute(request: dict) -> bytes:
+def _compute(request: dict, *, static=False) -> bytes:
     name = f"lumina-mind-model-{uuid.uuid4().hex}"
     captured: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
     truncated = threading.Event()
@@ -142,7 +228,7 @@ def _compute(request: dict) -> bytes:
             request_stream.write(_json(request).encode("utf-8"))
             request_stream.seek(0)
             process = subprocess.Popen(
-                _command(name), stdin=request_stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                (_command(name, static=True) if static else _command(name)), stdin=request_stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             readers = [threading.Thread(target=drain, args=(key, stream, limit), daemon=True)
                        for key, stream, limit in (("stdout", process.stdout, 65_536),
@@ -232,6 +318,45 @@ def run_model(source: str, initial_observation: dict, actions: list[dict]) -> di
     return {"kind": "COMPUTED", "protocol": PROTOCOL, "runtime": IMAGE,
             "source_digest": _digest(source), "request_digest": _digest(_json(request)),
             "request": request, "prediction": prediction}
+
+
+def _static_request(source, inputs, action):
+    # Reuse the same source/scalar/serialized resource limits, without fake state.
+    _request(source, inputs, [action])
+    return copy.deepcopy({'source': source, 'inputs': inputs, 'action': action})
+
+
+def run_static_model(source: str, inputs: dict, action: dict) -> dict:
+    """Compute one candidate's consequences; inputs and action are immutable bindings."""
+    request = _static_request(source, inputs, action)
+    raw = _compute(request, static=True)
+    try:
+        prediction = json.loads(raw, object_pairs_hook=_strict_object)
+        if isinstance(prediction, dict) and 'error' in prediction:
+            raise ModelComputationError('model_static_computation_error')
+        if type(prediction) is not dict or set(prediction) != {'quantities'}:
+            raise ValueError('invalid static prediction')
+        _fields(prediction['quantities'])
+    except (ValueError, TypeError, RecursionError) as error:
+        raise ModelComputationError('invalid_computation_output') from error
+    return {'kind': 'COMPUTED', 'protocol': STATIC_PROTOCOL, 'runtime': IMAGE,
+        'source_digest': _digest(source), 'request_digest': _digest(_json(request)),
+        'request': request, 'prediction': prediction}
+
+
+def verify_static_run(run):
+    """Validate binding and shape, not the truth of an analysis or a future outcome."""
+    if type(run) is not dict or set(run) != {'kind', 'protocol', 'runtime', 'source_digest',
+                                            'request_digest', 'request', 'prediction'}:
+        raise ValueError('invalid static model record')
+    request = _static_request(**run['request'])
+    if (run['kind'] != 'COMPUTED' or run['protocol'] != STATIC_PROTOCOL or run['runtime'] != IMAGE
+            or run['source_digest'] != _digest(request['source'])
+            or run['request_digest'] != _digest(_json(request))):
+        raise ValueError('computed model provenance mismatch')
+    if type(run['prediction']) is not dict or set(run['prediction']) != {'quantities'}:
+        raise ValueError('invalid static prediction')
+    _fields(run['prediction']['quantities'])
 
 
 def _compare(predicted: dict, observed: dict | None) -> dict:

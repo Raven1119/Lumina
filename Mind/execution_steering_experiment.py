@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from Mind.directive import DirectiveApplication
 from Mind.trace import MAX_DECISION_ID_CHARS, MAX_DIRECTIVE_CHARS
+from Mind.task_view import directive_limit
 
 
 FIXED_DIRECTIVE_TEXT = "Re-check assumption X before continuing."
@@ -15,7 +16,7 @@ DecisionAdvisory = tuple[str, str]
 
 
 def decision_advisory_from(
-    application: object,
+    application: object, *, contract=None,
 ) -> DecisionAdvisory | None:
     """Project one validated D application into inert Execution input data."""
     if type(application) is not DirectiveApplication:
@@ -30,17 +31,17 @@ def decision_advisory_from(
         or type(text) is not str
         or not text.strip()
         or text != text.strip()
-        or len(text) > MAX_DIRECTIVE_CHARS
+        or len(text) > directive_limit(contract)
     ):
         return None
     context = application.as_model_context()
-    if len(context) > MAX_RENDERED_DIRECTIVE_CHARS:
+    if len(context) > MAX_RENDERED_DIRECTIVE_CHARS + directive_limit(contract) - MAX_DIRECTIVE_CHARS:
         return None
     return decision_id, context
 
 
 def decision_advisory_for_execution(
-    application: object, *, execution_ref: str, decision_id: str,
+    application: object, *, execution_ref: str, decision_id: str, contract=None,
 ) -> DecisionAdvisory | None:
     """Host routing: validate the full recipient before projecting its local ID.
 
@@ -54,6 +55,6 @@ def decision_advisory_for_execution(
         return None
     if application.decision_id != f"{execution_ref}:root:{decision_id}":
         return None
-    if decision_advisory_from(application) is None:
+    if decision_advisory_from(application, contract=contract) is None:
         return None
-    return decision_advisory_from(replace(application, decision_id=decision_id))
+    return decision_advisory_from(replace(application, decision_id=decision_id), contract=contract)

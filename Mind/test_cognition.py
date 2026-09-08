@@ -281,18 +281,37 @@ def test_unavailable_read_is_not_advertised_or_executed(tmp_path):
         assert len(model.calls) == 1 and mind.inspect().revision == 0
 
 
-def test_original_v1_smoke_replays_with_exact_historical_prompt(tmp_path):
-    artifact = json.loads((Path(__file__).parent / "docs/cognition_minimal/protocol_smoke_2.json")
-                          .read_text(encoding="utf-8"))
-    name, text = next(iter(artifact["trace_files"].items()))
-    trace_path = tmp_path / name
-    trace_path.write_text(text, encoding="utf-8")
-    replay = replay_activation(MindTrace.reopen(trace_path).events)
-    original = artifact["calls"][0]
-    assert replay.model_requests[0].as_model_call() == {
-        key: original[key] for key in ("recent_context", "user_message", "system_prompt")}
-    assert replay.model_outputs[0] == original["output"]
+def _synthetic_legacy_replay(path, version, capabilities=()):
+    """Exercise persisted old contracts without retaining real provider logs."""
+    from Mind.trace import ACTIVATION_STARTED, MODEL_OUTPUT_RECORDED, ACTIVATION_FAILED, project_model_request
+    payload = {
+        "activation": {"execution_goal_snapshot": "Investigate the synthetic request failure.",
+                       "execution_status": "waiting", "trigger": "Synthetic legacy replay input."},
+        "information_acquisition_allowed": bool(capabilities),
+        "projector_version": f"mind-cognitive-projector-v{version}",
+        "prompt_version": f"mind-cognitive-prompt-v{version}",
+        "cognitive_context": {"revision": 0, "event_id": "synthetic-legacy-event", "items": [], "evidence": []},
+    }
+    if version >= 2:
+        payload["available_capabilities"] = list(capabilities)
+    trace = MindTrace.create(path, activation_id=f"synthetic-legacy-v{version}")
+    started = trace.append(ACTIVATION_STARTED, payload, source_event_seqs=())
+    original_request = project_model_request(trace.events).as_model_call()
+    output = trace.append(MODEL_OUTPUT_RECORDED, {"call_index": 1, "text": "{"},
+                          source_event_seqs=(started.seq,))
+    trace.append(ACTIVATION_FAILED, {"code": "invalid_model_output"}, source_event_seqs=(output.seq,))
+    replay = replay_activation(MindTrace.reopen(path).events)
+    assert replay.model_requests[0].as_model_call() == original_request
+    assert replay.model_outputs == ("{",)
     assert replay.failure_code == "invalid_model_output"
+    return original_request
+
+
+def test_synthetic_v1_trace_replays_with_its_legacy_prompt(tmp_path):
+    from Mind.trace import COGNITIVE_SYSTEM_PROMPT
+    request = _synthetic_legacy_replay(tmp_path / "v1.jsonl", 1)
+    assert request["system_prompt"] == COGNITIVE_SYSTEM_PROMPT
+    assert "available_capabilities" not in json.loads(request["user_message"])
 
 
 @pytest.mark.skipif(os.environ.get("LUMINA_TEST_WORLD_MODEL_DOCKER") != "1",
@@ -353,23 +372,16 @@ def test_model_failure_or_simulated_quote_cannot_become_reality_evidence(tmp_pat
         assert observation["status"] == "failed" and observation["result"] is None
 
 
-@pytest.mark.parametrize("artifact_name", ["protocol_smoke_3.json", "model_build_smoke_1.json", "model_build_smoke_2.json"])
-def test_model_capability_is_explicit_and_earlier_real_smokes_remain_replayable(tmp_path, artifact_name):
-    artifact = json.loads((Path(__file__).parent / "docs/cognition_minimal" / artifact_name)
-                          .read_text(encoding="utf-8"))
-    actual = {}
-    for name, text in artifact["trace_files"].items():
-        path = tmp_path / name
-        path.write_text(text, encoding="utf-8")
-        replay = replay_activation(MindTrace.reopen(path).events)
-        calls = [request.as_model_call() for request in replay.model_requests]
-        event_id = json.loads(calls[0]["user_message"])["cognition"]["event_id"]
-        actual[event_id] = calls
-    expected = {}
-    for call in artifact["calls"]:
-        event_id = json.loads(call["user_message"])["cognition"]["event_id"]
-        expected.setdefault(event_id, []).append({key: call[key] for key in ("recent_context", "user_message", "system_prompt")})
-    assert actual == expected  # File enumeration order is not activation order.
+@pytest.mark.parametrize("version,capabilities,prompt_name", [
+    (2, (), "COGNITIVE_STEP_SYSTEM_PROMPT"),
+    (3, ("run_world_model",), "COGNITIVE_MODEL_SYSTEM_PROMPT"),
+    (4, ("run_world_model",), "COGNITIVE_COMPACT_SYSTEM_PROMPT"),
+])
+def test_model_capability_is_explicit_and_synthetic_legacy_versions_replay(tmp_path, version, capabilities, prompt_name):
+    from Mind import trace
+    request = _synthetic_legacy_replay(tmp_path / "legacy.jsonl", version, capabilities)
+    assert request["system_prompt"] == getattr(trace, prompt_name)
+    assert json.loads(request["user_message"])["available_capabilities"] == list(capabilities)
     model = ScriptedModel([_response()])
     with _organ(tmp_path / "ordinary", model) as mind:
         assert mind.activate(_event()).status == "accepted"

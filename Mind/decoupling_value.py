@@ -68,7 +68,12 @@ def _messages(messages):
                                'name': call['function']['name'],
                                'input': json.loads(call['function']['arguments'])})
         if blocks:
-            result.append({'role': role, 'content': blocks})
+            # A native sibling batch returns all results in one Anthropic turn.
+            if (message['role'] == 'tool' and result and result[-1]['role'] == 'user'
+                    and all(b['type'] == 'tool_result' for b in result[-1]['content'])):
+                result[-1]['content'].extend(blocks)
+            else:
+                result.append({'role': role, 'content': blocks})
     return result
 
 
@@ -486,7 +491,7 @@ def _run_case(case, directory, *, review_transports, execution_transports, admit
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PATHS = (
     'Mind/decoupling_value.py', 'Mind/test_decoupling_value.py',
-    'Mind/docs/DECOUPLING_VALUE_TASK.md', 'Mind/behavioral_experiment.py',
+    'Mind/docs/INTEGRATED_CHAIN.md', 'Mind/docs/EXPERIMENT_HISTORY.md', 'Mind/behavioral_experiment.py',
     'Mind/organ.py', 'Mind/host.py', 'Mind/experiment_a.py', 'Mind/trace.py',
     'Mind/directive.py', 'Mind/execution_steering_experiment.py',
     'Execution/organ.py', 'Execution/execution.py', 'Execution/ipython_control.py',
@@ -528,6 +533,7 @@ def preregister(manifest_path, directory):
         'created_at': datetime.now(timezone.utc).isoformat(),
         'baseline_head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
         'manifest': manifest, 'manifest_sha256': digest(manifest),
+        'source_set_version': 'retained-regression-sources-v1',
         'source_hashes': {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in SOURCE_PATHS},
         'provider': {'model': MODEL, 'endpoint': 'https://api.deepseek.com/anthropic/v1/messages',
                      'thinking': 'disabled', 'temperature': 0, 'timeout_seconds': 30, 'retries': 0},

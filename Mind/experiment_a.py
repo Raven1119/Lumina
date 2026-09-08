@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 from Conversation_Memory.adapter.interfaces import MemoryRetriever
 from Conversation_Memory.adapter.models import MemoryContext, RecallPolicy
 from core.model_client import ModelClient
-from Mind.task_view import output_limit
+from Mind.task_view import output_limit, execution_view_limits, directive_limit
 from Mind.trace import (
     COGNITIVE_PROBE_PROJECTOR_VERSION,
     COGNITIVE_PROBE_PROMPT_VERSION,
@@ -75,7 +75,7 @@ EXPERIMENT_A_RECALL_POLICY = RecallPolicy(
 class ActivationInput:
     trigger: str
     execution_goal_snapshot: str
-    execution_status: str
+    execution_status: str | None
 
 
 @dataclass(frozen=True)
@@ -196,7 +196,7 @@ def _run_activation(
     native_protocol: str | None = None,
 ) -> NoChange | Directive | DecisionIntent | ActivationFailure:
     if (
-        not _valid_activation(activation)
+        not _valid_activation(activation, cognitive_context)
         or type(allow_information_acquisition) is not bool
         or type(initial_execution_observation_visible) is not bool
         or type(allow_model_computation) is not bool
@@ -208,7 +208,9 @@ def _run_activation(
         return ActivationFailure("invalid_activation_input")
     prepared_execution_observation = None
     if execution_observation is not None:
-        prepared = _execution_observation(execution_observation)
+        if activation.execution_status is None:
+            return ActivationFailure("invalid_execution_observation")
+        prepared = _execution_observation(execution_observation, cognitive_context)
         if isinstance(prepared, ActivationFailure):
             return prepared
         prepared_execution_observation = prepared
@@ -389,7 +391,8 @@ def _run_valid_activation(
     )
     if first_output is None:
         return ActivationFailure("trace_failed")
-    parsed = _parse_output(first, unified=cognitive_context is not None, compute=allow_model_computation)
+    parsed = _parse_output(first, unified=cognitive_context is not None, compute=allow_model_computation,
+        max_updates=8 if (cognitive_context or {}).get("contract_version") in {"cognitive-chain-v10", "cognitive-chain-v11", "cognitive-chain-v12", "cognitive-chain-v13", "cognitive-chain-v14", "cognitive-chain-v15", "cognitive-chain-v16"} else 4, contract=(cognitive_context or {}).get("contract_version"))
     if not isinstance(parsed, _CapabilityRequest):
         return _record_terminal(trace, parsed, (first_output.seq,))
 
@@ -469,7 +472,8 @@ def _resolve_capability(parsed, *, memory_retriever, prepared_execution_observat
 
 
 def _continue_activation(*, trace, model, observation, cognitive, compute):
-    """Continue exactly once from an already durable capability request."""
+    """Continue from a durable request within its persisted activity budget."""
+    from Mind.trace import activity_steps, cognitive_phase, model_dependencies, consultation_allowed
     started = trace.events[0]
     request = trace.events[-1]
     if request.event_type != CAPABILITY_REQUESTED:
@@ -492,34 +496,26 @@ def _continue_activation(*, trace, model, observation, cognitive, compute):
     if observed is None:
         return ActivationFailure("trace_failed")
 
-    second_dependencies = (
-        (started.seq, request.seq, observed.seq)
-        if initial_execution is None
-        else (
-            started.seq,
-            initial_execution.seq,
-            *(
-                (supervisor_evidence_event.seq,)
-                if supervisor_evidence_event is not None
-                else ()
-            ),
-            request.seq,
-            observed.seq,
-        )
-    )
+    second_dependencies = model_dependencies(trace.events)
     second = _project_and_call(model, trace)
     if isinstance(second, ActivationFailure):
         return _record_failure(trace, second, second_dependencies)
     second_output = _append_event(
         trace,
         MODEL_OUTPUT_RECORDED,
-        {"call_index": 2, "text": second},
+        {"call_index": cognitive_phase(trace.events), "text": second},
         second_dependencies,
     )
     if second_output is None:
         return ActivationFailure("trace_failed")
-    final = _parse_output(second, unified=cognitive, compute=compute)
+    final = _parse_output(second, unified=cognitive, compute=compute,
+        max_updates=8 if trace.events[0].payload.get("cognitive_context", {}).get("contract_version") in {"cognitive-chain-v10", "cognitive-chain-v11", "cognitive-chain-v12", "cognitive-chain-v13", "cognitive-chain-v14", "cognitive-chain-v15", "cognitive-chain-v16"} else 4, contract=trace.events[0].payload.get("cognitive_context", {}).get("contract_version"))
     if isinstance(final, _CapabilityRequest):
+        if (consultation_allowed(trace.events)
+                and final.capability in started.payload["available_capabilities"]):
+            if _append_event(trace, CAPABILITY_REQUESTED, _request_payload(final), (second_output.seq,)) is None:
+                return ActivationFailure("trace_failed")
+            return final
         final = ActivationFailure("capability_limit_exceeded")
     return _record_terminal(trace, final, (second_output.seq,))
 
@@ -559,20 +555,19 @@ def _call_model(
 
 def _resume_native_activation(trace, model):
     """Finish an uncommitted logical step from its durable native annex."""
-    first = not any(e.event_type == CAPABILITY_OBSERVED for e in trace.events)
-    initial = next((e for e in trace.events if e.event_type == INITIAL_EXECUTION_OBSERVED), None)
-    dependencies = (0, *([initial.seq] if initial else []), *(
-        [e.seq for e in trace.events if e.event_type in {CAPABILITY_REQUESTED, CAPABILITY_OBSERVED}]
-        if not first else []))
+    from Mind.trace import activity_steps, cognitive_phase, model_dependencies, consultation_allowed
+    dependencies = model_dependencies(trace.events)
     raw = _project_and_call(model, trace)
     if isinstance(raw, ActivationFailure):
         return _record_failure(trace, raw, dependencies)
-    event = _append_event(trace, MODEL_OUTPUT_RECORDED, {"call_index": 1 if first else 2, "text": raw}, dependencies)
+    event = _append_event(trace, MODEL_OUTPUT_RECORDED, {"call_index": cognitive_phase(trace.events), "text": raw}, dependencies)
     if event is None:
         return ActivationFailure("trace_failed")
-    parsed = _parse_output(raw, unified=True)
+    parsed = _parse_output(raw, unified=True,
+        max_updates=8 if trace.events[0].payload.get("cognitive_context", {}).get("contract_version") in {"cognitive-chain-v10", "cognitive-chain-v11", "cognitive-chain-v12", "cognitive-chain-v13", "cognitive-chain-v14", "cognitive-chain-v15", "cognitive-chain-v16"} else 4, contract=trace.events[0].payload.get("cognitive_context", {}).get("contract_version"))
     if isinstance(parsed, _CapabilityRequest):
-        if not first or parsed.capability not in trace.events[0].payload["available_capabilities"]:
+        if (not consultation_allowed(trace.events)
+                or parsed.capability not in trace.events[0].payload["available_capabilities"]):
             return _record_failure(trace, ActivationFailure("capability_limit_exceeded"), (event.seq,))
         if _append_event(trace, CAPABILITY_REQUESTED, _request_payload(parsed), (event.seq,)) is None:
             return ActivationFailure("trace_failed")
@@ -610,7 +605,7 @@ def _record_terminal(
         payload = {
             "directive_id": directive_id_for(
                 trace.events[0].activation_id,
-                issuing_seq,
+                issuing_seq, events=trace.events,
             ),
             "text": result.text,
         }
@@ -653,8 +648,10 @@ def _record_failure(
 
 def _parse_output(
     raw: str,
-    *, cognitive: bool = False, unified: bool = False, compute: bool = False,
+    *, cognitive: bool = False, unified: bool = False, compute: bool = False, max_updates: int = 4, contract=None,
 ) -> NoChange | Directive | DecisionIntent | _CapabilityRequest | ActivationFailure:
+    if contract in {"cognitive-chain-v20", "cognitive-chain-v49", "cognitive-chain-v51", "cognitive-chain-v53", "cognitive-chain-v55", "cognitive-chain-v56", "cognitive-chain-v57", "cognitive-chain-v58", "cognitive-chain-v59", "cognitive-chain-v60", "cognitive-chain-v61", "cognitive-chain-v62", "cognitive-chain-v64", "cognitive-chain-v65", "cognitive-chain-v66", "cognitive-chain-v67"}:
+        max_updates = 16
     try:
         payload = json.loads(
             raw,
@@ -668,12 +665,16 @@ def _parse_output(
 
     output_type = payload["type"]
     if unified:
-        if (output_type != "cognitive_step" or set(payload) != {"type", "updates", "next"}
-                or type(payload["updates"]) is not list or len(payload["updates"]) > 4
+        keys = set(payload) - ({'current'} if contract in {'cognitive-chain-v59', 'cognitive-chain-v60', 'cognitive-chain-v66', 'cognitive-chain-v67'} else set())
+        if (output_type != "cognitive_step" or keys != {"type", "updates", "next"}
+                or ('current' in payload and (type(payload['current']) is not list
+                    or any(type(ref) is not str for ref in payload['current'])
+                    or len(set(payload['current'])) != len(payload['current'])))
+                or type(payload["updates"]) is not list or len(payload["updates"]) > max_updates
                 or any(type(update) is not dict for update in payload["updates"])
                 or type(payload["next"]) is not dict):
             return ActivationFailure("invalid_model_output")
-        return _parse_output(_json_message(payload["next"]), compute=compute)
+        return _parse_output(_json_message(payload["next"]), compute=compute, contract=contract)
     if cognitive and output_type != "capability_request":
         if (
             output_type != "cognitive_commit"
@@ -695,7 +696,7 @@ def _parse_output(
         if (
             not isinstance(text, str)
             or not text.strip()
-            or len(text) > MAX_DIRECTIVE_CHARS
+            or len(text) > directive_limit(contract)
         ):
             return ActivationFailure("invalid_model_output")
         return Directive(text.strip())
@@ -712,6 +713,14 @@ def _parse_output(
         return DecisionIntent(intent.strip())
     if output_type == "capability_request":
         capability = payload.get("capability")
+        if capability in {"read_evidence", "analyze_world_model"}:
+            from Mind.trace import _validate_capability_request
+            request = {key: value for key, value in payload.items() if key != "type"}
+            try:
+                _validate_capability_request(request, contract=contract)
+            except (TypeError, ValueError):
+                return ActivationFailure("invalid_model_output")
+            return _CapabilityRequest(capability, model_request={key: value for key, value in request.items() if key != "capability"})
         if capability == "evaluate_model" and compute:
             if (set(payload) != {"type", "capability", "source", "probe_ref"}
                     or not _valid_normalized_text(payload["probe_ref"], 128)
@@ -788,6 +797,7 @@ def _memory_observation(
 
 def _execution_observation(
     view: object,
+    cognitive_context=None,
 ) -> dict[str, object] | ActivationFailure:
     if type(view) is not ExecutionObservation:
         return ActivationFailure("invalid_execution_observation")
@@ -797,7 +807,7 @@ def _execution_observation(
     recent_outcome = view.recent_outcome
     failure = view.failure
     fields = (
-        (goal, MAX_GOAL_CHARS, False),
+        (goal, execution_view_limits(cognitive_context)[0], False),
         (status, MAX_STATUS_CHARS, False),
         (recent_outcome, MAX_OUTCOME_CHARS, True),
         (failure, MAX_FAILURE_CHARS, True),
@@ -818,7 +828,7 @@ def _execution_observation(
         "recent_outcome": recent_outcome,
         "status": status,
     }
-    if len(_json_message(observation)) > MAX_OBSERVATION_CHARS:
+    if len(_json_message(observation)) > execution_view_limits(cognitive_context)[1]:
         return ActivationFailure("observation_too_large")
     return observation
 
@@ -934,14 +944,18 @@ def _reject_json_constant(_: str) -> object:
     raise ValueError("non-standard JSON constant")
 
 
-def _valid_activation(activation: object) -> bool:
+def _valid_activation(activation: object, cognitive_context=None) -> bool:
     if not isinstance(activation, ActivationInput):
         return False
     fields = (
         (activation.trigger, MAX_TRIGGER_CHARS),
-        (activation.execution_goal_snapshot, MAX_GOAL_CHARS),
-        (activation.execution_status, MAX_STATUS_CHARS),
+        (activation.execution_goal_snapshot, execution_view_limits(cognitive_context)[0]),
     )
+    if isinstance(cognitive_context, dict) and "execution_ref" in cognitive_context and cognitive_context["execution_ref"] is None:
+        if activation.execution_status is not None:
+            return False
+    else:
+        fields += ((activation.execution_status, MAX_STATUS_CHARS),)
     return all(
         isinstance(value, str) and bool(value.strip()) and len(value) <= limit
         for value, limit in fields
