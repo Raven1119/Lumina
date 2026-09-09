@@ -253,6 +253,15 @@ class Execution:
         return {key: snapshot.get(key) for key in
                 ('execution_ref', 'decision', 'state_version', 'status', 'files')}
 
+    def outcome_identity(self, snapshot):
+        position = [self.target(snapshot), snapshot['request_event']]
+        if snapshot['execution_ref'] is None:
+            # Without an Actor checkpoint, accepted reviews distinguish later
+            # changes back to old content from retries of the pending review.
+            review = self.state['last_reviewed']
+            position.append(review['activity_id'] if review else None)
+        return fingerprint(position)
+
     def handle(self, event):
         if event.target != 'execution' or event.source not in {'mind', 'mind.results'}:
             raise ValueError('execution_event_authority_conflict')
@@ -288,7 +297,8 @@ class Execution:
                     raise ValueError('prediction_watch_bound')
                 state = self.run_state()
                 self.state['predictions'].append({**registration,
-                    'execution_ref': state.execution_id if state else None})
+                    'execution_ref': state.execution_id if state else None,
+                    'registered_after_review': (self.state['last_reviewed'] or {}).get('activity_id')})
             emitted = (reply(event, 'prediction.receipt', {'activity_id': data['activity_id'],
                 'ref': data['ref'], 'status': 'watching'}),)
         elif event.kind == 'mind.decision':
@@ -398,7 +408,7 @@ class Execution:
                                   'origin_activity_id': activity_id}, cause)
         if not any(item['event_id'] == event.event_id for item in self.state['outbox']):
             self.state['outbox'].append(event.document())
-        outcome = fingerprint([self.target(snapshot), snapshot['request_event']])
+        outcome = self.outcome_identity(snapshot)
         if outcome not in self.state['announced']:
             self.state['announced'].append(outcome)
 
@@ -465,15 +475,24 @@ class Execution:
         if self.state['outbox']:
             return tuple(Event(**x) for x in self.state['outbox'])
         state = self.run_state()
-        if state is None:
+        if state is None and not self.state['predictions']:
             return ()
         snapshot = self.capture()
-        requests = [item for item in self.actor.cognitive_requests() if item[0] not in self.state['handled_requests']]
-        changed_predictions = [p for p in self.state['predictions'] if self.observation_ref(p, snapshot['files'])
-                               != p.get('reviewed_source', p['before_observation_ref'])]
-        dependencies = self.dependencies(snapshot['files'])
+        requests = ([item for item in self.actor.cognitive_requests()
+                     if item[0] not in self.state['handled_requests']] if self.actor else [])
         review = self.state['last_reviewed']
-        same_files = review and review['execution_ref'] == state.execution_id and review['files'] == snapshot['files']
+        changed_predictions = []
+        for prediction in self.state['predictions']:
+            # A review after registration records notification even if the body
+            # stayed unread. It does not acknowledge the prediction comparison.
+            notified = (state is None and review
+                        and review['activity_id'] != prediction.get('registered_after_review'))
+            previous = (self.observation_ref(prediction, review['files']) if notified
+                        else prediction.get('reviewed_source', prediction['before_observation_ref']))
+            if self.observation_ref(prediction, snapshot['files']) != previous:
+                changed_predictions.append(prediction)
+        dependencies = self.dependencies(snapshot['files'])
+        same_files = review and review['execution_ref'] == snapshot['execution_ref'] and review['files'] == snapshot['files']
         reason = None
         if requests:
             reason = 'Execution explicitly requests high-level judgment; its question is an attributed actor judgment.'
@@ -481,9 +500,9 @@ class Execution:
             reason = 'A declared prediction observation changed. Check its source, action and conditions before comparing.'
         elif self.state['stop_reason'] == 'feedback_budget_reserved' and any(dependencies):
             reason = 'Execution yielded its remaining allocation for pending feedback; budget exhaustion proves no business conclusion.'
-        elif self.actor.completion_review_pending() and any(dependencies):
+        elif self.actor and self.actor.completion_review_pending() and any(dependencies):
             reason = 'Execution proposed completion; outstanding guidance or computation results require business-result feedback.'
-        elif state.status in {'waiting', 'completed', 'failed'} and (any(dependencies) or not same_files):
+        elif state and state.status in {'waiting', 'completed', 'failed'} and (any(dependencies) or not same_files):
             reason = 'Execution reached a significant result or outside wait; assess current business evidence and remaining conditions.'
         if reason is None:
             self.save()
@@ -491,7 +510,7 @@ class Execution:
         # Several mechanical triggers may describe the same committed outcome.
         # Publishing its request must not enqueue a second review merely because
         # the next poll now notices its pending prediction comparison instead.
-        identity = fingerprint([self.target(snapshot), snapshot['request_event']])
+        identity = self.outcome_identity(snapshot)
         if identity in self.state['announced']:
             self.save()
             return ()

@@ -38,6 +38,18 @@ An exact repeated start is idempotent; a conflicting task/workspace is rejected.
 Later messages reach the same Mind before action, regardless of Execution's
 current wait status. Only an actual matching event satisfies an outside wait.
 
+Each later message/event is a new submission by default, even when its text
+matches an earlier one. To retry a transport submission, supply the same
+`--submission-id` on its original invocation and retry:
+
+```powershell
+.venv/Scripts/python.exe -m Mind resume --state .mind-state/task1 --message "Continue." --submission-id click-1
+```
+
+A second intentional "Continue." uses a new identity (or omits the flag).
+Reusing an identity with changed text/event type is rejected. This transport
+identity does not restart an already handled cognitive activity or action.
+
 No pending information means quiet status/resume with no model calls.
 To explicitly retry a failed cognitive activity after addressing its cause:
 
@@ -124,6 +136,14 @@ decides what agreement/divergence means. Missing observations remain unverified,
 different conditions are not applicable, unmappable quantities incomparable.
 Unretrieved observation bodies are explicitly unread, not absent.
 Only declared final observables are compared, not the whole trajectory.
+Observation watching does not require an Execution Run. A prediction followed
+by NoChange remains registered. A new watch first uses its own registration
+baseline, not a snapshot from an earlier unrelated review. When an external
+observation appears or changes,
+a foreground resume returns that evidence to the same Mind. Returning to a
+previously seen value after a completed reassessment is a new change, not a
+retry of the old notification. An unchanged observation stays quiet without
+a model call.
 
 ## Durability and budgets
 

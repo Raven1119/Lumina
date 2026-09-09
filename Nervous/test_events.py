@@ -162,3 +162,46 @@ def test_data_and_history_bounds_keep_old_delivery_receipts(tmp_path):
         for invalid in (0, 33, True):
             with pytest.raises(ValueError, match="invalid_pending_limit"):
                 nervous.pending("mind", invalid)
+
+
+@pytest.mark.parametrize('completed', [False, True])
+def test_equal_text_is_a_new_submission_even_after_restart(tmp_path, completed):
+    with NervousOrgan(tmp_path) as nervous:
+        first = nervous.submit('Continue.')
+        if completed:
+            nervous.complete(first.event_id, 'mind')
+    with NervousOrgan(tmp_path) as nervous:
+        second = nervous.submit('Continue.')
+        assert second.event_id != first.event_id
+        expected = [second] if completed else [first, second]
+        assert list(nervous.pending('mind')) == expected
+        for item in expected:
+            assert nervous.complete(item.event_id, 'mind')
+        assert nervous.pending('mind') == ()
+
+
+def test_submission_identity_retries_survive_ack_and_lost_response(tmp_path, monkeypatch):
+    with NervousOrgan(tmp_path) as nervous:
+        real_save = nervous._save
+        def lose_reply(state):
+            real_save(state)
+            raise OSError('simulated lost submission response')
+        with monkeypatch.context() as patch:
+            patch.setattr(nervous, '_save', lose_reply)
+            with pytest.raises(OSError, match='lost submission response'):
+                nervous.submit('Continue.', submission_id='click-1')
+        first, = nervous.pending('mind')
+        assert nervous.submit('Continue.', submission_id='click-1') == first
+        assert nervous.pending('mind') == (first,)
+        nervous.complete(first.event_id, 'mind')
+    with NervousOrgan(tmp_path) as nervous:
+        second = nervous.submit('Continue.', submission_id='click-2')
+        before = (tmp_path / 'events.json').read_bytes()
+        assert nervous.submit('Continue.', submission_id='click-1') == first
+        assert nervous.pending('mind') == (second,)
+        for text, kind in [('Different input.', 'USER_MESSAGE'), ('Continue.', 'INPUT_READY')]:
+            with pytest.raises(ValueError, match='event_identity_conflict'):
+                nervous.submit(text, kind, submission_id='click-1')
+        assert (tmp_path / 'events.json').read_bytes() == before
+        assert nervous.complete(second.event_id, 'mind')
+        assert nervous.pending('mind') == ()

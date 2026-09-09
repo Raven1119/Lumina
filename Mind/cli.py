@@ -26,6 +26,7 @@ def main(argv=None):
     event.add_argument('--event', help='The actual type of a new owner event; matching waits may resume.')
     event.add_argument('--retry-review', action='store_true', help='Explicitly reassess a failed cognitive activity with current evidence.')
     parser.add_argument('--data', default='')
+    parser.add_argument('--submission-id', help='Reuse only when retrying the same message/event submission.')
     parser.add_argument('--max-calls', type=int, default=40)
     parser.add_argument('--max-output-tokens', type=int)
     parser.add_argument('--max-request-bytes', type=int)
@@ -50,6 +51,8 @@ def main(argv=None):
         parser.error('new events and budget extensions require resume')
     if args.data and not args.event:
         parser.error('--data requires --event')
+    if args.submission_id is not None and args.message is None and not args.event:
+        parser.error('--submission-id requires --message or --event')
     if (args.add_output_tokens is not None or args.add_request_bytes is not None) and args.add_calls is None:
         parser.error('added allocations require --add-calls')
     limits = {'calls': args.max_calls,
@@ -83,7 +86,7 @@ def main(argv=None):
                                   request_bytes=args.add_request_bytes)
         if args.message is not None or args.event:
             nervous.submit(args.message if args.message is not None else args.data,
-                           event_type=args.event or 'USER_MESSAGE')
+                           event_type=args.event or 'USER_MESSAGE', submission_id=args.submission_id)
         if args.retry_review:
             nervous.retry_cognition(mind.retry_activity())
         result = (nervous.status(mind, execution) if args.action == 'status'

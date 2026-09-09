@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -257,21 +258,18 @@ class NervousOrgan:
             self._save(state)
             return True
 
-    def submit(self, text: str, event_type: str = "USER_MESSAGE") -> Event:
-        """Persist an original user input; a retry of the latest input is identical."""
+    def submit(self, text: str, event_type: str = "USER_MESSAGE", *,
+               submission_id: str | None = None) -> Event:
+        """New identity by default; callers reuse submission_id for transport retries."""
         if type(text) is not str or not text.strip() or len(text) > 4000:
             raise ValueError("invalid_user_input")
         _text(event_type)
-        with self._lock:
-            state = self._load()
-            previous = [e for e in state["events"] if e["source"] == "user"]
-            data = {"event_type": event_type, "text": text}
-            if previous and previous[-1]["data"] == data:
-                return Event(**previous[-1])
-            event = Event(f"user-{len(previous)+1:06d}", "user", "mind", "user.input", data)
-            self._add(state, event)
-            self._save(state)
-            return event
+        identity = uuid.uuid4().hex if submission_id is None else submission_id
+        _text(identity)
+        event = Event('user-submission-' + _digest(identity), 'user', 'mind', 'user.input',
+                      {'event_type': event_type, 'text': text})
+        self.publish(event)
+        return event
 
     def initialize(self, *, goal=None, workspace=None):
         """Retain immutable launch input before constructing its receiving organs.

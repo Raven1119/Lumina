@@ -89,3 +89,38 @@ def test_explicit_cli_retry_retains_failure_and_closes_obligation(tmp_path, monk
     assert any(activity.get('retry_of') for activity in saved['activities'].values())
     assert cli.main(['resume', '--state', str(state)]) == 0
     assert calls == ['mind', 'mind']
+
+
+@pytest.mark.parametrize('identified', [False, True])
+@pytest.mark.parametrize('input_args', [['--message', 'Continue.'], ['--event', 'INPUT_READY', '--data', 'Continue.']])
+def test_repeated_cli_text_reaches_mind_but_submission_retry_does_not(tmp_path, monkeypatch, capsys, identified, input_args):
+    workspace, state = tmp_path / 'work', tmp_path / 'private'
+    workspace.mkdir()
+    wires = []
+    original_provider = ProviderCalls.__init__
+    def provider(self, directory, limits, transport=None):
+        def scripted(role, wire):
+            assert role == 'mind'
+            wires.append(wire)
+            return native_nochange()
+        original_provider(self, directory, limits, scripted)
+    monkeypatch.setattr(ProviderCalls, '__init__', provider)
+    assert cli.main(['start', '--state', str(state), '--workspace', str(workspace),
+                     '--goal', 'Review the current observation without workspace actions.']) == 0
+    capsys.readouterr()
+    resume = ['resume', '--state', str(state), *input_args]
+    first_key = ['--submission-id', 'click-1'] if identified else []
+    second_key = ['--submission-id', 'click-2'] if identified else []
+    assert cli.main(resume + first_key) == 0
+    assert json.loads(capsys.readouterr().out)['mind']['revision'] == 2
+    (workspace / 'observation.txt').write_text('Observed revision 2.', encoding='utf-8')
+    if identified:
+        assert cli.main(resume + first_key) == 0
+        assert json.loads(capsys.readouterr().out)['mind']['revision'] == 2
+        assert len(wires) == 2
+    assert cli.main(resume + second_key) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['mind']['revision'] == 3 and not any(result['pending'].values())
+    assert 'Observed revision 2.' in json.dumps(wires[-1])
+    assert cli.main(['resume', '--state', str(state)]) == 0
+    assert len(wires) == 3

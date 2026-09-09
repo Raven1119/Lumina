@@ -16,6 +16,7 @@ import pytest
 
 from Execution.model import EXECUTION_PROTOCOL
 from Execution.runtime import Execution
+from Mind import world_model
 from Mind.organ import MindOrgan
 from Nervous.organ import NervousOrgan
 from Nervous.storage import canonical
@@ -90,6 +91,153 @@ def test_fresh_nochange_has_no_action_and_quiet_restart(tmp_path):
         assert result['execution']['execution_ref'] is None
         assert not any(result['pending'].values())
     assert calls == ['mind']
+
+
+@pytest.mark.parametrize('observation_exists', [False, True])
+@pytest.mark.parametrize('unread_observation', [False, True])
+@pytest.mark.parametrize('prior_review', [False, True])
+def test_prediction_without_execution_run_reassesses_external_change_after_restart(
+        tmp_path, monkeypatch, observation_exists, unread_observation, prior_review):
+    workspace, directory = tmp_path / 'workspace', tmp_path / 'state'
+    workspace.mkdir()
+    rule = 'The external producer adds three bytes to the supplied twelve-byte input.'
+    (workspace / 'rule.txt').write_text(rule, encoding='utf-8')
+    observation_path = workspace / 'observation.json'
+    observation = {'extra': 3, 'input_bytes': 12, 'observation_object': 'external artifact',
+                   'observation_time': 'after generation', 'bytes': 15}
+    if unread_observation:
+        observation['detail'] = 'x' * 26000
+    if prior_review:
+        observation_path.write_text(json.dumps({**observation, 'bytes': 6}), encoding='utf-8')
+    elif observation_exists:
+        observation_path.write_text(json.dumps({**observation, 'bytes': 9}), encoding='utf-8')
+    goal = 'Predict the external artifact size and review later observations; no workspace action is authorized.'
+    counts, computations, observed_refs = Counter(), [], []
+
+    def compute(*args, **kwargs):
+        computations.append(args)
+        return json.dumps({'quantities': {'bytes': 15}})
+
+    monkeypatch.setattr(world_model, '_compute', compute)
+
+    def transport(role, wire):
+        counts[role] += 1
+        if role == 'mind':
+            records = source_records(wire)
+            if prior_review and counts[role] == 1:
+                return native('cognitive_step', {'type': 'cognitive_step', 'updates': [],
+                                                'next': {'type': 'no_change'}})
+            if counts[role] == 1 + prior_review:
+                source = next(x for x in records if x['text'] == rule)
+                return native('analyze_world_model', {'refs': [source['ref']], 'model_ref': '',
+                    'observation_file': 'observation.json',
+                    'question': 'Predict the external artifact size under the supplied rule and declare a later observation check.'})
+            if counts[role] >= 3 + prior_review:
+                assert counts[role] == 2 + prior_review + len(observed_refs), 'An unchanged observation must not repeat the review.'
+                if unread_observation:
+                    assert 'observation_source_not_read' in canonical(wire)
+                    assert all(x['text'] != json.dumps(observation) for x in records)
+                else:
+                    actual = next(x for x in records if x['text'] == json.dumps(observation))
+                    assert actual['ref'] == observed_refs[-1]
+            else:
+                assert counts[role] == 2 + prior_review
+            return native('cognitive_step', {'type': 'cognitive_step', 'updates': [],
+                                            'next': {'type': 'no_change'}})
+        assert role == 'builder', 'No execution model call is authorized by NoChange.'
+        if counts[role] == 1:
+            return native('compute', {
+                'source': 'def predict(inputs, action): return {"bytes": inputs["bytes"] + action["extra"]}',
+                'inputs': {'bytes': 12}, 'action': {'extra': 3}, 'observation_file': 'observation.json',
+                'check_spec': {'conditions': {'input_bytes': 12}, 'object': 'external artifact',
+                    'when': 'after generation',
+                    'quantities': {'bytes': {'meaning': 'complete artifact size', 'unit': 'byte'}}}})
+        assert counts[role] == 2
+        result = json.loads(wire['messages'][-1]['content'][0]['content'])
+        return native('report', {'run_ref': result['run_ref'], 'answer': 'The conditional artifact size is fifteen bytes.',
+            'assumptions': 'The external producer uses the supplied input and rule.',
+            'unknowns': 'A later observation is needed.'})
+
+    stack, nervous, mind, execution = start_organs(directory, workspace, transport, goal)
+    with stack:
+        nervous.submit(goal, 'USER_GOAL')
+        if prior_review:
+            earlier = nervous.run(mind, execution)
+            assert earlier['mind']['revision'] == 1 and counts == {'mind': 1}
+            assert not execution.state['predictions'] and execution.actor is None
+            if observation_exists:
+                observation_path.write_text(json.dumps({**observation, 'bytes': 9}), encoding='utf-8')
+            else:
+                observation_path.unlink()
+            nervous.submit('The observation baseline has changed. Predict the later external artifact size.')
+        first = nervous.run(mind, execution)
+        assert counts == {'mind': 2 + prior_review, 'builder': 2}, 'Registering a watch must not announce an unchanged baseline.'
+        assert first['mind']['revision'] == 1 + prior_review and not first['mind']['unresolved']
+        assert first['execution']['execution_ref'] is None and execution.actor is None
+        assert not any(first['pending'].values())
+        assert len(computations) == 1
+        prediction = execution.state['predictions'][0]
+        prediction_ref = prediction['ref']
+        assert prediction_ref in mind.state['predictions'] and prediction['execution_ref'] is None
+        assert bool(prediction['before_observation_ref']) == observation_exists
+        assert not execution.state['deliveries']
+
+    resumed, event_ids, review_ids = first, set(), set()
+    for index, quantity in enumerate((15, 12, 15, 12)):
+        stack, nervous, mind, execution = start_organs(directory, None, transport)
+        with stack:
+            unchanged = nervous.run(mind, execution)
+            assert unchanged['cost'] == resumed['cost']
+            assert counts == {'mind': 2 + prior_review + index, 'builder': 2}
+            observation['bytes'] = quantity
+            observation_path.write_text(json.dumps(observation), encoding='utf-8')
+            events = execution.poll()
+            assert len(events) == 1, 'Every later observation change needs a new review, even when old content returns.'
+            assert execution.poll() == events
+            event_ids.add(events[0].event_id)
+            observed_refs.append(next(x['ref'] for x in events[0].data['snapshot']['files']
+                                      if x['file'] == 'observation.json'))
+
+        stack, nervous, mind, execution = start_organs(directory, None, transport)
+        with stack:
+            assert execution.poll() == events  # The unpublished outbox survives restart.
+            nervous.publish(events[0])
+            execution.published(events[0].event_id)
+            assert execution.poll() == ()  # Pending transport must not duplicate its review.
+            resumed = nervous.run(mind, execution)
+            assert counts == {'mind': 3 + prior_review + index, 'builder': 2}, resumed
+            assert resumed['mind']['revision'] == 2 + prior_review + index and not resumed['mind']['unresolved']
+            assert resumed['execution']['execution_ref'] is None and execution.actor is None
+            assert not any(resumed['pending'].values())
+            if unread_observation:
+                assert 'reviewed_source' not in mind.state['predictions'][prediction_ref]
+                assert 'reviewed_source' not in execution.state['predictions'][0]
+                assert observed_refs[-1] not in mind.state['sources']
+                assert resumed['execution']['feedback_pending']['predictions'] == [prediction_ref]
+            else:
+                assert mind.state['predictions'][prediction_ref]['reviewed_source'] == observed_refs[-1]
+                assert execution.state['predictions'][0]['reviewed_source'] == observed_refs[-1]
+            review_ids.add(execution.state['last_reviewed']['activity_id'])
+            comparisons = [json.loads(mind.source_record(ref)['text']) for ref in mind.state['sources']
+                           if mind.source_info(ref).get('label') == 'prediction comparison']
+            comparison = next(x for x in comparisons if x['reality_source'] == observed_refs[-1])
+            if unread_observation:
+                assert comparison['alignment']['reason'] == 'observation_source_not_read'
+                assert comparison['alignment']['comparison'] is None
+            else:
+                assert comparison['alignment']['comparison']['status'] == ('matched' if quantity == 15 else 'mismatch')
+            assert len(computations) == 1 and not execution.state['deliveries']
+            settled = canonical(mind.status())
+            assert nervous.run(mind, execution)['cost'] == resumed['cost']
+
+    stack, nervous, mind, execution = start_organs(directory, None, transport)
+    with stack:
+        quiet = nervous.run(mind, execution)
+        assert quiet['cost'] == resumed['cost'] and canonical(mind.status()) == settled
+        assert not any(quiet['pending'].values()) and not execution.state['outbox']
+    assert counts == {'mind': 6 + prior_review, 'builder': 2} and len(computations) == 1
+    assert len(event_ids) == len(review_ids) == 4
+    assert observed_refs[0] == observed_refs[2] != observed_refs[1] == observed_refs[3]
 
 
 @pytest.mark.skipif(os.environ.get('LUMINA_TEST_CORE_DOCKER') != '1',

@@ -28,6 +28,13 @@ requires the actual recipient; every emitted event must name that recipient
 as source and the consumed event as cause. Repeating the same completion is
 idempotent; a different emission set is rejected.
 
+User submission identity is separate from text. `submit(text, event_type,
+submission_id=...)` uses the caller's identity for an idempotent transport retry;
+without an identity every invocation creates a new event. Identical text in two
+submissions is still two events. Reusing an identity with different text/type
+is rejected, including after completion and restart. Existing event publication
+and receipts provide this guarantee; there is no separate deduplication store.
+
 An organ persists its handling receipt before Nervous acknowledges it.
 Publication after a crash repeats the same event, not the action. Execution
 owns its outbound event cursor; Mind owns pending cognitive continuations.
@@ -49,7 +56,10 @@ owns its outbound event cursor; Mind owns pending cognitive continuations.
 
 Ordinary action results stay inside Execution. Its advance returns at a known
 safe boundary; Nervous can service pending work then continue. This handoff is
-not a business Wait or a fabricated owner event. With no pending information
+not a business Wait or a fabricated owner event. Declared observation watches
+also run when no Execution Actor/Run exists: NoChange does not cancel a forecast.
+A later foreground resume can publish changed observation evidence to Mind.
+With no pending information
 and an externally waiting/completed Execution, the loop is quiet.
 
 ## Recovery and bounds

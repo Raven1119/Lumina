@@ -48,7 +48,7 @@ initialization and stale-guidance continuation gaps; targeted recovery regressio
 cover the repaired paths. Explicit CLI retry preserves failures and cost while
 reassessing current evidence; known read/analysis errors no longer wedge delivery.
 
-Final validation on 2026-09-09:
+Core refactor validation on 2026-09-09 (commit `1f893d7`):
 
 - Maintained default suite: **641 passed, 29 skipped**. Optional/environment tests
   remain opt-in; the two upstream MAGMA deprecation warnings are unchanged.
@@ -61,6 +61,34 @@ The full suite uses a fresh temporary directory outside the checkout: Recall's
 sandbox tests intentionally reject repository paths. An initial in-repository
 test directory caused six such refusals; moving test state fixed the setup
 without changing Recall's safety policy. No real model/provider calls were made.
+
+## Event semantics follow-up
+
+The post-refactor source review found two event-delivery defects. User input
+was deduplicated by text/type rather than submission identity; a second
+intentional identical message could disappear. Submission now has a fresh
+identity by default; explicit `submission_id` / CLI `--submission-id` reuses
+only the same transport submission, with immutable content checked by Nervous.
+
+Prediction watching had also returned early without an Execution Run, despite
+accepting the watch. Registered external observations now remain monitored on
+foreground resume after NoChange, even without an Actor. Subsequent review
+also caught A-B-A observations being mistaken for an old notification: without
+a Run, the latest accepted review now distinguishes successive observation
+checks while a pending notification retains the same identity. Each new watch
+retains its own registration baseline until a later accepted review covers it;
+an earlier review cannot manufacture a change for that watch. Recovery and delivery
+remain owned by the existing organs; no background scheduler is introduced.
+
+Event-fix validation: **323 passed, 5 skipped** in the full Mind/Nervous/Execution
+suite. Regressions cover completed/pending and lost-response submission retries,
+both CLI input forms, and eight no-Run observation scenarios including repeated
+values, registration after an earlier review, unread sources and restart.
+Standards and Spec review have no remaining findings. Real provider calls: zero;
+new prediction tests inject both model responses and calculation output.
+The whole-repository rerun did not start because automatic execution approval
+timed out twice; Docker opt-ins were not rerun. The earlier refactor counts above
+remain historical evidence, not a claim of a new full-tree validation.
 
 ## Scope and limits
 
