@@ -254,13 +254,12 @@ class Execution:
                 ('execution_ref', 'decision', 'state_version', 'status', 'files')}
 
     def outcome_identity(self, snapshot):
-        position = [self.target(snapshot), snapshot['request_event']]
-        if snapshot['execution_ref'] is None:
-            # Without an Actor checkpoint, accepted reviews distinguish later
-            # changes back to old content from retries of the pending review.
-            review = self.state['last_reviewed']
-            position.append(review['activity_id'] if review else None)
-        return fingerprint(position)
+        # A waiting Actor can keep the same checkpoint across many reviews.
+        # The accepted review distinguishes a later return to old content from
+        # retries of the pending notification, with or without an Actor.
+        review = self.state['last_reviewed']
+        return fingerprint([self.target(snapshot), snapshot['request_event'],
+                            review['activity_id'] if review else None])
 
     def handle(self, event):
         if event.target != 'execution' or event.source not in {'mind', 'mind.results'}:
@@ -485,7 +484,7 @@ class Execution:
         for prediction in self.state['predictions']:
             # A review after registration records notification even if the body
             # stayed unread. It does not acknowledge the prediction comparison.
-            notified = (state is None and review
+            notified = (review
                         and review['activity_id'] != prediction.get('registered_after_review'))
             previous = (self.observation_ref(prediction, review['files']) if notified
                         else prediction.get('reviewed_source', prediction['before_observation_ref']))
@@ -493,6 +492,12 @@ class Execution:
                 changed_predictions.append(prediction)
         dependencies = self.dependencies(snapshot['files'])
         same_files = review and review['execution_ref'] == snapshot['execution_ref'] and review['files'] == snapshot['files']
+        if (not requests and not changed_predictions and review
+                and self.target(snapshot) == self.target(review)):
+            # Unread comparisons remain pending, but an accepted review already
+            # handled this notification. Waiting alone is not new evidence.
+            self.save()
+            return ()
         reason = None
         if requests:
             reason = 'Execution explicitly requests high-level judgment; its question is an attributed actor judgment.'

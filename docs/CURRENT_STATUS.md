@@ -80,7 +80,7 @@ retains its own registration baseline until a later accepted review covers it;
 an earlier review cannot manufacture a change for that watch. Recovery and delivery
 remain owned by the existing organs; no background scheduler is introduced.
 
-Event-fix validation: **323 passed, 5 skipped** in the full Mind/Nervous/Execution
+Event-fix validation at `5757df7`: **323 passed, 5 skipped** in the full Mind/Nervous/Execution
 suite. Regressions cover completed/pending and lost-response submission retries,
 both CLI input forms, and eight no-Run observation scenarios including repeated
 values, registration after an earlier review, unread sources and restart.
@@ -89,6 +89,26 @@ new prediction tests inject both model responses and calculation output.
 The whole-repository rerun did not start because automatic execution approval
 timed out twice; Docker opt-ins were not rerun. The earlier refactor counts above
 remain historical evidence, not a claim of a new full-tree validation.
+
+The next source review found that the A-B-A fix still excluded an existing Run
+at an unchanged waiting checkpoint. The runtime now uses the latest accepted
+review to distinguish later observation changes both with and without a Run.
+An accepted review also closes notification of that exact checkpoint without
+falsely acknowledging unread prediction comparisons. Original pending events
+keep their identities through delivery retries and restart. No transport store,
+scheduler or cognitive authority was added.
+
+Fixed-checkpoint validation: **331 passed, 5 skipped** in Mind/Nervous/Execution.
+Before the repair, all eight added waiting-Run variants reproduced the lost
+notification, while the eight no-Run variants passed. The expanded regression
+checks A-B-A-B, an unchanged Actor checkpoint and deliveries, unread obligations,
+publication retries, restart and quiet settled resumes. The final addition of
+restart after publication but before handling passed all **16** focused cases
+(one Docker opt-in skipped, one unrelated test deselected). Standards and Spec
+review found no remaining issues in this diff. Real provider calls: zero;
+responses and calculation output are injected. Whole-repository and Docker
+checks were not rerun for this narrow repair. This is scoped regression evidence,
+not a claim that the entire cognitive loop has no remaining defects.
 
 ## Scope and limits
 

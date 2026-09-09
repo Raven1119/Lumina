@@ -93,11 +93,12 @@ def test_fresh_nochange_has_no_action_and_quiet_restart(tmp_path):
     assert calls == ['mind']
 
 
+@pytest.mark.parametrize('waiting_run', [False, True])
 @pytest.mark.parametrize('observation_exists', [False, True])
 @pytest.mark.parametrize('unread_observation', [False, True])
 @pytest.mark.parametrize('prior_review', [False, True])
-def test_prediction_without_execution_run_reassesses_external_change_after_restart(
-        tmp_path, monkeypatch, observation_exists, unread_observation, prior_review):
+def test_prediction_reassesses_external_change_after_restart(
+        tmp_path, monkeypatch, observation_exists, unread_observation, prior_review, waiting_run):
     workspace, directory = tmp_path / 'workspace', tmp_path / 'state'
     workspace.mkdir()
     rule = 'The external producer adds three bytes to the supplied twelve-byte input.'
@@ -112,6 +113,12 @@ def test_prediction_without_execution_run_reassesses_external_change_after_resta
     elif observation_exists:
         observation_path.write_text(json.dumps({**observation, 'bytes': 9}), encoding='utf-8')
     goal = 'Predict the external artifact size and review later observations; no workspace action is authorized.'
+    if waiting_run:
+        goal = 'Predict the external artifact size, wait for authorization to act, and review later observations.'
+    initial_mind_calls = 2 + prior_review + waiting_run
+    expected_counts = {'mind': initial_mind_calls, 'builder': 2}
+    if waiting_run:
+        expected_counts['execution'] = 1
     counts, computations, observed_refs = Counter(), [], []
 
     def compute(*args, **kwargs):
@@ -132,8 +139,8 @@ def test_prediction_without_execution_run_reassesses_external_change_after_resta
                 return native('analyze_world_model', {'refs': [source['ref']], 'model_ref': '',
                     'observation_file': 'observation.json',
                     'question': 'Predict the external artifact size under the supplied rule and declare a later observation check.'})
-            if counts[role] >= 3 + prior_review:
-                assert counts[role] == 2 + prior_review + len(observed_refs), 'An unchanged observation must not repeat the review.'
+            if counts[role] > initial_mind_calls:
+                assert counts[role] == initial_mind_calls + len(observed_refs), 'An unchanged observation must not repeat the review.'
                 if unread_observation:
                     assert 'observation_source_not_read' in canonical(wire)
                     assert all(x['text'] != json.dumps(observation) for x in records)
@@ -141,10 +148,16 @@ def test_prediction_without_execution_run_reassesses_external_change_after_resta
                     actual = next(x for x in records if x['text'] == json.dumps(observation))
                     assert actual['ref'] == observed_refs[-1]
             else:
-                assert counts[role] == 2 + prior_review
+                assert counts[role] in (2 + prior_review, initial_mind_calls)
+            direction = {'type': 'no_change'}
+            if waiting_run and counts[role] == 2 + prior_review:
+                direction = {'type': 'directive', 'text': 'Await authorization to act; retain uncertainty about the external observation.'}
             return native('cognitive_step', {'type': 'cognitive_step', 'updates': [],
-                                            'next': {'type': 'no_change'}})
-        assert role == 'builder', 'No execution model call is authorized by NoChange.'
+                                            'next': direction})
+        if role == 'execution':
+            assert waiting_run and counts[role] == 1, 'Observation reviews must leave the waiting checkpoint unchanged.'
+            return native('wait', {'event_type': 'ACTION_AUTHORIZED'})
+        assert role == 'builder'
         if counts[role] == 1:
             return native('compute', {
                 'source': 'def predict(inputs, action): return {"bytes": inputs["bytes"] + action["extra"]}',
@@ -171,16 +184,21 @@ def test_prediction_without_execution_run_reassesses_external_change_after_resta
                 observation_path.unlink()
             nervous.submit('The observation baseline has changed. Predict the later external artifact size.')
         first = nervous.run(mind, execution)
-        assert counts == {'mind': 2 + prior_review, 'builder': 2}, 'Registering a watch must not announce an unchanged baseline.'
-        assert first['mind']['revision'] == 1 + prior_review and not first['mind']['unresolved']
-        assert first['execution']['execution_ref'] is None and execution.actor is None
+        assert counts == expected_counts, 'Registering a watch must not announce an unchanged baseline.'
+        assert first['mind']['revision'] == initial_mind_calls - 1 and not first['mind']['unresolved']
+        assert first['execution']['status'] == ('waiting' if waiting_run else 'not_started')
+        checkpoint = {key: execution.capture()[key] for key in
+                      ('execution_ref', 'decision', 'state_version', 'status')}
+        assert bool(checkpoint['execution_ref']) == waiting_run
         assert not any(first['pending'].values())
         assert len(computations) == 1
         prediction = execution.state['predictions'][0]
         prediction_ref = prediction['ref']
-        assert prediction_ref in mind.state['predictions'] and prediction['execution_ref'] is None
+        assert prediction_ref in mind.state['predictions']
+        assert prediction['execution_ref'] == checkpoint['execution_ref']
         assert bool(prediction['before_observation_ref']) == observation_exists
-        assert not execution.state['deliveries']
+        deliveries = canonical(execution.state['deliveries'])
+        assert len(execution.state['deliveries']) == int(waiting_run)
 
     resumed, event_ids, review_ids = first, set(), set()
     for index, quantity in enumerate((15, 12, 15, 12)):
@@ -188,7 +206,7 @@ def test_prediction_without_execution_run_reassesses_external_change_after_resta
         with stack:
             unchanged = nervous.run(mind, execution)
             assert unchanged['cost'] == resumed['cost']
-            assert counts == {'mind': 2 + prior_review + index, 'builder': 2}
+            assert counts == {**expected_counts, 'mind': initial_mind_calls + index}
             observation['bytes'] = quantity
             observation_path.write_text(json.dumps(observation), encoding='utf-8')
             events = execution.poll()
@@ -204,14 +222,21 @@ def test_prediction_without_execution_run_reassesses_external_change_after_resta
             nervous.publish(events[0])
             execution.published(events[0].event_id)
             assert execution.poll() == ()  # Pending transport must not duplicate its review.
+
+        stack, nervous, mind, execution = start_organs(directory, None, transport)
+        with stack:
+            assert execution.poll() == ()
+            assert nervous.pending('mind') == events  # Published but unhandled also survives restart.
             resumed = nervous.run(mind, execution)
-            assert counts == {'mind': 3 + prior_review + index, 'builder': 2}, resumed
-            assert resumed['mind']['revision'] == 2 + prior_review + index and not resumed['mind']['unresolved']
-            assert resumed['execution']['execution_ref'] is None and execution.actor is None
+            assert counts == {**expected_counts, 'mind': initial_mind_calls + 1 + index}, resumed
+            assert resumed['mind']['revision'] == initial_mind_calls + index and not resumed['mind']['unresolved']
+            assert {key: execution.capture()[key] for key in checkpoint} == checkpoint
             assert not any(resumed['pending'].values())
             if unread_observation:
-                assert 'reviewed_source' not in mind.state['predictions'][prediction_ref]
-                assert 'reviewed_source' not in execution.state['predictions'][0]
+                # The initial wait may have reviewed an absent observation
+                # (None); the new unread body must never be acknowledged.
+                assert mind.state['predictions'][prediction_ref].get('reviewed_source') is None
+                assert execution.state['predictions'][0].get('reviewed_source') is None
                 assert observed_refs[-1] not in mind.state['sources']
                 assert resumed['execution']['feedback_pending']['predictions'] == [prediction_ref]
             else:
@@ -226,7 +251,8 @@ def test_prediction_without_execution_run_reassesses_external_change_after_resta
                 assert comparison['alignment']['comparison'] is None
             else:
                 assert comparison['alignment']['comparison']['status'] == ('matched' if quantity == 15 else 'mismatch')
-            assert len(computations) == 1 and not execution.state['deliveries']
+            assert len(computations) == 1
+            assert canonical(execution.state['deliveries']) == deliveries
             settled = canonical(mind.status())
             assert nervous.run(mind, execution)['cost'] == resumed['cost']
 
@@ -235,7 +261,7 @@ def test_prediction_without_execution_run_reassesses_external_change_after_resta
         quiet = nervous.run(mind, execution)
         assert quiet['cost'] == resumed['cost'] and canonical(mind.status()) == settled
         assert not any(quiet['pending'].values()) and not execution.state['outbox']
-    assert counts == {'mind': 6 + prior_review, 'builder': 2} and len(computations) == 1
+    assert counts == {**expected_counts, 'mind': initial_mind_calls + 4} and len(computations) == 1
     assert len(event_ids) == len(review_ids) == 4
     assert observed_refs[0] == observed_refs[2] != observed_refs[1] == observed_refs[3]
 

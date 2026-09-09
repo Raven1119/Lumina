@@ -142,8 +142,11 @@ baseline, not a snapshot from an earlier unrelated review. When an external
 observation appears or changes,
 a foreground resume returns that evidence to the same Mind. Returning to a
 previously seen value after a completed reassessment is a new change, not a
-retry of the old notification. An unchanged observation stays quiet without
-a model call.
+retry of the old notification, including when a waiting Run keeps the same
+execution checkpoint. Pending retries retain the original event identity
+across restart. An accepted review of an unchanged checkpoint stays quiet
+without a model call; unread prediction comparisons remain pending and are
+not acknowledged merely because their notification was handled.
 
 ## Durability and budgets
 
