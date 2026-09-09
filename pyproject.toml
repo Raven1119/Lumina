@@ -1,3 +1,3 @@
 [tool.pytest.ini_options]
-testpaths = ["tests", "Execution"]
+testpaths = ["tests", "Execution", "Mind", "Nervous"]
 norecursedirs = [".*", "build", "dist", "node_modules", "venv", "fixtures", "__pycache__"]

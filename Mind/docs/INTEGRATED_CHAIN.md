@@ -1,160 +1,169 @@
-# Standalone Mind—Nervous—Execution chain
+# Mind-Nervous-Execution operating contract
 
-The supported entry is `python -m Mind`. Current routing/input profile is
-`cognitive-chain-v73`; selective cognitive submission remains V67.
-The chain owns one authorized goal and one bounded workspace. Production Chat
-still uses its separate Recall gate; this CLI does not wire Chat or Memory.
+The supported foreground entry is `python -m Mind`. The current core has
+organ-owned state and a single current cognitive/native protocol; it does not
+load old V1-V72 sessions or campaign traces. Production Chat's Recall gate and
+the manual Execution API remain separate.
 
-## Run and recover
+## Setup and use
 
-Run from the repository root with the prepared environment and Docker available.
-The runtime reads `DEEPSEEK_API_KEY` through the existing environment loader.
-Keep the session directory outside the business workspace. Do not mount the
-repository, credentials or development logs into the execution workspace.
+Install the root requirements and provide `DEEPSEEK_API_KEY` through the existing
+environment loader. Docker must be available for workspace actions and isolated
+model computation. Build the small interpreter image if it is not installed:
 
 ```powershell
-.venv/Scripts/python.exe -m Mind start --session .mind-sessions/task1 --workspace <authorized-workspace> --goal-file <goal.txt> --max-calls 40 --max-output-tokens 655360 --max-request-bytes 6000000
-.venv/Scripts/python.exe -m Mind status --session .mind-sessions/task1
-.venv/Scripts/python.exe -m Mind resume --session .mind-sessions/task1
-.venv/Scripts/python.exe -m Mind resume --session .mind-sessions/task1 --message "<actual new information>"
+docker build -t lumina-execution-ipython:d2 Execution/container
+docker pull python@sha256:3b3706a90cb23f04fabb0d255824f9a70ceb46177041898133dd5a35f3a50f0a
 ```
 
-Use a new session name only for a genuinely new task, not to reset a campaign's
-cost. Status and a quiet settled resume do not call a model. Later owner messages
-become Nervous events for the same Mind; they do not require an Execution wait.
-A completed run can have a legally linked successor if owner input and accepted
-Mind guidance warrant further work. The original formal goal remains unchanged.
+The retained interpreter tag identifies an installed image, not an old runtime
+contract. Its Dockerfile pins the Python base and IPython version. Computation
+has no business mount; Execution mounts only the explicitly authorized workspace.
+Neither backend has network access or a host-execution fallback.
 
-After resolving a known failed, quiescent review, use `resume --retry-review`.
-The original failure remains recorded. Unknown dispatched action/provider outcomes
-require reconciliation; repeated sampling is not recovery. Additional explicitly
-authorized quota uses `--add-calls`, `--add-output-tokens` and
-`--add-request-bytes`; historical spend is retained. A depleted budget does not
-prove business completion. See `python -m Mind --help` for optional settings.
+Keep private state, credentials and development logs outside that workspace.
+Use a small task directory, not the whole repository.
 
-## Responsibility and information flow
+```powershell
+.venv/Scripts/python.exe -m Mind start --state .mind-state/task1 --workspace <task-directory> --goal-file <goal.txt> --max-calls 40
+.venv/Scripts/python.exe -m Mind status --state .mind-state/task1
+.venv/Scripts/python.exe -m Mind resume --state .mind-state/task1
+.venv/Scripts/python.exe -m Mind resume --state .mind-state/task1 --message "<actual new information>"
+.venv/Scripts/python.exe -m Mind resume --state .mind-state/task1 --event INPUT_READY --data "<actual evidence>"
+```
+
+The original goal/workspace launch input is retained by Nervous before organ
+construction. Interrupted initialization resumes from those same arguments.
+An exact repeated start is idempotent; a conflicting task/workspace is rejected.
+Later messages reach the same Mind before action, regardless of Execution's
+current wait status. Only an actual matching event satisfies an outside wait.
+
+No pending information means quiet status/resume with no model calls.
+To explicitly retry a failed cognitive activity after addressing its cause:
+
+```powershell
+.venv/Scripts/python.exe -m Mind resume --state .mind-state/task1 --retry-review
+.venv/Scripts/python.exe -m Mind resume --state .mind-state/task1 --add-calls 8 --add-output-tokens 131072 --add-request-bytes 1200000
+```
+
+A retry is a new bounded judgment of the original matter with current evidence;
+it does not erase the failed activity or reset cost. Unknown action outcomes
+are not repaired by this flag. A legitimately needed follow-up after a terminal
+Execution uses a linked run under the same formal goal.
+
+## Owners and flow
+
+| Responsibility formerly in Session | Current owner |
+| --- | --- |
+| Goal interpretation, activations, cognitive repair and outcome judgment | Mind/organ.py and cognition.py |
+| Optional analysis, model reuse and comparison interpretation | Mind/analysis.py, world_model.py |
+| Original input transport, mailbox completion, pumping, shared call accounting | Nervous/organ.py, provider.py |
+| Workspace observation, source snapshots, action lifecycle and recovery | Execution/runtime.py, evidence.py and the supported ExecutionOrgan facade |
+| Guidance binding/receipt, execution context, feedback obligation and observation watch | Execution/runtime.py |
+| Command-line arguments and organ construction | Mind/cli.py; no central state machine |
 
 ```text
-owner goal/message -> Nervous -> persistent Mind
-Mind -> optional read_evidence / analyze_world_model -> same activity
-Mind -> cognitive_step -> NoChange or original-text high-level Directive
-Directive -> eligible Execution decision -> actual work
-important Execution request/result or registered observation -> Nervous -> Mind
+user -> Nervous -> Mind
+Mind -> optional evidence read / analysis -> same activity
+Mind -> accepted NoChange or original Directive -> Nervous -> Execution
+Execution -> ordinary actions -> Environment
+important request/result or declared observation change -> Nervous -> same Mind
 ```
-
-Mind owns goal interpretation, material conditions, uncertainty, stage priorities
-and direction. Execution retains implementation and local correction. Builder is
-a temporary independent analysis role, not a second decision owner. Mind and
-Builder have no business filesystem, shell or IPython authority. Trusted owners
-persist and deliver their bounded outputs.
 
 Execution can call `request_mind(question, evidence_files=(), model_ref="")`
-inside an ordinary IPython cell. This publishes a request after the cell commits;
-it does not require a business Wait. Ordinary tool feedback stays in Execution.
-Foreground control yields at known completed-action boundaries so relevant
-pending events and outstanding feedback get an opportunity. It is not a
-background scheduler or a rule that every action needs Mind approval.
+inside a normal IPython cell. It is published only after the cell commits and
+does not require Wait. Ordinary action results stay inside Execution.
+A completed action yields control so pending events and feedback can run;
+this handoff is neither a business wait nor fabricated evidence.
+Multiple triggers for the same committed checkpoint share one review event.
 
-Mind sees the owner business goal, relevant current cognition, attributed source
-records and the important event. Execution receives the real task, local state
-and original guidance. Builder receives its question, selected evidence and an
-optional previous model. Full reasoning and debugging are not copied between
-roles. Original evidence, requests, histories and model artifacts remain in the
-local session and can be read by reference.
+Mind receives the original business requirements, relevant accepted cognition,
+attributed sources and a bounded execution snapshot. Execution receives its
+actual task, local state and original guidance. Analysis receives a question,
+selected source copies and optionally a prior artifact. No role inherits the
+other roles' complete reasoning or debugging history.
 
-## Cognitive revision and closure
+## Cognition, direction and source meaning
 
-Native read/analysis calls commit no provisional cognition. The same activity
-can consult and continue, then submit only changed items through cognitive_step.
-Omitted existing items remain; an explicit current selection or archived status
-retires obsolete knowledge. Trace preserves prior versions. Current belief input
-uses prior_truth (true/false/null) as a lossless representation of the previous
-supported/contradicted/open judgment. This is not verified reality and the host
-does not flip a status for the model.
+Only a final cognitive_step commits selective updates. Unsubmitted items stay;
+explicit archived status/current selection retires obsolete knowledge without
+deleting history. A revised claim, status, basis and optional discriminator are
+one replacement. Status evaluates the new literal assertion, not task pass/fail.
+The previous prior_truth is an earlier judgment, not certified reality.
 
-A belief's submitted status evaluates its literal new claim. Material conditions,
-scope, source basis and useful unresolved tests must remain consistent when a
-claim changes. A correct sentence about an earlier error can itself be supported.
-Both discovering an error and revising old cognition remain model judgments.
+NoChange can close a successful review, including after cognitive revision.
+It does not erase previous guidance or create work. A Directive conveys the
+decision, material conditions, decisive evidence/gap and business priority;
+Execution chooses code and tools. DecisionIntent is representable but formal
+goal switching is not implemented.
 
-NoChange can accept a correct result and end a cognitive activity without new
-business work. It does not prevent Execution from finishing. Directive conveys
-a new decision, material conditions, decisive evidence or gap and its acceptance
-or priority implication. It is not a completion acknowledgement or a request to
-repeat an already satisfactory report. Completion protocols remain Execution's
-responsibility. DecisionIntent is represented but formal goal switching is not
-implemented by this chain.
+Execution binds guidance once to a still-applicable run/decision. Previously
+received text remains visible across normal history trimming; visibility is
+not another delivery or proof of adoption. If the position or evidence changes
+before use, old advice is withdrawn and an attributed event returns to Mind
+for a fresh judgment, retaining the original owner input.
 
-A Directive is delivered once to an applicable run/decision. Persistent display
-through later local actions is not a second delivery or evidence of adoption.
-New events and guidance retain provenance and ordering. Stale unreceived bindings
-are not blindly applied; actual delivery and result feedback are tracked.
+Evidence is immutable by reference. Source kinds distinguish original owner
+statements, actor judgments, observed text, file metadata, catalogues and
+computation. A citation establishes provenance, not inference correctness.
+UTF-8-sig text projection is not raw-byte certification; BOM may be stripped.
+Oversize reads return explicit capacity metadata without truncating source text.
 
-## World-model analysis and prediction
+## World-model analysis
 
-Mind decides whether analysis is useful. Builder may answer directly, compute
-named quantities with predict(inputs, action), or use stateful simulation.
-Programs are optional. Code generation, debugging and reruns stay isolated;
-the compact report distinguishes answer, assumptions, unknowns and actual run_ref.
-Use model_ref="" for new analysis. Reuse/revision copies an existing opaque
-model reference; a descriptive title is not a model handle.
+Mind chooses analysis when useful. The independent bounded role can return
+understanding/unknowns directly, compute named quantities with
+`predict(inputs, action)`, or run a state-transition model. Programs are optional.
+The compact result keeps answer, assumptions, unknowns and an actual run reference.
 
-Ordinary calculation creates no prediction obligation. A prospective comparison
-also declares observation_file and check_spec: candidate action, conditions,
-object, time, quantities, meaning and units. The model and run are saved before
-the later observation. Relevant observation changes enter the existing event
-loop, which checks binding applicability before quantities. Missing observations
-remain unverified; changed conditions are not applicable; missing/unmappable
-quantities are incomparable. Comparison is limited to declared final fields.
+Ordinary calculation creates no future-check obligation. A prospective
+calculation additionally declares observation_file and check_spec before later
+evidence: action, conditions, object, time, quantity meanings and units.
+Execution observes the declared record; Mind compares applicable fields and
+decides what agreement/divergence means. Missing observations remain unverified,
+different conditions are not applicable, unmappable quantities incomparable.
+Unretrieved observation bodies are explicitly unread, not absent.
+Only declared final observables are compared, not the whole trajectory.
 
-Mind receives differences and source references and decides whether the model,
-assumptions, interpretation or direction needs revision. Numerical agreement
-does not certify premises, causality, an entire trajectory or general model
-accuracy. The current mechanism observes bounded workspace records, not arbitrary
-outside reality. Text projection uses UTF-8-sig; character counts are not general
-raw-byte certification and BOM can be stripped.
+## Durability and budgets
 
-## Persistence, budgets and failure
+Nervous atomically acknowledges events with causal emissions. Mind preserves
+activity/native traces and accepted revisions. Execution preserves EventLog,
+checkpoints, guidance receipts, sources and feedback. Each organ caches its own
+handling result before transport acknowledgement. There is no extra Host/Session.
 
-Nervous owns durable request/result events and idempotent acknowledgement.
-Mind owns accepted cognition; Execution owns actions and reality records.
-The chain persists feedback obligations and model/decision references.
-Only a final accepted submission changes effective cognition. Explicit errors,
-pending/failed understanding and remaining resources are visible through status.
+All roles use DeepSeek-V4-Pro through the official Anthropic-compatible API.
+Mind and analysis default to enabled low-effort thinking; Execution is disabled.
+An activity shares six Mind calls across consultation and recovery. Current
+submission limits are 6000 characters, 16 updates and 16000 active-state characters.
+Analysis is bounded to six calls/computations. World-model inputs have at most
+16 scalar fields, with strings at most 256 characters.
 
-DeepSeek-V4-Pro through the official Anthropic-compatible API is the runtime
-model. Default Mind and Builder thinking are enabled with low effort;
-Execution thinking is disabled. The existing activity and chain budgets include
-all roles, repairs and provider requests. The cognitive activity is bounded
-at six model calls; evidence/analysis continuation does not reset its quota.
-Current whole cognitive submission is at most 6000 characters and 16 updates,
-with 16000 characters of active knowledge. These are versioned implementation
-bounds, not principles that future evidence cannot change.
+Default launch allocation is 40 calls, 200000 reserved output tokens and
+2800000 request bytes, shared across Mind, analysis and Execution. Explicit
+extensions preserve spent allocations and actual usage. Guidance/prediction
+feedback reserves room for result judgment and recovery before further action.
 
-A received but uncommitted action and a connection failure before dispatch have
-different recovery semantics. The runtime must not replay unknown side effects.
-Failed important reviews remain explicit; they are not converted to NoChange.
-Quiet waiting and successful restart do not themselves prove semantic correctness.
+Known responses/committed actions resume without repetition. Protocol and model
+errors remain explicit failed activities; no failure becomes NoChange.
+Unknown dispatched provider/action outcomes and isolation/integrity failures
+stop rather than blindly retry. State remains local and inspectable.
 
-## Validation and current scope
+## Validation and limitations
 
 ```powershell
-.venv/Scripts/python.exe -m pytest Mind Nervous Execution tests -q
+.venv/Scripts/python.exe -m pytest -q
+$env:LUMINA_TEST_CORE_DOCKER="1"
+.venv/Scripts/python.exe -m pytest Mind/test_core_loop.py -q
 ```
 
-Deterministic tests use temporary state and scripted model responses. Docker
-checks explicitly marked opt-in remain separate. Real provider campaigns are
-not part of the ordinary test suite and require bounded authorization.
+The fresh smoke uses scripted native model decisions with real isolated
+calculation and IPython action: a Unicode CSV export, declared byte prediction,
+actual measurement, feedback and restart. It proves the current mechanical
+integration, not general model judgment or architectural superiority.
+Historical behavioral conclusions remain in [EXPERIMENT_HISTORY](EXPERIMENT_HISTORY.md);
+[CURRENT_STATUS](../../docs/CURRENT_STATUS.md) records current validation.
 
-Current functionality supports a single-goal foreground task with persistent
-judgment, sparse direction, actual execution and feedback. V70-V73 demonstrated
-scoped retained-error recovery and a fresh file task, not general unattended
-reliability or independent-context superiority. The [history summary](EXPERIMENT_HISTORY.md)
-retains failures and inconclusive outcomes. [Current status](../../docs/CURRENT_STATUS.md)
-distinguishes implementation from evidence; [references](REFERENCES.md) records
-actual third-party reuse.
-
-Raw experiment runs, copied runtime versions and phase-by-phase result/review
-documents were removed by owner instruction during repository cleanup. Future
-local sessions and generated records belong in ignored directories; maintained
-tests keep small synthetic/static inputs, not archived provider bodies.
+The supported scope is one goal, a bounded authorized workspace and foreground
+operation. There is no arbitrary-reality anomaly detector, background scheduler,
+autonomous goal creation or Chat/Memory/Dream wiring.

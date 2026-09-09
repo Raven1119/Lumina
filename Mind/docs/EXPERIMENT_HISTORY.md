@@ -19,10 +19,11 @@
 | V59–V69 | 用户事件先 Mind、上下文、认知提交和协议修复；旧认知自主修订仍失败。V63 AUTONOMOUS_REVISION_NOT_SUPPORTED；V69 文件已正确，但状态错配和重复指导尚未闭合。 |
 | V70–V73 | 保留历史的旧命题状态由 Mind 修正；三个跨事件种子样本和新 CLI 文件任务完成，反馈后修正新错误假设并正常收尾。28/30 次含 6 次无效验收调用及 1 次 ConnectError。Builder 仅验证精确计算；输入为 ASCII。开发修复与显式恢复仍参与，非通用自治或单变量因果收益证明。 |
 
-当前代码保留有效的事件、持久认知、独立执行、可选分析、原文指导及恢复机制。
-没有当前调用方的 E2–E4、W0–W8/S0 实验驱动程序及其专属验收代码退休。
-部分名称含 experiment 的文件仍被当前运行代码使用，不能仅按名称删除。
-必要静态输入和合成回归用例保留，历史 provider 响应不再作为测试依赖。
+The promoted mechanisms now have formal current modules. Pure campaign drivers,
+fixtures, old evaluator tests and V1-V72 compatibility branches are retired.
+There is no central Session/Host. Current invariant tests use independent
+synthetic inputs; they do not replay archived provider responses. The refactor
+adds no real-model result and does not change any verdict in the table above.
 
 当前接口和使用方法见 [INTEGRATED_CHAIN](INTEGRATED_CHAIN.md)，
 当前能力及限制见 [CURRENT_STATUS](../../docs/CURRENT_STATUS.md)。

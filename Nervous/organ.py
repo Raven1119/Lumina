@@ -1,4 +1,4 @@
-"""Durable, explicitly driven organ mailboxes; no handlers, clocks or workers."""
+"""Durable organ mailboxes and bounded foreground mechanical continuation."""
 from __future__ import annotations
 
 import hashlib
@@ -94,7 +94,7 @@ class Event:
 class NervousOrgan:
     """One bounded mailbox owner. Consumers acknowledge only after durable work."""
 
-    def __init__(self, directory: str | Path):
+    def __init__(self, directory: str | Path, *, limits=None, transport=None):
         self._directory = Path(directory).resolve()
         self._directory.mkdir(parents=True, exist_ok=True)
         self._path = self._directory / "events.json"
@@ -114,6 +114,19 @@ class NervousOrgan:
                 import fcntl
                 fcntl.flock(self._writer.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             self._load()
+            from Nervous.provider import ProviderCalls
+            from Nervous.storage import read_json, write_json
+            self._settings_path = self._directory / "settings.json"
+            if self._settings_path.exists():
+                self.settings = read_json(self._settings_path)
+                if self.settings.get("format") != "nervous-runtime-1":
+                    raise ValueError("unsupported_nervous_format")
+            else:
+                self.settings = {"format": "nervous-runtime-1", "limits": limits or {
+                    "calls": 40, "output_tokens": 200000, "request_bytes": 2800000}}
+                write_json(self._settings_path, self.settings)
+            self.calls = ProviderCalls(self._directory / "calls", self.settings["limits"], transport)
+            self.stop_reason = None
         except Exception:
             self._writer.close()
             raise
@@ -213,8 +226,8 @@ class NervousOrgan:
             raise ValueError("invalid_pending_limit")
         with self._lock:
             state = self._load()
-            # ponytail: at most 256 retained events; no index/database until the
-            # experiment establishes a need for longer-lived mailbox storage.
+            # ponytail: bounded retained history; archive/compaction needs a
+            # separate identity-retention design before this capacity is raised.
             return tuple(Event(**item) for item in state["events"]
                          if item["target"] == target and item["event_id"] not in state["completed"])[:limit]
 
@@ -243,3 +256,110 @@ class NervousOrgan:
             state["completed"][event_id] = emitted_ids
             self._save(state)
             return True
+
+    def submit(self, text: str, event_type: str = "USER_MESSAGE") -> Event:
+        """Persist an original user input; a retry of the latest input is identical."""
+        if type(text) is not str or not text.strip() or len(text) > 4000:
+            raise ValueError("invalid_user_input")
+        _text(event_type)
+        with self._lock:
+            state = self._load()
+            previous = [e for e in state["events"] if e["source"] == "user"]
+            data = {"event_type": event_type, "text": text}
+            if previous and previous[-1]["data"] == data:
+                return Event(**previous[-1])
+            event = Event(f"user-{len(previous)+1:06d}", "user", "mind", "user.input", data)
+            self._add(state, event)
+            self._save(state)
+            return event
+
+    def initialize(self, *, goal=None, workspace=None):
+        """Retain immutable launch input before constructing its receiving organs.
+
+        These are original routing/authorization arguments, never mutable task
+        progress. A start/resume after any construction cut republishes the same
+        original input and reconstructs each organ from its own durable state.
+        """
+        from Nervous.storage import write_json
+        previous = self.settings.get('initial_input')
+        if goal is not None or workspace is not None:
+            if type(goal) is not str or not goal.strip() or len(goal) > 4000 or workspace is None:
+                raise ValueError('invalid_initial_input')
+            initial = {'goal': goal, 'workspace': str(Path(workspace).resolve(strict=True))}
+            if previous is not None and previous != initial:
+                raise ValueError('initial_input_identity_conflict')
+            if previous is None:
+                self.settings['initial_input'] = initial
+                write_json(self._settings_path, self.settings)
+        if 'initial_input' not in self.settings:
+            raise ValueError('initial_input_missing')
+        initial = self.settings['initial_input']
+        self.publish(Event('user-000001', 'user', 'mind', 'user.input',
+                           {'event_type': 'USER_GOAL', 'text': initial['goal']}))
+        return dict(initial)
+
+    def retry_cognition(self, activity_id):
+        """Explicit user control, not new reality evidence or automatic sampling."""
+        _text(activity_id)
+        event = Event('retry-' + _digest(activity_id)[:24], 'user', 'mind',
+                      'mind.retry', {'activity_id': activity_id})
+        self.publish(event)
+        return event
+
+    def extend_budget(self, calls: int, *, output_tokens=None, request_bytes=None):
+        from Nervous.storage import write_json
+        amounts = {"calls": calls, "output_tokens": output_tokens if output_tokens is not None else calls*5000,
+                   "request_bytes": request_bytes if request_bytes is not None else calls*70000}
+        bounds = {"calls": 200, "output_tokens": 2000000, "request_bytes": 20000000}
+        if any(type(v) is not int or not 1 <= v <= bounds[k] for k, v in amounts.items()):
+            raise ValueError("invalid_budget_extension")
+        for key, amount in amounts.items():
+            self.settings["limits"][key] += amount
+        write_json(self._settings_path, self.settings)
+
+    def run(self, mind, execution, *, max_steps=240):
+        """Deliver fixed organ messages, then return control at a safe action boundary.
+
+        This loop neither reads cognition nor chooses direction. Each recipient
+        owns its durable receipt and each publisher owns its durable outbox.
+        """
+        from Nervous.provider import BudgetPause
+        if type(max_steps) is not int or not 1 <= max_steps <= 240:
+            raise ValueError("invalid_foreground_step_bound")
+        self.stop_reason = None
+        try:
+            for _ in range(max_steps):
+                for event in execution.poll():
+                    self.publish(event)
+                    execution.published(event.event_id)
+                delivered = False
+                for target, organ in (("mind.results", mind), ("mind.analysis", mind),
+                                      ("mind", mind), ("execution", execution)):
+                    pending = self.pending(target, 1)
+                    if not pending:
+                        continue
+                    event = pending[0]
+                    emitted = organ.handle(event)
+                    if emitted is not None:
+                        self.complete(event.event_id, target, emitted=tuple(emitted))
+                        delivered = True
+                        break
+                if delivered:
+                    continue
+                if any(self.pending(t, 1) for t in ("mind", "mind.results", "mind.analysis", "execution")):
+                    self.stop_reason = "pending_organ_work"
+                    break
+                if not execution.advance():
+                    break
+            else:
+                self.stop_reason = "foreground_step_bound"
+        except BudgetPause as pause:
+            self.stop_reason = str(pause)
+        return self.status(mind, execution)
+
+    def status(self, mind, execution):
+        """Read-only projection of organ-owned status and outstanding transport."""
+        return {"mind": mind.status(), "execution": execution.status(),
+                "pending": {t: [e.event_id for e in self.pending(t)]
+                            for t in ("mind", "mind.results", "mind.analysis", "execution")},
+                "stop_reason": self.stop_reason, "cost": self.calls.summary()}

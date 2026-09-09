@@ -5,6 +5,8 @@
 > 设计来源：结合 Codex 的持续真实执行 Runtime、DeepSeek Harness 的 event sourcing / capability seam，以及 Prime Agent 的 programmable execution / recursive AgentProcess 思路，并遵循 Lumina North Star 的连续整体心智与递归自进化方向。\
 > 当前文档定义目标架构，不代表所有机制立即实现。
 
+当前认知链通过 `Execution/runtime.py` 将用户授权工作区、执行生命周期、指导投递与结果反馈归属 Execution；`Execution/organ.py` 仍是单次运行 facade。Nervous 负责事件续接，Mind 在同一个正式目标下稀疏提供高层指导，没有中央 Host/Session。当前可运行范围与命令以 [CURRENT_STATUS](CURRENT_STATUS.md) 和 [认知链契约](../Mind/docs/INTEGRATED_CHAIN.md) 为准；下文的长期目标与能力规划不应直接视为当前实现。
+
 ---
 
 ## 1. 定义

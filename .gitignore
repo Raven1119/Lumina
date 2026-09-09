@@ -19,11 +19,10 @@ data/
 /.fixtures/
 /.cleanup-work/
 /.mind-sessions/
+/.mind-state/
+/.test-state/
+/.refactor-work/
 /Mind/deliverables/
 /docs/experiments/
 /Mind/fixtures/**
-!/Mind/fixtures/e1/
-!/Mind/fixtures/e1/manifest.json
-!/Mind/fixtures/decoupling_d1/
-!/Mind/fixtures/decoupling_d1/manifest.json
 /Execution_Lab/

@@ -1,6 +1,8 @@
 # Lumina
 
-The separate Mind-Nervous-Execution chain is available through `python -m Mind`.
+The separate Mind-Nervous-Execution core runs through `python -m Mind`.
+Mind owns judgment, Nervous durable events, and Execution independent action;
+there is no central Host/Session. Use a fresh `--state` directory.
 See [current capabilities and limits](docs/CURRENT_STATUS.md),
 [start/resume usage](Mind/docs/INTEGRATED_CHAIN.md), and the
 [condensed experiment history](Mind/docs/EXPERIMENT_HISTORY.md).
@@ -96,39 +98,21 @@ startup:
 LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false
 ```
 
-## Current Development Focus
+## Development baseline
 
-The Memory stage is complete and has no blocking todos. In production: the
-Memory MVP, Grounded Write, the Mind Recall gate stage 2 (`LlmMindGate` as the
-real-model default), the generic multi-entity Entity graph (`CURRENT_USER` ->
-`E_001` plus ordinary persisted entities, graph-only non-temporal EntityNodes,
-subject and role-less mention `REFERS_TO` edges, entity-conditioned retrieval
-with exact-surface query-side ref lookup, `[SAME_ENTITY]`), and the self-name
-coverage guard.
+The cognitive core uses organ-owned persistence, sparse original guidance,
+independent bounded analysis, and explicit execution feedback. Current tests
+cover its invariants; old campaign drivers and version replay are retired.
+This does not connect the core to production Chat or prove general autonomy.
 
-Execution V1 is preserved as isolated experimental history at tag
-`execution-organ-v1-final`; it never changed the production chat or memory
-path. Execution V2 has not started and requires its own approved design task.
+Execution's supported facade and manual API live in `Execution/` and
+`POST /api/execution`. Chat continues to use bounded Recall and manual Dream.
+Memory algorithm/history details remain in their maintained documents.
 
-On the authorization-aligned 36-case development subset, raw-turn Recall scored
-26/36 and Grounded Write scored 29/36. Both retained all 6 currently authorized
-positive cases; Grounded Write improved negative correctness from 20/30 to
-23/30. The original 60-case result remains historical evidence because 24 of
-its positives depended only on assistant utterances, which are not verified
-fact or self-action provenance.
-
-`ControlledRelationResolver` is an adopted fail-open capability for structured
-callers. Normal Chat does not supply relation surfaces, and this consolidation
-does not add a query parser. Future Mind work must cross that caller-contract
-seam explicitly.
-
-See:
-
-- `docs/final_goal.md` for the current product objective;
-- `docs/CURRENT_STATUS.md` for implementation facts;
-- `docs/MAGMA_RECALL_ALGORITHM_AUDIT.md` for the pinned MAGMA/Lumina query-path
-  audit;
-- `AGENTS.md` for development constraints.
+See [current facts](docs/CURRENT_STATUS.md),
+[the core operating contract](Mind/docs/INTEGRATED_CHAIN.md),
+[Memory history](docs/MEMORY_EXPERIMENT_HISTORY.md), and
+[development guidance](AGENTS.md).
 
 ## Install and Run
 

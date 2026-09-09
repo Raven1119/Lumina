@@ -1,65 +1,80 @@
-# Mind—Nervous—Execution 当前状态
+# Lumina current state
 
-当前保留版本：`cognitive-chain-v73`；认知提交契约保持 V67。
-这是可运行的单目标、前台、受界工作区认知执行链。它与生产 Chat 的
-Recall gate、手动 Execution API 分别存在，尚未接入 Chat 或 Memory。
+The cognitive core is now `Mind <-> Nervous <-> Execution <-> Environment`.
+Each organ owns its state and continuation; there is no central Session/Host.
+The supported single-goal foreground CLI is `python -m Mind`, using a new
+`--state` directory. Production Chat still runs its separate Recall gate;
+the manual Execution API is also separate.
 
-## 当前能力
+## Current implementation
 
-| 部分 | 已实现职责 |
+| Part | Responsibility |
 | --- | --- |
-| Mind | 接收用户目标及后续事件；承接持久理解、条件、假设和开放问题；按需取证与分析；原子提交受影响的修订；选择 NoChange 或高层 Directive。 |
-| Nervous | 持久邮箱、请求／结果关联、幂等确认、重启续接。传递事件，不判断语义。 |
-| Execution | 独立上下文中的 Python/IPython 实施、局部判断、等待与恢复；在合格决策接收指导原文，向同一 Mind 返回重要结果。 |
-| 世界模型分析 | Mind 按需咨询独立 Builder；可以直接分析，也可生成、复用、修订隔离程序。返回结论、条件、未知与运行引用，过程外置。 |
-| 预测反馈 | 已登记预测可以绑定行动、条件、对象、时点和量纲；后续对应观察触发比较与 Mind 重评。是否修模和改向由 Mind 决定。 |
+| Mind | Original user/important events, persistent selective cognition, necessary evidence/analysis, NoChange or original high-level guidance. |
+| Nervous | Original input transport, durable causal mailboxes, idempotent completion, mechanical foreground continuation and shared provider accounting. |
+| Execution | Independent local implementation, AgentProcess/facade lifecycle, immutable environment sources, single guidance binding, persistent received advice and feedback. |
+| Analysis | Mind-owned independent bounded context; structured understanding, optional isolated static/stateful computation, model reuse/revision and compact attributed reports. |
+| Prediction feedback | Prospective action/condition/object/time/quantity declaration, actual observation watch, mechanical alignment/comparison and Mind reassessment. |
 
-初始用户消息先经 Nervous 进入 Mind；没有固定的额外改写调用或第二个决策 Agent。
-指导持续可见不等于重复投递。NoChange 可以接受正确的结果反馈并结束认知活动。
-模型可以犯错；宿主不会把私有 belief 自动变成指导，也不会代写正确答案。
+Current cognition/native formats are `mind-cognition-v1` and
+`mind-native-v1:6-calls`. Old experiment session/schema/native replay is retired.
+Historical conclusions are preserved; old raw campaigns and provider responses
+are not maintained runtime or test dependencies.
 
-## 可用程度与证据
+Promoted mechanisms now live in formal activity/cognition/contracts/model/
+analysis modules, Execution's model/sandbox/evidence/runtime, and Nervous's
+provider/storage. The old chain -> event_loop -> decoupling -> behavioral imports,
+experiment_a, central host and checkpoint fixture are removed.
+Production Recall gates, the supported Execution facade and licenses remain.
 
-V70–V73 在保留错误历史的会话中修正了命题／状态错配并停止重复派工。
-三个明确标为开发者种子的跨事件样本完成了语义修订，并以 NoChange 结束；
-它们没有要求业务行动。另一个实际文件清单任务完成了指导投递、实际执行、
-结果回流、认知修订和静默恢复。
-该轮共 28 次新调用尝试，包含 6 次无效验收脚本调用和 1 次连接失败。
+## Evidence
 
-新任务中的 Builder 实际进行了哈希计算；这证明给定字节串的计算一致性，
-不等于未来环境预测或 Builder 独立观察文件。任务初期产生过错误猜测，
-后续由 Mind 修订；开发者仍进行过接口修复与显式恢复。
-这些是限定任务的功能证据，不能宣称普遍无人监管可靠性、独立上下文优势
-或通用自主纠错已经成立。
+V70-V73 previously demonstrated scoped correction of retained erroneous cognition,
+NoChange closure and a CLI file task, with development repairs and explicit
+recovery involved. Those results did not establish general autonomous reliability.
+All failed/INCONCLUSIVE conclusions remain in
+[EXPERIMENT_HISTORY](../Mind/docs/EXPERIMENT_HISTORY.md).
 
-## 限制
+This refactor uses deterministic current-invariant regression rather than a new
+model-ability campaign. A new Unicode CSV smoke has run actual isolated model
+calculation and IPython action, preserved original guidance, measured real output,
+compared declared byte quantities, returned to the same Mind and restarted quietly.
+It used eight injected provider responses (Mind 4, analysis 2, Execution 2),
+zero real provider requests. Scripted decisions do not establish model judgment.
 
-- 当前是单目标前台运行；没有常驻调度、自主目标生成或跨 Intention 切换。
-- 世界模型只对声明且可对应的观察进行机械比较；任意现实异常发现尚未实现。
-- 字段合法、程序可运行、指导送达、完成标记均不证明语义正确。
-- 文本文件投影以 UTF-8-sig 解码，字符数不是通用原始字节证明，BOM 会被剥离。
-- 未知副作用与未确认的已发请求保留阻塞；不能盲目重放。
-- 推理、工具和引用预算有界。资源不足或认知失败保持可恢复事项，不伪装 NoChange。
+The smoke exposed and corrected duplicate reviews when request_mind and a changed
+prediction described the same committed checkpoint. Review also identified
+initialization and stale-guidance continuation gaps; targeted recovery regressions
+cover the repaired paths. Explicit CLI retry preserves failures and cost while
+reassessing current evidence; known read/analysis errors no longer wedge delivery.
 
-## 入口与文档
+Final validation on 2026-09-09:
 
-启动、状态、后续证据、恢复及权限说明见
-[运行契约](../Mind/docs/INTEGRATED_CHAIN.md)。
-历史结论压缩为 [认知与执行历史](../Mind/docs/EXPERIMENT_HISTORY.md)；
-Memory 历史见 [简要索引](MEMORY_EXPERIMENT_HISTORY.md)。
-北极星仍是 [持续理解、判断与行动协调](NORTH_STAR.md)。
+- Maintained default suite: **641 passed, 29 skipped**. Optional/environment tests
+  remain opt-in; the two upstream MAGMA deprecation warnings are unchanged.
+- Isolated Docker computation plus the fresh whole-loop smoke: **14 passed**.
+- Standards and Spec review: no remaining findings after the recovery fixes.
+- Current Python parsing/import audit, maintained document links and
+  `git diff --check` passed; no retired campaign module is imported.
 
-生产 Chat 保持 Cold-first、受界 Recall 和手动 Dream；
-本轮清理没有改变 Memory 算法、Chat 路由或真实用户数据。
+The full suite uses a fresh temporary directory outside the checkout: Recall's
+sandbox tests intentionally reject repository paths. An initial in-repository
+test directory caused six such refusals; moving test state fixed the setup
+without changing Recall's safety policy. No real model/provider calls were made.
 
-本次仓库清理将原始实验输出、逐轮记录和无当前调用方的历史实验程序移出项目，
-保留仓库外的恢复副本。
-保留当前实现、兼容与回归测试、必要静态输入、设计及许可证。
-仓库内仅保留历史失败／INCONCLUSIVE 的摘要；摘要不等于可重放的原始证据。
-删除作用于最新 Git 文件树，旧提交未改写。
+## Scope and limits
 
-2026-09-09 清理后回归：`pytest Mind Nervous Execution tests -q`，
-1242 passed, 40 skipped (16 opt-in Docker checks; 24 Memory-environment E2E checks).
-Execution 的 8 份核心回归已从旧 Lab 迁入 `Execution/tests/`。
-历史协议回归使用明确标注的合成输入，旧版本按旧契约解释。
-本轮没有新增真实模型调用；测试通过不扩大上述语义能力结论。
+- One goal, foreground operation, one writer and a small authorized workspace.
+  No background scheduler, autonomous goals or formal Intention switch.
+- Optional models describe conditional consequences; arbitrary outside-reality
+  anomaly detection and full-trajectory validation are not implemented.
+- Source references, legal schema, successful computation, delivery and runtime
+  markers do not establish semantic correctness or business success.
+- UTF-8-sig source text is not a general proof of original bytes.
+- Unknown actions/dispatches remain stopped for explicit resolution; resources
+  and processing failures remain visible, without fabricated NoChange.
+- Retired historical sessions are not migrated. Start a fresh current state.
+- Chat, Memory algorithms, Cold-first continuity and manual Dream are unchanged.
+
+Use [INTEGRATED_CHAIN](../Mind/docs/INTEGRATED_CHAIN.md) for setup, input, status,
+resume, retry and budgets; [NORTH_STAR](NORTH_STAR.md) for long-term direction.
