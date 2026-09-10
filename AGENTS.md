@@ -41,6 +41,8 @@ retain failures and distinguish mechanism from behavioral benefit.
 | Dream | Explicit serial runner `Dream/runner.py`; [local instructions](Dream/AGENTS.md), [digestion contract](Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md). |
 
 For domain changes consult [CONTEXT](CONTEXT.md) and [domain guidance](docs/agents/domain.md).
+For opt-in pursuit, serial Task versions, attention selection, owner queries or
+Watch changes, read the [Stage1 runtime contract](Mind/docs/INTENTION_STAGE1.md).
 Historical results are condensed in [Mind history](Mind/docs/EXPERIMENT_HISTORY.md)
 and [Memory history](docs/MEMORY_EXPERIMENT_HISTORY.md). Retired campaigns and
 version compatibility are not runtime dependencies or tests to resurrect.

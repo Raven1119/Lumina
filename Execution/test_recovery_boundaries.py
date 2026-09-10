@@ -322,6 +322,9 @@ owner.advance()
             assert not owner.advance() and not owner.advance()
             assert owner.status()['stop_reason'] == 'execution_action_outcome_requires_owner_check'
             assert calls.summary()['calls'] == 1 and not effect.exists()
+            unknown = Execution.inspect_directory(directory)['recovery']['unknown_action']
+            assert unknown == {**owner.state['unknown_action'], **view['recovery']['unknown_action']}
+            assert unknown['event_id'] and unknown['reason']
         else:
             assert owner.advance() and owner.run_state().waiting_for == 'LATER'
             assert calls.summary()['calls'] == 2

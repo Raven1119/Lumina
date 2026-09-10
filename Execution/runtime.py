@@ -31,7 +31,8 @@ def advisory(text):
 
 class Execution:
     """One authorized workspace; handlers persist intent before any action."""
-    def __init__(self, directory, calls, workspace=None, ipython=None, *, context_mode=None):
+    def __init__(self, directory, calls, workspace=None, ipython=None, *, context_mode=None,
+                 stage1_authority=None):
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / 'run.json'
@@ -53,6 +54,15 @@ class Execution:
                 'task': None, 'active_run': None, 'prior_runs': [], 'deliveries': [], 'predictions': [],
                 'owners': [], 'handled': {}, 'outbox': [], 'announced': [], 'handled_requests': [],
                 'last_reviewed': None, 'stop_reason': None, 'initializing': None}
+        if stage1_authority is not None:
+            if (type(stage1_authority) is not dict or set(stage1_authority) != {'ref', 'text', 'mind_id'}
+                    or any(type(value) is not str or not value for value in stage1_authority.values())):
+                raise ValueError('invalid_execution_authority')
+            if self.path.exists() and self.state.get('stage1_authority') != stage1_authority:
+                raise ValueError('execution_authority_conflict')
+            self.state.setdefault('stage1_authority', dict(stage1_authority))
+            self.state.setdefault('task_contract', None)
+            self.state.setdefault('task_contracts', [])
         if context_mode not in (None, 'baseline', 'mask', 'summary'):
             raise ValueError('unsupported_context_mode')
         if self.path.exists() and context_mode is not None and context_mode != self.state.get('context_mode', 'baseline'):
@@ -91,6 +101,12 @@ class Execution:
             if events:
                 state = fold_execution_state(events)
         pending = _unsettled_action_start(events)
+        # A recorded transport failure can still leave the action outcome unknown.
+        unknown = dict(owner.get('unknown_action') or {})
+        if pending:
+            unknown.update(event_id=pending.event_id,
+                decision_event_id=pending.source_event_refs[0],
+                provider_tool_call_id=pending.payload.get('provider_tool_call_id'))
         context = {'mode': owner.get('context_mode', 'baseline')}
         if state is not None and context['mode'] == 'summary':
             from working_context import inspect_context
@@ -99,16 +115,15 @@ class Execution:
                 directory / 'runs' / str(owner['active_run']) / 'handoff.json',
                 role='execution', scope=state.execution_id)))
         return {'status': state.status if state else ('unavailable' if diagnostic['issue'] else 'not_started'),
+            **({'control': owner.get('control'), 'task_contract': owner.get('task_contract')}
+               if 'stage1_authority' in owner else {}),
             'working_context': context,
             'execution_ref': state.execution_id if state else None,
             'decision_count': state.decision_count if state else 0,
             'waiting_for': state.waiting_for if state else None,
             'stop_reason': owner['stop_reason'], 'diagnostic': diagnostic,
             'recovery': {'last_event_type': events[-1].event_type if events else None,
-                         'unknown_action': {'event_id': pending.event_id,
-                             'decision_event_id': pending.source_event_refs[0],
-                             'provider_tool_call_id': pending.payload.get('provider_tool_call_id')}
-                             if pending else None},
+                         'unknown_action': unknown or None},
             'deliveries': [{k: v for k, v in d.items() if k not in {'text', 'files'}} for d in owner['deliveries']],
             'predictions': [{'ref': p['ref'], 'reviewed_source': p.get('reviewed_source')}
                             for p in owner['predictions']],
@@ -146,8 +161,140 @@ class Execution:
     def run_state(self):
         return self.actor.state if self.actor is not None else None
 
+    def task_binding(self):
+        contract = self.state.get('task_contract')
+        return fingerprint(contract) if contract else None
+
+    def task_scoped(self, records):
+        if 'stage1_authority' not in self.state:
+            return records
+        return [item for item in records if item.get('task_binding') == self.task_binding()]
+
+    def current_review(self):
+        review = self.state['last_reviewed']
+        return review if not review or self.task_scoped([review]) else None
+
+    def original_authorization(self):
+        authority = self.state.get('stage1_authority')
+        if authority is None:
+            return None
+        return {'kind': 'original_authorization', 'source_ref': authority['ref'], 'text': authority['text'],
+                'source_kind': 'owner_statement',
+                'scope': 'Immutable owner authorization shared across Tasks. A Task or guidance does not '
+                         'expand this scope, workspace, tools or cumulative budget.'}
+
+    def view(self, name, *, execution_ref=None, event_ref=None, offset=0, limit=4):
+        """Read saved owner facts; no environment sampling or Actor construction."""
+        from Execution.execution import EventLog, fold_execution_state, _encode_value, _unsettled_action_start
+        if name not in {'execution.state', 'execution.history'}:
+            raise ValueError('unknown_execution_view')
+        if (type(offset) is not int or offset < 0 or type(limit) is not int
+                or not 1 <= limit <= (6000 if event_ref is not None else 8)
+                or event_ref is not None and (name != 'execution.history' or type(event_ref) is not str)):
+            raise ValueError('invalid_execution_view_range')
+        document = read_json(self.path)
+        owner = document['state']
+        if document['sha256'] != fingerprint(owner):
+            raise ValueError('execution_state_integrity_failure')
+        candidates = [(owner['active_run'], owner.get('task_contract'))]
+        if execution_ref is not None:
+            candidates.extend((item['run'], item.get('task_contract')) for item in owner['prior_runs'])
+        state, events, task = None, (), owner.get('task_contract')
+        for run, contract in candidates:
+            if run is None:
+                continue
+            if not str(run).isdecimal():
+                raise ValueError('invalid_run_directory')
+            path = self.directory / 'runs' / str(run) / 'events.jsonl'
+            if not path.exists():
+                continue
+            candidate_events = EventLog.load(path).events
+            if not candidate_events:
+                continue
+            candidate = fold_execution_state(candidate_events)
+            if execution_ref is None or candidate.execution_id == execution_ref:
+                state, events, task = candidate, candidate_events, contract
+                break
+        missing = state is None
+        next_offset, truncated = None, False
+        if name == 'execution.state':
+            unknown = dict(owner.get('unknown_action') or {})
+            if state is not None and unknown.get('execution_ref') != state.execution_id:
+                unknown = {}
+            pending = _unsettled_action_start(events)
+            if pending:
+                unknown.update(event_id=pending.event_id, decision_event_id=pending.source_event_refs[0],
+                               provider_tool_call_id=pending.payload.get('provider_tool_call_id'))
+            historical = next((item for item in owner['prior_runs']
+                               if state and item['execution_ref'] == state.execution_id), None)
+            content = {'execution_ref': state.execution_id if state else None,
+                'status': state.status if state else 'not_started',
+                'waiting_for': state.waiting_for if state else None,
+                'decision_count': state.decision_count if state else 0,
+                'completion_scope': 'Runtime acknowledgment, not business acceptance.',
+                'unknown_action': unknown or None,
+                'stop_reason': owner['stop_reason'] if historical is None else None,
+                'control': owner.get('control') if historical is None else None,
+                'historical': historical is not None,
+                'retirement': historical.get('retirement') if historical else None}
+        else:
+            allowed = {'IPYTHON_EXECUTION_STARTED', 'IPYTHON_EXECUTION_RESULT', 'IPYTHON_EXECUTION_FAILED',
+                'TOOL_CALL_STARTED', 'TOOL_RESULT', 'TOOL_FAILED', 'ACTION_RECONCILED',
+                'ROOT_WAITING', 'ROOT_WOKEN', 'COMPLETION_VERIFIED', 'COMPLETION_REJECTED',
+                'COMPLETION_DEFERRED', 'DECISION_RETIRED', 'EXECUTION_COMPLETED', 'EXECUTION_FAILED'}
+            selected = [event for event in events if event.event_type in allowed]
+            content, chars = [], 0
+            for event in selected[offset:offset + limit]:
+                text = canonical(_encode_value(event.payload))
+                record = {'ref': event.event_id, 'sequence': event.sequence, 'kind': event.event_type,
+                    'causes': list(event.source_event_refs), 'text': text[:2000],
+                    'original_chars': len(text), 'truncated': len(text) > 2000}
+                size = len(canonical(record))
+                if content and chars + size > 6000:
+                    break
+                content.append(record)
+                chars += size
+            next_offset = offset + len(content) if offset + len(content) < len(selected) else None
+            truncated = next_offset is not None or any(record['truncated'] for record in content)
+            if event_ref is not None:
+                event = next((item for item in selected if item.event_id == event_ref), None)
+                text = canonical(_encode_value(event.payload)) if event else ''
+                missing = event is None
+                content = {'ref': event_ref, 'text': text[offset:offset + limit],
+                           'original_chars': len(text), 'offset': offset}
+                next_offset = offset + limit if offset + limit < len(text) else None
+                truncated = next_offset is not None or offset > 0
+        sequence = events[-1].sequence if events else 0
+        result = {'owner': 'execution', 'revision': fingerprint([document['sha256'], sequence]),
+            'as_of': {'owner_state': document['sha256'], 'execution_sequence': sequence},
+            'scope': {'execution_ref': state.execution_id if state else execution_ref,
+                      'task': {'id': task['id'], 'revision': task['revision']} if task else None,
+                      'sampling': 'saved_owner_state'},
+            'content': content, 'missing': missing, 'truncated': truncated, 'next_offset': next_offset}
+        return {**result, 'ref': 'execution-view:' + fingerprint([name, event_ref, offset, limit, result])[:24]}
+
+    def read_source(self, ref):
+        """Return a verified immutable source through its owning interface."""
+        return self.evidence.read(ref)
+
+    def refresh_environment(self):
+        """Explicitly sample the authorized workspace, unlike saved views/status."""
+        return self.capture()
+
+    def source_observation(self, relative):
+        """Sample one authorized source; Nervous owns watch occurrence identity."""
+        path = workspace_path(self.workspace, relative)
+        lexical = self.workspace / relative
+        if any(part.is_symlink() for part in (lexical, *lexical.parents) if part != self.workspace):
+            raise ValueError('workspace_symlink_not_authorized')
+        if not path.exists():
+            return {'file': relative, 'ref': None, 'missing': True}
+        if not path.is_file():
+            raise ValueError('workspace_source_is_not_file')
+        return {**self.evidence.file(relative), 'missing': False}
+
     def watched(self):
-        return tuple(p['observation_file'] for p in self.state['predictions'])
+        return tuple(p['observation_file'] for p in self.task_scoped(self.state['predictions']))
 
     def dependencies(self, files=None):
         state = self.run_state()
@@ -155,7 +302,7 @@ class Execution:
         deliveries = [d for d in self.state['deliveries'] if d['execution_ref'] == run
                       and not d['status'].startswith('expired') and not d.get('reviewed_by')]
         predictions = []
-        for p in self.state['predictions']:
+        for p in self.task_scoped(self.state['predictions']):
             if p.get('execution_ref') != run:
                 continue
             source = self.observation_ref(p, files)
@@ -183,7 +330,8 @@ class Execution:
             result.append({key: d[key] for key in
                 ('id', 'activity_id', 'execution_ref', 'decision', 'text', 'call_ref', 'owner_sequence')})
             result[-1]['later_owner_input_sequences'] = [x['sequence'] for x in self.state['owners']
-                                                        if x['sequence'] > d['owner_sequence']]
+                                                        if x['sequence'] > d['owner_sequence']
+                                                        and self.task_scoped([x])]
         return result
 
     def retry_context(self):
@@ -197,8 +345,9 @@ class Execution:
 
     def execution_context(self, count, *, force=False):
         state = self.run_state()
-        owners = []
-        for item in self.state['owners']:
+        authorization = self.original_authorization()
+        owners = [authorization] if authorization else []
+        for item in self.task_scoped(self.state['owners']):
             value = {k: v for k, v in item.items() if k != 'text'}
             if len(item['text']) <= 2000:
                 value['text'] = item['text']
@@ -259,7 +408,7 @@ class Execution:
         return {'version': 'execution-context-1' if mode == 'baseline' else 'execution-working-context-1',
             'mode': mode, 'rounds': rounds, **projection,
             'received_guidance': self.received_guidance(count), 'owner_inputs': owners,
-            'cognitive_feedback': {'last_reviewed': self.state['last_reviewed'],
+            'cognitive_feedback': {'last_reviewed': self.current_review(),
                                   'completion_review_required': self.feedback_required()},
             'guidance_scope': 'Exact prior advice in receiving-decision order, not a new delivery or verified fact. '
                 'NoChange does not revoke advice. Consider later guidance and owner inputs for current applicability.'}
@@ -267,9 +416,11 @@ class Execution:
     def recovery_context(self):
         # These owner facts are projected after ModelRequest construction.
         # NoChange does not make a newly received owner statement disappear.
-        return {'owner_inputs': [item['source_ref'] for item in self.state['owners']],
+        return {'owner_inputs': [item['source_ref'] for item in self.task_scoped(self.state['owners'])],
+                **({'original_authorization': self.original_authorization()}
+                   if 'stage1_authority' in self.state else {}),
                 'files': self.evidence.snapshot(self.watched())['files'],
-                'guidance': [item['id'] for item in self.state['deliveries']
+                'guidance': [item['id'] for item in self.task_scoped(self.state['deliveries'])
                              if not item['status'].startswith('expired')]}
 
     def changed_decision_context(self, frame):
@@ -387,12 +538,17 @@ class Execution:
                       'predictions': {p['ref']: self.observation_ref(p, content['files']) for p in predictions}},
             observation={'goal': execution_goal(self.state['task']), 'status': state.status,
                          'recent_outcome': canonical(outcome), 'failure': state.failure} if state else None)
+        if 'stage1_authority' in self.state:
+            content['task_contract'] = self.state['task_contract']
         return content
 
     @staticmethod
     def target(snapshot):
-        return {key: snapshot.get(key) for key in
-                ('execution_ref', 'decision', 'state_version', 'status', 'files')}
+        result = {key: snapshot.get(key) for key in
+                  ('execution_ref', 'decision', 'state_version', 'status', 'files')}
+        if 'task_contract' in snapshot:
+            result['task_contract'] = snapshot['task_contract']
+        return result
 
     def outcome_identity(self, snapshot):
         # A waiting Actor can keep the same checkpoint across many reviews.
@@ -403,7 +559,9 @@ class Execution:
                             review['activity_id'] if review else None])
 
     def handle(self, event):
-        if event.target != 'execution' or event.source not in {'mind', 'mind.results'}:
+        routed_decision = ('stage1_authority' in self.state and event.source == 'nervous'
+                           and event.kind in {'mind.decision', 'execution.control'})
+        if event.target != 'execution' or (event.source not in {'mind', 'mind.results'} and not routed_decision):
             raise ValueError('execution_event_authority_conflict')
         digest = fingerprint(event.document())
         previous = self.state['handled'].get(event.event_id)
@@ -412,7 +570,15 @@ class Execution:
                 raise ValueError('execution_event_identity_conflict')
             return tuple(Event(**x) for x in previous['responses'])
         data = plain(event.data)
-        if event.kind == 'execution.inspect':
+        if event.kind == 'execution.control':
+            if (not routed_decision or set(data) != {'action', 'control_ref'}
+                    or data['action'] not in {'stop', 'resume', 'revoke'}
+                    or type(data['control_ref']) is not str or not data['control_ref']):
+                raise ValueError('invalid_execution_control')
+            if data['action'] != 'resume' or (self.state.get('control') or {}).get('action') != 'revoke':
+                self.state['control'] = data
+            emitted = ()
+        elif event.kind == 'execution.inspect':
             emitted = (reply(event, 'execution.snapshot', {'activity_id': data['activity_id'], 'snapshot': self.capture()}),)
         elif event.kind == 'evidence.read':
             try:
@@ -426,6 +592,16 @@ class Execution:
             emitted = (reply(event, 'evidence.result', {'activity_id': data['activity_id'],
                 'request_ref': data['request_ref'], **result}),)
         elif event.kind == 'prediction.watch':
+            if 'stage1_authority' in self.state:
+                if 'task_contract' not in data:
+                    raise ValueError('prediction_task_contract_required')
+                if data['task_contract'] != self.state['task_contract']:
+                    emitted = (reply(event, 'prediction.receipt', {'activity_id': data['activity_id'],
+                        'ref': data['ref'], 'status': 'stale_task'}),)
+                    self.state['handled'][event.event_id] = {'digest': digest,
+                        'responses': [item.document() for item in emitted]}
+                    self.save()
+                    return emitted
             workspace_path(self.workspace, data['observation_file'])
             previous = next((p for p in self.state['predictions'] if p['ref'] == data['ref']), None)
             registration = {k: data[k] for k in
@@ -438,6 +614,7 @@ class Execution:
                 state = self.run_state()
                 self.state['predictions'].append({**registration,
                     'execution_ref': state.execution_id if state else None,
+                    **({'task_binding': self.task_binding()} if 'stage1_authority' in self.state else {}),
                     'registered_after_review': (self.state['last_reviewed'] or {}).get('activity_id')})
             emitted = (reply(event, 'prediction.receipt', {'activity_id': data['activity_id'],
                 'ref': data['ref'], 'status': 'watching'}),)
@@ -451,6 +628,11 @@ class Execution:
 
     def accept_decision(self, event, data):
         task = data['task']
+        if (self.state.get('control') or {}).get('action') in {'stop', 'revoke'}:
+            state = self.run_state()
+            return {'activity_id': data['activity_id'], 'status': 'control_blocked',
+                    'execution_ref': state.execution_id if state else None,
+                    'decision': self.actor.next_root_decision_id if self.actor else None}
         directive = data.get('directive')
         if directive is not None and (set(directive) != {'id', 'text'}
                 or not isinstance(directive['text'], str) or not directive['text'].strip()
@@ -461,13 +643,25 @@ class Execution:
                     and data['reviewed']['predictions'][prediction['ref']]
                     != self.observation_ref(prediction, data['snapshot']['files'])):
                 raise ValueError('prediction_review_source_conflict')
-        execution_goal(task)
-        if self.state['task'] is not None and task != self.state['task']:
-            raise ValueError('execution_owner_goal_conflict')
-        self.state['task'] = task
         current = self.capture()
         initialization = self.state['initializing']
         recovering = initialization is not None and initialization['event_id'] == event.event_id
+        contract = data.get('task_contract')
+        if 'stage1_authority' in self.state:
+            rejection = self.accept_task_contract(contract, task, directive, data['snapshot'], current, recovering)
+            if rejection:
+                if rejection == 'superseded':
+                    self.request_reassessment(event.event_id, data['activity_id'], current,
+                        'The reviewed Execution snapshot changed before the proposed Task could be accepted. '
+                        'Reassess the original event against the current observation; no Task or direction was accepted.')
+                return {'activity_id': data['activity_id'], 'status': rejection,
+                        'execution_ref': current['execution_ref'], 'decision': current['decision']}
+        else:
+            execution_goal(task)
+        if ('stage1_authority' not in self.state and self.state['task'] is not None
+                and task != self.state['task']):
+            raise ValueError('execution_owner_goal_conflict')
+        self.state['task'] = task
         response = {'activity_id': data['activity_id'], 'status': 'accepted',
                     'execution_ref': current['execution_ref'], 'decision': current['decision']}
         if self.target(data['snapshot']) != self.target(current) and not recovering:
@@ -481,7 +675,8 @@ class Execution:
             if len(self.state['owners']) >= 32:
                 raise ValueError('owner_input_lifetime_bound')
             record = self.evidence.put(canonical(owner), 'owner event ' + owner['event_id'], kind='owner_statement')
-            self.state['owners'].append({**owner, 'sequence': len(self.state['owners']) + 1, 'source_ref': record['ref']})
+            self.state['owners'].append({**owner, 'sequence': len(self.state['owners']) + 1, 'source_ref': record['ref'],
+                                        **({'task_binding': self.task_binding()} if 'stage1_authority' in self.state else {})})
         for d in self.state['deliveries']:
             if d['id'] in data['reviewed']['deliveries'] and d.get('call_ref'):
                 d['reviewed_by'] = data['activity_id']
@@ -492,28 +687,47 @@ class Execution:
                     raise ValueError('prediction_review_source_conflict')
                 p.update(reviewed_by=data['activity_id'], reviewed_source=source)
         self.state['last_reviewed'] = {'activity_id': data['activity_id'],
-            **self.target(data['snapshot'])}
+            **self.target(data['snapshot']),
+            **({'task_binding': (fingerprint(data['snapshot']['task_contract'])
+                                if data['snapshot'].get('task_contract') else None)}
+               if 'stage1_authority' in self.state else {})}
         if directive is not None:
             state = self.run_state()
-            if recovering or state is None or state.status in {'completed', 'failed'}:
+            task_changed = ('stage1_authority' in self.state
+                            and current.get('task_contract') != self.state['task_contract'])
+            if recovering or task_changed or state is None or state.status in {'completed', 'failed'}:
                 if not recovering:
                     self.state['initializing'] = {'event_id': event.event_id, 'prior': self.target(current)}
                     if state:
-                        self.state['prior_runs'].append({'execution_ref': state.execution_id,
-                            'status': state.status, 'run': self.state['active_run'], 'continuation_event': event.event_id})
+                        prior_run = {'execution_ref': state.execution_id,
+                            'status': state.status, 'run': self.state['active_run'], 'continuation_event': event.event_id,
+                            **({'task_contract': current.get('task_contract')} if 'stage1_authority' in self.state else {})}
+                        if task_changed and state.status == 'waiting':
+                            # A completed Wait remains historical. Any received but
+                            # uncommitted next plan is barred by this new Run binding.
+                            pending = self.history._restore({'execution_id': state.execution_id,
+                                                             'decision_count': state.decision_count})
+                            prior_run['retirement'] = {'reason': 'task_revision_replaced_at_wait',
+                                'replaced_by': self.task_binding(),
+                                'retired_request_refs': [fingerprint(record['wire']) for record in pending]}
+                        self.state['prior_runs'].append(prior_run)
                     self.state['active_run'] = 0 if self.state['active_run'] is None else self.state['active_run'] + 1
                     self.save()
                     if self.actor is not None:
                         self.actor.shutdown()
                     self.open_actor()
                 if self.actor.state is None:
-                    self.actor.run_goal(execution_goal(task), FileContentEquals('.lumina-complete', 'done'), defer_actions=True)
+                    token = 'done:' + self.task_binding()[:24] if self.task_binding() else 'done'
+                    self.actor.run_goal(execution_goal(task), FileContentEquals('.lumina-complete', token), defer_actions=True)
                 state = self.run_state()
                 if state.decision_count != 0:
                     raise ValueError('execution_initialization_already_advanced')
                 for p in self.state['predictions']:
-                    if p['execution_ref'] is None:
+                    if (p['execution_ref'] is None and ('stage1_authority' not in self.state
+                            or p['activity_id'] == data['activity_id'])):
                         p['execution_ref'] = state.execution_id
+                        if 'stage1_authority' in self.state:
+                            p['task_binding'] = self.task_binding()
             decision = self.actor.next_root_decision_id
             if decision is None:
                 raise ValueError('no_eligible_execution_decision')
@@ -522,7 +736,8 @@ class Execution:
                     old['status'] = 'expired_by_later_guidance'
             delivery = {**directive, 'activity_id': data['activity_id'], 'event_id': event.event_id,
                 'execution_ref': state.execution_id, 'decision': decision, 'status': 'bound',
-                'files': current['files'], 'owner_sequence': len(self.state['owners'])}
+                'files': current['files'], 'owner_sequence': len(self.state['owners']),
+                **({'task_binding': self.task_binding()} if 'stage1_authority' in self.state else {})}
             previous = next((x for x in self.state['deliveries'] if x['id'] == directive['id']), None)
             if previous is not None:
                 if previous != delivery:
@@ -539,6 +754,55 @@ class Execution:
                 self.actor.deliver_event(owner['event_type'], owner['text'], defer_actions=True)
             self.state['stop_reason'] = 'awaiting_user' if state is None else None
         return response
+
+    def accept_task_contract(self, contract, task, directive, snapshot, current, recovering):
+        """Check an immutable proposal against the still-current receiving boundary."""
+        if contract is None:
+            if task is not None or directive is not None or self.state['task_contract'] is not None:
+                raise ValueError('execution_task_contract_required')
+            return None
+        fields = {'id', 'revision', 'intention_id', 'intention_revision', 'authority_ref', 'goal', 'acceptance'}
+        if (type(contract) is not dict or set(contract) != fields
+                or any(type(contract[k]) is not str or not contract[k] for k in fields - {'revision', 'intention_revision'})
+                or any(type(contract[k]) is not int or contract[k] < 1 for k in ('revision', 'intention_revision'))):
+            raise ValueError('invalid_execution_task_contract')
+        if contract['authority_ref'] != self.state['stage1_authority']['ref']:
+            raise ValueError('execution_task_authority_conflict')
+        token = 'done:' + fingerprint(contract)[:24]
+        expected = {'business_goal': contract['goal'] + '\n\nAcceptance:\n' + contract['acceptance'],
+                    'execution_protocol': EXECUTION_PROTOCOL.replace('exact content done', 'exact content ' + token)}
+        if task != expected:
+            raise ValueError('execution_task_projection_conflict')
+        execution_goal(task)
+        accepted = self.state['task_contract']
+        if directive is not None and self.preserve_unknown_action():
+            return 'unknown_action'
+        if accepted == contract:
+            return None
+        prior = [item for item in self.state['task_contracts'] if item['id'] == contract['id']]
+        if any(item['revision'] == contract['revision'] and item != contract for item in prior):
+            raise ValueError('execution_task_version_conflict')
+        if prior and contract['revision'] <= max(item['revision'] for item in prior):
+            return 'stale_task'
+        if contract['revision'] != (max(item['revision'] for item in prior) + 1 if prior else 1):
+            raise ValueError('execution_task_version_conflict')
+        state = self.run_state()
+        if self.preserve_unknown_action():
+            return 'unknown_action'
+        revising_wait = (state and state.status == 'waiting' and accepted
+                        and accepted['id'] == contract['id'])
+        if state and state.status not in {'completed', 'failed'} and not revising_wait:
+            return 'task_not_settled'
+        if revising_wait:
+            # Validate any pending provider outcome before mutating owner state.
+            self.history._restore({'execution_id': state.execution_id, 'decision_count': state.decision_count})
+        if directive is None:
+            return 'task_requires_direction'
+        if self.target(snapshot) != self.target(current) and not recovering:
+            return 'superseded'
+        self.state['task_contracts'].append(dict(contract))
+        self.state['task_contract'] = dict(contract)
+        return None
 
     def request_reassessment(self, cause, activity_id, snapshot, reason):
         """Persist changed applicability as an event, without choosing new direction."""
@@ -575,6 +839,8 @@ class Execution:
         return None
 
     def advance(self):
+        if (self.state.get('control') or {}).get('action') in {'stop', 'revoke'}:
+            return False
         state = self.run_state()
         if state is None or state.status in {'completed', 'failed', 'child_pending'}:
             return False
@@ -614,7 +880,7 @@ class Execution:
         self.save()
         return self.run_state().version != before
 
-    def poll(self):
+    def poll(self, *, observation_cycle=None):
         if self.state['outbox']:
             return tuple(Event(**x) for x in self.state['outbox'])
         state = self.run_state()
@@ -624,16 +890,19 @@ class Execution:
         requests = ([item for item in self.actor.cognitive_requests()
                      if item[0] not in self.state['handled_requests']] if self.actor else [])
         review = self.state['last_reviewed']
-        changed_predictions = []
-        for prediction in self.state['predictions']:
+        changed_predictions, source_changes = [], []
+        for prediction in self.task_scoped(self.state['predictions']):
             # A review after registration records notification even if the body
             # stayed unread. It does not acknowledge the prediction comparison.
             notified = (review
                         and review['activity_id'] != prediction.get('registered_after_review'))
             previous = (self.observation_ref(prediction, review['files']) if notified
                         else prediction.get('reviewed_source', prediction['before_observation_ref']))
-            if self.observation_ref(prediction, snapshot['files']) != previous:
+            observed = self.observation_ref(prediction, snapshot['files'])
+            if observed != previous:
                 changed_predictions.append(prediction)
+                source_changes.append({'file': prediction['observation_file'],
+                                       'before': {'ref': previous}, 'after': {'ref': observed}})
         dependencies = self.dependencies(snapshot['files'])
         same_files = review and review['execution_ref'] == snapshot['execution_ref'] and review['files'] == snapshot['files']
         if (not requests and not changed_predictions and review
@@ -642,18 +911,16 @@ class Execution:
             # handled this notification. Waiting alone is not new evidence.
             self.save()
             return ()
-        reason = None
-        if requests:
-            reason = 'Execution explicitly requests high-level judgment; its question is an attributed actor judgment.'
-        elif changed_predictions:
-            reason = 'A declared prediction observation changed. Check its source, action and conditions before comparing.'
-        elif self.state['stop_reason'] == 'feedback_budget_reserved' and any(dependencies):
-            reason = 'Execution yielded its remaining allocation for pending feedback; budget exhaustion proves no business conclusion.'
-        elif self.actor and self.actor.completion_review_pending() and any(dependencies):
-            reason = 'Execution proposed completion; outstanding guidance or computation results require business-result feedback.'
-        elif state and state.status in {'waiting', 'completed', 'failed'} and (any(dependencies) or not same_files):
-            reason = 'Execution reached a significant result or outside wait; assess current business evidence and remaining conditions.'
-        if reason is None:
+        from Nervous.triggers import execution_reasons
+        reasons = execution_reasons({
+            'requests': bool(requests), 'changed_predictions': bool(changed_predictions),
+            'budget_feedback': self.state['stop_reason'] == 'feedback_budget_reserved' and any(dependencies),
+            'completion_feedback': bool(self.actor and self.actor.completion_review_pending() and any(dependencies)),
+            'significant_result': bool(state and state.status in {'waiting', 'completed', 'failed'}
+                                       and (any(dependencies)
+                                            or (not review or review.get('status') != state.status
+                                                if 'stage1_authority' in self.state else not same_files)))})
+        if not reasons:
             self.save()
             return ()
         # Several mechanical triggers may describe the same committed outcome.
@@ -664,7 +931,9 @@ class Execution:
             self.save()
             return ()
         event = Event('execution-change-' + identity[:24], 'execution', 'mind', 'execution.changed',
-                      {'snapshot': snapshot, 'reason': reason})
+                      {'snapshot': snapshot, 'reason': reasons[0].reason,
+                       **({'observation_cycle': observation_cycle, 'source_changes': source_changes}
+                          if observation_cycle is not None and 'stage1_authority' in self.state else {})})
         self.state['announced'].append(identity)
         self.state['handled_requests'].extend(item[0] for item in requests)
         self.state['outbox'].append(event.document())
@@ -679,6 +948,8 @@ class Execution:
         state = self.run_state()
         deliveries, predictions = self.dependencies()
         return {'status': state.status if state else 'not_started',
+            **({'control': self.state.get('control'), 'task_contract': self.state.get('task_contract')}
+               if 'stage1_authority' in self.state else {}),
             'execution_ref': state.execution_id if state else None,
             'decision_count': state.decision_count if state else 0,
             'waiting_for': state.waiting_for if state else None,

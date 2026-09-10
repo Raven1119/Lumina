@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import threading
+from urllib.parse import parse_qsl
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping
@@ -21,6 +22,8 @@ from Mind.trace import (MindTrace, TraceError, NATIVE_PROTOCOL_VERSION, CAPABILI
     CAPABILITY_REQUESTED, _freeze, _thaw, _strict_json_object, _reject_json_constant,
     replay_activation, observation_ref, consultation_allowed, ACTIVITY_CALLS, cognitive_phase,
     ACTIVATION_STARTED, MODEL_OUTPUT_RECORDED)
+from Mind.intention import (COGNITIVE_VERSION as PURSUIT_CONTRACT, bind_pursuit,
+    effects_schema, apply_effects, source_refs as pursuit_source_refs, validate_task_projection)
 
 MAX_ACTIVATIONS=64
 MAX_JOURNAL_RECORDS=(ACTIVITY_CALLS+1)*MAX_ACTIVATIONS
@@ -82,6 +85,9 @@ def cognitive_step_schema(sources, items=(), capabilities=(), *, contract=None):
         if name not in capabilities:continue
         fields={'type':{'enum':['capability_request']},'capability':{'enum':[name]},
             'refs':{'type':'array','minItems':1,'maxItems':3,'items':_schema_text(128)}}
+        if name == 'read_evidence' and contract == PURSUIT_CONTRACT:
+            fields['refs']['items'] = {**_schema_text(256), 'anyOf': [
+                {'maxLength': 128}, {'pattern': '^view:'}]}
         if name=='analyze_world_model':fields.update(question=_schema_text(analysis_question_limit()),model_ref={'type':'string','maxLength':128},observation_file=_schema_text(128))
         option=_schema_object(fields)
         if name=='analyze_world_model':option['required'].remove('observation_file')
@@ -90,6 +96,12 @@ def cognitive_step_schema(sources, items=(), capabilities=(), *, contract=None):
     result['properties']['updates']['description']='Only added or changed knowledge. Unsubmitted records stay unchanged. Reuse an ID to replace the complete record; retire obsolete knowledge explicitly.'
     result['properties']['current']={'type':'array','uniqueItems':True,'items':_schema_text(64),
         'description':'Optional complete selection after updates. Omitted IDs leave current understanding; history remains. Omit this field to retain unchanged records.'}
+    if contract == PURSUIT_CONTRACT:
+        result['properties']['effects'] = effects_schema(sources)
+        result['properties']['effects']['description'] = ('Optional versioned pursuit, Task and Watch changes committed with cognition. '
+            'Use an empty list or null for unchanged effects. A new Task requires an explicit high-level directive.')
+        result['properties']['current']['description'] = ('Optional selection within this activity\'s visible cognition. '
+            'Unseen knowledge remains accepted. Leaving attention never retires a pursuit.')
     return result
 
 
@@ -134,6 +146,8 @@ class MindInput:
     evidence: tuple[Evidence,...]=()
     execution_observation: ExecutionObservation | None=None
     owner_task: dict | None=None
+    pursuit: dict | None=None
+    attention: dict | None=None
 
 
 @dataclass(frozen=True)
@@ -164,6 +178,7 @@ class MindReceipt:
     output: Mapping[str, object] | None = None
     error: str | None = None
     request: MindRequest | None = None
+    effects: Mapping[str, object] | None = None
 
 def _json(text: str):
     return json.loads(text, object_pairs_hook=_strict_json_object, parse_constant=_reject_json_constant)
@@ -184,13 +199,31 @@ def _input_document(value):
     for item in value.evidence:
         if type(item) is not Evidence or item.origin not in {'execution','computation'}:raise ValueError('invalid_evidence')
         _text(item.ref,128)
-        if not isinstance(item.text,str) or len(item.text)>MAX_EVIDENCE_CHARS:raise ValueError('invalid_evidence')
+        authority = value.pursuit.get('authorization') if isinstance(value.pursuit, dict) else None
+        original_authority = (isinstance(authority, dict) and item.ref == authority.get('ref')
+                              and item.text == authority.get('text'))
+        limit = 4000 if original_authority else MAX_EVIDENCE_CHARS
+        if not isinstance(item.text,str) or len(item.text)>limit:raise ValueError('invalid_evidence')
         if item.ref in seen or item.ref.startswith('activation:observation'):raise ValueError('evidence_identity_conflict')
         seen.add(item.ref)
     if value.execution_observation is not None:
         if type(value.execution_observation) is not ExecutionObservation or value.execution_observation.goal!=value.goal or value.execution_observation.status!=value.execution_status:raise ValueError('execution_snapshot_conflict')
     if value.owner_task is not None:mind_task_view(value.owner_task,value.goal)
-    return _json(_canonical_json(asdict(value)))
+    document = asdict(value)
+    if value.pursuit is None:
+        document.pop('pursuit')  # Preserve old input digests and frozen activity replay.
+        if value.attention is not None:
+            raise ValueError('attention_requires_pursuit')
+    else:
+        # Identity relative to accepted state is checked before activity admission.
+        if type(value.pursuit) is not dict:
+            raise ValueError('invalid_pursuit_input')
+        validate_task_projection(value.pursuit, value.owner_task)
+    if value.attention is None:
+        document.pop('attention')
+    elif type(value.attention) is not dict or len(_canonical_json(value.attention)) > 16000:
+        raise ValueError('attention_frame_bound')
+    return _json(_canonical_json(document))
 
 
 def _basis(basis,sources,*,contract=None):
@@ -234,6 +267,84 @@ def _apply_updates(items,updates,sources,event_id,*,contract=None,current=None):
     for item in active.values():
         if item['kind']=='scenario' and any(ref not in active or active[ref]['kind']!='belief' for ref in item['assumptions']):raise ValueError('unknown_scenario_assumption')
     return active
+
+
+def apply_cognitive_commit(items, submitted, sources, event_id, context):
+    """The model adapter and durable owner share exactly the same structural check."""
+    current = submitted.get('current')
+    pursuit = context.get('pursuit')
+    if pursuit is not None:
+        visible = {item['id'] for item in context['items']}
+        if any(not update['id'].startswith('new:') and update['id'] not in visible
+               for update in submitted['updates']):
+            raise ValueError('unread_cognitive_item')
+        if current is not None:
+            current = [*current, *(identity for identity in items if identity not in visible)]
+    elif 'effects' in submitted:
+        raise ValueError('pursuit_effects_not_enabled')
+    candidate = _apply_updates(items, submitted['updates'], sources, event_id, current=current)
+    revised, effects = apply_effects(pursuit, submitted, sources, candidate, event_id,
+                                   task_status=context.get('task_status'), activation_id=context.get('activation_id'))
+    return candidate, revised, effects
+
+
+def _requested_cognitive_items(payload):
+    if payload.get('capability') != 'read_evidence':
+        return ()
+    result = []
+    for ref in payload.get('refs', ()):
+        prefix = 'view:mind.cognition?'
+        if not ref.startswith(prefix):
+            continue
+        pairs = parse_qsl(ref[len(prefix):], strict_parsing=True)
+        if len(pairs) == 1 and pairs[0][0] == 'item_ref':
+            result.append(pairs[0][1])
+    return tuple(result)
+
+
+def context_with_cognitive_reads(context, events):
+    """Extend only this activity's visible set from correlated current-owner reads."""
+    if context.get('pursuit') is None:
+        return copy.deepcopy(context)
+    result = copy.deepcopy(context)
+    items = {item['id']: item for item in result['items']}
+    sources = {source['ref']: source for source in result['evidence']}
+    requested = ()
+    for event in events:
+        if event.event_type == CAPABILITY_REQUESTED:
+            requested = _requested_cognitive_items(event.payload)
+        elif event.event_type == CAPABILITY_OBSERVED and requested:
+            observation = event.payload['observation']
+            if observation['capability'] != 'read_evidence':
+                continue
+            body = _json(observation['text'])
+            if body.get('read_result') != 'sources-v1':
+                continue
+            for source in body['sources']:
+                if not source['ref'].startswith('view-result:'):
+                    continue
+                view = _json(source['text'])
+                scope = view.get('scope', {})
+                if (view.get('owner') != 'mind' or not isinstance(scope, dict)
+                        or scope.get('kind') != 'cognitive_item' or scope.get('item_ref') not in requested):
+                    continue
+                if (source['ref'] != 'view-result:' + _digest(view)[:24]
+                        or view['revision'] != context['revision'] or view['truncated']):
+                    raise ValueError('cognitive_view_identity_conflict')
+                if view['missing']:
+                    continue
+                item = view['content']['item']
+                if item['id'] != scope['item_ref']:
+                    raise ValueError('cognitive_view_identity_conflict')
+                for revealed in [item, *view['content'].get('dependencies', [])]:
+                    items[revealed['id']] = revealed
+                for basis in view['content']['basis_sources']:
+                    if basis['ref'] in sources and basis != sources[basis['ref']]:
+                        raise ValueError('evidence_identity_conflict')
+                    sources[basis['ref']] = basis
+    result['items'] = list(items.values())
+    result['evidence'] = list(sources.values())
+    return result
 
 class Cognition:
 
@@ -319,6 +430,89 @@ class Cognition:
             state, _, _ = self._fold(self._load())
             intention = state['intention']
             return MindView(state['revision'], intention[0] if intention else None, intention[1] if intention else None, tuple((_freeze(item) for item in state['items'].values())))
+
+    def pursuit_state(self):
+        """Accepted pursuit and proposed immutable Task versions, never execution progress."""
+        with self._lock:
+            state, _, _ = self._fold(self._load())
+            return copy.deepcopy(state.get('pursuit'))
+
+    @staticmethod
+    def _item_headers(state, starts, ends):
+        metadata = {}
+        for event_id, start in starts.items():
+            end = ends.get(event_id, {})
+            if end.get('kind') != 'accepted':
+                continue
+            task = start['context'].get('execution_task')
+            task_ref = {key: task[key] for key in ('id', 'revision')} if task else None
+            for update in end['updates']:
+                identity = ('item-' + _digest([event_id, update['id']])[:20]
+                            if update['id'].startswith('new:') else update['id'])
+                metadata[identity] = {'task_ref': task_ref, 'last_revision': end['revision']}
+        return [{'id': item['id'], 'kind': item['kind'], 'status': item['status'],
+                 'basis_refs': [basis['ref'] for basis in item.get('basis', [])], **metadata[item['id']],
+                 **({'dependencies': list(item['assumptions'])} if item['kind'] == 'scenario' else {})}
+                for item in state['items'].values()]
+
+    def attention_catalogue(self):
+        """Bounded headers derived from accepted knowledge; no extra authority store."""
+        with self._lock:
+            state, starts, ends = self._fold(self._load())
+            return {'revision': state['revision'], 'items': self._item_headers(state, starts, ends)}
+
+    @classmethod
+    def _item_view(cls, state, starts, ends, item_ref):
+        item = state['items'].get(item_ref)
+        header = next((entry for entry in cls._item_headers(state, starts, ends) if entry['id'] == item_ref), None)
+        dependencies = ([state['items'][ref] for ref in item['assumptions']]
+                        if item and item['kind'] == 'scenario' else [])
+        # A scenario's accepted assumptions are part of its complete read, just
+        # as they are part of the initial AttentionFrame's structural closure.
+        basis_refs = dict.fromkeys(basis['ref'] for record in ([item, *dependencies] if item else [])
+                                   for basis in record.get('basis', []))
+        view = {'owner': 'mind', 'revision': state['revision'],
+                'scope': {'kind': 'cognitive_item', 'item_ref': item_ref},
+                'content': {'item': copy.deepcopy(item), 'last_revision': header['last_revision'],
+                            **({'dependencies': copy.deepcopy(dependencies)} if dependencies else {}),
+                            'basis_sources': [copy.deepcopy(state['sources'][ref])
+                                              for ref in basis_refs]} if item else None,
+                'missing': item is None, 'truncated': False}
+        view['ref'] = 'mind-cognition:' + _digest(view)[:24]
+        return view
+
+    def cognitive_item_view(self, item_ref):
+        """Read the current complete record and its original basis, not a new truth assessment."""
+        _text(item_ref, 64)
+        with self._lock:
+            state, starts, ends = self._fold(self._load())
+            return self._item_view(state, starts, ends, item_ref)
+
+    @classmethod
+    def _validate_cognitive_read(cls, request, observation, state, starts, ends):
+        wanted = _requested_cognitive_items(request.payload)
+        if not wanted or observation is None or observation.get('capability') != 'read_evidence':
+            return
+        body = _json(observation['text'])
+        if body.get('read_result') != 'sources-v1':
+            return  # Capacity or failed reads never reveal another editable item.
+        sources = {source['ref']: source['text'] for source in body['sources']}
+        expected_records = {}
+        for item_ref in wanted:
+            expected = cls._item_view(state, starts, ends, item_ref)
+            expected_ref, expected_text = 'view-result:' + _digest(expected)[:24], _canonical_json(expected)
+            expected_records[item_ref] = (expected_ref, expected_text)
+            if sources.get(expected_ref) != expected_text:
+                raise ValueError('cognitive_view_identity_conflict')
+        for source in body['sources']:
+            if not source['ref'].startswith('view-result:'):
+                continue
+            view = _json(source['text'])
+            scope = view.get('scope', {})
+            if (view.get('owner') == 'mind' and isinstance(scope, dict)
+                    and scope.get('kind') == 'cognitive_item' and scope.get('item_ref') in expected_records
+                    and (source['ref'], source['text']) != expected_records[scope['item_ref']]):
+                raise ValueError('cognitive_view_identity_conflict')
 
     def has_replayable_result(self, event_id: str) -> bool:
         """Identify a durable receipt or accepted native answer requiring no call.
@@ -443,6 +637,9 @@ class Cognition:
                 'content': {'event_id': event_id, 'status': ends[event_id]['kind'],
                     'pieces': [self._history_piece(start, event, prior_refs)
                                for event in MindTrace.reopen(self._trace_path(start)).events]}})
+            if start['context'].get('pursuit') is not None:
+                task = start['context'].get('execution_task')
+                segments[-1]['content']['task_ref'] = {key: task[key] for key in ('id', 'revision')} if task else None
             # Source text remains at its first historical occurrence. Repeated
             # initial evidence is a projection of that same immutable source.
             prior_refs.update(item['ref'] for item in start['input']['evidence'])
@@ -458,7 +655,8 @@ class Cognition:
         if end['kind'] == 'failed':
             return MindReceipt(start['event_id'], 'failed', start['base_revision'], error=end['error'])
         replay = replay_activation(MindTrace.reopen(self._trace_path(start)).events)
-        return MindReceipt(start['event_id'], 'duplicate' if duplicate else 'accepted', end['revision'], replay.final_result)
+        return MindReceipt(start['event_id'], 'duplicate' if duplicate else 'accepted', end['revision'],
+                           replay.final_result, effects=copy.deepcopy(end.get('effects')))
 
     @staticmethod
     def _request(start: dict, trace: MindTrace, request_ref=None) -> MindRequest:
@@ -480,8 +678,9 @@ class Cognition:
         return MindReceipt(start['event_id'], 'waiting', start['base_revision'], request=self._request(start, trace))
 
     @staticmethod
-    def _sources(start: dict, trace: MindTrace | None = None) -> dict:
-        sources = {item["ref"]: item for item in start["context"]["evidence"]}
+    def _sources(start: dict, trace: MindTrace | None = None, *, retained_sources=None) -> dict:
+        context = context_with_cognitive_reads(start['context'], trace.events) if trace else start['context']
+        sources = {item["ref"]: item for item in context["evidence"]}
         if trace is not None:
             for event in trace.events:
                 if event.event_type != CAPABILITY_OBSERVED:
@@ -492,6 +691,14 @@ class Cognition:
                     if ref in sources and sources[ref] != value:
                         raise ValueError("evidence_identity_conflict")
                     sources[ref] = value
+        if start['context'].get('pursuit') is not None:
+            for ref, source in list(sources.items()):
+                if ref.startswith('activation:observation'):
+                    durable = ref.replace('activation:', start['activation_id'] + ':', 1)
+                    sources[durable] = {**source, 'ref': durable}
+        for ref, source in sources.items():
+            if ref in (retained_sources or {}) and retained_sources[ref] != source:
+                raise ValueError('evidence_identity_conflict')
         return sources
 
     def _fold(self, records: list[dict]):
@@ -518,13 +725,16 @@ class Cognition:
                   and isinstance(record.get('activation_id'), str)
                   and record['activation_id'].startswith('activation-')
                   and record['activation_id'][11:].isalnum()}
-        return {'revision': state['revision'], 'items': list(state['items'].values()),
-                'diagnostic': diagnostic, 'traces': traces}
+        result = {'revision': state['revision'], 'items': list(state['items'].values()),
+                  'diagnostic': diagnostic, 'traces': traces}
+        if state.get('pursuit') is not None:
+            result['pursuit'] = copy.deepcopy(state['pursuit'])
+        return result
 
     @classmethod
     def fold_records(cls, records: list[dict], directory):
         state = {"revision": 0, "intention": None, "items": {}, "sources": {}, "execution_ref": None,
-                 "results": {}, "owner_task": None}
+                 "results": {}, "owner_task": None, "pursuit": None}
         starts: dict[str, dict] = {}
         ends: dict[str, dict] = {}
         for record in records:
@@ -545,7 +755,7 @@ class Cognition:
                         or record["activation_id"] != "activation-" + _digest([event_id, value])[:24]
                         or record["base_revision"] != state["revision"]
                         or record["budget_version"] != ACTIVITY_BUDGET_VERSION
-                        or context.get("contract_version") != COGNITIVE_CONTRACT_VERSION
+                        or context.get("contract_version") != (PURSUIT_CONTRACT if value.get('pursuit') is not None else COGNITIVE_CONTRACT_VERSION)
                         or any(prior not in ends for prior in starts)):
                     raise ValueError("invalid_cognition_start")
                 trace_path = Path(directory) / (record['activation_id'] + '.jsonl')
@@ -555,10 +765,25 @@ class Cognition:
                             != _canonical_json(context)):
                         raise ValueError("cognition_context_mismatch")
                 intention = [value["intention_ref"], value["intention_revision"], value["goal"]]
-                if state["intention"] is not None and intention != state["intention"]:
+                if value.get('pursuit') is not None:
+                    if state['intention'] is not None and state['pursuit'] is None:
+                        raise ValueError('pursuit_mode_conflict')
+                    state['pursuit'] = bind_pursuit(value['pursuit'], state['pursuit'])
+                    validate_task_projection(value['pursuit'], value.get('owner_task'))
+                    if context.get('pursuit') != state['pursuit']:
+                        raise ValueError('pursuit_context_mismatch')
+                    if context.get('attention') != value.get('attention'):
+                        raise ValueError('attention_context_mismatch')
+                    if (context.get('task_status') != value['pursuit']['task_status']
+                            or context.get('execution_task') != value['pursuit'].get('execution_task', value['pursuit']['task'])
+                            or context.get('activation_id') != record['activation_id']):
+                        raise ValueError('pursuit_context_mismatch')
+                elif state['pursuit'] is not None:
+                    raise ValueError('pursuit_mode_conflict')
+                elif state["intention"] is not None and intention != state["intention"]:
                     raise ValueError("intention_conflict")
                 task = value.get("owner_task")
-                if state["owner_task"] is not None and task != state["owner_task"]:
+                if state['pursuit'] is None and state["owner_task"] is not None and task != state["owner_task"]:
                     raise ValueError("owner_task_identity_conflict")
                 if task is not None:
                     expected = mind_task_view(task, value["goal"])
@@ -567,7 +792,7 @@ class Cognition:
                 elif "task_view" in record["context"]:
                     raise ValueError("task_view_without_owner")
                 state["owner_task"] = task
-                state["intention"] = intention
+                state["intention"] = intention if state['pursuit'] is None else None
                 starts[event_id] = record
             elif kind == "result_received":
                 if (set(record) != {"kind", "event_id", "result", "result_digest"}
@@ -579,6 +804,7 @@ class Cognition:
                 result = record["result"]
                 if set(result) != {"request_ref", "observation", "error"} or result["request_ref"] != request.request_ref:
                     raise ValueError("result_request_conflict")
+                cls._validate_cognitive_read(request, result['observation'], state, starts, ends)
                 preview = trace.preview_capability_result(result["observation"], result["error"],
                     request_seq=int(request.request_ref.rsplit(':', 1)[1]))
                 if len(trace.events) > preview.seq:
@@ -591,8 +817,8 @@ class Cognition:
                 if event_id not in starts or event_id in ends:
                     raise ValueError("invalid_cognition_end")
                 if kind == "accepted":
-                    if set(record) not in ({"kind", "event_id", "revision", "updates"},
-                                           {"kind", "event_id", "revision", "updates", "current"}):
+                    if (set(record) - {'current', 'effects'} != {"kind", "event_id", "revision", "updates"}
+                            or ('effects' in record and state['pursuit'] is None)):
                         raise ValueError("invalid_cognition_commit")
                     start = starts[event_id]
                     if record["revision"] != state["revision"] + 1 or start["base_revision"] != state["revision"]:
@@ -610,9 +836,12 @@ class Cognition:
                             or ('current' in raw) != ('current' in record)
                             or raw.get('current') != record.get('current')):
                         raise ValueError("cognition_trace_mismatch")
-                    sources = cls._sources(start, trace)
-                    items = _apply_updates(state["items"], record["updates"], sources, event_id,
-                                           current=record.get('current'))
+                    sources = cls._sources(start, trace, retained_sources=state['sources'])
+                    visible_context = context_with_cognitive_reads(start['context'], trace.events)
+                    items, pursuit, effects = apply_cognitive_commit(state['items'], raw, sources,
+                                                                     event_id, visible_context)
+                    if effects != record.get('effects'):
+                        raise ValueError('pursuit_effect_trace_mismatch')
                     # Local observation aliases must not collide across activations.
                     aliases = {ref: ref.replace("activation:", start["activation_id"] + ":", 1)
                                for ref in sources if ref.startswith("activation:observation")}
@@ -622,9 +851,11 @@ class Cognition:
                                 basis["ref"] = aliases[basis["ref"]]
                     for local_ref, durable_ref in aliases.items():
                         sources[durable_ref] = {**sources[local_ref], "ref": durable_ref}
-                    used = {basis["ref"] for item in items.values() for basis in item.get("basis", [])}
+                    used = {basis["ref"] for item in items.values() for basis in item.get("basis", [])} | pursuit_source_refs(pursuit)
+                    retained_sources = {**state['sources'], **sources}
                     state.update(revision=record["revision"], items=items,
-                                 sources={ref: sources[ref] for ref in sorted(used)}, execution_ref=start["input"]["execution_ref"])
+                                 sources={ref: retained_sources[ref] for ref in sorted(used)}, execution_ref=start["input"]["execution_ref"],
+                                 pursuit=pursuit)
                 elif set(record) != {"kind", "event_id", "error"}:
                     raise ValueError("invalid_cognition_failure")
                 ends[event_id] = record
@@ -656,14 +887,36 @@ class Cognition:
             if any(event_id not in ends for event_id in starts):
                 return MindReceipt(value.event_id, "busy", state["revision"], error="prior_event_pending")
             intention = [value.intention_ref, value.intention_revision, value.goal]
-            if state["intention"] is not None and intention != state["intention"]:
+            if value.pursuit is not None:
+                if state['intention'] is not None and state['pursuit'] is None:
+                    raise ValueError('pursuit_mode_conflict')
+                pursuit = bind_pursuit(value.pursuit, state['pursuit'])
+            elif state['pursuit'] is not None:
+                raise ValueError('pursuit_mode_conflict')
+            else:
+                pursuit = None
+            if pursuit is None and state["intention"] is not None and intention != state["intention"]:
                 raise ValueError("intention_conflict")
-            if state["owner_task"] is not None and document["owner_task"] != state["owner_task"]:
+            if pursuit is None and state["owner_task"] is not None and document["owner_task"] != state["owner_task"]:
                 raise ValueError("owner_task_identity_conflict")
             if len(starts) >= MAX_ACTIVATIONS:
                 return MindReceipt(value.event_id, "failed", state["revision"], error="activation_budget_exceeded")
             sources = dict(state["sources"])
+            if pursuit is not None and value.pursuit.get('visible_item_ids') is not None:
+                selected = value.pursuit['visible_item_ids']
+                if any(ref not in state['items'] for ref in selected):
+                    raise ValueError('unknown_visible_cognition')
+                retained = {basis['ref'] for identity in selected for basis in state['items'][identity].get('basis', [])}
+                retained.add(pursuit['authorization']['ref'])
+                for item in pursuit['intentions'].values():
+                    if item['commitment'] == 'committed':
+                        retained.update(item['origin_refs'])
+                        retained.update(item['influence_refs'])
+                sources = {ref: source for ref, source in sources.items() if ref in retained}
             for evidence in document["evidence"]:
+                if (evidence['ref'] in state['sources']
+                        and state['sources'][evidence['ref']] != evidence):
+                    raise ValueError('evidence_identity_conflict')
                 for previous in starts.values():
                     for prior in previous["input"]["evidence"]:
                         if prior["ref"] == evidence["ref"] and prior != evidence:
@@ -679,6 +932,21 @@ class Cognition:
                        "capacity": {"used_chars": used_chars, "max_chars": MAX_COGNITIVE_STATE_CHARS,
                                     "remaining_chars": MAX_COGNITIVE_STATE_CHARS - used_chars},
                        "contract_version": COGNITIVE_CONTRACT_VERSION}
+            if pursuit is not None:
+                context.update(pursuit=pursuit, task_status=value.pursuit['task_status'],
+                               contract_version=PURSUIT_CONTRACT)
+                context['activation_id'] = 'activation-' + _digest([value.event_id, document])[:24]
+                context['execution_task'] = value.pursuit.get('execution_task', value.pursuit['task'])
+                if value.attention is not None:
+                    context['attention'] = document['attention']
+                selected = value.pursuit.get('visible_item_ids')
+                if selected is not None:
+                    if any(ref not in state['items'] for ref in selected):
+                        raise ValueError('unknown_visible_cognition')
+                    context['items'] = [state['items'][ref] for ref in selected]
+                authority = pursuit['authorization']
+                if authority['ref'] not in sources:
+                    raise ValueError('unread_pursuit_authority')
             if document["owner_task"] is not None:
                 context["task_view"] = mind_task_view(document["owner_task"], value.goal)
                 task_source = {"ref": "owner-task:" + context["task_view"]["owner_task_sha256"],
@@ -773,6 +1041,7 @@ class Cognition:
             request = self._request(start, trace)
             if value.request_ref != request.request_ref:
                 raise ValueError("result_request_conflict")
+            self._validate_cognitive_read(request, document['observation'], state, starts, ends)
             trace.preview_capability_result(document["observation"], document["error"])
             # Bind the result before inference. An unknown response is never resampled.
             if not duplicate:
@@ -813,11 +1082,17 @@ class Cognition:
                 raise ValueError("activation_failed")
             submitted = _json(replay.model_outputs[-1])
             updates = submitted["updates"]
-            sources = self._sources(start, trace)
-            items = _apply_updates(state["items"], updates, sources, start["event_id"],
-                                   current=submitted.get("current"))
-            used = {basis["ref"] for item in items.values() for basis in item.get("basis", [])}
-            next_context = {**start["context"], "items": list(items.values()),
+            sources = self._sources(start, trace, retained_sources=state['sources'])
+            visible_context = context_with_cognitive_reads(start['context'], trace.events)
+            items, pursuit, effects = apply_cognitive_commit(state['items'], submitted, sources,
+                                                             start['event_id'], visible_context)
+            visible_ids = {item['id'] for item in visible_context['items']} | {
+                'item-' + _digest([start['event_id'], update['id']])[:20]
+                for update in submitted['updates'] if update['id'].startswith('new:')}
+            visible_items = {ref: item for ref, item in items.items()
+                             if pursuit is None or ref in visible_ids}
+            used = {basis["ref"] for item in visible_items.values() for basis in item.get("basis", [])}
+            next_context = {**visible_context, "items": list(visible_items.values()),
                             "evidence": [sources[ref] for ref in sorted(used)]}
             if len(_canonical_json(next_context)) > context_limit():
                 raise ValueError("context_budget_exceeded")
@@ -832,5 +1107,7 @@ class Cognition:
                    "revision": state["revision"] + 1, "updates": updates}
             if "current" in submitted:
                 end["current"] = submitted["current"]
+            if effects is not None:
+                end['effects'] = effects
         self._append(end)
         return self._receipt(start, end)

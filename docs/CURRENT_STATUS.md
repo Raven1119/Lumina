@@ -2,8 +2,9 @@
 
 The cognitive core is now `Mind <-> Nervous <-> Execution <-> Environment`.
 Each organ owns its state and continuation; there is no central Session/Host.
-The supported single-goal foreground CLI is `python -m Mind`, using a new
-`--state` directory. Production Chat still runs its separate Recall gate;
+The foreground CLI is `python -m Mind`, using a new `--state` directory.
+Single-goal operation remains the default; `--pursuit` opts into the Stage1
+continuing-Mind implementation described below. Production Chat still runs its separate Recall gate;
 the manual Execution API is also separate.
 
 ## Current implementation
@@ -16,8 +17,9 @@ the manual Execution API is also separate.
 | Analysis | Mind-owned independent bounded context; structured understanding, optional isolated static/stateful computation, model reuse/revision and compact attributed reports. |
 | Prediction feedback | Prospective action/condition/object/time/quantity declaration, actual observation watch, mechanical alignment/comparison and Mind reassessment. |
 
-Current cognition/native formats are `mind-cognition-v1` and
-`mind-native-v1:6-calls`. Old experiment session/schema/native replay is retired.
+Baseline cognition uses `mind-cognition-v1`; explicit pursuit uses
+`mind-cognition-stage1-v1`. Both use `mind-native-v1:6-calls`.
+Old experiment session/schema/native replay is retired.
 Historical conclusions are preserved; old raw campaigns and provider responses
 are not maintained runtime or test dependencies.
 
@@ -26,6 +28,47 @@ analysis modules, Execution's model/sandbox/evidence/runtime, and Nervous's
 provider/storage. The old chain -> event_loop -> decoupling -> behavioral imports,
 experiment_a, central host and checkpoint fixture are removed.
 Production Recall gates, the supported Execution facade and licenses remain.
+
+## Intention and Nervous Stage1 implementation
+
+Implemented as an explicit opt-in; bounded real acceptance is **partial**.
+Final validation: core **603 passed, 6 skipped**; maintained tree **936 passed,
+30 skipped**. Docker checks passed **31** tests with scripted model replies before
+the final field-schema/query adjustments, which the final core/full suites cover.
+See [Stage1 result](../Mind/docs/INTENTION_STAGE1_RESULT.md) for exact scope.
+
+The same real Mind revised its existing measurement belief, selected two distinct
+serial Tasks under one Intention, and delivered two original Directives. Task A
+completed its feedback chain; Task B wrote its report but has a known evidence
+result pending before final cognitive submission at the frozen **32-call** cap.
+Costs: **19 Mind + 13 Execution**, 59,579 reported output tokens and 1,247,950
+request bytes. An unrelated message preserved the pursuit; quiet restarts added
+zero calls. Four rejected cognitive submissions and remaining imprecise report
+wording are retained in the result. This is not full two-task live closure or a
+claim of general autonomy. No additional calls, commit or push followed the cap.
+Older results below retain their original scopes.
+
+`start --pursuit` freezes the real owner's authorized scope, Mind identity,
+workspace and cumulative budget. Mind can commit versioned Intentions and propose
+distinct bounded Tasks through the existing atomic cognitive submission. Execution
+accepts Task versions and runs them serially; a proposal or Task A's completion
+does not establish acceptance or completion of Task B.
+
+Nervous now builds and freezes actual attention selections from bounded owner
+views. Unselected cognition stays accepted; a current owner read is required
+before changing an unseen item. Old Task bodies and background are available by
+reference rather than automatically carried into the next Task. Registered
+`read_evidence` queries return owner state or bounded history to the same activity.
+`source.changed` and one-time `review.due` watches operate during foreground
+checks; STOP/RESUME/REVOKE are durable owner control events in pursuit mode.
+
+The implementation extends the existing Cognition journal, Nervous mailbox and
+Execution owner state. It adds no central manager, competing persistence store,
+upstream orchestration transplant or background heartbeat. Baseline context mode,
+single-goal launch and the separate Chat/Memory/Dream paths retain their meaning.
+See the [Stage1 runtime contract](../Mind/docs/INTENTION_STAGE1.md) for authority,
+selection, Watch lifecycle, query and recovery limits; the
+[approved design](plan/INTENTION_NERVOUS_STAGE1.md) records the intended acceptance.
 
 ## Evidence
 
@@ -147,7 +190,7 @@ known rejected-summary continuation. New `working-context-v4` makes the local
 6000-character count a drafting target; provider output, whole request capacity
 and cumulative budgets remain hard. Old failures/protocols are preserved. The
 complete task used **48/64 real calls**, including comparisons and all repairs.
-Latest maintained suite: **821 passed, 30 skipped**. The earlier 31-test Docker
+Release validation at `734c9b3`: **821 passed, 30 skipped**. The earlier 31-test Docker
 run covered computation/action/history mechanisms; the real CLI exercised v4.
 
 This is scoped delivery and recovery evidence. Some older belief wording still
@@ -160,10 +203,22 @@ See the current
 retained failures and default-selection evidence. Detailed campaign reports and
 raw provider records are local recovery artifacts, not published dependencies.
 
+The read-only status follow-up fixes a diagnostic omission: an IPython failure
+record can coexist with a persisted unknown action outcome. Status now combines
+the owner's `unknown_action` with any unclosed action-start reference; a recorded
+transport failure does not imply the action never happened. The regression closes
+the runtime before querying the CLI and checks unchanged files and model calls.
+Execution's existing recovery stop and the default baseline mode are unchanged.
+Follow-up validation: **489 passed, 6 skipped** in Mind/Nervous/Execution, including
+the focused 64-test regression. No whole-repository or Docker rerun and no real
+provider calls were made for this diagnostic fix.
+
 ## Scope and limits
 
-- One goal, foreground operation, one writer and a small authorized workspace.
-  No background scheduler, autonomous goals or formal Intention switch.
+- Single-goal baseline, or explicit Stage1 pursuit with serial bounded Tasks;
+  foreground operation, one writer and a small authorized workspace. Pursuit
+  choices remain inside the original authorization and shared budget. There is
+  no background scheduler or unrestricted autonomous goal creation.
 - Optional models describe conditional consequences; arbitrary outside-reality
   anomaly detection and full-trajectory validation are not implemented.
 - Source references, legal schema, successful computation, delivery and runtime

@@ -9,10 +9,10 @@ There is no separate Session/Host owning the loop.
 
 | Owner | State and interface |
 | --- | --- |
-| MindOrgan | One authorized task, current cognitive activity, selected immutable source copies, prediction interpretation; handles user/events and cognitive continuations. |
-| Cognition | Accepted items and revisions; activate/accept_result/inspect; atomic final commits and bounded activity history. |
+| MindOrgan | Current authorized Task, cognitive activity, selected immutable source copies and prediction interpretation; in Stage1 preserves one Mind across serial Task contracts. |
+| Cognition | Accepted items and revisions; activate/accept_result/inspect; atomic final commits and bounded activity history, including opt-in Intention/Task/Watch effects. |
 | Mind analysis | Optional independent context, selected evidence, computation artifacts and concise attributed results. No business workspace. |
-| Nervous | Durable mailboxes, causal completion, pending delivery, foreground continuation and common provider accounting. No semantic direction. |
+| Nervous | Durable mailboxes, causal completion, pending delivery, foreground continuation and common provider accounting; Stage1 fixed attention selection, owner queries and Watch scheduling. No semantic direction. |
 | Execution | AgentProcess lifecycle, linked runs, environment sources, original guidance binding/receipts, feedback obligations and declared observation watches. |
 
 The CLI assembles these owners and submits an event. No fourth coordinator
@@ -25,14 +25,17 @@ understanding folded from atomic submissions. Context is a bounded projection
 for the current decision, reconstructed from state and selected sources.
 Removing irrelevant context does not erase history.
 
-The current schema is `mind-cognition-v1`; the native protocol is
-`mind-native-v1:6-calls`. Retired V/D/W formats are not loaded or migrated.
+Baseline uses `mind-cognition-v1`; opt-in pursuit uses
+`mind-cognition-stage1-v1`. Both use `mind-native-v1:6-calls`.
+Retired V/D/W formats are not loaded or migrated.
 
 A cognitive_step contains selective updates and a next decision. Unsubmitted
 items remain unchanged. An update replaces the named record completely,
 including claim, status, basis and optional discriminator. An optional current
 selection retires omitted records from effective understanding while preserving
-their history. Final commits alone change accepted state.
+their history. In Stage1, this selection applies only to visible cognition;
+unselected records stay accepted. An exact current owner read expands the
+activity's editable set. Final commits alone change accepted state.
 
 A belief's status evaluates its NEW literal claim: supported means warranted,
 contradicted means its negation is warranted, open means unresolved. Conditions
@@ -61,6 +64,27 @@ semantic reviewer or runtime answer replacement is introduced. Failed or
 unresolved activities remain explicitly visible, never converted to NoChange.
 DecisionIntent is preserved but does not implement a formal goal switch.
 
+## Opt-in Stage1 pursuit
+
+`--pursuit` freezes the real owner's scope and preserves the same Mind identity
+and budget across serial Tasks. `Mind/intention.py` validates versioned effects
+inside Cognition's existing final commit: Intention changes, an optional Task
+proposal and Watch changes. Mind owns their meaning; Execution owns accepting
+the immutable Task version and its action facts. Candidate, committed, paused
+and closed Intentions express Mind's judgment; only one may be committed.
+
+Nervous selects bounded cognition/source references from current Task versions,
+Intention understanding links and event sources, and freezes the actual Frame.
+Queries append attributed owner results to the waiting activity. Earlier Task
+goals, evidence and working background retain their original scope; the current
+request uses relevant content and retrieval references. This extends the existing
+organ journals and mailbox, without a new manager or a transplanted upstream loop.
+
+Implementation is under validation; the
+[Stage1 runtime contract](../Mind/docs/INTENTION_STAGE1.md) defines the current
+authority, selection and continuation boundaries. Source identity, structural
+validity and effect delivery do not establish model judgment quality.
+
 ## Analysis and prediction
 
 Analysis receives only its question, selected source records and an optional
@@ -85,8 +109,10 @@ Provider attempts are reserved and recorded before dispatch; costs span all role
 A known response can be resumed without re-sampling. Unknown outcomes stop
 instead of being blindly replayed.
 
-The supported scope is one goal, a bounded workspace and foreground operation.
-Longer-term North Star work includes broader continuity, autonomous focus/goals
-and self-improvement; none is implied by this core refactor.
+Single-goal operation remains the baseline. Explicit Stage1 pursuit adds bounded
+serial Tasks in the same authorized workspace and foreground process. Broader
+autonomy and self-improvement remain North Star goals; this implementation does
+not establish subjective experience, general autonomous reliability or new
+workspace/tool/budget authority.
 Historical experiments and their limitations are condensed in
 [EXPERIMENT_HISTORY](../Mind/docs/EXPERIMENT_HISTORY.md).

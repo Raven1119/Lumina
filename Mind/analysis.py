@@ -30,7 +30,10 @@ class Analysis:
         self.calls, self.read_source, self.compute = (calls, read_source, compute)
         self.owner_task, self.thinking, self.static_compute = (owner_task, thinking, static_compute)
 
-    def analyze(self, request_ref, request):
+    def analyze(self, request_ref, request, *, owner_task=None):
+        # A continuing Mind freezes the relevant Task per request; old analysis
+        # resumes under that original identity after later Task changes.
+        owner_task = self.owner_task if owner_task is None else owner_task
         destination = self.directory / (fingerprint(request_ref) + '.json')
         if destination.exists():
             saved = read_json(destination)
@@ -44,7 +47,7 @@ class Analysis:
             if (frozen.get('request_sha256', fingerprint(request)) != fingerprint(request)
                     or context['question'] != request['question']
                     or [e['ref'] for e in context['evidence']] != request['refs']
-                    or context['owner_task'] != self.owner_task
+                    or context['owner_task'] != owner_task
                     or (context['prior_model']['ref'] if context['prior_model'] else '') != request['model_ref']
                     or context.get('observation_file') != request.get('observation_file')):
                 raise ValueError('analysis_request_identity_conflict')
@@ -52,7 +55,7 @@ class Analysis:
         else:
             evidence = [{'ref': ref, 'text': self.read_source(ref)} for ref in request['refs']]
             previous = self.model(request['model_ref']) if request['model_ref'] else None
-            context = {'question': request['question'], 'evidence': evidence, 'prior_model': previous, 'owner_task': self.owner_task}
+            context = {'question': request['question'], 'evidence': evidence, 'prior_model': previous, 'owner_task': owner_task}
             if 'observation_file' in request:
                 context['observation_file'] = request['observation_file']
         if sum((len(e['text']) for e in evidence)) > 24000:
@@ -80,7 +83,7 @@ class Analysis:
         for index in range(MAX_TURNS):
             tools[1]['input_schema']['properties']['run_ref'] = {'type': 'string', 'enum': ['', *runs]}
             turn_path = self.directory / (fingerprint(request_ref) + f'.turn-{index}.json')
-            operation = fingerprint([self.owner_task, request_ref, index])
+            operation = fingerprint([owner_task, request_ref, index])
             metadata = {'analysis_request_sha256': fingerprint(request)}
             prompt = ANALYSIS_PROMPT
             wire = {'model': MODEL, 'system': prompt, 'messages': messages, 'tools': tools, 'tool_choice': {'type': 'auto'}, 'thinking': {'type': 'enabled'}, 'output_config': {'effort': 'low'}, 'max_tokens': OUTPUT_TOKENS}

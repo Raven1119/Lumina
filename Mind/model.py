@@ -10,7 +10,8 @@ import json
 from jsonschema import Draft202012Validator
 from Nervous.provider import MODEL, ProviderCalls, canonical
 from Nervous.storage import fingerprint, plain
-from Mind.cognition import cognitive_step_schema, observation_sources, _apply_updates
+from Mind.cognition import cognitive_step_schema, observation_sources, apply_cognitive_commit
+from Mind.intention import COGNITIVE_VERSION as PURSUIT_CONTRACT
 from Mind.task_view import COGNITIVE_CONTRACT_VERSION, evidence_read_limits
 from Mind.trace import (NATIVE_PROTOCOL_VERSION, cognitive_phase, native_call_limit, output_limit,
                         project_activity_context)
@@ -116,7 +117,8 @@ class MindModel:
 
     def _prepare_call(self, recent_context, user_message, *, system_prompt):
         payload = json.loads(user_message)
-        if payload['cognition'].get('contract_version') != self.contract:
+        contract = payload['cognition'].get('contract_version')
+        if contract not in {self.contract, PURSUIT_CONTRACT}:
             raise ValueError('cognitive_contract_context_mismatch')
         sources = citation_sources(user_message)
         background = payload['cognition'].pop('derived_history_background', None)
@@ -125,7 +127,7 @@ class MindModel:
         wire = {'model': MODEL, 'system': MIND_PROMPT, 'messages': [{'role': 'user', 'content': user_message}], 'tools': [{'name': 'cognitive_step'}], 'tool_choice': {'type': 'auto'}, 'max_tokens': OUTPUT_TOKENS, 'thinking': {'type': 'enabled' if self.thinking else 'disabled'}}
         if not self.thinking:
             wire['temperature'] = 0
-        record = {'projection': {'recent_context': list(recent_context), 'user_message': user_message, 'system_prompt': system_prompt}, 'wire': wire, 'contract_version': self.contract}
+        record = {'projection': {'recent_context': list(recent_context), 'user_message': user_message, 'system_prompt': system_prompt}, 'wire': wire, 'contract_version': contract}
         prior_items = payload['cognition'].pop('items')
         payload['cognition']['prior_model_judgments'] = [{'prior_status' if key == 'status' else key: [{'ref': b['ref']} for b in value] if key == 'basis' else value for key, value in item.items()} for item in prior_items]
         for item in payload['cognition']['prior_model_judgments']:
@@ -182,14 +184,46 @@ class MindModel:
             goal = {'ref': goal_ref, 'text': sources[goal_ref]}
             task_view.pop('goal')
             task_view['goal_ref'] = goal_ref
+        pursuit = payload['cognition'].get('pursuit')
+        if pursuit is not None and payload['cognition'].get('execution_task') is None:
+            goal = None
+        if pursuit is not None:
+            pursuit['tasks'] = {identity: {'id': task['id'], 'revision': task['revision'],
+                'view_ref': 'view:mind.intentions?task_ref=' + identity}
+                for identity, task in pursuit['tasks'].items()}
+            authority = pursuit['authorization']
+            if sources.get(authority['ref']) == authority['text']:
+                # The complete original remains once in source_records; only
+                # this actual-wire projection replaces its duplicate body.
+                pursuit['authorization'] = {'ref': authority['ref']}
         payload['cognition'].pop('evidence')
-        payload = {'current_activity': activity, 'goal': goal, 'source_records': [{'ref': ref, **annotations.get(ref, {}), 'origin': origins[ref], 'text': text} for ref, text in sources.items() if ref != goal.get('ref')], **payload}
+        payload = {'current_activity': activity, 'goal': goal, 'source_records': [{'ref': ref, **annotations.get(ref, {}), 'origin': origins[ref], 'text': text} for ref, text in sources.items() if ref != (goal or {}).get('ref')], **payload}
         content = json.dumps(payload, ensure_ascii=False)
         wire = record['wire']
         wire.update(system=MIND_PROMPT, max_tokens=OUTPUT_TOKENS, tool_choice={'type': 'auto'}, messages=[{'role': 'user', 'content': content}])
+        if contract == PURSUIT_CONTRACT:
+            wire['system'] = MIND_PROMPT.replace('Do not change the formal goal.',
+                'This explicit pursuit mode permits versioned intention and Task proposals within the supplied owner authorization; it grants no new workspace, tools or budget.')
+            wire['system'] += ('\n\nPersistent pursuit mode: cognition.pursuit distinguishes the same continuing Mind, '
+                'its accepted intentions, immutable proposed Task versions and the original owner authorization. '
+                'pursuit.task is the latest proposal; execution_task is the actual observed accepted contract and can differ '
+                'while acceptance is pending or refused. A proposal is not evidence that Execution accepted or completed it. '
+                'A null goal/task means there is no current Execution task, not a task to complete. '
+                'Use optional effects in your final cognitive_step for only needed changes: intentions, task, watches. '
+                'For new IDs use new:label with base_revision 0; for changes copy the existing ID and revision. '
+                'Source the reason for committing, revising, pausing or closing an intention. At most one intention is committed. '
+                'A completed Task does not finish its intention. Select a next bounded Task from actual evidence, '
+                'with its own goal, acceptance and the existing authority_ref, only after the previous Task is settled. '
+                'An existing Task version may be revised while it is waiting at a known safe boundary. '
+                'Use a directive to give that Task its high-level direction. NoChange may still revise intentions or watches. '
+                'With no proposed Task, a directive must include the Task proposal in this same effects bundle. '
+                'Source-change watches use a workspace-relative file; one-time review watches use an absolute UTC due_at. '
+                'Cancel affected watches when closing their intention; ordinary text cannot register a trigger. '
+                'Queries through read_evidence may request registered view: references. They return bounded owner facts in this activity. '
+                'Leaving the attention frame does not retire knowledge or a commitment. Unseen cognition remains accepted.')
         if self.thinking:
             wire['output_config'] = {'effort': self.effort}
-        wire['tools'][0]['input_schema'] = cognitive_step_schema(sources, prior_items, payload['available_capabilities'], contract=self.contract)
+        wire['tools'][0]['input_schema'] = cognitive_step_schema(sources, prior_items, payload['available_capabilities'], contract=contract)
         if self.readable_sources is not None:
             readable = sorted(set(sources) | set(self.readable_sources()))
             if background is not None:
@@ -204,6 +238,9 @@ class MindModel:
                     refs['description'] = 'Readable source references, including catalogued files whose contents are not yet visible. Reading does not require a basis citation. Cite returned text only after it appears in the exact source catalogue.'
                     if option['properties']['capability']['enum'] == ['read_evidence']:
                         refs['description'] += f' The combined returned text is limited to {EVIDENCE_READ_CHARS} characters including record labels. The file catalogue gives source character counts; choose only the evidence needed for this judgment, not every related file. Oversize returns capacity metadata without contents and consumes one consultation; use remaining consultations to narrow the request or obtain analysis.'
+                        if contract == PURSUIT_CONTRACT:
+                            from Nervous.views import query_descriptors
+                            refs['description'] += ' Registered bounded owner views: ' + canonical(query_descriptors())
                         if background is not None:
                             refs['description'] += ' Historical trace pieces are readable by their history: ref; append :offset:limit to read an exact character range, with limit 1..6000. These are historical observations or model judgments, not new owner facts. A derived summary is not an evidence source.'
         commit = wire['tools'][0]
@@ -332,11 +369,11 @@ class MindModel:
                            'message': f'Cognitive step exceeds {limit} characters.'}]
             if not errors and submission['next']['type'] != 'capability_request':
                 sources = {ref: {'text': text} for ref, text in citation_sources(projection.user_message).items()}
-                current = json.loads(projection.user_message)['cognition']['items']
+                cognitive_context = json.loads(projection.user_message)['cognition']
+                current = cognitive_context['items']
                 try:
-                    _apply_updates({item['id']: item for item in current}, submission['updates'],
-                        sources, trace.events[0].activation_id, contract=self.contract,
-                        current=submission.get('current'))
+                    apply_cognitive_commit({item['id']: item for item in current}, submission,
+                        sources, cognitive_context.get('event_id', trace.events[0].activation_id), cognitive_context)
                 except ValueError as error:
                     errors.append({'validator': 'effective_state', 'path': ['updates'],
                                    'message': 'Atomic state update rejected: ' + str(error)})

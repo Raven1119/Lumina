@@ -5,7 +5,7 @@ Read the root instructions, [current status](../docs/CURRENT_STATUS.md) and
 [NORTH_STAR](../docs/NORTH_STAR.md) guides design; the current task governs scope.
 
 Mind is the persistent high-level judgment owner, outside Execution's actor tree.
-`organ.py` owns semantic activities, one authorized task and analysis references.
+`organ.py` owns semantic activities, the current authorized Task and analysis references.
 `cognition.py` atomically accepts selective updates; `trace.py` preserves the
 actual activity and native continuation. `model.py` supplies bounded role input.
 Working background is a derived projection, separate from accepted cognition;
@@ -24,7 +24,11 @@ User and important Execution events arrive through Nervous. Mind may inspect
 evidence, analyze, revise cognition and choose NoChange or an original high-level
 Directive. Execution owns applicability, one causal delivery, actual actions
 and result feedback. NoChange can close a review without erasing prior advice.
-DecisionIntent is representable; formal goal switching is not implemented.
+DecisionIntent remains representable without switching the baseline formal goal.
+For opt-in pursuit, Intention/Task effects, cross-Task context or owner queries,
+read the [Stage1 runtime contract](docs/INTENTION_STAGE1.md). Stage1 extends the
+same cognition journal; a Task proposal becomes action authority only through
+Execution's versioned acceptance under the original owner scope.
 
 Preserve current crash recovery, bounded costs and pending failures. Retired
 experimental contracts and campaign replay are not compatibility obligations.

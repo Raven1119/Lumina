@@ -96,19 +96,9 @@ class EvidenceStore:
         if sum(item['kind'] == 'observed_text' for item in files) > 12:
             raise ValueError('workspace_evidence_bound_requires_smaller_scope')
         catalogue = self.put(canonical(files), 'current workspace file catalogue', kind='catalogue')
-        sources, unread_observation_refs = [], []
-        size = 0
-        watched = set(watched_files)
-        for item in sorted(files, key=lambda item: item['file'] not in watched):
-            record = self.read(item['ref'])
-            length = len(canonical(record).encode('utf-8'))
-            observation = item['file'] in watched
-            if ((observation and size + length <= 18000)
-                    or (len(record['text']) <= 600 and size + length <= 6000 and len(sources) < 6)):
-                sources.append(record)
-                size += length
-            elif observation and item['kind'] == 'observed_text':
-                unread_observation_refs.append(item['ref'])
+        from Nervous.attention import delivery_sources
+        sources, unread_observation_refs = delivery_sources(
+            files, {item['ref']: self.read(item['ref']) for item in files}, watched_files)
         return {'files': files, 'sources': sources, 'catalogue_ref': catalogue['ref'],
                 'unread_observation_refs': unread_observation_refs}
 

@@ -59,11 +59,13 @@ def parse_output(raw, *, submission=True):
         if not isinstance(value, dict):
             raise ValueError()
         if submission:
-            if (set(value) - {'current'} != {'type', 'updates', 'next'}
+            if (set(value) - {'current', 'effects'} != {'type', 'updates', 'next'}
                     or value['type'] != 'cognitive_step'
                     or type(value['updates']) is not list or len(value['updates']) > 16
                     or any(type(item) is not dict for item in value['updates'])
                     or type(value['next']) is not dict):
+                raise ValueError()
+            if 'effects' in value and type(value['effects']) is not dict:
                 raise ValueError()
             if 'current' in value and (type(value['current']) is not list
                     or any(type(ref) is not str for ref in value['current'])

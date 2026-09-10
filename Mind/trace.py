@@ -338,6 +338,9 @@ def project_model_request(events):
     prefix=tuple(events)
     if _validate_sequence(prefix,require_terminal=False)!='awaiting_model':raise TraceError('event_prefix_has_no_model_request')
     start=prefix[0];context=_thaw(start.payload['cognitive_context']);activation=_thaw(start.payload['activation'])
+    if context.get('pursuit') is not None:
+        from Mind.cognition import context_with_cognitive_reads
+        context=context_with_cognitive_reads(context,prefix)
     observed=[e for e in prefix if e.event_type==CAPABILITY_OBSERVED]
     spent=cognitive_phase(prefix)-1+sum(e.event_type==NATIVE_REPAIR_RESERVED for e in prefix)
     initial=next((e for e in prefix if e.event_type==INITIAL_EXECUTION_OBSERVED),None)
@@ -448,10 +451,11 @@ def _validate_output_transition(output, event):
 
 
 def _validate_started(payload):
+    from Mind.intention import COGNITIVE_VERSION as PURSUIT_CONTRACT
     _require_keys(payload,{'activation','cognitive_context','available_capabilities','native_protocol'})
     if payload['native_protocol']!=NATIVE_PROTOCOL_VERSION:raise TraceError('unsupported_native_protocol')
     context=payload['cognitive_context'];activation=payload['activation']
-    if not isinstance(context,Mapping) or context.get('contract_version')!=COGNITIVE_CONTRACT_VERSION:raise TraceError('unsupported_cognitive_contract')
+    if not isinstance(context,Mapping) or context.get('contract_version') not in {COGNITIVE_CONTRACT_VERSION, PURSUIT_CONTRACT}:raise TraceError('unsupported_cognitive_contract')
     if len(_canonical_json(_thaw(context)))>context_limit():raise TraceError('context_too_large')
     _require_keys(activation,{'trigger','execution_goal_snapshot','execution_status'})
     _validate_required_text(activation['trigger'],MAX_TRIGGER_CHARS)
@@ -472,7 +476,9 @@ def _validate_capability_request(payload, *, contract=None):
     if name=='analyze_world_model' and 'observation_file' in payload:fields.add('observation_file')
     _require_keys(payload,fields);refs=payload['refs']
     if not isinstance(refs,(list,tuple)) or not 1<=len(refs)<=3:raise TraceError('invalid_source_refs')
-    for ref in refs:_validate_required_text(ref,128,normalized=True)
+    for ref in refs:
+        limit = 256 if name == 'read_evidence' and isinstance(ref, str) and ref.startswith('view:') else 128
+        _validate_required_text(ref, limit, normalized=True)
     if name=='analyze_world_model':
         _validate_required_text(payload['question'],analysis_question_limit())
         if not isinstance(payload['model_ref'],str) or len(payload['model_ref'])>128:raise TraceError('invalid_model_reference')

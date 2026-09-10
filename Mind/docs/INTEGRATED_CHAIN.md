@@ -1,7 +1,7 @@
 # Mind-Nervous-Execution operating contract
 
 The supported foreground entry is `python -m Mind`. The current core has
-organ-owned state and a single current cognitive/native protocol; it does not
+organ-owned state, baseline and opt-in pursuit cognition under one native protocol; it does not
 load old V1-V72 sessions or campaign traces. Production Chat's Recall gate and
 the manual Execution API remain separate.
 
@@ -52,7 +52,18 @@ A second intentional "Continue." uses a new identity (or omits the flag).
 Reusing an identity with changed text/event type is rejected. This transport
 identity does not restart an already handled cognitive activity or action.
 
-No pending information means quiet status/resume with no model calls.
+With no new information, baseline resume stays quiet without model calls.
+Stage1 resume also checks foreground source/due Watches; `status` is read-only
+in both modes.
+
+Single-goal `--goal` / `--goal-file` remains the baseline launch. The opt-in
+`start --pursuit "<original authorized scope>"` keeps the same Mind across
+serial bounded Tasks, with explicit Intention/Watch effects and Nervous attention
+selection. Use a fresh private state directory and retain the original scope;
+later Task proposals do not change workspace permissions or reset costs.
+Stage1 implementation is under validation. Its commands, authority boundaries,
+owner queries and foreground Watch behavior are in the
+[Stage1 runtime contract](INTENTION_STAGE1.md).
 
 ## Pause, recovery and working context
 
@@ -85,7 +96,9 @@ Whole-request capacity may trigger earlier bounded compaction. Under that pressu
 owners preserve the latest complete segment rather than requiring six historical
 segments to fit; no native round is split. Summaries are
 derived history, never accepted beliefs, new owner evidence, guidance receipts
-or action results. All current cognition/authority remains separately visible.
+or action results. Current authority remains separately visible. Baseline retains
+its cognition projection; Stage1 selects relevant accepted items while preserving
+unselected state and exact owner reads for later expansion.
 
 Execution's `read_history(ref, offset=0, limit=8000)` in ordinary IPython reads
 its exported action/result records. Mind uses existing `read_evidence` with
@@ -142,7 +155,9 @@ To explicitly retry a failed cognitive activity after addressing its cause:
 A retry is a new bounded judgment of the original matter with current evidence;
 it does not erase the failed activity or reset cost. Unknown action outcomes
 are not repaired by this flag. A legitimately needed follow-up after a terminal
-Execution uses a linked run under the same formal goal.
+Execution uses a linked run under the same formal goal in baseline mode.
+Stage1 may instead propose a distinct Task or a new version at an admitted safe
+boundary; those proposals use the existing owner authorization and shared ledger.
 
 ## Owners and flow
 
@@ -151,6 +166,7 @@ Execution uses a linked run under the same formal goal.
 | Goal interpretation, activations, cognitive repair and outcome judgment | Mind/organ.py and cognition.py |
 | Optional analysis, model reuse and comparison interpretation | Mind/analysis.py, world_model.py |
 | Original input transport, mailbox completion, pumping, shared call accounting | Nervous/organ.py, provider.py |
+| Stage1 fixed attention selection, registered view routing and Watch scheduling | Nervous/attention.py, triggers.py, views.py, watch.py; persisted by Nervous/organ.py |
 | Workspace observation, source snapshots, action lifecycle and recovery | Execution/runtime.py, evidence.py and the supported ExecutionOrgan facade |
 | Guidance binding/receipt, execution context, feedback obligation and observation watch | Execution/runtime.py |
 | Command-line arguments and organ construction | Mind/cli.py; no central state machine |
@@ -183,12 +199,16 @@ explicit archived status/current selection retires obsolete knowledge without
 deleting history. A revised claim, status, basis and optional discriminator are
 one replacement. Status evaluates the new literal assertion, not task pass/fail.
 The previous prior_truth is an earlier judgment, not certified reality.
+In Stage1, `current` selects only within the activity's visible set; leaving
+attention does not retire an item or Intention. An unseen item must first be
+read at its current owner version before it can be updated.
 
 NoChange can close a successful review, including after cognitive revision.
 It does not erase previous guidance or create work. A Directive conveys the
 decision, material conditions, decisive evidence/gap and business priority;
-Execution chooses code and tools. DecisionIntent is representable but formal
-goal switching is not implemented.
+Execution chooses code and tools. DecisionIntent is representable without a
+baseline formal goal switch. Stage1 uses explicit versioned Task effects for
+authorized changes; a free-text decision is not a replacement Task contract.
 
 Execution binds guidance once to a still-applicable run/decision. Previously
 received text remains visible across normal history trimming; visibility is
@@ -241,7 +261,8 @@ Mind and analysis default to enabled low-effort thinking; Execution is disabled.
 An activity shares six Mind calls across consultation and recovery. Current
 submission limits are 6000 characters, 16 updates and 16000 active-state characters.
 New activities report used/max/remaining characters for the same canonical accepted
-state measured by the commit limit; this does not retire or hide any item.
+state measured by the commit limit; this capacity accounting does not retire
+items. Stage1 attention may omit items from a request while retaining that state.
 Analysis is bounded to six calls/computations. World-model inputs have at most
 16 scalar fields, with strings at most 256 characters.
 
@@ -270,6 +291,8 @@ integration, not general model judgment or architectural superiority.
 Historical behavioral conclusions remain in [EXPERIMENT_HISTORY](EXPERIMENT_HISTORY.md);
 [CURRENT_STATUS](../../docs/CURRENT_STATUS.md) records current validation.
 
-The supported scope is one goal, a bounded authorized workspace and foreground
-operation. There is no arbitrary-reality anomaly detector, background scheduler,
-autonomous goal creation or Chat/Memory/Dream wiring.
+The baseline scope is one goal, a bounded authorized workspace and foreground
+operation. Opt-in Stage1 adds persistent Intentions and serial Tasks within
+explicit scope; its behavioral acceptance remains under validation. There is no
+arbitrary-reality anomaly detector, background scheduler, unrestricted goal
+creation or Chat/Memory/Dream wiring.

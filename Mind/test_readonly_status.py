@@ -84,6 +84,44 @@ def test_status_keeps_valid_execution_prefix_and_reports_other_damaged_owner(tmp
     assert files_under(tmp_path) == before
 
 
+def test_status_reports_persisted_unknown_kernel_outcome_after_restart(tmp_path, monkeypatch, capsys):
+    from Execution.execution import EventLog, _unsettled_action_start
+    from Execution.ipython_control import IPythonResult
+    from Execution.test_runtime import runtime, native as execution_native, decision
+    from Nervous.storage import read_json, write_json
+
+    owner, calls, control = runtime(tmp_path, iter([execution_native('ipython', {'code': 'pass'})]))
+    control.execute = lambda _: IPythonResult(False, error_code='isolated_kernel_failed')
+    directory = owner.directory.parent
+    try:
+        owner.handle(decision(owner, 'start', 'Perform the authorized local action.'))
+        assert owner.advance()
+        assert not owner.advance()
+        events, _ = EventLog.inspect_path(owner.directory / 'runs' / str(owner.state['active_run']) / 'events.jsonl')
+        assert any(e.event_type == 'IPYTHON_EXECUTION_FAILED' for e in events)
+        assert _unsettled_action_start(events) is None
+    finally:
+        owner.close()
+    unknown = read_json(owner.directory / 'run.json')['state']['unknown_action']
+    assert unknown['event_ref'] and unknown['reason'] == 'isolated_kernel_failed'
+    write_json(directory / 'nervous' / 'settings.json', {'format': 'nervous-runtime-1',
+        'limits': calls.limits, 'initial_input': {'goal': 'Perform the authorized local action.',
+                                                'workspace': str(tmp_path / 'workspace')}})
+    before = files_under(tmp_path)
+
+    def no_writer(*args, **kwargs):
+        raise AssertionError('status constructed a writable runtime')
+
+    for cls in (NervousOrgan, Execution, MindOrgan, ProviderCalls):
+        monkeypatch.setattr(cls, '__init__', no_writer)
+    assert main(['status', '--state', str(directory)]) == 0
+    execution = json.loads(capsys.readouterr().out)['execution']
+    assert execution['stop_reason'] == 'execution_action_outcome_requires_owner_check'
+    assert execution['recovery']['unknown_action'] == unknown
+    assert calls.summary()['calls'] == 1
+    assert files_under(tmp_path) == before
+
+
 @pytest.mark.parametrize('damaged', ['settings', 'provider'])
 def test_status_isolates_valid_json_with_invalid_record_shape(tmp_path, capsys, damaged):
     from Nervous.storage import write_json
