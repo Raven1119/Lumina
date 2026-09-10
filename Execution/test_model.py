@@ -5,11 +5,11 @@ import httpx
 import pytest
 
 from Execution import ExecutionOrgan, FileContentEquals
-from Execution.execution import ModelRequest, Wait
+from Execution.execution import ModelRequest, Wait, _encode_value
 from Execution.ipython_control import IPythonResult
 from Execution.model import ExecutionHistory, ExecutionModel, correction_wire, execution_goal
 from Nervous.provider import BudgetPause, MODEL, ProviderCalls
-from Nervous.storage import canonical, fingerprint
+from Nervous.storage import canonical, fingerprint, write_json
 
 
 def response(name='wait', value=None):
@@ -31,6 +31,101 @@ def wire():
 def dispatch(calls, request, *, correction_of=None):
     previous, metadata = ExecutionHistory(calls).attempt(request, correction_of)
     return previous['response'] if previous else calls.call('execution', request, metadata=metadata)
+
+
+@pytest.mark.parametrize('thinking', [False, True])
+def test_received_tool_response_recovers_frozen_wire_before_owner_decision(tmp_path, thinking):
+    answer = response()
+    if thinking:
+        answer['content'].insert(0, {'type': 'thinking', 'thinking': 'private', 'signature': 'original'})
+    calls = ProviderCalls(tmp_path, {'calls': 1, 'output_tokens': 100, 'request_bytes': 100000},
+                          lambda *_: answer)
+    request = ModelRequest(canonical({'state': {'execution_id': 'run-1', 'decision_count': 0}}),
+                           ExecutionModel.tool_contracts, ())
+    history = ExecutionHistory(calls)
+    def send(wire, **kwargs):
+        previous, metadata = history.attempt(wire, **kwargs)
+        return previous['response'] if previous else calls.call('execution', wire, metadata=metadata)
+    original = ExecutionModel(send, history=history,
+                              max_output_tokens=100, thinking=thinking).decide(request)
+    before = calls.summary()
+    calls = ProviderCalls(tmp_path, calls.limits, lambda *_: pytest.fail('Known decision was resampled'))
+    # A changed adapter prompt must not be paired with yesterday's response.
+    recovered = ExecutionModel(lambda w, **kw: dispatch(calls, w, **kw),
+        history=ExecutionHistory(calls), role_prompt='New role wording after restart.', max_output_tokens=100).decide(request)
+    assert recovered.action == Wait('INPUT')
+    assert recovered.provider_wire_request == original.provider_wire_request
+    assert recovered.raw_provider_response == original.raw_provider_response
+    assert recovered.provider_tool_call_id == original.provider_tool_call_id
+    assert calls.summary() == before
+
+
+@pytest.mark.parametrize('valid_hash', [False, True])
+def test_recovery_rejects_corrupt_or_cross_run_owner_request(tmp_path, valid_hash):
+    calls = ProviderCalls(tmp_path, {'calls': 2, 'output_tokens': 200, 'request_bytes': 100000},
+                          lambda *_: response())
+    history = ExecutionHistory(calls)
+    def send(w, **kwargs):
+        _, metadata = history.attempt(w, **kwargs)
+        return calls.call('execution', w, metadata=metadata)
+    request = ModelRequest(canonical({'state': {'execution_id': 'run-1', 'decision_count': 0}}),
+                           ExecutionModel.tool_contracts, ())
+    model = ExecutionModel(send, history=history, max_output_tokens=100)
+    model.decide(request)
+    path, record = calls.records()[0]
+    replacement = ModelRequest(canonical({'state': {'execution_id': 'other-run', 'decision_count': 55}}),
+                               request.available_tools, ())
+    record['metadata']['owner_request'] = _encode_value(replacement)
+    if valid_hash:
+        record['metadata']['owner_request_sha256'] = fingerprint(record['metadata']['owner_request'])
+    write_json(path, record)
+    with pytest.raises(ValueError, match='execution_owner_request_(integrity|identity)_'):
+        model.decide(request)
+    assert calls.summary()['calls'] == 1
+
+
+def test_legacy_known_no_action_keeps_its_single_correction_and_recovery(tmp_path):
+    calls = ProviderCalls(tmp_path, {'calls': 2, 'output_tokens': 200, 'request_bytes': 100000},
+                          lambda *_: no_tool())
+    request = ModelRequest(canonical({'state': {'execution_id': 'run-1', 'decision_count': 0}}),
+                           ExecutionModel.tool_contracts, ())
+    def old_send(w, *, correction_of=None):
+        if correction_of is not None:
+            raise BudgetPause('correction not dispatched')
+        return dispatch(calls, w)
+    with pytest.raises(BudgetPause):
+        ExecutionModel(old_send, max_output_tokens=100).decide(request)
+    calls.transport = lambda *_: response()
+    history = ExecutionHistory(calls)
+    def send(w, **kwargs):
+        previous, metadata = history.attempt(w, **kwargs)
+        return previous['response'] if previous else calls.call('execution', w, metadata=metadata)
+    result = ExecutionModel(send, history=history, max_output_tokens=100).decide(request)
+    assert result.action == Wait('INPUT')
+    assert calls.summary()['calls'] == 2
+    calls.transport = lambda *_: pytest.fail('Saved correction was resampled')
+    recovered = ExecutionModel(send, history=ExecutionHistory(calls), max_output_tokens=100).decide(request)
+    assert recovered.raw_provider_response == result.raw_provider_response
+    assert calls.summary()['calls'] == 2
+
+
+def test_fully_legacy_correction_chain_recovers_only_its_exact_request(tmp_path):
+    answers = iter([no_tool(), response()])
+    calls = ProviderCalls(tmp_path, {'calls': 2, 'output_tokens': 200, 'request_bytes': 100000},
+                          lambda *_: next(answers))
+    request = ModelRequest(canonical({'state': {'execution_id': 'run-1', 'decision_count': 0}}),
+                           ExecutionModel.tool_contracts, ())
+    original = ExecutionModel(lambda w, **kw: dispatch(calls, w, **kw), max_output_tokens=100).decide(request)
+    before = calls.summary()
+    def no_dispatch(*_, **__):
+        pytest.fail('Saved legacy correction was resampled')
+    restored = ExecutionModel(no_dispatch, history=ExecutionHistory(calls), max_output_tokens=100).decide(request)
+    assert restored.raw_provider_response == original.raw_provider_response
+    assert restored.provider_wire_request == original.provider_wire_request
+    assert calls.summary() == before
+    with pytest.raises(BudgetPause, match='execution_owner_request_unavailable'):
+        ExecutionModel(no_dispatch, history=ExecutionHistory(calls), role_prompt='Changed role',
+                       max_output_tokens=100).decide(request)
 
 
 @pytest.mark.parametrize('error', [httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout])

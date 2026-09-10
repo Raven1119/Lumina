@@ -13,7 +13,8 @@ def native_nochange():
 
 
 @pytest.mark.parametrize('cut', ['initial_event', 'execution_construct', 'mind_construct'])
-def test_start_cuts_resume_from_original_input_without_resubmission(tmp_path, monkeypatch, capsys, cut):
+@pytest.mark.parametrize('mode', ['baseline', 'summary'])
+def test_start_cuts_resume_from_original_input_without_resubmission(tmp_path, monkeypatch, capsys, cut, mode):
     workspace, state = tmp_path / 'work', tmp_path / 'private'
     workspace.mkdir()
     calls = []
@@ -35,17 +36,66 @@ def test_start_cuts_resume_from_original_input_without_resubmission(tmp_path, mo
             patch.setattr(cli, 'MindOrgan', lambda *args, **kwargs: (_ for _ in ()).throw(Crash()))
         with pytest.raises(Crash):
             cli.main(['start', '--state', str(state), '--workspace', str(workspace),
-                      '--goal', 'Record the requested understanding; no action is required.'])
+                      '--context-mode', mode, '--goal', 'Record the requested understanding; no action is required.'])
     assert calls == []
     assert cli.main(['status', '--state', str(state)]) == 0
     assert json.loads(capsys.readouterr().out)['initialization'] == 'pending'
     assert cli.main(['resume', '--state', str(state)]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result['mind']['revision'] == 1 and result['execution']['status'] == 'not_started'
+    for organ, filename in [('mind', 'mind.json'), ('execution', 'run.json')]:
+        assert json.loads((state / organ / filename).read_text(encoding='utf-8'))['state']['context_mode'] == mode
     assert not any(result['pending'].values())
     assert cli.main(['resume', '--state', str(state)]) == 0
     assert cli.main(['status', '--state', str(state)]) == 0
     assert calls == ['mind']
+
+
+def test_explicit_context_retry_keeps_failed_attempt_and_resumes_same_activity(tmp_path, monkeypatch, capsys):
+    workspace, state = tmp_path / 'work', tmp_path / 'private'
+    workspace.mkdir()
+    wires, summaries = [], []
+    original_provider = ProviderCalls.__init__
+    def provider(self, directory, limits, transport=None):
+        def scripted(role, wire):
+            assert role == 'mind'
+            wires.append(wire)
+            if wire.get('tools'):
+                return native_nochange()
+            summaries.append(wire)
+            if len(summaries) == 1:
+                return {'stop_reason': 'max_tokens', 'content': [{'type': 'text', 'text': '{"summary":"partial'}]}
+            payload = json.loads(wire['messages'][0]['content'])
+            return {'stop_reason': 'end_turn', 'content': [{'type': 'text', 'text': json.dumps({
+                'summary': 'The earlier events required no action; preserve their scope.',
+                'source_refs': [payload['segments'][0]['ref']]})}]}
+        original_provider(self, directory, limits, scripted)
+    monkeypatch.setattr(ProviderCalls, '__init__', provider)
+    assert cli.main(['start', '--state', str(state), '--workspace', str(workspace),
+        '--goal', 'Review the supplied observations without taking action.', '--context-mode', 'summary',
+        '--max-calls', '40', '--max-output-tokens', '1000000']) == 0
+    capsys.readouterr()
+    for i in range(12):
+        assert cli.main(['resume', '--state', str(state), '--message', f'Observation {i}.']) == 0
+        before = json.loads(capsys.readouterr().out)
+    assert before['stop_reason'] == 'working_context_summary_incomplete'
+    assert before['mind']['revision'] == 12 and len(summaries) == 1
+    failed = state / 'nervous' / 'calls' / '0013.json'
+    failed_bytes = failed.read_bytes()
+    assert cli.main(['resume', '--state', str(state)]) == 0
+    unchanged = json.loads(capsys.readouterr().out)
+    assert unchanged['cost']['calls'] == before['cost']['calls']
+    assert cli.main(['resume', '--state', str(state), '--retry-context']) == 0
+    after = json.loads(capsys.readouterr().out)
+    assert after['mind']['revision'] == 13 and after['mind']['active'] is None
+    assert after['cost']['calls'] == before['cost']['calls'] + 2
+    assert len(summaries) == 2 and summaries[1]['max_tokens'] == 8192
+    assert failed.read_bytes() == failed_bytes
+    assert list((state / 'mind').glob('background.failed-*.json'))
+    assert not any(after['pending'].values())
+    assert cli.main(['resume', '--state', str(state), '--retry-context']) == 0
+    quiet = json.loads(capsys.readouterr().out)
+    assert quiet['cost']['calls'] == after['cost']['calls']
 
 
 def test_original_launch_and_budget_are_not_replaced_on_reopen(tmp_path):

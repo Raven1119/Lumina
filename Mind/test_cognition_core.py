@@ -43,6 +43,29 @@ def belief(identity, claim, source="source", **extra):
             "basis": [{"ref": source}], **extra}
 
 
+def test_normal_wire_reports_accepted_cognition_capacity_before_limit(tmp_path):
+    script = Script(*(response(step([belief(f"new:fact{i}", "测" * 5100)]))
+                      for i in range(3)), response(step()))
+    with Cognition(directory=tmp_path, model=MindModel(script)) as mind:
+        for i in range(3):
+            assert mind.activate(event(f"event-{i}",
+                [Evidence("source", "Original measurements.", "execution")])).status == "accepted"
+        items = {item["id"]: plain(item) for item in mind.inspect().items}
+    # A new activity after restart reports the complete accepted map, including
+    # item IDs and JSON structure, measured in Unicode characters, not bytes.
+    with Cognition(directory=tmp_path, model=MindModel(script)) as mind:
+        assert mind.activate(event("event-capacity")).status == "accepted"
+    first = json.loads(script.wires[0]["messages"][0]["content"])["cognition"]
+    assert first["capacity"] == {"used_chars": 2, "max_chars": 16000, "remaining_chars": 15998}
+    latest = json.loads(script.wires[-1]["messages"][0]["content"])["cognition"]
+    encoded = json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    assert len(encoded.encode("utf-8")) > 16000
+    assert 0 < 16000 - len(encoded) < 1000
+    assert latest["capacity"] == {"used_chars": len(encoded), "max_chars": 16000,
+                                  "remaining_chars": 16000 - len(encoded)}
+    assert len(latest["prior_model_judgments"]) == 3
+
+
 def test_selective_revision_preserves_correct_knowledge_and_wrong_history(tmp_path):
     initial = event(evidence=[Evidence("source", "Only subset A was measured; B is unobserved.", "execution")])
     script = Script(response(step([belief("new:wrong", "Both subsets were measured.",

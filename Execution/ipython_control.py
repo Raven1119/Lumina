@@ -4,6 +4,7 @@ import os
 import json
 import queue
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -126,6 +127,7 @@ class PersistentIPython:
         self._manager = None
         self._client = None
         self._closed = False
+        self.kernel_epoch = uuid.uuid4().hex
 
     @property
     def is_alive(self) -> bool:

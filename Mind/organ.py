@@ -11,9 +11,10 @@ import httpx
 from jsonschema import ValidationError
 from Nervous.organ import Event
 from Nervous.storage import canonical, fingerprint, plain, read_json, write_json
+from Nervous.provider import BudgetPause
 from Mind.cognition import Cognition, Evidence, MindInput, MindResultEvent
 from Mind.contracts import ExecutionObservation
-from Mind.model import MindModel
+from Mind.model import MindModel, READ_SOURCE_METADATA_FIELDS
 from Mind.analysis import Analysis
 from Mind.task_view import execution_goal
 from Mind.world_model import compare_observation_contract
@@ -33,7 +34,7 @@ class MindOrgan:
     """One continuing goal, one active judgment, inert external input."""
 
     def __init__(self, directory, calls, *, goal=None, execution_protocol='',
-                 model=None, analysis=None):
+                 model=None, analysis=None, context_mode=None):
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self._path = self.directory / 'mind.json'
@@ -52,13 +53,22 @@ class MindOrgan:
             self.state = {'format': 'mind-organ-1', 'task': task, 'active': None,
                 'activities': {}, 'handled': {}, 'owners': [], 'sources': {},
                 'predictions': {}, 'unresolved': []}
+        if context_mode not in (None, 'baseline', 'mask', 'summary'):
+            raise ValueError('unsupported_context_mode')
+        if (self._path.exists() and context_mode is not None
+                and context_mode != self.state.get('context_mode', 'baseline')):
+            raise ValueError('context_mode_is_fixed_at_start')
+        if context_mode is not None:
+            self.state['context_mode'] = context_mode
         self.calls = calls
         self.cognition = Cognition(directory=self.directory / 'cognition',
-            model=model or MindModel(lambda wire: calls.call('mind', wire),
-                preflight=lambda wire: calls.ensure(wire, role='mind'),
+            model=model or MindModel(calls,
+                preflight=self.preflight,
                 source_info=self.source_info,
                 readable_sources=lambda: [x['ref'] for x in self.snapshot().get('files', [])]),
-            available_capabilities=('read_evidence', 'analyze_world_model'))
+            available_capabilities=('read_evidence', 'analyze_world_model'),
+            prepare_background=self.prepare_background
+                               if self.state.get('context_mode', 'baseline') != 'baseline' else None)
         self.analysis = analysis or Analysis(self.directory / 'analysis', calls,
             lambda ref: self.source_record(ref)['text'],
             owner_task={'ref': 'owner-task:' + fingerprint(self.state['task']),
@@ -70,6 +80,86 @@ class MindOrgan:
 
     def save(self):
         write_json(self._path, {'state': self.state, 'sha256': fingerprint(self.state)})
+
+    def preflight(self, wire):
+        if self.state.get('context_mode', 'baseline') != 'baseline':
+            from working_context import estimate_request_tokens
+            if estimate_request_tokens(wire) + wire['max_tokens'] > 196608:
+                raise BudgetPause('mind_context_capacity_exhausted')
+        try:
+            return self.calls.ensure(wire, role='mind')
+        except ValueError as error:
+            if str(error) == 'provider_request_too_large' and self.state.get('context_mode', 'baseline') != 'baseline':
+                raise BudgetPause('mind_context_capacity_exhausted') from error
+            raise
+
+    def retry_context(self):
+        from working_context import retry_failed_compaction
+        return retry_failed_compaction(self.directory / 'background.json', self.calls,
+            role='mind', scope=fingerprint(self.state['task']),
+            segments=self.cognition.history_segments())
+
+    def prepare_background(self, segments, *, force=False):
+        mode = self.state.get('context_mode', 'baseline')
+        summary = None
+        if mode == 'summary':
+            from working_context import compact
+            summary = compact(self.directory / 'background.json', self.calls, role='mind',
+                scope=fingerprint(self.state['task']), segments=segments, force=force,
+                retain=1 if force else 6,
+                instructions='Preserve why the situation and guidance changed, relevant conditions, '
+                'competing explanations and unknowns. Old Mind judgments, hypotheses, calculations '
+                'and executor statements are not verified reality. Retain failures and exact source '
+                'references. Current accepted cognition and the new event are supplied separately.')
+        covered = len(summary['source_refs']) if summary else 0
+        masked = []
+        if mode == 'mask':
+            for segment in segments[:-6]:
+                pieces = []
+                for piece in segment['content']['pieces']:
+                    if piece['event_type'] in {'INITIAL_EXECUTION_OBSERVED', 'CAPABILITY_OBSERVED',
+                                                'MODEL_OUTPUT_RECORDED'}:
+                        piece = {**piece, 'content': {'masked': True, 'source_ref': piece['ref'],
+                            'chars': len(canonical(piece['content'])),
+                            'scope': 'Historical result body omitted; read the original history ref.'}}
+                    pieces.append(piece)
+                masked.append({**segment, 'content': {**segment['content'], 'pieces': pieces}})
+        return {'mode': mode,
+            'scope': 'Derived historical background, not accepted cognition, current authorization or evidence. '
+                     'Read original trace pieces when needed; a summary ref cannot support a belief.',
+            'policy': 'Mask old observation and model-output bodies; keep inputs, requests and terminal structure.'
+                      if mode == 'mask' else 'Summarize complete old activities and retain the uncovered complete suffix.',
+            'summary': summary['summary'] if summary else None,
+            'source_refs': summary['source_refs'] if summary else [],
+            'masked_activities': masked,
+            'recent_activities': segments[-6:] if mode == 'mask' else segments[covered:],
+            'catalogue': [{'ref': piece['ref'], 'event_type': piece['event_type'],
+                           'chars': len(canonical(piece['content']))}
+                          for segment in segments for piece in segment['content']['pieces']]}
+
+    @staticmethod
+    def _context_status(directory, state):
+        from Nervous.storage import inspect_safely
+        from working_context import inspect_context
+        return {'context_mode': state.get('context_mode', 'baseline'),
+                'background': inspect_safely(lambda: inspect_context(Path(directory) / 'background.json',
+                    role='mind', scope=fingerprint(state['task'])))}
+
+    @classmethod
+    def inspect_directory(cls, directory):
+        directory = Path(directory)
+        if not (directory / 'mind.json').exists():
+            return {'status': 'not_initialized'}
+        document = read_json(directory / 'mind.json')
+        state = document['state']
+        if document['sha256'] != fingerprint(state) or state['format'] != 'mind-organ-1':
+            raise ValueError('mind_state_integrity_failure')
+        from Nervous.storage import inspect_safely
+        view = inspect_safely(Cognition.inspect_directory, directory / 'cognition')
+        return {'goal': state['task']['business_goal'], **view, 'active': state['active'],
+            'unresolved': [{'activity_id': key, 'status': state['activities'][key]['status'],
+                           'error': state['activities'][key].get('error')} for key in state['unresolved']],
+            'predictions': list(state['predictions']), **cls._context_status(directory, state)}
 
     def snapshot(self):
         return self.state['activities'].get(self.state['active'], {}).get('snapshot') or {}
@@ -111,6 +201,9 @@ class MindOrgan:
             return {'kind': 'historical_cognitive_source'}
         record = read_json(self.directory / 'sources' / name)
         info = {'kind': record.get('source_kind', 'recorded_text'), 'label': record.get('label', '')}
+        if ref.startswith('history:'):
+            info.update(scope='Role-projected historical trace fragment; model output is a past judgment, not an owner fact.',
+                        offset=record['offset'], total_chars=record['total_chars'], truncated=record['truncated'])
         latest = next((x for x in self.snapshot().get('files', [])
                        if x['file'] == record.get('label')), None)
         if latest:
@@ -372,8 +465,13 @@ class MindOrgan:
             return (reply(event, 'mind.analysis', 'analysis.request', {
                 'activity_id': work['id'], 'request_ref': request['request_ref']}),)
         records = [self.source_record(ref) for ref in request['payload']['refs']]
-        text = canonical({'read_result': 'sources-v1', 'sources': [
-            {k: r[k] for k in ('ref', 'text', 'origin')} for r in records]})
+        body = {'read_result': 'sources-v1', 'sources': [
+            {k: r[k] for k in ('ref', 'text', 'origin')} for r in records]}
+        metadata = {record['ref']: {key: record[key] for key in READ_SOURCE_METADATA_FIELDS if key in record}
+                    for record in records if record['ref'].startswith('history:')}
+        if metadata:
+            body['source_metadata'] = metadata
+        text = canonical(body)
         observation = {'capability': 'read_evidence', 'text': text,
             'origin': 'computation' if any(r['origin'] == 'computation' for r in records) else 'execution'}
         if len(text) > 8000 or len(canonical(observation)) > 9000:
@@ -445,4 +543,4 @@ class MindOrgan:
             'unresolved': [{'activity_id': key, 'status': self.state['activities'][key]['status'],
                            'error': self.state['activities'][key].get('error')}
                           for key in self.state['unresolved']],
-            'predictions': list(self.state['predictions'])}
+            'predictions': list(self.state['predictions']), **self._context_status(self.directory, self.state)}

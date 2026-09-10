@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 import json
+import signal
 from pathlib import Path
 
 from Execution.model import EXECUTION_PROTOCOL
@@ -25,11 +26,14 @@ def main(argv=None):
     event.add_argument('--message')
     event.add_argument('--event', help='The actual type of a new owner event; matching waits may resume.')
     event.add_argument('--retry-review', action='store_true', help='Explicitly reassess a failed cognitive activity with current evidence.')
+    event.add_argument('--retry-context', action='store_true', help='Explicitly retry a rejected historical summary, preserving the failed attempt and cost.')
     parser.add_argument('--data', default='')
     parser.add_argument('--submission-id', help='Reuse only when retrying the same message/event submission.')
     parser.add_argument('--max-calls', type=int, default=40)
     parser.add_argument('--max-output-tokens', type=int)
     parser.add_argument('--max-request-bytes', type=int)
+    parser.add_argument('--context-mode', choices=('baseline', 'mask', 'summary'),
+                        help='Experimental working projection, fixed at start; default baseline.')
     parser.add_argument('--add-calls', type=int)
     parser.add_argument('--add-output-tokens', type=int)
     parser.add_argument('--add-request-bytes', type=int)
@@ -45,9 +49,9 @@ def main(argv=None):
             parser.error('state and workspace must be disjoint directories')
     elif not (directory / 'nervous' / 'settings.json').exists():
         parser.error('state does not exist')
-    if args.action != 'start' and (args.workspace or args.goal or args.goal_file):
+    if args.action != 'start' and (args.workspace or args.goal or args.goal_file or args.context_mode):
         parser.error('workspace and goal are fixed at start')
-    if args.action != 'resume' and (args.message is not None or args.event or args.retry_review or args.add_calls is not None):
+    if args.action != 'resume' and (args.message is not None or args.event or args.retry_review or args.retry_context or args.add_calls is not None):
         parser.error('new events and budget extensions require resume')
     if args.data and not args.event:
         parser.error('--data requires --event')
@@ -64,22 +68,34 @@ def main(argv=None):
     goal_text = args.goal_file.read_text(encoding='utf-8-sig') if args.goal_file else args.goal
     if args.action == 'start':
         execution_goal({'business_goal': goal_text, 'execution_protocol': EXECUTION_PROTOCOL})
-    if args.action != 'status':
-        from core.env_loader import load_env_file
-        load_env_file()
+    if args.action == 'status':
+        from Nervous.provider import ProviderCalls
+        from Nervous.storage import inspect_safely
+        result = {'mind': inspect_safely(MindOrgan.inspect_directory, directory / 'mind'),
+                  'execution': inspect_safely(Execution.inspect_directory, directory / 'execution'),
+                  'pending': inspect_safely(NervousOrgan.inspect_directory, directory / 'nervous'),
+                  'cost': inspect_safely(ProviderCalls.inspect_directory, directory / 'nervous' / 'calls')}
+        settings = inspect_safely(NervousOrgan.read_settings, directory / 'nervous' / 'settings.json')
+        result['stop_reason'] = settings.get('foreground_stop_reason')
+        if settings.get('diagnostic'):
+            result['settings_diagnostic'] = settings['diagnostic']
+        if any(result[owner].get('status') == 'not_initialized' for owner in ('mind', 'execution')):
+            result['initialization'] = 'pending'
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    from core.env_loader import load_env_file
+    load_env_file()
     with ExitStack() as stack:
         nervous = NervousOrgan(directory / 'nervous', limits=limits)
         stack.callback(nervous.close)
-        if args.action == 'status' and not all(path.exists() for path in (
-                directory / 'mind' / 'mind.json', directory / 'execution' / 'run.json')):
-            print(json.dumps({'initialization': 'pending', 'cost': nervous.calls.summary()}))
-            return 0
-        initial = (dict(nervous.settings['initial_input']) if args.action == 'status'
-                   else nervous.initialize(goal=goal_text, workspace=args.workspace))
-        execution = Execution(directory / 'execution', nervous.calls, workspace=Path(initial['workspace']))
+        previous_handler = signal.signal(signal.SIGINT, lambda *_: nervous.calls.request_pause())
+        stack.callback(signal.signal, signal.SIGINT, previous_handler)
+        initial = nervous.initialize(goal=goal_text, workspace=args.workspace, context_mode=args.context_mode)
+        mode = initial.get('context_mode', 'baseline')
+        execution = Execution(directory / 'execution', nervous.calls, workspace=Path(initial['workspace']), context_mode=mode)
         stack.callback(execution.close)
         mind = MindOrgan(directory / 'mind', nervous.calls, goal=initial['goal'],
-                         execution_protocol=EXECUTION_PROTOCOL)
+                         execution_protocol=EXECUTION_PROTOCOL, context_mode=mode)
         stack.callback(mind.close)
         if args.add_calls is not None:
             nervous.extend_budget(args.add_calls, output_tokens=args.add_output_tokens,
@@ -89,7 +105,13 @@ def main(argv=None):
                            event_type=args.event or 'USER_MESSAGE', submission_id=args.submission_id)
         if args.retry_review:
             nervous.retry_cognition(mind.retry_activity())
-        result = (nervous.status(mind, execution) if args.action == 'status'
-                  else nervous.run(mind, execution))
+        if args.retry_context:
+            from Nervous.provider import BudgetPause
+            try:
+                mind.retry_context()
+                execution.retry_context()
+            except (BudgetPause, ValueError, OSError):
+                parser.error('context_retry_not_admitted; use status to inspect the retained recovery state')
+        result = nervous.run(mind, execution)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

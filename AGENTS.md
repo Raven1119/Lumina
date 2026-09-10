@@ -51,6 +51,9 @@ version compatibility are not runtime dependencies or tests to resurrect.
   filesystem, shell, IPython, mutable Execution handles or direct action authority.
   Execution chooses implementation. Nervous transports; it does not reason.
   Trace, accepted State and projected Context remain distinct.
+  Recovery and working-context changes follow the [working-context design](docs/RECOVERY_AND_WORKING_CONTEXT_DESIGN.md).
+  `working_context.py` derives owner-local summaries; current authority and original
+  history stay with each organ. Baseline is default; summary/masking are explicit options.
 - Original statements, model judgments, calculations and reality observations
   retain their provenance. A valid citation, delivered Directive or completion
   marker establishes only what was actually checked. Failures remain failures.

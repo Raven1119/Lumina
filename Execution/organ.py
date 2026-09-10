@@ -15,6 +15,7 @@ from Execution.execution import (
     AgentProcess,
     ChildRef,
     CompletionSpec,
+    DecisionFrame,
     EventLog,
     ExecutionResult,
     ExecutionState,
@@ -22,6 +23,9 @@ from Execution.execution import (
     SharedEnvironment,
     ToolHost,
     restore_execution_state,
+    _action_sequence,
+    _encode_value,
+    _unsettled_action_start,
 )
 from Execution.ipython_control import PersistentIPython
 
@@ -82,6 +86,8 @@ class ExecutionOrgan:
         ipython_control=None,
         max_decisions_per_advance: int | None = None,
         completion_review_required: Callable[[], bool] | None = None,
+        changed_decision_context: Callable[[DecisionFrame], Mapping | None] | None = None,
+        before_dispatch: Callable[[], None] | None = None,
         _child_ref: ChildRef | None = None,
     ) -> None:
         self._workspace = Path(workspace).resolve()
@@ -118,6 +124,8 @@ class ExecutionOrgan:
                 **process_options,
                 max_depth=max_depth,
                 completion_review_required=completion_review_required,
+                changed_decision_context=changed_decision_context,
+                before_dispatch=before_dispatch,
             )
         else:
             self._process = AgentProcess.for_child(
@@ -178,22 +186,65 @@ class ExecutionOrgan:
                 return True
         return False
 
-    def committed_tool_calls(self) -> tuple[tuple[str, str], ...]:
-        """Last six committed tool-batch digests; not proof of task success."""
+    def committed_tool_calls(self, *, limit: int = 6) -> tuple[tuple[str, str], ...]:
+        """Bounded committed tool-batch digests; not proof of task success."""
+        if type(limit) is not int or not 1 <= limit <= 120:
+            raise ValueError('invalid_history_limit')
         result = []
+        retired = self.retired_decisions()
+        started = {e.source_event_refs[0] for e in self._event_log.events
+                   if e.event_type in {'TOOL_CALL_STARTED', 'IPYTHON_EXECUTION_STARTED'}}
         for event in reversed(self._event_log.events):
             if event.event_type != "MODEL_DECISION":
                 continue
             frame = event.payload["frame"]
+            if frame.decision_id in retired and event.event_id not in started:
+                continue
             if frame.provider_tool_call_id is not None:
                 calls = frame.raw_provider_response['choices'][0]['message']['tool_calls']
                 value = [(c['id'], c['function']['name'], c['function']['arguments']) for c in calls]
                 digest = hashlib.sha256(json.dumps(value, ensure_ascii=False,
                     separators=(',', ':')).encode('utf-8')).hexdigest()
                 result.append((frame.decision_id, digest))
-            if len(result) == 6:
+            if len(result) == limit:
                 break
         return tuple(reversed(result))
+
+    def history_segments(self) -> list[dict]:
+        """Completed decision ranges, without recursively embedded model requests.
+
+        Actual result truncation metadata is retained. Retired plans remain
+        identifiable as unexecuted; they never acquire fabricated tool results.
+        """
+        events = self._event_log.events
+        positions = [i for i, event in enumerate(events) if event.event_type == 'MODEL_DECISION']
+        segments = []
+        for index, position in enumerate(positions):
+            end = positions[index + 1] if index + 1 < len(positions) else len(events)
+            group = events[position:end]
+            frame = group[0].payload['frame']
+            results = [e for e in group[1:] if e.event_type in {
+                'TOOL_RESULT', 'TOOL_FAILED', 'IPYTHON_EXECUTION_RESULT', 'IPYTHON_EXECUTION_FAILED',
+                'ACTION_RECONCILED', 'ROOT_WAITING', 'COMPLETION_VERIFIED', 'COMPLETION_REJECTED',
+                'COMPLETION_DEFERRED', 'DECISION_RETIRED'}]
+            if (_unsettled_action_start(events[:end]) is not None or not results
+                    or len(results) < len(_action_sequence(frame.resulting_action))
+                    and not any(e.event_type == 'DECISION_RETIRED' for e in results)):
+                continue
+            segments.append({'ref': 'execution-history:' + self.state.execution_id + ':' + frame.decision_id,
+                'content': {'decision': frame.decision_id, 'action': _encode_value(frame.resulting_action),
+                    'results': [{'ref': e.event_id, 'kind': e.event_type, 'data': _encode_value(e.payload)}
+                                for e in results]}})
+        return segments
+
+    def retired_decisions(self) -> tuple[str, ...]:
+        """Plans barred from dispatch; their retirement suffix may still be pending."""
+        retired = {event.source_event_refs[0] for event in self._event_log.events
+                   if event.event_type == 'DECISION_RETIRED'}
+        return tuple(event.payload['frame'].decision_id for event in self._event_log.events
+                     if event.event_type == 'MODEL_DECISION'
+                     and (event.event_id in retired
+                          or getattr(event.payload['frame'].raw_model_response, 'retirement_reason', None) is not None))
 
     def latest_transport_failure(self) -> tuple[str, str] | None:
         """Stable owner evidence for the latest IPython transport outcome."""

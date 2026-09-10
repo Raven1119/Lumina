@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from jsonschema import validate, ValidationError
 from Nervous.storage import fingerprint, write_json, read_json
-from Nervous.provider import MODEL
+from Nervous.provider import MODEL, BudgetPause
 from Mind.world_model import (run_model, verify_run, run_static_model, verify_static_run,
     observation_contract_schema, compare_observation_contract, STATIC_PROTOCOL)
 
@@ -37,15 +37,26 @@ class Analysis:
             if saved['request_ref'] != request_ref or saved['request'] != request:
                 raise ValueError('analysis_request_identity_conflict')
             return saved['observation']
-        evidence = [{'ref': ref, 'text': self.read_source(ref)} for ref in request['refs']]
+        first_turn = self.directory / (fingerprint(request_ref) + '.turn-0.json')
+        if first_turn.exists():
+            frozen = read_json(first_turn)
+            context = json.loads(frozen['wire']['messages'][0]['content'])
+            if (frozen.get('request_sha256', fingerprint(request)) != fingerprint(request)
+                    or context['question'] != request['question']
+                    or [e['ref'] for e in context['evidence']] != request['refs']
+                    or context['owner_task'] != self.owner_task
+                    or (context['prior_model']['ref'] if context['prior_model'] else '') != request['model_ref']
+                    or context.get('observation_file') != request.get('observation_file')):
+                raise ValueError('analysis_request_identity_conflict')
+            evidence, previous = context['evidence'], context['prior_model']
+        else:
+            evidence = [{'ref': ref, 'text': self.read_source(ref)} for ref in request['refs']]
+            previous = self.model(request['model_ref']) if request['model_ref'] else None
+            context = {'question': request['question'], 'evidence': evidence, 'prior_model': previous, 'owner_task': self.owner_task}
+            if 'observation_file' in request:
+                context['observation_file'] = request['observation_file']
         if sum((len(e['text']) for e in evidence)) > 24000:
             raise ValueError('builder_evidence_bound')
-        previous = None
-        if request['model_ref']:
-            previous = self.model(request['model_ref'])
-        context = {'question': request['question'], 'evidence': evidence, 'prior_model': previous, 'owner_task': self.owner_task}
-        if 'observation_file' in request:
-            context['observation_file'] = request['observation_file']
         messages = [{'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}]
         scalar = {'type': ['string', 'number', 'boolean', 'null']}
         fields = {'type': 'object', 'minProperties': 1, 'maxProperties': 16, 'additionalProperties': scalar}
@@ -69,6 +80,8 @@ class Analysis:
         for index in range(MAX_TURNS):
             tools[1]['input_schema']['properties']['run_ref'] = {'type': 'string', 'enum': ['', *runs]}
             turn_path = self.directory / (fingerprint(request_ref) + f'.turn-{index}.json')
+            operation = fingerprint([self.owner_task, request_ref, index])
+            metadata = {'analysis_request_sha256': fingerprint(request)}
             prompt = ANALYSIS_PROMPT
             wire = {'model': MODEL, 'system': prompt, 'messages': messages, 'tools': tools, 'tool_choice': {'type': 'auto'}, 'thinking': {'type': 'enabled'}, 'output_config': {'effort': 'low'}, 'max_tokens': OUTPUT_TOKENS}
             if not self.thinking:
@@ -76,14 +89,30 @@ class Analysis:
                 wire.pop('output_config')
             if turn_path.exists():
                 turn = read_json(turn_path)
-                if turn['wire'] != wire or 'response' not in turn:
-                    raise RuntimeError('builder_call_outcome_unknown')
+                if (turn.get('request_sha256', fingerprint(request) if turn['wire'] == wire else None)
+                        != fingerprint(request)):
+                    raise ValueError('analysis_request_identity_conflict')
+                if 'response' not in turn:
+                    try:
+                        saved = self.calls.recover('builder', operation)
+                    except BudgetPause as error:
+                        raise RuntimeError('builder_call_outcome_unknown') from error
+                    if saved is None and turn.get('operation') != operation:
+                        raise RuntimeError('builder_call_outcome_unknown')
+                    if saved is not None and (saved['wire'] != turn['wire'] or saved.get('metadata') != metadata):
+                        raise ValueError('analysis_call_identity_conflict')
+                    turn['response'] = (saved['response'] if saved is not None else
+                        self.calls.call('builder', turn['wire'], operation=operation, metadata=metadata))
+                    write_json(turn_path, turn)
+                wire = turn['wire']
                 response = turn['response']
             else:
                 self.calls.ensure(wire, role='builder')
-                write_json(turn_path, {'wire': wire})
-                response = self.calls.call('builder', wire)
-                write_json(turn_path, {'wire': wire, 'response': response})
+                turn = {'wire': wire, 'request_sha256': fingerprint(request), 'operation': operation}
+                write_json(turn_path, turn)
+                response = self.calls.call('builder', wire, operation=operation, metadata=metadata)
+                write_json(turn_path, {**turn, 'response': response})
+            messages, tools = wire['messages'], wire['tools']
             turns.append(str(turn_path.name))
             blocks = [b for b in response.get('content', []) if b.get('type') == 'tool_use']
             if not 1 <= len(blocks) <= 3 or response.get('stop_reason') != 'tool_use' or len({b['id'] for b in blocks}) != len(blocks) or (len(blocks) > 1 and any((b['name'] != 'compute' for b in blocks))):
@@ -148,6 +177,7 @@ class Analysis:
                     if result['kind'] == 'COMPUTED':
                         runs[result['run_ref']] = self.model(result['run_ref'])
                 else:
+                    self.calls.check_pause()
                     saved = {'input': value, 'status': 'reserved'}
                     write_json(compute_path, saved)
                     try:

@@ -10,7 +10,7 @@ from Execution.model import EXECUTION_PROTOCOL
 from Execution.runtime import Execution, advisory
 from Nervous.organ import Event
 from Nervous.provider import ProviderCalls
-from Nervous.storage import canonical, fingerprint
+from Nervous.storage import canonical, fingerprint, plain
 
 
 class Python:
@@ -99,6 +99,73 @@ def test_guidance_survives_many_actions_restart_and_nochange_without_redelivery(
         latest = calls.records(role='execution')[-1][1]['wire']
         assert sum(m['content'] == advisory('Prioritize the now observed constraint.') for m in latest['messages']) == 1
         assert owner.state['deliveries'][0]['call_ref'] == original['call_ref']
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize('new_directive', [False, True])
+@pytest.mark.parametrize('retirement_crash', [None, 'before', 'after'])
+def test_saved_response_does_not_acquire_new_guidance_before_owner_commit(
+        tmp_path, monkeypatch, new_directive, retirement_crash):
+    from Execution.execution import EventLog
+
+    old_text, new_text = 'Use the initial condition.', 'Use the newly observed condition.'
+    answers = iter([
+        native('ipython', {'code': "(workspace / 'old.txt').write_text('old')"}, 'old-call'),
+        native('ipython', {'code': "(workspace / 'new.txt').write_text('new')"}, 'new-call'),
+    ])
+    owner, calls, control = runtime(tmp_path, answers)
+    original_append = EventLog.append
+
+    def interrupt_before_decision(log, event_type, *args, **kwargs):
+        if event_type == 'MODEL_DECISION':
+            raise SystemExit('after durable provider response, before owner decision')
+        return original_append(log, event_type, *args, **kwargs)
+
+    try:
+        owner.handle(decision(owner, 'start', old_text))
+        monkeypatch.setattr(EventLog, 'append', interrupt_before_decision)
+        with pytest.raises(SystemExit):
+            owner.advance()
+        assert calls.summary()['calls'] == 1 and control.actions == []
+        monkeypatch.setattr(EventLog, 'append', original_append)
+        owner.close()
+        owner = Execution(owner.directory, calls, ipython=control)
+        owner.handle(decision(owner, 'new-direction', new_text if new_directive else None,
+            owner_input={'event_id': 'new-owner', 'event_type': 'OWNER_EVIDENCE',
+                         'text': 'A new condition is now observed.'}))
+        if retirement_crash:
+            def interrupt_retirement(log, event_type, *args, **kwargs):
+                if event_type == 'DECISION_RETIRED' and retirement_crash == 'before':
+                    raise SystemExit('before retirement settlement')
+                result = original_append(log, event_type, *args, **kwargs)
+                if event_type == 'DECISION_RETIRED':
+                    raise SystemExit('after retirement settlement')
+                return result
+            monkeypatch.setattr(EventLog, 'append', interrupt_retirement)
+            with pytest.raises(SystemExit):
+                owner.advance()
+            monkeypatch.setattr(EventLog, 'append', original_append)
+            owner.close()
+            owner = Execution(owner.directory, calls, ipython=control)
+            owner.actor.interrupt()
+        owner.advance()
+        assert not (owner.workspace / 'old.txt').exists()
+        # Recovery may yield at a settled owner boundary before a fresh decision.
+        if not (owner.workspace / 'new.txt').exists():
+            owner.advance()
+        assert (owner.workspace / 'new.txt').read_text() == 'new'
+        assert calls.summary()['calls'] == 2
+        log_path = owner.directory / 'runs' / str(owner.state['active_run']) / 'events.jsonl'
+        events = EventLog.load(log_path).events
+        frames = [event.payload['frame'] for event in events if event.event_type == 'MODEL_DECISION']
+        assert sum(event.event_type == 'DECISION_RETIRED' for event in events) == 1
+        assert old_text in frames[0].actual_request.context
+        assert new_text not in frames[0].actual_request.context
+        assert (new_text in frames[-1].actual_request.context) == new_directive
+        assert 'A new condition is now observed.' in canonical(plain(frames[-1].provider_wire_request))
+        assert frames[0].raw_provider_response != frames[-1].raw_provider_response
+        assert sum(d['status'] == 'received' for d in owner.state['deliveries']) == 1
     finally:
         owner.close()
 
@@ -241,6 +308,38 @@ def test_read_rejection_is_durable_but_source_integrity_failure_stops(tmp_path):
         with pytest.raises(ValueError, match='source_identity_conflict'):
             owner.handle(request('corrupt', record['ref']))
         assert calls.summary()['calls'] == 0 and control.actions == []
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize('tool, arguments', [('wait', {'event_type': 'OLD'}), ('claim_complete', {})])
+def test_saved_control_rechecks_new_owner_input_before_dispatch(tmp_path, monkeypatch, tool, arguments):
+    from Execution.execution import EventLog
+    owner, calls, control = runtime(tmp_path, iter([
+        native(tool, arguments, 'old-control'), native('wait', {'event_type': 'NEW'}, 'new-control')]))
+    original = EventLog._persist
+    def crash(log, event):
+        original(log, event)
+        if event.event_type == 'MODEL_DECISION':
+            raise SystemExit('control decision saved, suffix unstarted')
+    try:
+        (owner.workspace / '.lumina-complete').write_text('done')
+        owner.handle(decision(owner, 'start', 'Use the current condition.'))
+        with monkeypatch.context() as patch:
+            patch.setattr(EventLog, '_persist', crash)
+            with pytest.raises(SystemExit):
+                owner.advance()
+        owner.close()
+        owner = Execution(owner.directory, calls, ipython=control)
+        owner.handle(decision(owner, 'new-condition', None,
+            owner_input={'event_id': 'changed', 'event_type': 'OWNER_EVIDENCE',
+                         'text': 'The current condition has changed.'}))
+        owner.advance()
+        assert owner.status()['status'] == 'running'
+        owner.advance()
+        assert owner.run_state().waiting_for == 'NEW'
+        assert calls.summary()['calls'] == 2 and not control.actions
+        assert owner.actor.retired_decisions() == ('decision-000001',)
     finally:
         owner.close()
 

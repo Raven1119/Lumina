@@ -137,6 +137,27 @@ class MindTrace:
         return cls(target, events[0].activation_id, fixed_timestamp=None, events=events, read_only=True)
 
     @classmethod
+    def inspect_path(cls, path):
+        from Nervous.storage import inspect_jsonl
+        events = []
+        def accept(document):
+            event = _event_from_document(document)
+            candidate = tuple([*events, event])
+            _validate_sequence(candidate, require_terminal=False)
+            events.append(event)
+        diagnostic = inspect_jsonl(path, accept, max_line_bytes=MAX_EVENT_BYTES)
+        result = {**diagnostic, 'last_event_type': events[-1].event_type if events else None}
+        if events and Path(path).with_suffix('.native.jsonl').exists():
+            trace = cls(Path(path), events[0].activation_id, fixed_timestamp=None, events=tuple(events), read_only=True)
+            records = []
+            def accept_native(record):
+                trace._validate_native([*records, record])
+                records.append(record)
+            result['native'] = inspect_jsonl(Path(path).with_suffix('.native.jsonl'), accept_native,
+                                              max_line_bytes=trace._native_record_limit())
+        return result
+
+    @classmethod
     def reopen_for_finalization(cls, path: str | Path) -> MindTrace:
         target = Path(path)
         events = _read_events(target)
@@ -155,8 +176,8 @@ class MindTrace:
         return cls(target, events[0].activation_id, fixed_timestamp=None, events=events, read_only=False)
 
     @classmethod
-    def reopen_for_native(cls, path: str | Path) -> MindTrace:
-        """Resume known results or a not-yet-dispatched phase; never unknown calls."""
+    def reopen_for_native(cls, path: str | Path, *, allow_pending=False) -> MindTrace:
+        """Open a native continuation; pending calls require provider ownership proof."""
         trace = cls.reopen(path)
         if trace.events[0].payload.get('native_protocol') != NATIVE_PROTOCOL_VERSION:
             raise TraceError('native_protocol_not_enabled')
@@ -164,8 +185,9 @@ class MindTrace:
         records = trace.native_records()
         phase = cognitive_phase(trace.events)
         if records and records[-1]['kind'] == 'call':
-            raise TraceError('native_result_unknown')
-        if records:
+            if not allow_pending or records[-1]['phase'] != phase:
+                raise TraceError('native_result_unknown')
+        elif records:
             recorded_phase = records[-2]['phase']
             if recorded_phase != phase and not (
                     recorded_phase == phase - 1 and records[-1]['accepted']
@@ -211,10 +233,14 @@ class MindTrace:
         if len(records) > 2 * native_call_limit(self.events):
             raise TraceError('native_call_budget')
         for index, record in enumerate(records):
+            if not isinstance(record, dict):
+                raise TraceError('invalid_native_record')
             if record.get('activation_id') != self._activation_id or record.get('seq') != index or record.get('version') != self.events[0].payload.get('native_protocol'):
                 raise TraceError('native_identity_conflict')
             if index % 2 == 0:
-                if set(record) != {'activation_id', 'seq', 'version', 'kind', 'phase', 'repair', 'wire'}:
+                if (set(record) - {'operation'} != {'activation_id', 'seq', 'version', 'kind', 'phase', 'repair', 'wire'}
+                        or 'operation' in record and (not isinstance(record['operation'], str)
+                            or len(record['operation']) != 64)):
                     raise TraceError('invalid_native_call')
                 if record['kind'] != 'call' or type(record['repair']) is not bool or type(record['phase']) is not int or (record['phase'] not in range(1, activity_steps(self.events) + 1)):
                     raise TraceError('invalid_native_call')
@@ -240,11 +266,15 @@ class MindTrace:
         if len(encoded) > self._native_record_limit():
             raise TraceError('native_record_too_large')
         try:
+            new_file = not self._path.with_suffix('.native.jsonl').exists()
             with self._path.with_suffix('.native.jsonl').open('ab') as stream:
                 if stream.write(encoded) != len(encoded):
                     raise OSError('partial native append')
                 stream.flush()
                 os.fsync(stream.fileno())
+            if new_file:
+                from Nervous.storage import sync_directory
+                sync_directory(self._path.parent)
         except OSError as exc:
             raise TraceError('native_persistence_failed') from exc
 
@@ -259,12 +289,16 @@ class MindTrace:
         candidate = self._events + (event,)
         encoded = (_canonical_json(_event_document(event)) + '\n').encode('utf-8')
         try:
+            new_file = not self._path.exists()
             with self._path.open('ab') as handle:
                 written = handle.write(encoded)
                 if written != len(encoded):
                     raise OSError('partial append')
                 handle.flush()
                 os.fsync(handle.fileno())
+            if new_file:
+                from Nervous.storage import sync_directory
+                sync_directory(self._path.parent)
         except OSError:
             raise TraceError('trace_append_failed') from None
         self._events = candidate
@@ -304,19 +338,30 @@ def project_model_request(events):
     prefix=tuple(events)
     if _validate_sequence(prefix,require_terminal=False)!='awaiting_model':raise TraceError('event_prefix_has_no_model_request')
     start=prefix[0];context=_thaw(start.payload['cognitive_context']);activation=_thaw(start.payload['activation'])
+    observed=[e for e in prefix if e.event_type==CAPABILITY_OBSERVED]
+    spent=cognitive_phase(prefix)-1+sum(e.event_type==NATIVE_REPAIR_RESERVED for e in prefix)
+    initial=next((e for e in prefix if e.event_type==INITIAL_EXECUTION_OBSERVED),None)
+    return project_activity_context(activation, context,
+        _thaw(start.payload['available_capabilities']) if consultation_allowed(prefix) else [],
+        observations=[{'ref':observation_ref(prefix,e),'observation':_thaw(e.payload['observation'])} for e in observed],
+        remaining_calls=ACTIVITY_CALLS-spent,
+        initial_observation=_initial_execution_projection(initial.payload) if initial else None)
+
+
+def project_activity_context(activation, context, capabilities, *, observations=(),
+                             remaining_calls=ACTIVITY_CALLS, initial_observation=None):
+    """The same pure projection supports pre-admission budgeting and saved traces."""
+    context=_thaw(context);activation=_thaw(activation)
     task=context.get('task_view')
     if task:
         if fingerprint(activation['execution_goal_snapshot'])!=task['execution_goal_sha256']:raise TraceError('execution_task_view_conflict')
         activation['execution_goal_snapshot']=task['goal']
-    observed=[e for e in prefix if e.event_type==CAPABILITY_OBSERVED]
-    spent=cognitive_phase(prefix)-1+sum(e.event_type==NATIVE_REPAIR_RESERVED for e in prefix)
     payload={'activation':activation,'cognition':context,'information_acquisition_allowed':True,
-        'available_capabilities':_thaw(start.payload['available_capabilities']) if consultation_allowed(prefix) else [],
-        'observations':[{'ref':observation_ref(prefix,e),'observation':project_observation(_thaw(e.payload['observation']),task)} for e in observed],
-        'activity_budget':{'mind_calls_total':ACTIVITY_CALLS,'mind_calls_remaining':ACTIVITY_CALLS-spent,'consultations_and_corrections_share_this_budget':True}}
-    initial=next((e for e in prefix if e.event_type==INITIAL_EXECUTION_OBSERVED),None)
-    if initial:payload['initial_execution_observation']=project_observation(_initial_execution_projection(initial.payload),task)
-    if observed:payload['observation']=payload['observations'][-1]['observation']
+        'available_capabilities':list(capabilities),
+        'observations':[{'ref':item['ref'],'observation':project_observation(item['observation'],task)} for item in observations],
+        'activity_budget':{'mind_calls_total':ACTIVITY_CALLS,'mind_calls_remaining':remaining_calls,'consultations_and_corrections_share_this_budget':True}}
+    if initial_observation:payload['initial_execution_observation']=project_observation(initial_observation,task)
+    if observations:payload['observation']=payload['observations'][-1]['observation']
     return ModelRequestProjection((),'',_canonical_json(payload))
 
 

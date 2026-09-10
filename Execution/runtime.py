@@ -31,7 +31,7 @@ def advisory(text):
 
 class Execution:
     """One authorized workspace; handlers persist intent before any action."""
-    def __init__(self, directory, calls, workspace=None, ipython=None):
+    def __init__(self, directory, calls, workspace=None, ipython=None, *, context_mode=None):
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / 'run.json'
@@ -53,6 +53,12 @@ class Execution:
                 'task': None, 'active_run': None, 'prior_runs': [], 'deliveries': [], 'predictions': [],
                 'owners': [], 'handled': {}, 'outbox': [], 'announced': [], 'handled_requests': [],
                 'last_reviewed': None, 'stop_reason': None, 'initializing': None}
+        if context_mode not in (None, 'baseline', 'mask', 'summary'):
+            raise ValueError('unsupported_context_mode')
+        if self.path.exists() and context_mode is not None and context_mode != self.state.get('context_mode', 'baseline'):
+            raise ValueError('context_mode_is_fixed_at_start')
+        if context_mode is not None:
+            self.state['context_mode'] = context_mode
         self.workspace = Path(self.state['workspace']).resolve(strict=True)
         if (not self.workspace.is_dir() or self.directory.is_relative_to(self.workspace)
                 or self.workspace.is_relative_to(self.directory)
@@ -66,15 +72,66 @@ class Execution:
     def save(self):
         write_json(self.path, {'state': self.state, 'sha256': fingerprint(self.state)})
 
+    @classmethod
+    def inspect_directory(cls, directory):
+        from Execution.execution import EventLog, fold_execution_state, _unsettled_action_start
+        directory = Path(directory)
+        if not (directory / 'run.json').exists():
+            return {'status': 'not_initialized'}
+        document = read_json(directory / 'run.json')
+        owner = document['state']
+        if document['sha256'] != fingerprint(owner) or owner['format'] != 'execution-runtime-1':
+            raise ValueError('execution_state_integrity_failure')
+        state, diagnostic, events = None, {'valid_records': 0, 'issue': None}, ()
+        if owner['active_run'] is not None:
+            run = str(owner['active_run'])
+            if not run.isdecimal():
+                raise ValueError('invalid_run_directory')
+            events, diagnostic = EventLog.inspect_path(directory / 'runs' / run / 'events.jsonl')
+            if events:
+                state = fold_execution_state(events)
+        pending = _unsettled_action_start(events)
+        context = {'mode': owner.get('context_mode', 'baseline')}
+        if state is not None and context['mode'] == 'summary':
+            from working_context import inspect_context
+            from Nervous.storage import inspect_safely
+            context.update(inspect_safely(lambda: inspect_context(
+                directory / 'runs' / str(owner['active_run']) / 'handoff.json',
+                role='execution', scope=state.execution_id)))
+        return {'status': state.status if state else ('unavailable' if diagnostic['issue'] else 'not_started'),
+            'working_context': context,
+            'execution_ref': state.execution_id if state else None,
+            'decision_count': state.decision_count if state else 0,
+            'waiting_for': state.waiting_for if state else None,
+            'stop_reason': owner['stop_reason'], 'diagnostic': diagnostic,
+            'recovery': {'last_event_type': events[-1].event_type if events else None,
+                         'unknown_action': {'event_id': pending.event_id,
+                             'decision_event_id': pending.source_event_refs[0],
+                             'provider_tool_call_id': pending.payload.get('provider_tool_call_id')}
+                             if pending else None},
+            'deliveries': [{k: v for k, v in d.items() if k not in {'text', 'files'}} for d in owner['deliveries']],
+            'predictions': [{'ref': p['ref'], 'reviewed_source': p.get('reviewed_source')}
+                            for p in owner['predictions']],
+            'outbox': [e['event_id'] for e in owner['outbox']],
+            'observation_poll': 'not_performed_by_status'}
+
     def open_actor(self):
         directory = self.directory / 'runs' / str(self.state['active_run'])
-        self.control = self._ipython or DockerIPython(self.workspace)
+        history_directory = None
+        if self.state.get('context_mode', 'baseline') != 'baseline':
+            history_directory = directory / 'history'
+            history_directory.mkdir(parents=True, exist_ok=True)
+        self.control = self._ipython or DockerIPython(self.workspace, history_directory=history_directory)
         self.actor = ExecutionOrgan(workspace=self.workspace,
             event_log_path=directory / 'events.jsonl', checkpoint_path=directory / 'checkpoint.json',
             max_decisions=120, max_depth=1, max_context_chars=16000, max_decisions_per_advance=1,
             completion_review_required=self.feedback_required,
+            changed_decision_context=self.changed_decision_context,
+            before_dispatch=self.calls.check_pause,
             model=ExecutionModel(self.call_execution, owner_task=self.state['task'],
                 execution_context=self.execution_context, role_prompt=EXECUTION_ROLE,
+                history=self.history,
+                recovery_context=self.recovery_context,
                 incoming_event_pending=lambda: self.actor.has_unhandled_external_event()),
             ipython_control=self.control)
         state = self.actor.state
@@ -129,7 +186,16 @@ class Execution:
                                                         if x['sequence'] > d['owner_sequence']]
         return result
 
-    def execution_context(self, count):
+    def retry_context(self):
+        state = self.run_state()
+        if state is None:
+            return False
+        from working_context import retry_failed_compaction
+        return retry_failed_compaction(
+            self.directory / 'runs' / str(self.state['active_run']) / 'handoff.json', self.calls,
+            role='execution', scope=state.execution_id, segments=self.actor.history_segments())
+
+    def execution_context(self, count, *, force=False):
         state = self.run_state()
         owners = []
         for item in self.state['owners']:
@@ -141,13 +207,79 @@ class Execution:
                 value['text_chars'] = len(item['text'])
                 value['scope'] = 'Exact owner statement retained externally; request Mind if its full text matters.'
             owners.append(value)
-        return {'version': 'execution-context-1',
-            'rounds': self.history.history(count, state.execution_id, self.actor.committed_tool_calls()),
+        mode = self.state.get('context_mode', 'baseline')
+        projection = {}
+        limit = 6 if mode == 'baseline' else 120
+        rounds = self.history.history(count, state.execution_id,
+            self.actor.committed_tool_calls(limit=limit), limit=limit,
+            max_chars=60000 if mode == 'baseline' else 10000000)
+        if mode != 'baseline':
+            segments = self.actor.history_segments()
+            directory = self.directory / 'runs' / str(self.state['active_run'])
+            for segment in segments:
+                path = directory / 'history' / (fingerprint(segment['ref']) + '.json')
+                if path.exists():
+                    if read_json(path) != segment:
+                        raise ValueError('execution_history_projection_conflict')
+                else:
+                    write_json(path, segment)
+            covered = set()
+            if mode == 'summary':
+                from working_context import compact
+                summary = compact(directory / 'handoff.json', self.calls, role='execution',
+                    scope=state.execution_id, segments=segments, force=force,
+                    retain=1 if force else 6,
+                    instructions='Write an operational handoff, not a new plan or action. Preserve exact relevant '
+                    'parameters, known completed effects, failures and their conditions, unfinished work and unknown '
+                    'outcomes with their references. Earlier commands or advice are historical, not current authority. '
+                    'Python variables may be lost after restart. Do not repeat old requests or invent results.')
+                if summary:
+                    covered = set(summary['source_refs'])
+                    projection['derived_history_handoff'] = summary
+            recent = {s['content']['decision'] for s in segments[-6:]}
+            if mode == 'mask':
+                def mask_outputs(value):
+                    if isinstance(value, dict):
+                        return {k: ({'omitted_chars': len(v), 'scope': 'Read original history for output.'}
+                                    if k == 'output' and isinstance(v, str) else mask_outputs(v)) for k, v in value.items()}
+                    return [mask_outputs(v) for v in value] if isinstance(value, list) else value
+                projection['masked_execution_history'] = [dict(s, content=mask_outputs(s['content']))
+                    for s in segments if s['content']['decision'] not in recent]
+                rounds = [r for r in rounds if f'decision-{r["decision"] + 1:06d}' in recent]
+            else:
+                rounds = [r for r in rounds if 'execution-history:' + state.execution_id
+                          + f':decision-{r["decision"] + 1:06d}' not in covered]
+            paired = {f'decision-{r["decision"] + 1:06d}' for r in rounds if r.get('native_messages')}
+            projection['unpaired_execution_history'] = [s for s in segments
+                if s['ref'] not in covered and s['content']['decision'] not in paired
+                and (mode == 'summary' or s['content']['decision'] in recent)]
+            projection['history_catalogue'] = [s['ref'] for s in segments]
+            projection['history_read'] = 'read_history(ref, offset=0, limit=8000) in IPython reads only this Run\'s '
+            projection['history_read'] += 'saved action/result projection. Source output truncation remains explicit; no hidden tail is recoverable.'
+        return {'version': 'execution-context-1' if mode == 'baseline' else 'execution-working-context-1',
+            'mode': mode, 'rounds': rounds, **projection,
             'received_guidance': self.received_guidance(count), 'owner_inputs': owners,
             'cognitive_feedback': {'last_reviewed': self.state['last_reviewed'],
                                   'completion_review_required': self.feedback_required()},
             'guidance_scope': 'Exact prior advice in receiving-decision order, not a new delivery or verified fact. '
                 'NoChange does not revoke advice. Consider later guidance and owner inputs for current applicability.'}
+
+    def recovery_context(self):
+        # These owner facts are projected after ModelRequest construction.
+        # NoChange does not make a newly received owner statement disappear.
+        return {'owner_inputs': [item['source_ref'] for item in self.state['owners']],
+                'files': self.evidence.snapshot(self.watched())['files'],
+                'guidance': [item['id'] for item in self.state['deliveries']
+                             if not item['status'].startswith('expired')]}
+
+    def changed_decision_context(self, frame):
+        records = self.history.restore_request(frame.actual_request)
+        if not records or 'execution_binding' not in records[-1]['metadata']:
+            return None  # The baseline did not record these additional owner facts.
+        if records[-1]['wire'] != plain(frame.provider_wire_request):
+            raise ValueError('execution_decision_wire_conflict')
+        before, after = records[-1]['metadata']['execution_binding'], self.recovery_context()
+        return {'before': before, 'after': after} if before != after else None
 
     def preserve_unknown_action(self):
         outcome = self.actor.latest_transport_failure() if self.actor else None
@@ -183,10 +315,19 @@ class Execution:
         state = self.run_state()
         if state is None:
             return
+        retired = self.actor.retired_decisions()
+        committed = {decision for decision, _ in self.actor.committed_tool_calls()}
         for delivery in self.state['deliveries']:
             if delivery['status'] != 'bound':
                 continue
+            if (delivery['execution_ref'] == state.execution_id
+                    and delivery['decision'] in retired and delivery['decision'] not in committed):
+                delivery.setdefault('retired_bindings', []).append(delivery['decision'])
+                delivery['decision'] = self.actor.next_root_decision_id
+                continue  # Rebinding is not receipt or adoption of the guidance.
             for path, record in self.calls.records(role='execution'):
+                if record.get('purpose', 'decision') != 'decision':
+                    continue
                 if record['status'] != 'received' or no_tool_response(record.get('response')):
                     continue
                 document = json.loads(record['wire']['messages'][0]['content'][0]['text'])
@@ -412,6 +553,7 @@ class Execution:
             self.state['announced'].append(outcome)
 
     def pending_advisory(self):
+        self.reconcile_deliveries()
         state = self.run_state()
         if state is None:
             return None
@@ -454,6 +596,8 @@ class Execution:
             changed = self.state['stop_reason'] != str(error)
             self.state['stop_reason'] = str(error)
             self.save()
+            if str(error) == 'user_pause_requested':
+                raise
             # A newly persisted yield gives the mechanical pump one chance to
             # publish feedback; unchanged budget cannot spin another model call.
             return changed and str(error) == 'feedback_budget_reserved'

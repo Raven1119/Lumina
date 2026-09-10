@@ -8,6 +8,10 @@ Mind is the persistent high-level judgment owner, outside Execution's actor tree
 `organ.py` owns semantic activities, one authorized task and analysis references.
 `cognition.py` atomically accepts selective updates; `trace.py` preserves the
 actual activity and native continuation. `model.py` supplies bounded role input.
+Working background is a derived projection, separate from accepted cognition;
+original activity pieces remain readable by bounded history references. Recovery
+uses the frozen original request before preparing a future context. See the
+[operating contract](docs/INTEGRATED_CHAIN.md) for pause, capacity and context modes.
 `analysis.py` owns an optional independent calculation/understanding context;
 `world_model.py` runs isolated programs without business workspace access.
 

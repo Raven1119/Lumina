@@ -119,9 +119,7 @@ class NervousOrgan:
             from Nervous.storage import read_json, write_json
             self._settings_path = self._directory / "settings.json"
             if self._settings_path.exists():
-                self.settings = read_json(self._settings_path)
-                if self.settings.get("format") != "nervous-runtime-1":
-                    raise ValueError("unsupported_nervous_format")
+                self.settings = self.read_settings(self._settings_path)
             else:
                 self.settings = {"format": "nervous-runtime-1", "limits": limits or {
                     "calls": 40, "output_tokens": 200000, "request_bytes": 2800000}}
@@ -145,11 +143,24 @@ class NervousOrgan:
     def _load(self) -> dict:
         if self._writer.closed:
             raise ValueError("nervous_is_closed")
-        if not self._path.exists():
+        return self.read_state(self._path)
+
+    @staticmethod
+    def read_settings(path):
+        from Nervous.storage import read_json
+        settings = read_json(path)
+        if not isinstance(settings, dict) or settings.get('format') != 'nervous-runtime-1':
+            raise ValueError('unsupported_nervous_format')
+        return settings
+
+    @staticmethod
+    def read_state(path) -> dict:
+        path = Path(path)
+        if not path.exists():
             return {"events": [], "completed": {}}
-        if self._path.stat().st_size > MAX_FILE_BYTES:
+        if path.stat().st_size > MAX_FILE_BYTES:
             raise ValueError("event_history_too_large")
-        document = json.loads(self._path.read_text(encoding="utf-8"), object_pairs_hook=_object)
+        document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_object)
         if (type(document) is not dict or set(document) != {"version", "state", "sha256"}
                 or type(document["version"]) is not int or document["version"] != 1
                 or document["sha256"] != _digest(document["state"])):
@@ -180,6 +191,13 @@ class NervousOrgan:
                     raise ValueError("invalid_event_history")
         return state
 
+    @classmethod
+    def inspect_directory(cls, directory):
+        state = cls.read_state(Path(directory) / 'events.json')
+        return {t: [e['event_id'] for e in state['events']
+                    if e['target'] == t and e['event_id'] not in state['completed']]
+                for t in ('mind', 'mind.results', 'mind.analysis', 'execution')}
+
     def _save(self, state: dict):
         encoded = _encode({"version": 1, "state": state, "sha256": _digest(state)})
         if len(encoded) > MAX_FILE_BYTES:
@@ -192,6 +210,8 @@ class NervousOrgan:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self._path)
+            from Nervous.storage import sync_directory
+            sync_directory(self._path.parent)
         finally:
             if temporary is not None:
                 Path(temporary).unlink(missing_ok=True)
@@ -271,7 +291,7 @@ class NervousOrgan:
         self.publish(event)
         return event
 
-    def initialize(self, *, goal=None, workspace=None):
+    def initialize(self, *, goal=None, workspace=None, context_mode=None):
         """Retain immutable launch input before constructing its receiving organs.
 
         These are original routing/authorization arguments, never mutable task
@@ -280,10 +300,15 @@ class NervousOrgan:
         """
         from Nervous.storage import write_json
         previous = self.settings.get('initial_input')
-        if goal is not None or workspace is not None:
+        if context_mode not in (None, 'baseline', 'mask', 'summary'):
+            raise ValueError('unsupported_context_mode')
+        if goal is not None or workspace is not None or context_mode is not None:
             if type(goal) is not str or not goal.strip() or len(goal) > 4000 or workspace is None:
                 raise ValueError('invalid_initial_input')
             initial = {'goal': goal, 'workspace': str(Path(workspace).resolve(strict=True))}
+            mode = context_mode or (previous or {}).get('context_mode', 'baseline')
+            if mode != 'baseline':
+                initial['context_mode'] = mode
             if previous is not None and previous != initial:
                 raise ValueError('initial_input_identity_conflict')
             if previous is None:
@@ -327,6 +352,7 @@ class NervousOrgan:
         self.stop_reason = None
         try:
             for _ in range(max_steps):
+                self.calls.check_pause()
                 for event in execution.poll():
                     self.publish(event)
                     execution.published(event.event_id)
@@ -353,6 +379,9 @@ class NervousOrgan:
                 self.stop_reason = "foreground_step_bound"
         except BudgetPause as pause:
             self.stop_reason = str(pause)
+        from Nervous.storage import write_json
+        self.settings['foreground_stop_reason'] = self.stop_reason
+        write_json(self._settings_path, self.settings)
         return self.status(mind, execution)
 
     def status(self, mind, execution):

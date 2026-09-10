@@ -18,7 +18,9 @@ docker pull python@sha256:3b3706a90cb23f04fabb0d255824f9a70ceb46177041898133dd5a
 
 The retained interpreter tag identifies an installed image, not an old runtime
 contract. Its Dockerfile pins the Python base and IPython version. Computation
-has no business mount; Execution mounts only the explicitly authorized workspace.
+has no business mount; Execution mounts the explicitly authorized workspace.
+Experimental context modes also mount a separate read-only export containing
+only this Run's saved action/result projections, never the provider or owner store.
 Neither backend has network access or a host-execution fallback.
 
 Keep private state, credentials and development logs outside that workspace.
@@ -51,6 +53,85 @@ Reusing an identity with changed text/event type is rejected. This transport
 identity does not restart an already handled cognitive activity or action.
 
 No pending information means quiet status/resume with no model calls.
+
+## Pause, recovery and working context
+
+The first Ctrl-C requests a cooperative foreground pause: it closes admission
+to further calls/actions. A known in-flight result is saved before stopping.
+`status` reads owner state and valid diagnostic log prefixes without constructing
+an Actor, observing workspace changes, starting a kernel or resuming anything.
+It reports pending transport, unknown action references, context progress and cost.
+
+`resume` claims an already received provider response from its original frozen
+request. Saved decisions and known action results are not sampled/executed again.
+An unstarted plan whose conditions or Python namespace changed is retired;
+Execution makes a fresh decision. A started action with an unknown outcome stays
+blocked for an actual outcome check. A partially executed batch retains its real
+results; only its unstarted suffix is retired. Python variables are not restored
+after a process restart. Persistent files and source references survive.
+
+Optional working projections are fixed at initial launch and survive interrupted
+initialization and restarts:
+
+```powershell
+.venv/Scripts/python.exe -m Mind start --state .mind-state/context-task --workspace <task-directory> --goal-file <goal.txt> --context-mode summary --max-calls 40
+```
+
+The default `baseline` preserves the existing projection. `mask` retains recent
+complete history and replaces older result bodies with explicit readable refs.
+`summary` uses one owner-local rolling handoff/background, then keeps the recent
+complete suffix; its initial threshold is 12 completed segments, retaining 6.
+Whole-request capacity may trigger earlier bounded compaction. Under that pressure,
+owners preserve the latest complete segment rather than requiring six historical
+segments to fit; no native round is split. Summaries are
+derived history, never accepted beliefs, new owner evidence, guidance receipts
+or action results. All current cognition/authority remains separately visible.
+
+Execution's `read_history(ref, offset=0, limit=8000)` in ordinary IPython reads
+its exported action/result records. Mind uses existing `read_evidence` with
+`history:<activation>:<sequence>[:offset:limit]` (limit at most 6000). The request
+catalogues supply actual refs. Mind reads a role projection of the historical
+piece: business constraints and source identity remain, while Execution's
+internal completion protocol stays outside Mind. Canonical Trace is unchanged.
+Range/total/truncation metadata travels with the actual returned text. History
+retrieval cannot reconstruct output discarded by the original tool.
+
+Summary requests have `purpose=compaction` in the same provider ledger and
+count toward the task's limits. A known summary response can finish its atomic
+commit after restart; an unknown/invalid summary or insufficient capacity pauses
+without replacing the old projection. The implementation does not automatically
+resample invalid summaries. For a known rejected summary, an explicit retry is:
+
+```powershell
+.venv/Scripts/python.exe -m Mind resume --state .mind-state/task1 --retry-context
+```
+
+This archives the original failed context and retains its provider response/cost,
+then freezes a new attempt over the same historical prefix with concrete format
+feedback and the received text reply to revise. It does not retry unknown
+dispatches or change accepted cognition.
+New v4 summaries reserve 8192 output tokens and target 6000 summary characters.
+The provider output allocation, complete request/context capacity and cumulative
+task budgets are hard limits; exceeding the drafting target alone is not a
+rejection. A larger summary can still cause the next whole request to pause before
+dispatch. Old v1-v3 pending requests retain their original hard character limit
+until an explicit retry creates a new v4 attempt; old failures remain failures.
+A valid saved response uses ordinary recovery. Full native tool batches/thinking blocks remain
+paired; they are not partially cut to fit a budget.
+
+Retain the whole private task directory and business workspace for recovery,
+including provider records, canonical owner logs, current derived contexts and
+the narrow history export. `status` may diagnose a damaged canonical tail but
+does not truncate it or authorize resumed side effects. Files use atomic replace
+and file fsync; parent-directory fsync is attempted on POSIX. This is not a claim
+of protection from every platform/filesystem/power-loss failure.
+
+See the [recovery/context design](../../docs/RECOVERY_AND_WORKING_CONTEXT_DESIGN.md)
+and [condensed validation history](EXPERIMENT_HISTORY.md) for scope, evidence and
+remaining limits. Detailed campaigns and raw records stay in local recovery
+storage. Experimental context options are not a claim of general performance
+or cognitive superiority.
+
 To explicitly retry a failed cognitive activity after addressing its cause:
 
 ```powershell
@@ -159,6 +240,8 @@ All roles use DeepSeek-V4-Pro through the official Anthropic-compatible API.
 Mind and analysis default to enabled low-effort thinking; Execution is disabled.
 An activity shares six Mind calls across consultation and recovery. Current
 submission limits are 6000 characters, 16 updates and 16000 active-state characters.
+New activities report used/max/remaining characters for the same canonical accepted
+state measured by the commit limit; this does not retire or hide any item.
 Analysis is bounded to six calls/computations. World-model inputs have at most
 16 scalar fields, with strings at most 256 characters.
 

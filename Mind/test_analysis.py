@@ -34,6 +34,28 @@ def ledger(tmp_path, transport, calls=6):
         {'calls': calls, 'output_tokens': calls * 16384, 'request_bytes': calls * 150000}, transport)
 
 
+def test_analysis_claims_global_response_when_local_turn_write_was_interrupted(tmp_path, monkeypatch):
+    class Crash(BaseException):
+        pass
+    calls = ledger(tmp_path, lambda *_: reply('report', report()), calls=1)
+    original_write = analysis.write_json
+    def interrupted(path, value):
+        if '.turn-' in path.name and 'response' in value:
+            raise Crash()
+        original_write(path, value)
+    with monkeypatch.context() as patch:
+        patch.setattr(analysis, 'write_json', interrupted)
+        owner = Analysis(tmp_path / 'models', calls, lambda _: 'Original rule.')
+        with pytest.raises(Crash):
+            owner.analyze('request-1', request())
+    before = calls.summary()
+    calls = ledger(tmp_path, lambda *_: pytest.fail('Known analysis sampled twice'), calls=1)
+    owner = Analysis(tmp_path / 'models', calls, lambda _: pytest.fail('Recovery reread an already frozen source'))
+    result = json.loads(owner.analyze('request-1', request())['text'])
+    assert result['answer'] == report()['answer']
+    assert calls.summary() == before
+
+
 def static_value(**extra):
     return {'source': 'def predict(inputs, action): return {"bytes": inputs["bytes"] + action["extra"]}',
             'inputs': {'bytes': 12}, 'action': {'extra': 3}, **extra}

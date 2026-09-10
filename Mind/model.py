@@ -8,14 +8,17 @@ from __future__ import annotations
 import copy
 import json
 from jsonschema import Draft202012Validator
-from Nervous.provider import MODEL, canonical
+from Nervous.provider import MODEL, ProviderCalls, canonical
+from Nervous.storage import fingerprint, plain
 from Mind.cognition import cognitive_step_schema, observation_sources, _apply_updates
 from Mind.task_view import COGNITIVE_CONTRACT_VERSION, evidence_read_limits
-from Mind.trace import NATIVE_PROTOCOL_VERSION, cognitive_phase, native_call_limit, output_limit
+from Mind.trace import (NATIVE_PROTOCOL_VERSION, cognitive_phase, native_call_limit, output_limit,
+                        project_activity_context)
 
 OUTPUT_TOKENS = 16384
 REQUEST_BYTES = 240000
 EVIDENCE_READ_CHARS, _ = evidence_read_limits(COGNITIVE_CONTRACT_VERSION)
+READ_SOURCE_METADATA_FIELDS = ('source_kind', 'label', 'offset', 'limit', 'total_chars', 'truncated')
 
 MIND_PROMPT = "You are Lumina's persistent Mind, the single high-level decision owner for the authorized goal. User messages and important Execution events reach you through Nervous. You understand, investigate and decide; Execution chooses the implementation. Address the current event in the continuing goal, including the possibility that your earlier conclusion was mistaken.\n\nExtract the information needed for this decision:\n- The owner's requested outcome, acceptance conditions, authorization and any real deadline.\n- What each original source actually observes or states, about which object, population, time and conditions. Distinguish that from an actor's inference or a prior Mind/Builder judgment.\n- The prerequisites of the proposed conclusion or action. For each prerequisite that could change the decision, determine whether the visible evidence establishes it, rules it out, or leaves it unresolved. An observed value must match the relevant source, identity, scope and condition; a similar-looking record is not enough.\nUse this to choose the useful question. A request may be framed around arithmetic or file completion while the owner's decision depends on whether the interpretation is justified. Correct calculations support those calculations; they do not establish unobserved outcomes or the premises chosen for them.\n\nRead original evidence when a specific missing fact could change the decision. Use analyze_world_model for a useful comparison, conditional consequence or independent analysis of selected sources; state the open question and supply its needed evidence. Builder cannot fetch sources. Its output distinguishes assumptions from computation and observation, and returns to you in this activity. If no available observation can resolve a prerequisite, preserve it as unknown and select a proportionate action: inquiry, waiting, partial delivery or ending work under the actual goal. Closing collection or stopping work does not settle an unobserved event. No tool or analysis is mandatory.\n\nYour cognitive_step communicates the accepted result, not a reasoning transcript:\n1. updates: only changed or added understanding and questions. Express factual claims literally, with material conditions, scope and uncertainty. Include the source refs that supply both the rule and observation when an inference needs both. Unsubmitted items stay unchanged. Reuse affected IDs to replace their complete claim, basis, status and optional discriminator; revise downstream conclusions and questions that relied on a changed premise. Explicitly archive or use current to retire obsolete records. Preserve correct knowledge.\n2. Within each belief update, status evaluates the exact NEW sentence you submitted. supported means that sentence is warranted; contradicted means its negation is warranted; open means neither is established. A sentence saying an earlier statement was wrong is itself supported when that assessment is established. Do not carry a previous claim's status onto a rewritten opposite claim. Missing support for a positive claim is not proof of its negation. Prefer storing the currently warranted scoped fact or unresolved question over a narrative about your correction.\n3. next: decide whether Execution needs a CHANGE of business direction. NoChange accepts the current direction and ends this cognitive activity, including a successful result review; it neither prevents Execution from completing nor requires another report. You can repair cognition and acknowledge satisfactory work with NoChange. A Directive initiates further execution and another result review: use it for actual remaining business work or changed conditions, not to acknowledge, repeat fulfilled advice, or authorize runtime completion. Convey the new decision, its material conditions, decisive evidence or gap, and acceptance or priority implication. Execution handles its own completion protocol. Do not provide finished artifact bodies, code, commands or implementation procedures; filenames, fields and concrete business requirements can identify the target.\n\nBefore the final commit, read the affected old beliefs as propositions with prior_truth: true means the complete claim was judged true, false means it was judged false, and null means its truth was unresolved. This records your earlier judgment, not a verified fact. Re-evaluate each relevant complete claim against the sources; a correct statement ABOUT an error or missing evidence is true. Repair an incorrect prior_truth by updating the same record with the appropriate literal claim and status. Do not rewrite unaffected correct knowledge. Compare actual results with the goal and prior direction. If the work already meets its requirements and has reported its result, accept it and end this review; if a specific unmet requirement remains, give that direction. A report repeating your judgment or a runtime marker alone does not establish business success. This reconciliation is your own reasoning within this activity, not another agent or an external approval.\n\nWith execution_status null no execution run exists: a Directive starts authorized work; NoChange records understanding without starting work. Do not change the formal goal. You have read-only/analysis tools, not execution authority. Use one declared tool per response and consider its result. Only final cognitive_step commits cognition and guidance. The whole submission is bounded at 6000 characters and 16 updates; current knowledge at 16000 characters. Use concise results and only the calls needed."
 
@@ -103,11 +106,22 @@ class MindModel:
         self.contract = self.cognitive_contract_version = COGNITIVE_CONTRACT_VERSION
         self.native_protocol_version = NATIVE_PROTOCOL_VERSION
 
+    def preflight_context(self, activation, context, capabilities, execution_observation=None):
+        projection = project_activity_context(activation, context, capabilities,
+            initial_observation={'capability': 'inspect_execution', **execution_observation}
+                                if execution_observation else None)
+        wire = self._prepare_call(**projection.as_model_call())['wire']
+        if self.preflight is not None:
+            self.preflight(wire)
+
     def _prepare_call(self, recent_context, user_message, *, system_prompt):
         payload = json.loads(user_message)
         if payload['cognition'].get('contract_version') != self.contract:
             raise ValueError('cognitive_contract_context_mismatch')
         sources = citation_sources(user_message)
+        background = payload['cognition'].pop('derived_history_background', None)
+        if background is not None:
+            payload['derived_history_background'] = background
         wire = {'model': MODEL, 'system': MIND_PROMPT, 'messages': [{'role': 'user', 'content': user_message}], 'tools': [{'name': 'cognitive_step'}], 'tool_choice': {'type': 'auto'}, 'max_tokens': OUTPUT_TOKENS, 'thinking': {'type': 'enabled' if self.thinking else 'disabled'}}
         if not self.thinking:
             wire['temperature'] = 0
@@ -137,6 +151,29 @@ class MindModel:
                     annotations[ref].update(kind='capability_response_capacity', requested_sources=[item['ref'] for item in capacity['sources']])
             elif self.source_info is not None:
                 annotations[ref] = {**self.source_info(ref), 'origin': origins[ref]}
+        for item in observations:
+            observation = item['observation']
+            if observation['capability'] != 'read_evidence':
+                continue
+            receipt = json.loads(observation['text'])
+            if receipt.get('read_result') != 'sources-v1':
+                continue
+            metadata = receipt.get('source_metadata', {})
+            if not isinstance(metadata, dict):
+                raise ValueError('invalid_read_source_metadata')
+            for source in receipt['sources']:
+                ref = source['ref']
+                if not ref.startswith('history:') or ref not in metadata:
+                    continue
+                if not isinstance(metadata[ref], dict):
+                    raise ValueError('invalid_read_source_metadata')
+                info = {key: metadata[ref][key] for key in READ_SOURCE_METADATA_FIELDS if key in metadata[ref]}
+                kind = info.pop('source_kind', 'historical_activity_record')
+                if kind not in {'historical_model_judgment', 'historical_activity_record'}:
+                    raise ValueError('invalid_read_source_metadata')
+                info.update(kind=kind, scope='Role-projected historical trace range, not a complete input '
+                            'or a new reality observation. Model output records a past judgment.')
+                annotations.setdefault(ref, {}).update(info)
         activity = payload['activation'].pop('trigger')
         goal = {'text': payload['activation'].pop('execution_goal_snapshot')}
         task_view = payload['cognition'].get('task_view')
@@ -155,6 +192,8 @@ class MindModel:
         wire['tools'][0]['input_schema'] = cognitive_step_schema(sources, prior_items, payload['available_capabilities'], contract=self.contract)
         if self.readable_sources is not None:
             readable = sorted(set(sources) | set(self.readable_sources()))
+            if background is not None:
+                readable = sorted(set(readable) | {item['ref'] for item in background['catalogue']})
             for option in wire['tools'][0]['input_schema']['properties']['next']['oneOf']:
                 if option['properties'].get('capability', {}).get('enum') == ['analyze_world_model']:
                     option['properties']['model_ref']['description'] = 'Use the empty string for a new analysis. To reuse or revise a saved model, copy its existing model: reference from a prior Builder result exactly. This field is not a title or a name to invent for the analysis.'
@@ -165,6 +204,8 @@ class MindModel:
                     refs['description'] = 'Readable source references, including catalogued files whose contents are not yet visible. Reading does not require a basis citation. Cite returned text only after it appears in the exact source catalogue.'
                     if option['properties']['capability']['enum'] == ['read_evidence']:
                         refs['description'] += f' The combined returned text is limited to {EVIDENCE_READ_CHARS} characters including record labels. The file catalogue gives source character counts; choose only the evidence needed for this judgment, not every related file. Oversize returns capacity metadata without contents and consumes one consultation; use remaining consultations to narrow the request or obtain analysis.'
+                        if background is not None:
+                            refs['description'] += ' Historical trace pieces are readable by their history: ref; append :offset:limit to read an exact character range, with limit 1..6000. These are historical observations or model judgments, not new owner facts. A derived summary is not an evidence source.'
         commit = wire['tools'][0]
         options = commit['input_schema']['properties']['next']['oneOf']
         consultations = []
@@ -207,9 +248,8 @@ class MindModel:
             if phase_calls:
                 base_wire = phase_calls[0]['wire']
             wire, repair = base_wire, False
-            if phase_calls:
-                if history[-1]['kind'] != 'result':
-                    raise ValueError('native_result_unknown')
+            pending = bool(phase_calls and history[-1]['kind'] == 'call')
+            if phase_calls and not pending:
                 result = history[-1]
                 if result['accepted']:
                     submission, errors, _ = _decode_native_response(result['response'], history[-2]['wire'])
@@ -232,9 +272,9 @@ class MindModel:
                         'is_error': True, 'content': canonical(feedback)}]}]}
                 repair = True
             remaining = native_call_limit(trace.events) - sum(r['kind'] == 'call' for r in history)
-            if remaining <= 0:
+            if remaining <= 0 and not pending:
                 raise ValueError('native_call_budget')
-            if remaining == 1:
+            if remaining == 1 and not pending:
                 # Preserve a final judgment slot instead of opening an unreturnable consultation.
                 wire = json.loads(canonical(wire))
                 wire['tools'] = [tool for tool in wire['tools'] if tool['name'] == 'cognitive_step']
@@ -243,15 +283,42 @@ class MindModel:
                 note = '\nThis is the last Mind call in this activity. Submit a final bounded judgment; unresolved questions may remain open.'
                 if not wire['system'].endswith(note):
                     wire['system'] += note
-            if self.preflight is not None:
-                self.preflight(wire)
-            if repair:
-                trace.reserve_native_repair()
-            trace.append_native(kind='call', phase=phase, repair=repair, wire=wire)
+            if pending:
+                wire, repair = history[-1]['wire'], history[-1]['repair']
+            else:
+                if isinstance(self.transport, ProviderCalls):
+                    self.transport.check_pause()
+                if self.preflight is not None:
+                    self.preflight(wire)
+                if repair:
+                    trace.reserve_native_repair()
+                operation = fingerprint([trace.events[0].activation_id, plain(trace.events[0].payload),
+                                         1 + sum(r['kind'] == 'call' for r in trace.native_records())])
+                admission = {'operation': operation} if isinstance(self.transport, ProviderCalls) else {}
+                trace.append_native(kind='call', phase=phase, repair=repair, wire=wire, **admission)
+            operation = fingerprint([trace.events[0].activation_id, plain(trace.events[0].payload),
+                                     sum(r['kind'] == 'call' for r in trace.native_records())])
             actual = {**record, 'wire': wire, 'phase': phase, 'repair': repair}
             self.calls.append(actual)
             try:
-                response = self.transport(wire)
+                if pending:
+                    saved = (self.transport.recover('mind', operation)
+                             if isinstance(self.transport, ProviderCalls) else None)
+                    if saved is None and not isinstance(self.transport, ProviderCalls):
+                        raise ValueError('native_result_unknown')
+                    if saved is None and history[-1].get('operation') != operation:
+                        from Nervous.provider import BudgetPause
+                        raise BudgetPause('provider_call_outcome_unknown')
+                    if saved is not None and saved['wire'] != wire:
+                        raise ValueError('native_provider_identity_conflict')
+                    # The provider ledger reserves durably before dispatch. No
+                    # record proves this frozen local call was never dispatched.
+                    response = (saved['response'] if saved is not None else
+                                self.transport.call('mind', wire, operation=operation))
+                elif isinstance(self.transport, ProviderCalls):
+                    response = self.transport.call('mind', wire, operation=operation)
+                else:
+                    response = self.transport(wire)
             except Exception as error:
                 trace.append_native(kind='result', response=None, errors=[{'transport': type(error).__name__}],
                                     accepted=False, recoverable=False)

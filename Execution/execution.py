@@ -6,7 +6,7 @@ import os
 import subprocess
 import threading
 import uuid
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Iterable, Literal, Mapping, Protocol, TypeAlias
@@ -119,6 +119,8 @@ class NativeModelDecision:
     raw_provider_response: object | None
     provider_tool_call_id: str | tuple[str, ...] | None = None
     failure: str | None = None
+    owner_request: ModelRequest | None = None
+    retirement_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -307,6 +309,7 @@ class ModelRequest:
     source_event_refs: tuple[str, ...]
     native_tool_continuation: NativeToolContinuation | None = None
     model_visible_context_limit: int | None = None
+    kernel_epoch: str | None = None  # Owner-side namespace binding, not a model conclusion.
 
     @property
     def context_size_chars(self) -> int:
@@ -580,6 +583,7 @@ class ExecutionStep:
 EventType: TypeAlias = Literal[
     "EXECUTION_STARTED",
     "MODEL_DECISION",
+    "DECISION_RETIRED",
     "TOOL_CALL_STARTED",
     "TOOL_RESULT",
     "TOOL_FAILED",
@@ -623,6 +627,10 @@ _SIBLING_SETTLED_EVENT_TYPES = (
     "ACTION_RECONCILED",
 )
 
+_PAUSE_EVENTS = {'INTERRUPT_REQUESTED', 'ACTOR_SUSPENDED', 'ACTOR_RESUMED'}
+_CONTROL_SETTLEMENT_EVENTS = {'ROOT_WAITING', 'COMPLETION_CLAIMED', 'COMPLETION_VERIFIED',
+                              'COMPLETION_REJECTED', 'COMPLETION_DEFERRED', 'EXECUTION_COMPLETED'}
+
 
 def _previous_sibling_is_settled(
     events: tuple[ExecutionEvent, ...],
@@ -665,6 +673,36 @@ def _previous_sibling_is_settled(
     )
 
 
+def _unsettled_action_start(events):
+    """Find an unknown outcome by causal identity, even across pause/input events."""
+    start = next((e for e in reversed(events)
+                  if e.event_type in {'TOOL_CALL_STARTED', 'IPYTHON_EXECUTION_STARTED'}), None)
+    if start is None:
+        return None
+    by_id = {e.event_id: e for e in events}
+    for event in events[start.sequence:]:
+        if event.event_type not in _SIBLING_SETTLED_EVENT_TYPES:
+            continue
+        cause = by_id.get(event.source_event_refs[0])
+        while cause is not None and cause.event_type in {'INTERRUPT_REQUESTED', 'CHILD_SPAWNED'}:
+            cause = by_id.get(cause.source_event_refs[0])
+        if cause is not None and cause.event_id == start.event_id:
+            return None
+    return start
+
+
+def _prefix_before_pause(events, origin_refs, current_refs):
+    if not events or len(origin_refs) != 1 or current_refs != (events[-1].event_id,):
+        return None
+    for index, event in enumerate(events):
+        if (event.event_id,) == origin_refs:
+            suffix = events[index + 1:]
+            if suffix and all(e.event_type in _PAUSE_EVENTS for e in suffix):
+                return events[:index + 1]
+            break
+    return None
+
+
 @dataclass(frozen=True)
 class DecisionFrame:
     decision_id: str
@@ -679,6 +717,7 @@ class DecisionFrame:
     provider_wire_request: object | None = None
     raw_provider_response: object | None = None
     provider_tool_call_id: str | tuple[str, ...] | None = None
+    raw_response_type: str | None = None
 
 
 _SERIALIZABLE_TYPES = {
@@ -745,6 +784,13 @@ def _encode_value(value: object) -> object:
                 for field in fields(value)
                 if not (isinstance(value, IPythonResult) and field.name == 'cognitive_request'
                         and value.cognitive_request is None)
+                and not (isinstance(value, NativeModelDecision)
+                         and field.name in {'owner_request', 'retirement_reason'}
+                         and getattr(value, field.name) is None)
+                and not (isinstance(value, ModelRequest) and field.name == 'kernel_epoch'
+                          and value.kernel_epoch is None)
+                and not (isinstance(value, DecisionFrame) and field.name == 'raw_response_type'
+                         and value.raw_response_type is None)
             },
         }
     raise TypeError(f"unsupported durable event value: {type(value).__name__}")
@@ -801,6 +847,12 @@ def _decode_value(value: object) -> object:
         encoded_fields = {"depth": 0, "max_depth": 1, **encoded_fields}
     elif value_type == 'IPythonResult':
         encoded_fields = {'cognitive_request': None, **encoded_fields}
+    elif value_type == 'NativeModelDecision':
+        encoded_fields = {'owner_request': None, 'retirement_reason': None, **encoded_fields}
+    elif value_type == 'ModelRequest':
+        encoded_fields = {'kernel_epoch': None, **encoded_fields}
+    elif value_type == 'DecisionFrame':
+        encoded_fields = {'raw_response_type': None, **encoded_fields}
     expected_fields = {field.name for field in fields(value_class)}
     if set(encoded_fields) != expected_fields:
         raise ValueError(f"invalid fields for durable {value_type}")
@@ -874,6 +926,13 @@ class EventLog:
                     ) from exc
         return event_log
 
+    @classmethod
+    def inspect_path(cls, path):
+        from Nervous.storage import inspect_jsonl
+        log = cls()  # No filesystem, Actor, checkpoint, or kernel construction.
+        diagnostic = inspect_jsonl(path, lambda doc: log._accept_loaded(log._event_from_record(doc)))
+        return log.events, diagnostic
+
     def _persist(self, event: ExecutionEvent) -> None:
         record = {
             "schema_version": self.SCHEMA_VERSION,
@@ -886,10 +945,14 @@ class EventLog:
         serialized = json.dumps(
             record, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         )
+        new_file = not self._path.exists()
         with self._path.open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(serialized + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+        if new_file:
+            from Nervous.storage import sync_directory
+            sync_directory(self._path.parent)
 
     @classmethod
     def _event_from_record(cls, record: object) -> ExecutionEvent:
@@ -943,6 +1006,7 @@ class EventLog:
     ) -> None:
         schemas = {
             "MODEL_DECISION": {"action", "frame"},
+            "DECISION_RETIRED": {"reason"},
             "TOOL_CALL_STARTED": {"request"},
             "TOOL_RESULT": {"observation"},
             "TOOL_FAILED": {"observation"},
@@ -1018,6 +1082,16 @@ class EventLog:
             == {"action", "code_sha256", "provider_tool_call_id"}
         ):
             expected_schema = set(payload)
+        if event_type == 'DECISION_RETIRED' and set(payload) in (
+                {'reason', 'context_change'}, {'reason', 'advisory'}):
+            expected_schema = set(payload)
+        if event_type == 'COMPLETION_DEFERRED' and set(payload) == {'observation', 'context_change'}:
+            expected_schema = set(payload)
+            change = payload['context_change']
+            if not (isinstance(change, Mapping) and set(change) == {'before', 'after'}
+                    and isinstance(change['before'], Mapping) and isinstance(change['after'], Mapping)
+                    and change['before'] != change['after']):
+                raise ValueError('completion deferral requires changed execution conditions')
         if set(payload) != expected_schema:
             raise ValueError(f"invalid payload for {event_type}")
         if self._events and (
@@ -1089,7 +1163,8 @@ class EventLog:
             "TOOL_CALL_STARTED",
             "IPYTHON_EXECUTION_STARTED",
             "CHILD_SPAWNED",
-        )
+            "DECISION_RETIRED",
+        ) or event_type in _CONTROL_SETTLEMENT_EVENTS
         if (
             not self._events
             or (decision_caused_event and len(source_event_refs) != 1)
@@ -1101,6 +1176,21 @@ class EventLog:
             raise ValueError("event must cite the immediately preceding cause")
 
         previous = self._events[-1]
+        if event_type in _CONTROL_SETTLEMENT_EVENTS:
+            previous = next(e for e in reversed(self._events)
+                            if e.event_type not in _PAUSE_EVENTS | {'EXTERNAL_EVENT_RECEIVED'})
+            if source_event_refs != (previous.event_id,):
+                raise ValueError('control settlement must cite its pending cause')
+        if event_type in {'TOOL_CALL_STARTED', 'IPYTHON_EXECUTION_STARTED',
+                          'CHILD_SPAWNED', 'ROOT_WAITING', 'COMPLETION_CLAIMED'}:
+            cause = next((e for e in self._events if source_event_refs == (e.event_id,)), None)
+            frame = cause.payload.get('frame') if cause else None
+            if (isinstance(frame, DecisionFrame)
+                    and (isinstance(frame.raw_model_response, NativeModelDecision)
+                         and frame.raw_model_response.retirement_reason is not None
+                         or any(e.event_type == 'DECISION_RETIRED' and e.source_event_refs == (cause.event_id,)
+                                for e in self._events))):
+                raise ValueError('retiring decision cannot dispatch an action')
         if event_type == "INTERRUPT_REQUESTED":
             state = fold_execution_state(self.events)
             if state.status != "running" or payload["status"] != "requested":
@@ -1351,10 +1441,19 @@ class EventLog:
             frame = payload["frame"]
             raw_action = None
             provider_fidelity = True
+            request_fidelity = False
             if isinstance(frame, DecisionFrame):
+                request_fidelity = frame.actual_request.source_event_refs == source_event_refs
                 raw_action = _structured_action(frame.raw_model_response)
                 if isinstance(frame.raw_model_response, NativeModelDecision):
                     native = frame.raw_model_response
+                    if native.owner_request is not None:
+                        origin_refs = native.owner_request.source_event_refs
+                        request_fidelity = (frame.actual_request == native.owner_request
+                            and len(origin_refs) == 1
+                            and any(e.event_id == origin_refs[0] for e in self._events)
+                            and (origin_refs == source_event_refs or native.retirement_reason is not None
+                                 or _prefix_before_pause(self.events, origin_refs, source_event_refs) is not None))
                     provider_fidelity = (
                         frame.provider_wire_request
                         == native.provider_wire_request
@@ -1383,6 +1482,7 @@ class EventLog:
                     "ROOT_WOKEN",
                     "ROOT_REDIRECTED",
                     "ACTOR_RESUMED",
+                    "DECISION_RETIRED",
                     "CHILD_SPAWNED",
                     "CHILD_RETURNED",
                     "CHILD_FAILED",
@@ -1392,12 +1492,45 @@ class EventLog:
                 or raw_action != frame.resulting_action
                 or frame.state_version != previous.sequence
                 or frame.source_event_refs != source_event_refs
-                or frame.actual_request.source_event_refs != source_event_refs
+                or not request_fidelity
                 or frame.actual_tools_exposed != frame.actual_request.available_tools
                 or frame.goal != self._events[0].payload["goal"]
                 or not provider_fidelity
             ):
                 raise ValueError("model decision requires current execution state")
+        elif event_type == 'DECISION_RETIRED':
+            cause = next((e for e in reversed(self._events) if e.event_type == 'MODEL_DECISION'), None)
+            frame = cause.payload.get('frame') if cause else None
+            native = frame.raw_model_response if isinstance(frame, DecisionFrame) else None
+            change = payload.get('context_change')
+            valid_reason = (isinstance(native, NativeModelDecision)
+                            and payload['reason'] == native.retirement_reason
+                            and payload['reason'] in {'owner_request_changed', 'execution_context_changed'})
+            if change is not None:
+                valid_reason = (payload['reason'] == 'execution_context_changed'
+                                and isinstance(change, Mapping) and set(change) == {'before', 'after'}
+                                and isinstance(change['before'], Mapping) and isinstance(change['after'], Mapping)
+                                and change['before'] != change['after'])
+            if 'advisory' in payload:
+                state = fold_execution_state(self.events)
+                valid_reason = (valid_reason and state.actor_role == 'root'
+                                and payload['reason'] == 'owner_request_changed'
+                                and _decision_advisory_for(payload['advisory'],
+                                    f'decision-{state.decision_count + 1:06d}') is not None)
+            tail = self._events[cause.sequence:] if cause else ()
+            starts = [e for e in tail if e.event_type in {'TOOL_CALL_STARTED', 'IPYTHON_EXECUTION_STARTED'}]
+            settled_prefix = (change is not None and starts and _unsettled_action_start(self.events) is None
+                              and len(starts) < len(_action_sequence(frame.resulting_action))
+                              and all(e.source_event_refs == (cause.event_id,) for e in starts))
+            allowed_tail = {'INTERRUPT_REQUESTED', 'ACTOR_SUSPENDED', 'ACTOR_RESUMED',
+                            'EXTERNAL_EVENT_RECEIVED', 'ROOT_REDIRECTED'}
+            if settled_prefix:
+                allowed_tail |= {'TOOL_CALL_STARTED', 'IPYTHON_EXECUTION_STARTED'} | set(_SIBLING_SETTLED_EVENT_TYPES)
+            if (cause is None
+                    or not valid_reason
+                    or source_event_refs != (cause.event_id,)
+                    or any(e.event_type not in allowed_tail for e in tail)):
+                raise ValueError('retirement requires known outcomes and an unstarted obsolete suffix')
         elif event_type == "ROOT_WAITING":
             frame = previous.payload.get("frame")
             condition = payload["condition"]
@@ -1779,7 +1912,7 @@ class EventLog:
             observation = payload["observation"]
             deferred = event_type == "COMPLETION_DEFERRED"
             if (
-                previous.event_type != "COMPLETION_CLAIMED"
+                previous.event_type not in {"COMPLETION_CLAIMED", "COMPLETION_VERIFIED"}
                 or not isinstance(observation, CompletionObservation)
                 or observation.status != ("review_pending" if deferred else "rejected")
                 or not _evidence_matches_spec(
@@ -1807,6 +1940,7 @@ class EventLog:
                 "ACTION_RECONCILED",
                 "COMPLETION_REJECTED",
                 "COMPLETION_DEFERRED",
+                "DECISION_RETIRED",
                 "ROOT_WOKEN",
                 "ROOT_REDIRECTED",
             ):
@@ -2004,6 +2138,8 @@ class EventLog:
                 raw_provider_response=cls._freeze(value.raw_provider_response),
                 provider_tool_call_id=cls._freeze(value.provider_tool_call_id),
                 failure=cls._freeze(value.failure),
+                owner_request=cls._freeze(value.owner_request),
+                retirement_reason=cls._freeze(value.retirement_reason),
             )
         if isinstance(value, NativeToolContinuation):
             return NativeToolContinuation(
@@ -2035,6 +2171,7 @@ class EventLog:
                 source_event_refs,
                 native_tool_continuation,
                 model_visible_context_limit,
+                cls._freeze(value.kernel_epoch),
             )
         if isinstance(value, DecisionFrame):
             return DecisionFrame(
@@ -2050,6 +2187,7 @@ class EventLog:
                 provider_wire_request=cls._freeze(value.provider_wire_request),
                 raw_provider_response=cls._freeze(value.raw_provider_response),
                 provider_tool_call_id=cls._freeze(value.provider_tool_call_id),
+                raw_response_type=cls._freeze(value.raw_response_type),
             )
         if isinstance(
             value,
@@ -2090,7 +2228,7 @@ class ExecutionState:
     waiting_for: str | None = None
     latest_external_event: ExternalEvent | None = None
     last_provider_tool_call_id: str | tuple[str, ...] | None = None
-    lifecycle_notice: Literal["interrupt_requested", "suspended", "resumed"] | None = None
+    lifecycle_notice: str | None = None
     child_refs: tuple[ChildRef, ...] = ()
     child_outcomes: tuple[ChildObservation, ...] = ()
     actor_role: Literal["root", "child"] = "root"
@@ -2221,6 +2359,17 @@ def fold_execution_state(
                 if isinstance(frame, DecisionFrame)
                 else None
             )
+        elif event.event_type == 'DECISION_RETIRED':
+            values['last_action'] = None
+            values['last_provider_tool_call_id'] = None
+            change = event.payload.get('context_change', {})
+            epoch = change.get('after', {}).get('kernel_epoch')
+            values['lifecycle_notice'] = (
+                f'Python namespace changed to {epoch}; earlier Python variables are unavailable. '
+                'Unstarted actions were not executed; completed results remain recorded. '
+                'Reconstruct needed state from persistent evidence before acting.'
+                if epoch else 'Unstarted actions were not executed because request or execution conditions changed; '
+                'decide from the current conditions.')
         elif event.event_type == "TOOL_CALL_STARTED":
             request = event.payload.get("request")
             if not isinstance(request, (ReadRequest, WriteRequest, ShellRequest)):
@@ -2284,6 +2433,9 @@ def fold_execution_state(
                     "completion rejection events require an observation"
                 )
             values["latest_observation"] = observation
+            if event.payload.get('context_change') is not None:
+                values['lifecycle_notice'] = ('The historical completion claim remains recorded, but its '
+                    'execution conditions changed before completion. Reassess the current requirements.')
         elif event.event_type == "ROOT_WAITING":
             condition = event.payload.get("condition")
             if not isinstance(condition, Wait):
@@ -2308,17 +2460,18 @@ def fold_execution_state(
         elif event.event_type == "ROOT_REDIRECTED":
             decision_id = f"decision-{state.decision_count + 1:06d}"
             withdrawal = _advisory_withdrawal_for(event.payload.get("advisory"), decision_id)
+            retired = state.last_action is None and state.decision_count > 0 and state.waiting_for is None
             if (
                 state.actor_role != "root"
-                or not isinstance(state.last_action, Wait)
+                or not (isinstance(state.last_action, Wait) or retired)
                 or state.status not in ("waiting", "running", "suspended")
                 or (withdrawal and state.status == "waiting")
                 or (not withdrawal and _decision_advisory_for(event.payload.get("advisory"), decision_id) is None)
             ):
                 raise ValueError("Root redirect requires guidance for its next waiting decision")
             if state.status != "suspended":
-                values["status"] = "waiting" if withdrawal else "running"
-            values["waiting_for"] = state.last_action.event_type if withdrawal else None
+                values["status"] = "waiting" if withdrawal and not retired else "running"
+            values["waiting_for"] = state.last_action.event_type if withdrawal and not retired else None
         elif event.event_type == "INTERRUPT_REQUESTED":
             values["lifecycle_notice"] = "interrupt_requested"
         elif event.event_type == "ACTOR_SUSPENDED":
@@ -2494,6 +2647,8 @@ class Checkpoint:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_path, checkpoint_path)
+        from Nervous.storage import sync_directory
+        sync_directory(checkpoint_path.parent)
 
     @classmethod
     def load(cls, path: str | Path) -> Checkpoint:
@@ -3006,7 +3161,8 @@ def _pending_root_redirect(events: tuple[ExecutionEvent, ...]) -> ExecutionEvent
     for event in reversed(events):
         if event.event_type == "MODEL_DECISION":
             break
-        if event.event_type == "ROOT_REDIRECTED":
+        if event.event_type == "ROOT_REDIRECTED" or (
+                event.event_type == 'DECISION_RETIRED' and 'advisory' in event.payload):
             return event if event.payload["advisory"][1] is not None else None
     return None
 
@@ -3074,11 +3230,14 @@ def _build_model_request(
     events: tuple[ExecutionEvent, ...] = (),
     capability_declarations: tuple[str, ...] = (),
     decision_advisory_context: str | None = None,
+    kernel_epoch: str | None = None,
 ) -> ModelRequest:
     continuation = None
     sibling_observations: tuple[RuntimeObservation, ...] = ()
     for event_index in range(len(events) - 1, -1, -1):
         event = events[event_index]
+        if event.event_type == 'DECISION_RETIRED':
+            break  # No invented tool result for a plan that was never dispatched.
         if event.event_type != "MODEL_DECISION":
             continue
         frame = event.payload.get("frame")
@@ -3134,6 +3293,7 @@ def _build_model_request(
         source_event_refs=source_event_refs,
         native_tool_continuation=continuation,
         model_visible_context_limit=max_context_chars,
+        kernel_epoch=kernel_epoch,
     )
 
 
@@ -3175,6 +3335,8 @@ class RootAgentProcess:
         max_depth: int = 1,
         max_decisions_per_advance: int | None = None,
         completion_review_required: Callable[[], bool] | None = None,
+        changed_decision_context: Callable[[DecisionFrame], Mapping | None] | None = None,
+        before_dispatch: Callable[[], None] | None = None,
         _child_ref: ChildRef | None = None,
     ) -> None:
         if max_decisions < 1:
@@ -3185,6 +3347,8 @@ class RootAgentProcess:
             raise ValueError("max_decisions_per_advance must be a positive integer or None")
         self._max_decisions_per_advance = max_decisions_per_advance
         self._completion_review_required = completion_review_required
+        self._changed_decision_context = changed_decision_context
+        self._before_dispatch = before_dispatch
         if max_context_chars < 768:
             raise ValueError("max_context_chars must be at least 768")
         if type(max_depth) is not int or max_depth not in (1, 2):
@@ -3272,6 +3436,7 @@ class RootAgentProcess:
         self._active_ipython_event: ExecutionEvent | None = None
         self._active_ipython_batch_size = 0
         self._ipython_control = ipython_control
+        self._kernel_epoch = getattr(ipython_control, 'kernel_epoch', None) or uuid.uuid4().hex
         self._checkpoint_path = (
             Path(checkpoint_path) if checkpoint_path is not None else None
         )
@@ -3300,20 +3465,8 @@ class RootAgentProcess:
                     raise ValueError(
                         "interrupted IPython Child spawn recovery is unsupported"
                     )
-            if last_event.event_type == "MODEL_DECISION":
-                frame = last_event.payload.get("frame")
-                actions = (
-                    _action_sequence(frame.resulting_action)
-                    if isinstance(frame, DecisionFrame)
-                    else ()
-                )
-                if not actions or any(
-                    not isinstance(action, SpawnChild) for action in actions
-                ):
-                    raise ValueError(
-                        "unsettled action recovery is not implemented for this event tail"
-                    )
-            elif last_event.event_type not in (
+            if last_event.event_type not in (
+                "MODEL_DECISION",  # _dispatch_decision checks applicability before any action.
                 "EXECUTION_STARTED",
                 "TOOL_RESULT",
                 "TOOL_FAILED",
@@ -3324,6 +3477,8 @@ class RootAgentProcess:
                 "ACTION_RECONCILED",
                 "COMPLETION_REJECTED",
                 "COMPLETION_DEFERRED",
+                "COMPLETION_CLAIMED",
+                "COMPLETION_VERIFIED",
                 "ROOT_WAITING",
                 "EXTERNAL_EVENT_RECEIVED",
                 "ROOT_WOKEN",
@@ -3331,6 +3486,7 @@ class RootAgentProcess:
                 "INTERRUPT_REQUESTED",
                 "ACTOR_SUSPENDED",
                 "ACTOR_RESUMED",
+                "DECISION_RETIRED",
                 "CHILD_SPAWNED",
                 "CHILD_RETURNED",
                 "CHILD_FAILED",
@@ -3555,11 +3711,39 @@ class RootAgentProcess:
                 )
                 self._interrupt_requested = False
                 self._lifecycle.notify_all()
-        last_event = self._event_log.events[-1]
-        if last_event.event_type == "IPYTHON_EXECUTION_STARTED":
+        pending_action = _unsettled_action_start(self._event_log.events)
+        if pending_action is not None and pending_action.event_type == "IPYTHON_EXECUTION_STARTED":
             raise ValueError("interrupted IPython execution recovery is unsupported")
-        if last_event.event_type == "TOOL_CALL_STARTED":
-            self._reconcile_interrupted_call(last_event)
+        if pending_action is not None:
+            self._reconcile_interrupted_call(pending_action)
+        retiring = next((e for e in reversed(self._event_log.events) if e.event_type == 'MODEL_DECISION'), None)
+        native = retiring.payload['frame'].raw_model_response if retiring else None
+        if (isinstance(native, NativeModelDecision) and native.retirement_reason is not None
+                and not any(e.event_type == 'DECISION_RETIRED' and e.source_event_refs == (retiring.event_id,)
+                            for e in self._event_log.events)):
+            payload = {'reason': native.retirement_reason}
+            if (native.retirement_reason == 'owner_request_changed'
+                    and _decision_advisory_for(decision_advisory, decision_id) is not None):
+                payload['advisory'] = decision_advisory
+            self._event_log.append('DECISION_RETIRED', payload, (retiring.event_id,))
+            return self._result(steps)
+        control_event = next(e for e in reversed(self._event_log.events)
+                             if e.event_type not in _PAUSE_EVENTS | {'EXTERNAL_EVENT_RECEIVED'})
+        if control_event.event_type == 'MODEL_DECISION':
+            review_completion = (self._completion_review_required is not None
+                                 and self._completion_review_required())
+            result = self._dispatch_decision(control_event, steps, review_completion=review_completion)
+            if result is not None:
+                return result
+            if self._max_decisions_per_advance is not None:
+                return self._result(steps)
+            return self._drive(steps, decision_advisory=decision_advisory)
+        elif control_event.event_type in {'COMPLETION_CLAIMED', 'COMPLETION_VERIFIED'}:
+            review_completion = (self._completion_review_required is not None
+                                 and self._completion_review_required())
+            result = self._settle_completion(control_event, steps, review_completion=review_completion)
+            if result is not None:
+                return result
         state = self._current_state()
         last_event = self._event_log.events[-1]
         if state.status == "waiting" and _decision_advisory_for(
@@ -3593,7 +3777,8 @@ class RootAgentProcess:
             return self._result(steps)
         if state.status == "child_pending" and self._max_depth == 2:
             return self._result(steps)
-        self._resume_sibling_suffix(steps)
+        if self._resume_sibling_suffix(steps):
+            return self._result(steps)
         return self._drive(steps, decision_advisory=decision_advisory)
 
     def _settle_recovered_interrupt(
@@ -3797,6 +3982,9 @@ class RootAgentProcess:
             if decision_event is not None
             else None
         )
+        if (decision_event is not None and any(event.event_type == 'DECISION_RETIRED'
+                and event.source_event_refs == (decision_event.event_id,) for event in events)):
+            return
         actions = (
             _action_sequence(frame.resulting_action)
             if isinstance(frame, DecisionFrame)
@@ -3869,7 +4057,7 @@ class RootAgentProcess:
                 (decision_event.event_id,),
             )
 
-    def _resume_sibling_suffix(self, steps: list[ExecutionStep]) -> None:
+    def _resume_sibling_suffix(self, steps: list[ExecutionStep]) -> bool:
         events = self._event_log.events
         decision_event = next(
             (
@@ -3884,6 +4072,11 @@ class RootAgentProcess:
             if decision_event is not None
             else None
         )
+        if (isinstance(frame, DecisionFrame) and isinstance(frame.raw_model_response, NativeModelDecision)
+                and frame.raw_model_response.retirement_reason is not None
+                or decision_event is not None and any(e.event_type == 'DECISION_RETIRED'
+                    and e.source_event_refs == (decision_event.event_id,) for e in events)):
+            return False
         actions = (
             _action_sequence(frame.resulting_action)
             if isinstance(frame, DecisionFrame)
@@ -3893,7 +4086,7 @@ class RootAgentProcess:
             not isinstance(action, (ToolCall, IPythonCode))
             for action in actions
         ):
-            return
+            return False
         starts = tuple(
             event
             for event in events
@@ -3902,24 +4095,26 @@ class RootAgentProcess:
             and event.source_event_refs == (decision_event.event_id,)
         )
         if len(starts) >= len(actions):
-            return
-        if starts and any(isinstance(action, IPythonCode) for action in actions):
-            raise ValueError(
-                "partial IPython sibling recovery is unsupported"
-            )
+            return False
+        change = self._decision_context_change(decision_event)
+        if change is not None:
+            self._event_log.append('DECISION_RETIRED',
+                {'reason': 'execution_context_changed', 'context_change': change}, (decision_event.event_id,))
+            return True
         call_ids = _provider_call_ids(
             frame.provider_tool_call_id,
             len(actions),
         )
         if len(call_ids) != len(actions):
             raise ValueError("sibling call identity is incomplete")
-        self._execute_actions(
+        suspended = self._execute_actions(
             self._current_state().decision_count,
             decision_event,
             actions[len(starts) :],
             call_ids[len(starts) :],
             steps,
         )
+        return suspended or self._max_decisions_per_advance is not None
 
     def _append_child_spawn(
         self,
@@ -3995,6 +4190,8 @@ class RootAgentProcess:
             provider_call_ids,
             strict=True,
         ):
+            if self._before_dispatch is not None:
+                self._before_dispatch()
             if isinstance(action, IPythonCode):
                 with self._lifecycle:
                     if self._interrupt_requested:
@@ -4109,6 +4306,8 @@ class RootAgentProcess:
                     )
                 return self._finish(steps)
             decision = state.decision_count + 1
+            if self._before_dispatch is not None:
+                self._before_dispatch()
             decision_id = f"decision-{decision:06d}"
             # Freeze the host's control requirement before a provider decision or
             # claim is committed. A failed policy read leaves a resumable tail.
@@ -4129,7 +4328,9 @@ class RootAgentProcess:
             )
             decision_advisory = None
             source_refs = (self._event_log.events[-1].event_id,)
-            request = _build_model_request(
+            recover_request = getattr(self._model, 'recover_request', None)
+            known_request = recover_request(state) if recover_request is not None else None
+            request = known_request or _build_model_request(
                 state,
                 source_refs,
                 self._max_context_chars,
@@ -4144,8 +4345,9 @@ class RootAgentProcess:
                 if self._ipython_child_delegation
                 else (),
                 advisory_context,
+                kernel_epoch=self._kernel_epoch,
             )
-            if advisory_context is not None and json.loads(request.context).get(
+            if known_request is None and advisory_context is not None and json.loads(request.context).get(
                 _DECISION_ADVISORY_CONTEXT_KEY
             ) != advisory_context:
                 raise ValueError("Root redirect guidance exceeds the available decision context")
@@ -4157,29 +4359,50 @@ class RootAgentProcess:
             raw_response_snapshot = EventLog._freeze(raw_response)
             structured_action = _structured_action(raw_response)
             action_snapshot = EventLog._freeze(structured_action)
-            actions = _action_sequence(action_snapshot)
             native_response = (
                 raw_response_snapshot
                 if isinstance(raw_response_snapshot, NativeModelDecision)
                 else None
             )
-            provider_call_ids = (
-                _provider_call_ids(
-                    native_response.provider_tool_call_id,
-                    len(actions),
-                )
-                if native_response is not None
-                else (None,) * len(actions)
-            )
+            comparison_request = request
+            retirement_advisory = None
+            if known_request is not None:
+                comparison_request = ModelRequest('', self._available_tools, source_refs)
+                if (native_response is None or native_response.owner_request != known_request):
+                    raise ValueError('recovered_request_requires_its_original_response')
+                if (native_response.retirement_reason is None
+                        and (known_request.source_event_refs != source_refs
+                             or known_request.available_tools != self._available_tools)):
+                    native_response = replace(native_response, retirement_reason='owner_request_changed')
+                    raw_response_snapshot = native_response
+            if (native_response is not None and native_response.owner_request is not None
+                    and advisory_context is not None
+                    and json.loads(native_response.owner_request.context).get(
+                        _DECISION_ADVISORY_CONTEXT_KEY) != advisory_context):
+                # The saved response still belongs to its original request. Accept
+                # this new direction only with retirement, for the next decision.
+                retirement_advisory = (f'decision-{decision + 1:06d}', advisory_context)
+                native_response = replace(native_response, retirement_reason='owner_request_changed')
+                raw_response_snapshot = native_response
+            if (native_response is not None and native_response.retirement_reason == 'owner_request_changed'
+                    and retirement_advisory is None
+                    and self._request_survives_pause(native_response.owner_request, comparison_request)):
+                native_response = replace(native_response, retirement_reason=None)
+                raw_response_snapshot = native_response
             frame = DecisionFrame(
                 decision_id=decision_id,
                 model_identifier=self._model.identifier,
                 goal=state.goal,
                 state_version=state.version,
                 source_event_refs=source_refs,
-                actual_request=request,
-                actual_tools_exposed=request.available_tools,
+                actual_request=(native_response.owner_request
+                                if native_response is not None and native_response.owner_request is not None
+                                else request),
+                actual_tools_exposed=(native_response.owner_request.available_tools
+                                     if native_response is not None and native_response.owner_request is not None
+                                     else request.available_tools),
                 raw_model_response=raw_response_snapshot,
+                raw_response_type=type(raw_response).__name__ if structured_action is None else None,
                 resulting_action=action_snapshot,
                 provider_wire_request=(
                     native_response.provider_wire_request
@@ -4208,228 +4431,298 @@ class RootAgentProcess:
                 )
                 self._active_phase = None
                 self._lifecycle.notify_all()
-            if native_response is not None and native_response.failure is not None:
-                with self._lifecycle:
-                    if self._suspend_if_requested_locked():
-                        return self._result(steps)
-                    steps.append(ExecutionStep(decision, raw_response, None))
-                    self._event_log.append(
-                        "EXECUTION_FAILED",
-                        {"failure": native_response.failure},
-                        (decision_event.event_id,),
-                    )
+            if native_response is not None and native_response.retirement_reason is not None:
+                payload = {'reason': native_response.retirement_reason}
+                if retirement_advisory is not None:
+                    payload['advisory'] = retirement_advisory
+                self._event_log.append('DECISION_RETIRED', payload, (decision_event.event_id,))
+                return self._result(steps)
+            result = self._dispatch_decision(decision_event, steps, review_completion=review_completion)
+            if result is not None:
+                return result
+
+    def _request_survives_pause(self, original, current):
+        """Prove the old owner request from its pre-pause history, without editing it."""
+        if original is None or original.available_tools != current.available_tools:
+            return False
+        prefix = _prefix_before_pause(self._event_log.events, original.source_event_refs, current.source_event_refs)
+        if prefix is None:
+            return False
+        rebuilt = _build_model_request(fold_execution_state(prefix), original.source_event_refs,
+            original.model_visible_context_limit or self._max_context_chars, self._available_tools, prefix,
+            ('IPython provides spawn_child(goal) for delegating one independent subtask.',)
+            if self._ipython_child_delegation else (),
+            json.loads(original.context).get(_DECISION_ADVISORY_CONTEXT_KEY), kernel_epoch=original.kernel_epoch)
+        return rebuilt == original
+
+    def _decision_context_change(self, decision_event):
+        frame = decision_event.payload['frame']
+        if (any(isinstance(action, IPythonCode) for action in _action_sequence(frame.resulting_action))
+                and frame.actual_request.kernel_epoch != self._kernel_epoch):
+            return {'before': {'kernel_epoch': frame.actual_request.kernel_epoch},
+                    'after': {'kernel_epoch': self._kernel_epoch}}
+        external = [e.event_id for e in self._event_log.events[decision_event.sequence:]
+                    if e.event_type == 'EXTERNAL_EVENT_RECEIVED']
+        if external:
+            return {'before': {'external_events': []}, 'after': {'external_events': external}}
+        if self._changed_decision_context is not None:
+            return self._changed_decision_context(frame)
+        return None
+
+    def _dispatch_decision(self, decision_event, steps, *, review_completion):
+        """Settle a frozen decision through the same path on first use or recovery."""
+        frame = decision_event.payload['frame']
+        change = self._decision_context_change(decision_event)
+        if change is not None:
+            self._event_log.append('DECISION_RETIRED',
+                {'reason': 'execution_context_changed', 'context_change': change}, (decision_event.event_id,))
+            return self._result(steps)
+        state = self._current_state()
+        decision = state.decision_count
+        raw_response, action_snapshot = frame.raw_model_response, frame.resulting_action
+        actions = _action_sequence(action_snapshot)
+        native_response = raw_response if isinstance(raw_response, NativeModelDecision) else None
+        provider_call_ids = (_provider_call_ids(frame.provider_tool_call_id, len(actions))
+                             if native_response is not None else (None,) * len(actions))
+        if native_response is not None and native_response.failure is not None:
+            with self._lifecycle:
+                if self._suspend_if_requested_locked():
+                    return self._result(steps)
+                steps.append(ExecutionStep(decision, raw_response, None))
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": native_response.failure},
+                    (decision_event.event_id,),
+                )
+            return self._finish(steps)
+        control_actions = (Wait, ClaimComplete, SpawnChild, Return)
+        if (
+            len(actions) > 1
+            and any(isinstance(item, control_actions) for item in actions)
+            and not all(isinstance(item, SpawnChild) for item in actions)
+        ):
+            steps.append(ExecutionStep(decision, action_snapshot, None))
+            self._event_log.append(
+                "EXECUTION_FAILED",
+                {"failure": "model_protocol:mixed_control_tool_calls"},
+                (decision_event.event_id,),
+            )
+            return self._finish(steps)
+        action = actions[0] if len(actions) == 1 else None
+        if isinstance(action, Return):
+            if self._actor_role != "child":
+                steps.append(ExecutionStep(decision, action, None))
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": "unauthorized_action:Return"},
+                    (decision_event.event_id,),
+                )
                 return self._finish(steps)
-            control_actions = (Wait, ClaimComplete, SpawnChild, Return)
+            steps.append(ExecutionStep(decision, action, None))
+            self._event_log.append(
+                "CHILD_RETURNED",
+                {
+                    "child_actor_id": state.actor_id or "",
+                    "parent_actor_id": state.parent_actor_id or "",
+                    "local_result": action.local_result,
+                },
+                (decision_event.event_id,),
+            )
+            return self._finish(steps)
+        spawn_actions = (
+            actions
+            if actions
+            and all(isinstance(item, SpawnChild) for item in actions)
+            else ()
+        )
+        if spawn_actions:
+            if not self._child_limit:
+                steps.append(ExecutionStep(decision, action_snapshot, None))
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": "unauthorized_action:SpawnChild"},
+                    (decision_event.event_id,),
+                )
+                return self._finish(steps)
             if (
-                len(actions) > 1
-                and any(isinstance(item, control_actions) for item in actions)
-                and not all(isinstance(item, SpawnChild) for item in actions)
+                len(state.child_refs) + len(spawn_actions)
+                > self._child_limit
             ):
                 steps.append(ExecutionStep(decision, action_snapshot, None))
                 self._event_log.append(
                     "EXECUTION_FAILED",
-                    {"failure": "model_protocol:mixed_control_tool_calls"},
+                    {"failure": "child_limit_reached"},
                     (decision_event.event_id,),
                 )
                 return self._finish(steps)
-            action = actions[0] if len(actions) == 1 else None
-            if isinstance(action, Return):
-                if self._actor_role != "child":
-                    steps.append(ExecutionStep(decision, action, None))
-                    self._event_log.append(
-                        "EXECUTION_FAILED",
-                        {"failure": "unauthorized_action:Return"},
-                        (decision_event.event_id,),
-                    )
-                    return self._finish(steps)
-                steps.append(ExecutionStep(decision, action, None))
+            if self._event_log.path is None:
+                steps.append(ExecutionStep(decision, action_snapshot, None))
                 self._event_log.append(
-                    "CHILD_RETURNED",
-                    {
-                        "child_actor_id": state.actor_id or "",
-                        "parent_actor_id": state.parent_actor_id or "",
-                        "local_result": action.local_result,
-                    },
+                    "EXECUTION_FAILED",
+                    {"failure": "child_persistence_required"},
                     (decision_event.event_id,),
                 )
                 return self._finish(steps)
-            spawn_actions = (
-                actions
-                if actions
-                and all(isinstance(item, SpawnChild) for item in actions)
-                else ()
+            non_null_call_ids = tuple(
+                call_id
+                for call_id in provider_call_ids
+                if call_id is not None
             )
-            if spawn_actions:
-                if not self._child_limit:
-                    steps.append(ExecutionStep(decision, action_snapshot, None))
-                    self._event_log.append(
-                        "EXECUTION_FAILED",
-                        {"failure": "unauthorized_action:SpawnChild"},
-                        (decision_event.event_id,),
+            if (
+                len(provider_call_ids) != len(spawn_actions)
+                or (
+                    len(spawn_actions) > 1
+                    and (
+                        len(non_null_call_ids)
+                        != len(provider_call_ids)
+                        or len(non_null_call_ids)
+                        != len(set(non_null_call_ids))
                     )
-                    return self._finish(steps)
-                if (
-                    len(state.child_refs) + len(spawn_actions)
-                    > self._child_limit
-                ):
-                    steps.append(ExecutionStep(decision, action_snapshot, None))
-                    self._event_log.append(
-                        "EXECUTION_FAILED",
-                        {"failure": "child_limit_reached"},
-                        (decision_event.event_id,),
-                    )
-                    return self._finish(steps)
-                if self._event_log.path is None:
-                    steps.append(ExecutionStep(decision, action_snapshot, None))
-                    self._event_log.append(
-                        "EXECUTION_FAILED",
-                        {"failure": "child_persistence_required"},
-                        (decision_event.event_id,),
-                    )
-                    return self._finish(steps)
-                non_null_call_ids = tuple(
-                    call_id
-                    for call_id in provider_call_ids
-                    if call_id is not None
                 )
-                if (
-                    len(provider_call_ids) != len(spawn_actions)
-                    or (
-                        len(spawn_actions) > 1
-                        and (
-                            len(non_null_call_ids)
-                            != len(provider_call_ids)
-                            or len(non_null_call_ids)
-                            != len(set(non_null_call_ids))
-                        )
-                    )
-                    or any(
-                        spawn.provider_tool_call_id != call_id
-                        for spawn, call_id in zip(
-                            spawn_actions,
-                            provider_call_ids,
-                            strict=True,
-                        )
-                    )
-                ):
-                    steps.append(ExecutionStep(decision, action_snapshot, None))
-                    self._event_log.append(
-                        "EXECUTION_FAILED",
-                        {"failure": "model_protocol:invalid_spawn_batch"},
-                        (decision_event.event_id,),
-                    )
-                    return self._finish(steps)
-                with self._lifecycle:
-                    if self._suspend_if_requested_locked():
-                        return self._result(steps)
-                    for spawn, provider_call_id in zip(
+                or any(
+                    spawn.provider_tool_call_id != call_id
+                    for spawn, call_id in zip(
                         spawn_actions,
                         provider_call_ids,
                         strict=True,
-                    ):
-                        steps.append(ExecutionStep(decision, spawn, None))
-                        self._append_child_spawn(
-                            spawn.goal,
-                            provider_call_id,
-                            decision_event,
+                    )
+                )
+            ):
+                steps.append(ExecutionStep(decision, action_snapshot, None))
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": "model_protocol:invalid_spawn_batch"},
+                    (decision_event.event_id,),
+                )
+                return self._finish(steps)
+            with self._lifecycle:
+                if self._suspend_if_requested_locked():
+                    return self._result(steps)
+                for spawn, provider_call_id in zip(
+                    spawn_actions,
+                    provider_call_ids,
+                    strict=True,
+                ):
+                    steps.append(ExecutionStep(decision, spawn, None))
+                    self._append_child_spawn(
+                        spawn.goal,
+                        provider_call_id,
+                        decision_event,
+                    )
+            return self._result(steps)
+        if isinstance(action, ClaimComplete):
+            if self._actor_role != "root":
+                steps.append(ExecutionStep(decision, action, None))
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {"failure": "unauthorized_action:ClaimComplete"},
+                    (decision_event.event_id,),
+                )
+                return self._finish(steps)
+            with self._lifecycle:
+                if self._suspend_if_requested_locked():
+                    return self._result(steps)
+                claim_event = self._event_log.append(
+                    "COMPLETION_CLAIMED",
+                    {"claim": action},
+                    (decision_event.event_id,),
+                )
+            return self._settle_completion(claim_event, steps, review_completion=review_completion)
+        if isinstance(action, Wait):
+            with self._lifecycle:
+                if self._suspend_if_requested_locked():
+                    return self._result(steps)
+                steps.append(ExecutionStep(decision, action, None))
+                self._event_log.append(
+                    "ROOT_WAITING",
+                    {"condition": action},
+                    (decision_event.event_id,),
+                )
+                if self._checkpoint_path is not None:
+                    Checkpoint.capture(self._event_log.events).save(
+                        self._checkpoint_path
+                    )
+            return self._result(steps)
+        if not actions or len(provider_call_ids) != len(actions):
+            with self._lifecycle:
+                if self._suspend_if_requested_locked():
+                    return self._result(steps)
+                steps.append(ExecutionStep(decision, raw_response, None))
+                self._event_log.append(
+                    "EXECUTION_FAILED",
+                    {
+                        "failure": (
+                            f"unknown_action:{frame.raw_response_type or type(raw_response).__name__}"
                         )
+                    },
+                    (decision_event.event_id,),
+                )
+            return self._finish(steps)
+        suspended = self._execute_actions(
+            decision,
+            decision_event,
+            actions,
+            provider_call_ids,
+            steps,
+        )
+        if suspended:
+            return self._result(steps)
+
+    def _settle_completion(self, claim_event, steps, *, review_completion):
+        with self._lifecycle:
+            if self._suspend_if_requested_locked():
                 return self._result(steps)
-            if isinstance(action, ClaimComplete):
-                if self._actor_role != "root":
-                    steps.append(ExecutionStep(decision, action, None))
+            pending_event = claim_event
+            if claim_event.event_type == 'COMPLETION_VERIFIED':
+                claim_event = next(e for e in self._event_log.events
+                                   if (e.event_id,) == pending_event.source_event_refs)
+            decision_event = next(e for e in self._event_log.events
+                                  if (e.event_id,) == claim_event.source_event_refs)
+            change = self._decision_context_change(decision_event)
+            action = claim_event.payload['claim']
+            state = self._current_state()
+            decision = state.decision_count
+            if state.completion_spec is None:
+                raise ValueError(
+                    "execution is missing its completion spec"
+                )
+            evidence = _verify_completion(
+                state.completion_spec,
+                self._tools.environment,
+            )
+            if evidence.matched:
+                if review_completion or change is not None:
+                    observation = CompletionObservation("review_pending", evidence)
+                    payload = {'observation': observation}
+                    if change is not None:
+                        payload['context_change'] = change
                     self._event_log.append(
-                        "EXECUTION_FAILED",
-                        {"failure": "unauthorized_action:ClaimComplete"},
-                        (decision_event.event_id,),
-                    )
-                    return self._finish(steps)
-                with self._lifecycle:
-                    if self._suspend_if_requested_locked():
-                        return self._result(steps)
-                    claim_event = self._event_log.append(
-                        "COMPLETION_CLAIMED",
-                        {"claim": action},
-                        (decision_event.event_id,),
-                    )
-                    state = self._current_state()
-                    if state.completion_spec is None:
-                        raise ValueError(
-                            "execution is missing its completion spec"
-                        )
-                    evidence = _verify_completion(
-                        state.completion_spec,
-                        self._tools.environment,
-                    )
-                    if evidence.matched:
-                        if review_completion:
-                            observation = CompletionObservation("review_pending", evidence)
-                            self._event_log.append(
-                                "COMPLETION_DEFERRED", {"observation": observation},
-                                (claim_event.event_id,),
-                            )
-                            steps.append(ExecutionStep(decision, action, observation))
-                            if self._checkpoint_path is not None:
-                                Checkpoint.capture(self._event_log.events).save(self._checkpoint_path)
-                            return self._result(steps)
-                        verified_event = self._event_log.append(
-                            "COMPLETION_VERIFIED",
-                            {"evidence": evidence},
-                            (claim_event.event_id,),
-                        )
-                        steps.append(ExecutionStep(decision, action, None))
-                        self._event_log.append(
-                            "EXECUTION_COMPLETED",
-                            {"status": "verified"},
-                            (verified_event.event_id,),
-                        )
-                        return self._finish(steps)
-                    observation = CompletionObservation("rejected", evidence)
-                    self._event_log.append(
-                        "COMPLETION_REJECTED",
-                        {"observation": observation},
-                        (claim_event.event_id,),
+                        "COMPLETION_DEFERRED", payload, (pending_event.event_id,),
                     )
                     steps.append(ExecutionStep(decision, action, observation))
-                continue
-            if isinstance(action, Wait):
-                with self._lifecycle:
-                    if self._suspend_if_requested_locked():
-                        return self._result(steps)
-                    steps.append(ExecutionStep(decision, action, None))
-                    self._event_log.append(
-                        "ROOT_WAITING",
-                        {"condition": action},
-                        (decision_event.event_id,),
-                    )
                     if self._checkpoint_path is not None:
-                        Checkpoint.capture(self._event_log.events).save(
-                            self._checkpoint_path
-                        )
-                return self._result(steps)
-            if not actions or len(provider_call_ids) != len(actions):
-                with self._lifecycle:
-                    if self._suspend_if_requested_locked():
-                        return self._result(steps)
-                    steps.append(ExecutionStep(decision, raw_response, None))
-                    self._event_log.append(
-                        "EXECUTION_FAILED",
-                        {
-                            "failure": (
-                                f"unknown_action:{type(raw_response).__name__}"
-                            )
-                        },
-                        (decision_event.event_id,),
-                    )
+                        Checkpoint.capture(self._event_log.events).save(self._checkpoint_path)
+                    return self._result(steps)
+                verified_event = pending_event if pending_event.event_type == 'COMPLETION_VERIFIED' else self._event_log.append(
+                    "COMPLETION_VERIFIED",
+                    {"evidence": evidence},
+                    (claim_event.event_id,),
+                )
+                steps.append(ExecutionStep(decision, action, None))
+                self._event_log.append(
+                    "EXECUTION_COMPLETED",
+                    {"status": "verified"},
+                    (verified_event.event_id,),
+                )
                 return self._finish(steps)
-            suspended = self._execute_actions(
-                decision,
-                decision_event,
-                actions,
-                provider_call_ids,
-                steps,
+            observation = CompletionObservation("rejected", evidence)
+            self._event_log.append(
+                "COMPLETION_REJECTED",
+                {"observation": observation},
+                (pending_event.event_id,),
             )
-            if suspended:
-                return self._result(steps)
+            steps.append(ExecutionStep(decision, action, observation))
+        return None
 
     def close(self) -> None:
         if self._ipython_control is not None:

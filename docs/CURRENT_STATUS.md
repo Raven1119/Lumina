@@ -110,6 +110,56 @@ responses and calculation output are injected. Whole-repository and Docker
 checks were not rerun for this narrow repair. This is scoped regression evidence,
 not a claim that the entire cognitive loop has no remaining defects.
 
+## Recovery and working-context implementation
+
+The current local implementation adds exact frozen-provider-response recovery,
+applicability checks before dispatching recovered plans, known control/action
+suffix completion, cold-kernel retirement of unstarted work, cooperative Ctrl-C
+and read-only diagnostic `status`. Unknown actions and unknown provider outcomes
+remain explicit stops; known results do not acquire another call/action charge.
+
+Mind and Execution now share the small pinned Kimi-derived compression core but
+own separate derived background/handoff files. Current cognition, received advice,
+action state and canonical history remain authoritative. Complete native rounds
+stay together; historical reads are bounded and attributed. Whole actual requests
+include catalogue/tool/native/correction costs. Capacity is visible rather than
+silently deleting knowledge or increasing lifetime limits. Mind also reports
+used/remaining accepted-cognition characters before a normal update.
+
+Baseline remains default. `--context-mode mask` and `--context-mode summary`
+are explicit, fixed-at-start options for this separate foreground CLI. Small
+real comparisons corrected the same scoped false inference in all successful
+Mind arms; they did not establish a general summary advantage. The first two
+summary replies were rejected by an overly narrow citation contract. The repaired
+v2 contract accepted only genuine visible references from the frozen source prefix;
+original failures and old protocol interpretations remain unchanged.
+
+The normal CLI task now completed from its original history: Lumina generated a
+real three-file provenance manifest, compared conditional CSV/JSON sizes through
+isolated analysis, waited for an external byte/hash check, updated its report and
+revised the old report-pending beliefs through the same Mind. Final Mind revision
+5 has no active activity or pending feedback; quiet resume added no calls.
+The actual CSV measured 278 bytes, matching that serialization's calculation;
+the unused JSON candidate and full trajectories were not reality-verified.
+
+Live repairs addressed short-history capacity, typed receipt references and
+known rejected-summary continuation. New `working-context-v4` makes the local
+6000-character count a drafting target; provider output, whole request capacity
+and cumulative budgets remain hard. Old failures/protocols are preserved. The
+complete task used **48/64 real calls**, including comparisons and all repairs.
+Latest maintained suite: **821 passed, 30 skipped**. The earlier 31-test Docker
+run covered computation/action/history mechanisms; the real CLI exercised v4.
+
+This is scoped delivery and recovery evidence. Some older belief wording still
+overstates decoded text as original-byte evidence, despite a later directly
+cited independent measurement. Summary fidelity/general benefit is not proven,
+and baseline remains default. Earlier validation counts above are historical.
+See the current
+[condensed validation history](../Mind/docs/EXPERIMENT_HISTORY.md) and
+[source reuse record](../vendor/kimi_compaction/PROVENANCE.md) for tested scope,
+retained failures and default-selection evidence. Detailed campaign reports and
+raw provider records are local recovery artifacts, not published dependencies.
+
 ## Scope and limits
 
 - One goal, foreground operation, one writer and a small authorized workspace.

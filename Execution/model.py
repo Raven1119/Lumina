@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 
 from Execution.deepseek_model import DeepSeekModel
+from Execution.execution import ModelRequest, _decode_value, _encode_value
 from Nervous.provider import MODEL, BudgetPause, anthropic_messages, native_response
 from Nervous.storage import canonical, fingerprint, plain
 
@@ -56,6 +57,14 @@ def correction_wire(wire, response):
             'and guidance. Do not repeat the prose analysis.'}]}
 
 
+def check_correction_capacity(wire):
+    # A correction belongs to the frozen original request. Do not recompact it
+    # or pair its already received response with a different working projection.
+    size = len(json.dumps(wire, ensure_ascii=False).encode('utf-8'))
+    if size > 150000 or size + wire['max_tokens'] > 196608:
+        raise BudgetPause('execution_working_context_capacity')
+
+
 class ExecutionModel:
     """Reuse the supported action parser; actual Anthropic wire is retained."""
     identifier = MODEL
@@ -63,18 +72,72 @@ class ExecutionModel:
 
     def __init__(self, transport, *, owner_task=None, execution_context=None, role_prompt="",
                  incoming_event_pending=None,
-                 max_output_tokens=8192, thinking=False):
+                 max_output_tokens=8192, thinking=False, history=None, recovery_context=None):
         self.transport, self.calls = transport, []
         self.owner_task, self.execution_context = owner_task, execution_context
         self.role_prompt = role_prompt
         self.incoming_event_pending = incoming_event_pending
         self.max_output_tokens = max_output_tokens
         self.thinking = thinking
+        self.history = history
+        self.recovery_context = recovery_context
+
+    def recover_request(self, state):
+        """Look up a known call before Root constructs a fresh working context."""
+        if self.history is None:
+            return None
+        records = self.history._restore({'execution_id': state.execution_id, 'decision_count': state.decision_count})
+        if records and 'owner_request' in records[-1]['metadata']:
+            return _decode_value(records[-1]['metadata']['owner_request'])
+        return None
 
     def decide(self, request):
+        current_request = request
+        restored = self.history.restore_request(request) if self.history is not None else ()
+        legacy = ()
+        if restored and 'owner_request' in restored[-1]['metadata']:
+            request = _decode_value(restored[-1]['metadata']['owner_request'])
+            if not isinstance(request, ModelRequest):
+                raise ValueError('execution_owner_request_identity_conflict')
+        elif restored:
+            # Older records lack the owner request. Do not attach today's
+            # context to a response whose original source binding is unknown.
+            if no_tool_response(restored[0]['response']):
+                legacy, restored = restored, ()
+            else:
+                raise BudgetPause('execution_owner_request_unavailable')
+        binding = self.recovery_context() if self.recovery_context is not None else None
+        if self.history is not None:
+            self.history.owner_request = _encode_value(request)
+            self.history.execution_binding = (restored[-1]['metadata'].get('execution_binding')
+                                              if restored else binding)
         record = {'context': request.context}
         self.calls.append(record)
-        def send(payload):
+        def decode_response(wire, response):
+            record.update(wire=wire, response=response)
+            if response.get('stop_reason') != 'tool_use':
+                return response  # Preserve incomplete envelopes, never normalize partial tools.
+            if any(block.get('name') not in {tool['name'] for tool in wire['tools']}
+                   for block in response.get('content', []) if block.get('type') == 'tool_use'):
+                raise ValueError('execution_tool_not_available')
+            native = native_response(response)
+            if wire.get('thinking', {}).get('type') == 'enabled':
+                native['anthropic_response'] = response
+            return native
+        def send(payload, *, compact_for_capacity=False):
+            if restored:
+                wire = plain(restored[0]['wire'])
+                response = restored[0]['response']
+                if no_tool_response(response):
+                    record['rejected_attempt'] = {'wire': wire, 'response': response}
+                    correction_of = fingerprint(wire)
+                    wire = (plain(restored[1]['wire']) if len(restored) == 2
+                            else correction_wire(wire, response))
+                    if len(restored) == 1:
+                        check_correction_capacity(wire)
+                    response = (restored[1]['response'] if len(restored) == 2
+                                else self.transport(wire, correction_of=correction_of))
+                return decode_response(wire, response)
             messages = anthropic_messages(payload['messages'])
             continuation = request.native_tool_continuation
             if self.thinking and continuation is not None:
@@ -106,13 +169,17 @@ class ExecutionModel:
                             value['incoming_event'] = document.get('incoming_event')
                             result['content'] = canonical(value)
                 if self.execution_context is not None:
-                    decision_context = self.execution_context(document['state']['decision_count'])
+                    decision_context = (self.execution_context(document['state']['decision_count'], force=True)
+                        if compact_for_capacity else self.execution_context(document['state']['decision_count']))
                     history = decision_context['rounds']
                     document['owner_inputs'] = decision_context['owner_inputs']
                     document['received_guidance'] = decision_context['received_guidance']
                     document['guidance_scope'] = decision_context['guidance_scope']
                     document['decision_context_version'] = decision_context['version']
                     document['cognitive_feedback'] = decision_context.get('cognitive_feedback')
+                    for key in ('derived_history_handoff', 'masked_execution_history', 'unpaired_execution_history', 'history_catalogue', 'history_read'):
+                        if key in decision_context:
+                            document[key] = decision_context[key]
                     current = messages[1:3] if len(messages) >= 3 else None
                     rounds = [(entry, entry['native_messages']) for entry in history
                               if entry.get('native_messages') and entry['decision'] + 1 < document['state']['decision_count']]
@@ -129,7 +196,7 @@ class ExecutionModel:
                         if has_thinking != self.thinking:
                             break
                         length = len(canonical(pair))
-                        if len(selected) == 6 or size + length > 60000:
+                        if decision_context.get('mode', 'baseline') == 'baseline' and (len(selected) == 6 or size + length > 60000):
                             if not selected:
                                 raise ValueError('execution_native_context_bound')
                             break  # Omit whole older rounds, never cut a signature or a tool batch.
@@ -158,31 +225,50 @@ class ExecutionModel:
                 wire['thinking'] = {'type': 'enabled'}
                 wire['output_config'] = {'effort': 'low'}
                 wire.pop('temperature', None)
+            if self.execution_context is not None and decision_context.get('mode', 'baseline') != 'baseline':
+                # Check the whole native request, not just its human-readable state.
+                # UTF-8 bytes are a conservative token estimate, not provider usage.
+                from working_context import estimate_request_tokens, should_auto_compact
+                size = len(json.dumps(wire, ensure_ascii=False).encode('utf-8'))
+                near_capacity = (size + 12000 > 150000 or should_auto_compact(
+                    estimate_request_tokens(wire), 196608, reserved_context_size=16384 + wire['max_tokens'], trigger_ratio=0.85))
+                if near_capacity and decision_context['mode'] == 'summary' and not compact_for_capacity:
+                    return send(payload, compact_for_capacity=True)
+                if near_capacity:
+                    raise BudgetPause('execution_working_context_capacity')
+            if len(legacy) == 2:
+                # The baseline supported an already saved correction only when
+                # its full request could be reproduced exactly. Keep that proof,
+                # not a guessed association with a changed owner request.
+                original = legacy[1]['wire']
+                if wire != {**original, 'messages': original['messages'][:-2]}:
+                    raise BudgetPause('execution_owner_request_unavailable')
+                record['rejected_attempt'] = {'wire': legacy[0]['wire'], 'response': legacy[0]['response']}
+                return decode_response(plain(original), legacy[1]['response'])
             record['wire'] = wire
-            response = self.transport(wire)
+            response = legacy[0]['response'] if legacy else self.transport(wire)
             if no_tool_response(response):
-                record['rejected_attempt'] = {'wire': wire, 'response': response}
+                record['rejected_attempt'] = {'wire': legacy[0]['wire'] if legacy else wire,
+                                              'response': response}
                 correction_of = fingerprint(wire)
                 wire = correction_wire(wire, response)
+                check_correction_capacity(wire)
                 record['wire'] = wire
                 response = self.transport(wire, correction_of=correction_of)
-            record['response'] = response
-            if response.get('stop_reason') != 'tool_use':
-                return response  # Retain the incomplete envelope; never normalize partial tools.
-            blocks = [b for b in response.get('content', []) if b.get('type') == 'tool_use']
-            if any(block.get('name') not in {tool['name'] for tool in wire['tools']} for block in blocks):
-                raise ValueError('execution_tool_not_available')
-            # Execution owns bounded batch parsing and validates every action before dispatch.
-            native = native_response(response)
-            if self.thinking:
-                native['anthropic_response'] = response
-            return native
+            return decode_response(wire, response)
         decision = DeepSeekModel(transport=send).decide(request)
         if 'response' in record and record['response'].get('stop_reason') != 'tool_use':
             decision = replace(decision, action=None, raw_provider_response=record['response'],
                                failure='model_native:incomplete_response')
         if 'wire' in record:
             decision = replace(decision, provider_wire_request=record['wire'])
+        if restored:
+            original_binding = restored[-1]['metadata'].get('execution_binding')
+            reason = ('owner_request_changed'
+                      if replace(request, kernel_epoch=None) != replace(current_request, kernel_epoch=None) else
+                      'execution_context_changed' if original_binding != binding else None)
+            decision = replace(decision, owner_request=request,
+                retirement_reason=reason)
         return decision
 
 
@@ -194,13 +280,41 @@ class ExecutionHistory:
     """
     def __init__(self, calls):
         self.calls = calls
+        self.owner_request = None
+        self.execution_binding = None
 
-    def attempt(self, wire, correction_of=None):
-        """Reuse only known no-action attempts under one durable owner decision."""
+    @staticmethod
+    def request_metadata(record):
+        """Validate the owner binding independently of the provider wire."""
+        metadata = record['metadata']
+        keys = ('owner_request', 'owner_request_sha256', 'execution_binding', 'execution_binding_sha256')
+        result = {key: metadata[key] for key in keys if key in metadata}
+        for field in ('owner_request', 'execution_binding'):
+            if ((field in result) != (field + '_sha256' in result)
+                    or field in result and result[field + '_sha256'] != fingerprint(result[field])):
+                raise ValueError('execution_owner_request_integrity_failure')
+        if 'owner_request' in result:
+            request = _decode_value(result['owner_request'])
+            if not isinstance(request, ModelRequest):
+                raise ValueError('execution_owner_request_identity_conflict')
+            original = json.loads(request.context)['state']
+            actual = json.loads(record['wire']['messages'][0]['content'][0]['text'])['state']
+            if any(original.get(key) != actual.get(key) for key in ('execution_id', 'decision_count', 'version')):
+                raise ValueError('execution_owner_request_identity_conflict')
+        return result
+
+    def restore_request(self, request):
+        return self._restore(json.loads(request.context)['state'])
+
+    def restore(self, wire):
+        """Find the exact original attempt chain for this Run and decision."""
         current = json.loads(wire['messages'][0]['content'][0]['text'])['state']
+        return self._restore(current)
+
+    def _restore(self, current):
         prior = []
         for _, record in self.calls.records(role='execution'):
-            if 'metadata' not in record:
+            if 'metadata' not in record or record.get('purpose', 'decision') != 'decision':
                 continue
             if (record['status'] == 'failed' and 'response' not in record and 'provider_rejection' not in record
                     and record.get('error') in {'ConnectError', 'ConnectTimeout', 'PoolTimeout'}):
@@ -208,18 +322,41 @@ class ExecutionHistory:
             state = json.loads(record['wire']['messages'][0]['content'][0]['text'])['state']
             if (state.get('execution_id'), state['decision_count']) == (current.get('execution_id'), current['decision_count']):
                 prior.append(record)
+        if not prior:
+            return []
+        first = prior[0]
+        base = fingerprint(first['wire'])
+        request_metadata = self.request_metadata(first)
+        if (len(prior) > 2 or first.get('metadata') != {'base_wire_sha256': base, 'repair': False, **request_metadata}
+                or any(record['status'] != 'received' or 'response' not in record for record in prior)):
+            raise BudgetPause('execution_model_outcome_unknown')
+        if len(prior) == 2:
+            second = prior[1]
+            second_base = {**second['wire'], 'messages': second['wire']['messages'][:-2]}
+            second_digest = fingerprint(second_base)
+            expected = {'base_wire_sha256': second_digest, 'repair': True, **self.request_metadata(second)}
+            if second_digest != base:
+                expected['original_wire_sha256'] = base
+            if (not no_tool_response(first['response']) or second.get('metadata') != expected
+                    or second['wire'] != correction_wire(second_base, first['response'])):
+                raise ValueError('execution_correction_identity_conflict')
+        return prior
+
+    def attempt(self, wire, correction_of=None):
+        """Select a known attempt or reserve the one permitted correction."""
+        prior = self.restore(wire)
         metadata = {'base_wire_sha256': correction_of or fingerprint(wire), 'repair': correction_of is not None}
+        if self.owner_request is not None:
+            metadata['owner_request'] = self.owner_request
+            metadata['owner_request_sha256'] = fingerprint(self.owner_request)
+        if self.execution_binding is not None:
+            metadata['execution_binding'] = self.execution_binding
+            metadata['execution_binding_sha256'] = fingerprint(self.execution_binding)
         if not prior:
             if correction_of is not None:
                 raise ValueError('execution_correction_without_original')
             return None, metadata
-        first = prior[0]
-        base = fingerprint(first['wire'])
-        if (len(prior) > 2 or first.get('metadata') != {'base_wire_sha256': base, 'repair': False}
-                or any(record['status'] != 'received' or 'response' not in record for record in prior)):
-            raise BudgetPause('execution_model_outcome_unknown')
-        if not no_tool_response(first['response']):
-            raise RuntimeError('execution_response_pending_owner_commit')
+        first, base = prior[0], fingerprint(prior[0]['wire'])
         if correction_of is None:
             if len(prior) == 2:
                 repaired_base = {**prior[1]['wire'], 'messages': prior[1]['wire']['messages'][:-2]}
@@ -242,7 +379,7 @@ class ExecutionHistory:
             return second, metadata
         return None, metadata
 
-    def history(self, committed_count=None, execution_ref=None, committed_calls=()):
+    def history(self, committed_count=None, execution_ref=None, committed_calls=(), *, limit=6, max_chars=60000):
         """Recent complete native rounds authenticated by the owning Execution log."""
         committed = dict(committed_calls)
         records, outcomes = [], {}
@@ -252,6 +389,8 @@ class ExecutionHistory:
                 sort_keys=True, separators=(',', ':'), allow_nan=False)) for b in blocks])
 
         for path, record in reversed(self.calls.records(role='execution')):
+            if record.get('purpose', 'decision') != 'decision':
+                continue
             messages = record['wire']['messages']
             document = json.loads(messages[0]['content'][0]['text'])
             run = document['state'].get('execution_id')
@@ -301,7 +440,7 @@ class ExecutionHistory:
             if any(b['name'] in ('wait', 'claim_complete') for b in blocks):
                 entry['result_scope'] = 'control_continuation_not_action_observation'
             length = len(json.dumps(entry, ensure_ascii=False))
-            if len(entries) == 6 or size + length > 60000:
+            if len(entries) == limit or size + length > max_chars:
                 break  # Drop whole older rounds; never cut thinking or a batch.
             entries.append(entry)
             size += length

@@ -8,6 +8,7 @@ from Mind.contracts import ActivationInput, CapabilityRequest, NoChange, Activat
 from Mind.model import MindModel, citation_sources
 from Mind.task_view import COGNITIVE_CONTRACT_VERSION, execution_goal, mind_task_view, fingerprint
 from Mind.trace import MindTrace, ACTIVATION_STARTED, MODEL_OUTPUT_RECORDED, project_model_request
+from Nervous.provider import ProviderCalls
 
 
 def response(name, value):
@@ -31,6 +32,29 @@ def begin(tmp_path, model, *, items=(), capabilities=()):
     result = start_activity(ActivationInput('Evaluate the new evidence.', 'Deliver a sourced conclusion.', None),
         model=model, trace=trace, cognitive_context=context(items), capabilities=capabilities)
     return trace, result
+
+
+def test_native_claims_global_response_without_repeating_call_or_charge(tmp_path, monkeypatch):
+    class Crash(BaseException):
+        pass
+    calls = ProviderCalls(tmp_path / 'calls',
+        {'calls': 1, 'output_tokens': 16384, 'request_bytes': 240000}, lambda *_: commit())
+    append = MindTrace.append_native
+    def interrupted(trace, **value):
+        if value['kind'] == 'result':
+            raise Crash()
+        return append(trace, **value)
+    with monkeypatch.context() as patch:
+        patch.setattr(MindTrace, 'append_native', interrupted)
+        with pytest.raises(Crash):
+            begin(tmp_path, MindModel(calls))
+    assert calls.summary()['calls'] == 1
+    before = calls.summary()
+    calls = ProviderCalls(calls.directory, calls.limits, lambda *_: pytest.fail('Known Mind call repeated'))
+    trace = MindTrace.reopen_for_native(tmp_path / 'activity.jsonl', allow_pending=True)
+    assert isinstance(resume_native_activity(trace, MindModel(calls)), NoChange)
+    assert calls.summary() == before
+    assert len(trace.native_records()) == 2
 
 
 def test_unknown_tool_feedback_does_not_supply_a_semantic_answer(tmp_path):
@@ -115,9 +139,12 @@ def test_accepted_native_result_replays_without_another_call(tmp_path):
         source_event_seqs=())
     model.generate_from_trace(trace, project_model_request(trace.events))
     # Crash window: native result persisted, logical MODEL_OUTPUT not yet appended.
+    frozen = trace.native_records()[0]["wire"]
+    assert "capacity" not in json.loads(frozen["messages"][0]["content"])["cognition"]
     trace = MindTrace.reopen_for_native(tmp_path / 'activity.jsonl')
     assert isinstance(resume_native_activity(trace, MindModel(transport)), NoChange)
     assert count == 1
+    assert trace.native_records()[0]["wire"] == frozen
 
 
 def test_projection_preserves_business_goal_sources_and_prior_truth(tmp_path):

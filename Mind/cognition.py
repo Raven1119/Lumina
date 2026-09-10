@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Mapping
 from jsonschema import Draft202012Validator
 from Nervous.storage import canonical as _canonical_json, fingerprint as _digest
+from Nervous.provider import BudgetPause
 from Mind.contracts import (ActivationInput, ExecutionObservation, ActivationFailure,
     CapabilityRequest, parse_output, request_payload)
 from Mind.activity import start_activity, continue_activity, resume_native_activity, record_terminal
@@ -18,7 +19,8 @@ from Mind.task_view import (COGNITIVE_CONTRACT_VERSION, context_limit, mind_task
     project_observation, evidence_read_limits, execution_view_limits, directive_limit, analysis_question_limit)
 from Mind.trace import (MindTrace, TraceError, NATIVE_PROTOCOL_VERSION, CAPABILITY_OBSERVED,
     CAPABILITY_REQUESTED, _freeze, _thaw, _strict_json_object, _reject_json_constant,
-    replay_activation, observation_ref, consultation_allowed, ACTIVITY_CALLS, cognitive_phase)
+    replay_activation, observation_ref, consultation_allowed, ACTIVITY_CALLS, cognitive_phase,
+    ACTIVATION_STARTED, MODEL_OUTPUT_RECORDED)
 
 MAX_ACTIVATIONS=64
 MAX_JOURNAL_RECORDS=(ACTIVITY_CALLS+1)*MAX_ACTIVATIONS
@@ -235,7 +237,7 @@ def _apply_updates(items,updates,sources,event_id,*,contract=None,current=None):
 
 class Cognition:
 
-    def __init__(self, *, directory, model, available_capabilities=()):
+    def __init__(self, *, directory, model, available_capabilities=(), prepare_background=None):
         if type(available_capabilities) is not tuple or any((n not in {'read_evidence', 'analyze_world_model', 'inspect_execution'} for n in available_capabilities)) or len(set(available_capabilities)) != len(available_capabilities):
             raise ValueError('invalid_capability_inventory')
         self._directory = Path(directory).resolve()
@@ -243,6 +245,7 @@ class Cognition:
         self._path = self._directory / 'cognition.json'
         self._model = model
         self._capabilities = available_capabilities
+        self._prepare_background = prepare_background
         self._lock = threading.Lock()
         self._writer = (self._directory / 'writer.lock').open('a+b')
         self._writer.seek(0, os.SEEK_END)
@@ -276,11 +279,16 @@ class Cognition:
         return self._directory / (start['activation_id'] + '.jsonl')
 
     def _load(self) -> list[dict]:
-        if not self._path.exists():
+        return self.read_records(self._path)
+
+    @staticmethod
+    def read_records(path) -> list[dict]:
+        path = Path(path)
+        if not path.exists():
             return []
-        if self._path.stat().st_size > MAX_JOURNAL_BYTES:
+        if path.stat().st_size > MAX_JOURNAL_BYTES:
             raise ValueError('cognition_history_too_large')
-        document = _json(self._path.read_text(encoding='utf-8'))
+        document = _json(path.read_text(encoding='utf-8'))
         if type(document) is not dict or set(document) != {'version', 'records', 'sha256'} or type(document['version']) is not int or (document['version'] != 1) or (type(document['records']) is not list) or (len(document['records']) > MAX_JOURNAL_RECORDS) or (document['sha256'] != _digest(document['records'])):
             raise ValueError('invalid_cognition_history')
         return document['records']
@@ -300,6 +308,8 @@ class Cognition:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self._path)
+            from Nervous.storage import sync_directory
+            sync_directory(self._path.parent)
         finally:
             if temporary is not None:
                 Path(temporary).unlink(missing_ok=True)
@@ -349,6 +359,36 @@ class Cognition:
         _text(ref, 128)
         with self._lock:
             _, starts, ends = self._fold(self._load())
+            if ref.startswith('history:'):
+                match = re.fullmatch(r'history:(activation-[0-9a-f]{24}):(\d+)(?::(\d+):(\d+))?', ref)
+                if match is None:
+                    raise ValueError('invalid_history_reference')
+                activation_id, seq, offset, limit = match.groups()
+                offset, limit = int(offset or 0), int(limit or 6000)
+                if not 1 <= limit <= 6000:
+                    raise ValueError('invalid_history_range')
+                start = next((s for event_id, s in starts.items()
+                              if s['activation_id'] == activation_id and event_id in ends), None)
+                if start is None:
+                    raise ValueError('unknown_owner_source')
+                trace = MindTrace.reopen(self._trace_path(start))
+                event = next((event for event in trace.events if event.seq == int(seq)), None)
+                if event is None:
+                    raise ValueError('unknown_owner_source')
+                prior_refs = set()
+                for prior in starts.values():
+                    if prior['event_id'] == start['event_id']:
+                        break
+                    prior_refs.update(item['ref'] for item in prior['input']['evidence'])
+                piece = self._history_piece(start, event, prior_refs)
+                text = _canonical_json(piece['content'])
+                if offset > len(text):
+                    raise ValueError('invalid_history_range')
+                return _freeze({'ref': ref, 'text': text[offset:offset + limit], 'origin': 'computation',
+                    'source_kind': 'historical_model_judgment' if event.event_type == MODEL_OUTPUT_RECORDED
+                                   else 'historical_activity_record',
+                    'label': event.event_type, 'offset': offset, 'limit': limit,
+                    'total_chars': len(text), 'truncated': offset + limit < len(text)})
             for event_id, start in starts.items():
                 active_observation = ref.startswith(start['activation_id'] + ':observation')
                 if not active_observation and (event_id not in ends or ends[event_id]['kind'] != 'accepted'):
@@ -361,13 +401,67 @@ class Cognition:
                     return _freeze(sources[ref])
         raise ValueError('unknown_owner_source')
 
+    @staticmethod
+    def _history_piece(start, event, prior_refs=()):
+        # Initial context embeds old cognition and background; the input and
+        # activation are the original facts for this activity, without recursion.
+        inputs = {**start['input'], 'evidence': [item for item in start['input']['evidence']
+                                               if item['ref'] not in prior_refs]}
+        task = start['context'].get('task_view')
+        payload = _thaw(event.payload)
+        if event.event_type == ACTIVATION_STARTED:
+            activation = _thaw(event.payload['activation'])
+            activation['execution_goal_snapshot'] = project_observation(
+                {'capability': 'inspect_execution', 'goal': activation['execution_goal_snapshot']}, task)['goal']
+            inputs['goal'] = project_observation(
+                {'capability': 'inspect_execution', 'goal': inputs['goal']}, task)['goal']
+            if task:
+                inputs['owner_task'] = {'business_goal': task['goal'],
+                                        'owner_task_sha256': task['owner_task_sha256']}
+            if inputs['execution_observation'] is not None:
+                inputs['execution_observation'] = project_observation(
+                    {'capability': 'inspect_execution', **inputs['execution_observation']}, task)
+                inputs['execution_observation'].pop('capability')
+            payload = {'activation': activation, 'input': inputs}
+        elif event.event_type == 'INITIAL_EXECUTION_OBSERVED':
+            payload = project_observation({'capability': 'inspect_execution', **payload}, task)
+            payload.pop('capability')
+        elif event.event_type == CAPABILITY_OBSERVED:
+            payload['observation'] = project_observation(payload['observation'], task)
+        return {'ref': f"history:{start['activation_id']}:{event.seq}",
+                'event_type': event.event_type,
+                'content': {'payload': payload, 'timestamp': event.timestamp,
+                            'projection': 'Mind role view of the saved trace; execution protocol omitted.',
+                            'source_event_seqs': list(event.source_event_seqs)}}
+
+    def _history_segments(self, starts, ends):
+        segments, prior_refs = [], set()
+        for event_id, start in starts.items():
+            if event_id not in ends:
+                continue
+            segments.append({'ref': 'activity:' + start['activation_id'],
+                'content': {'event_id': event_id, 'status': ends[event_id]['kind'],
+                    'pieces': [self._history_piece(start, event, prior_refs)
+                               for event in MindTrace.reopen(self._trace_path(start)).events]}})
+            # Source text remains at its first historical occurrence. Repeated
+            # initial evidence is a projection of that same immutable source.
+            prior_refs.update(item['ref'] for item in start['input']['evidence'])
+        return segments
+
+    def history_segments(self):
+        """Complete ended activities, with no copied requests or old context."""
+        with self._lock:
+            _, starts, ends = self._fold(self._load())
+            return self._history_segments(starts, ends)
+
     def _receipt(self, start: dict, end: dict, *, duplicate: bool=False) -> MindReceipt:
         if end['kind'] == 'failed':
             return MindReceipt(start['event_id'], 'failed', start['base_revision'], error=end['error'])
         replay = replay_activation(MindTrace.reopen(self._trace_path(start)).events)
         return MindReceipt(start['event_id'], 'duplicate' if duplicate else 'accepted', end['revision'], replay.final_result)
 
-    def _request(self, start: dict, trace: MindTrace, request_ref=None) -> MindRequest:
+    @staticmethod
+    def _request(start: dict, trace: MindTrace, request_ref=None) -> MindRequest:
         event = next((e for e in reversed(trace.events) if e.event_type == CAPABILITY_REQUESTED and (request_ref is None or request_ref == f"{start['activation_id']}:request:{e.seq}")), None)
         if event is None:
             raise ValueError('unknown_capability_request')
@@ -385,7 +479,8 @@ class Cognition:
             trace.append(CAPABILITY_REQUESTED, request_payload(parsed), source_event_seqs=(last.seq,))
         return MindReceipt(start['event_id'], 'waiting', start['base_revision'], request=self._request(start, trace))
 
-    def _sources(self, start: dict, trace: MindTrace | None = None) -> dict:
+    @staticmethod
+    def _sources(start: dict, trace: MindTrace | None = None) -> dict:
         sources = {item["ref"]: item for item in start["context"]["evidence"]}
         if trace is not None:
             for event in trace.events:
@@ -400,11 +495,41 @@ class Cognition:
         return sources
 
     def _fold(self, records: list[dict]):
+        return self.fold_records(records, self._directory)
+
+    @classmethod
+    def inspect_directory(cls, directory):
+        directory = Path(directory)
+        records = cls.read_records(directory / 'cognition.json')
+        diagnostic = {'valid_records': len(records), 'issue': None}
+        try:
+            state, starts, ends = cls.fold_records(records, directory)
+        except (ValueError, TypeError, KeyError, IndexError, OSError):
+            # ponytail: bounded journal; only damaged diagnostics refold prefixes.
+            state, starts, ends = cls.fold_records([], directory)
+            for index in range(len(records)):
+                try:
+                    state, starts, ends = cls.fold_records(records[:index + 1], directory)
+                except (ValueError, TypeError, KeyError, IndexError, OSError) as error:
+                    diagnostic = {'valid_records': index, 'issue': {'record': index + 1, 'kind': type(error).__name__}}
+                    break
+        traces = {record['activation_id']: MindTrace.inspect_path(directory / (record['activation_id'] + '.jsonl'))
+                  for record in records if isinstance(record, dict) and record.get('kind') == 'started'
+                  and isinstance(record.get('activation_id'), str)
+                  and record['activation_id'].startswith('activation-')
+                  and record['activation_id'][11:].isalnum()}
+        return {'revision': state['revision'], 'items': list(state['items'].values()),
+                'diagnostic': diagnostic, 'traces': traces}
+
+    @classmethod
+    def fold_records(cls, records: list[dict], directory):
         state = {"revision": 0, "intention": None, "items": {}, "sources": {}, "execution_ref": None,
                  "results": {}, "owner_task": None}
         starts: dict[str, dict] = {}
         ends: dict[str, dict] = {}
         for record in records:
+            if not isinstance(record, dict):
+                raise ValueError('invalid_cognition_record')
             kind = record.get("kind")
             event_id = record.get("event_id")
             if kind == "started":
@@ -423,7 +548,7 @@ class Cognition:
                         or context.get("contract_version") != COGNITIVE_CONTRACT_VERSION
                         or any(prior not in ends for prior in starts)):
                     raise ValueError("invalid_cognition_start")
-                trace_path = self._trace_path(record)
+                trace_path = Path(directory) / (record['activation_id'] + '.jsonl')
                 if trace_path.exists() and trace_path.stat().st_size:
                     trace = MindTrace.reopen(trace_path)
                     if (_canonical_json(_thaw(trace.events[0].payload["cognitive_context"]))
@@ -449,8 +574,8 @@ class Cognition:
                         or event_id not in starts or event_id in ends or record["result"]["request_ref"] in state["results"]
                         or record["result_digest"] != _digest(record["result"])):
                     raise ValueError("invalid_result_receipt")
-                trace = MindTrace.reopen(self._trace_path(starts[event_id]))
-                request = self._request(starts[event_id], trace, record["result"]["request_ref"])
+                trace = MindTrace.reopen(Path(directory) / (starts[event_id]['activation_id'] + '.jsonl'))
+                request = cls._request(starts[event_id], trace, record["result"]["request_ref"])
                 result = record["result"]
                 if set(result) != {"request_ref", "observation", "error"} or result["request_ref"] != request.request_ref:
                     raise ValueError("result_request_conflict")
@@ -472,7 +597,7 @@ class Cognition:
                     start = starts[event_id]
                     if record["revision"] != state["revision"] + 1 or start["base_revision"] != state["revision"]:
                         raise ValueError("stale_cognition_commit")
-                    trace = MindTrace.reopen(self._trace_path(start))
+                    trace = MindTrace.reopen(Path(directory) / (start['activation_id'] + '.jsonl'))
                     if (any(f"{start['activation_id']}:request:{event.seq}" not in state["results"]
                                 for event in trace.events if event.event_type == CAPABILITY_REQUESTED)):
                         raise ValueError("missing_result_receipt")
@@ -485,7 +610,7 @@ class Cognition:
                             or ('current' in raw) != ('current' in record)
                             or raw.get('current') != record.get('current')):
                         raise ValueError("cognition_trace_mismatch")
-                    sources = self._sources(start, trace)
+                    sources = cls._sources(start, trace)
                     items = _apply_updates(state["items"], record["updates"], sources, event_id,
                                            current=record.get('current'))
                     # Local observation aliases must not collide across activations.
@@ -546,10 +671,13 @@ class Cognition:
                 if evidence["ref"] in sources and sources[evidence["ref"]] != evidence:
                     raise ValueError("evidence_identity_conflict")
                 sources[evidence["ref"]] = evidence
+            used_chars = len(_canonical_json(state["items"]))
             context = {"revision": state["revision"], "event_id": value.event_id,
                        "intention_ref": value.intention_ref, "intention_revision": value.intention_revision,
                        "execution_ref": value.execution_ref,
                        "items": list(state["items"].values()), "evidence": list(sources.values()),
+                       "capacity": {"used_chars": used_chars, "max_chars": MAX_COGNITIVE_STATE_CHARS,
+                                    "remaining_chars": MAX_COGNITIVE_STATE_CHARS - used_chars},
                        "contract_version": COGNITIVE_CONTRACT_VERSION}
             if document["owner_task"] is not None:
                 context["task_view"] = mind_task_view(document["owner_task"], value.goal)
@@ -557,7 +685,27 @@ class Cognition:
                                "text": document["owner_task"]["business_goal"], "origin": "execution"}
                 if task_source["ref"] not in sources:
                     context["evidence"].append(task_source)
-            if len(_canonical_json(context)) > context_limit():
+            activation = ActivationInput(value.trigger, value.goal, value.execution_status)
+            capabilities = tuple(name for name in self._capabilities
+                                 if value.execution_ref is not None or name != 'inspect_execution')
+            if self._prepare_background is not None:
+                segments = self._history_segments(starts, ends)
+                for force in (False, True):
+                    background = self._prepare_background(segments, force=force)
+                    context['derived_history_background'] = background
+                    try:
+                        if len(_canonical_json(context)) > context_limit():
+                            raise BudgetPause('mind_context_capacity_exhausted')
+                        preflight = getattr(self._model, 'preflight_context', None)
+                        if preflight is not None:
+                            preflight(asdict(activation), context, capabilities,
+                                      asdict(value.execution_observation) if value.execution_observation else None)
+                        break
+                    except BudgetPause as error:
+                        if (str(error) != 'mind_context_capacity_exhausted'
+                                or force or background['mode'] != 'summary'):
+                            raise
+            elif len(_canonical_json(context)) > context_limit():
                 return MindReceipt(value.event_id, "failed", state["revision"], error="context_budget_exceeded")
             start = {"kind": "started", "event_id": value.event_id, "input": document,
                      "request_digest": _digest(document), "base_revision": state["revision"],
@@ -565,11 +713,10 @@ class Cognition:
                      "context": context, "budget_version": ACTIVITY_BUDGET_VERSION}
             self._append(start)
             trace = MindTrace.create(self._trace_path(start), activation_id=start["activation_id"])
-            result = start_activity(ActivationInput(value.trigger, value.goal, value.execution_status),
+            result = start_activity(activation,
                 model=self._model, trace=trace, cognitive_context=context,
                 execution_observation=value.execution_observation,
-                capabilities=tuple(name for name in self._capabilities
-                                   if value.execution_ref is not None or name != "inspect_execution"))
+                capabilities=capabilities)
             return self._handle_activity_result(start, state, result)
         finally:
             self._lock.release()
@@ -639,7 +786,7 @@ class Cognition:
     def _finish(self, start: dict, state: dict, *, recovering: bool = False) -> MindReceipt:
         if recovering:
             try:
-                trace = MindTrace.reopen_for_native(self._trace_path(start))
+                trace = MindTrace.reopen_for_native(self._trace_path(start), allow_pending=True)
             except TraceError as error:
                 if str(error) not in {"event_prefix_has_no_model_request", "native_result_unknown"}:
                     end = {"kind": "failed", "event_id": start["event_id"], "error": "trace_failed"}

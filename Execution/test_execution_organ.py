@@ -13,6 +13,7 @@ from Execution.execution import (
     ChildRef,
     ClaimComplete,
     ExecutionEvent,
+    EventLog,
     IPythonCode,
     NativeModelDecision,
     Return,
@@ -56,6 +57,95 @@ def _organ(tmp_path, model, **overrides):
     }
     options.update(overrides)
     return ExecutionOrgan(**options)
+
+
+@pytest.mark.parametrize('action,cut,status', [
+    (Wait('INPUT'), 'MODEL_DECISION', 'waiting'),
+    (ClaimComplete(), 'MODEL_DECISION', 'completed'),
+    (ClaimComplete(), 'COMPLETION_CLAIMED', 'completed'),
+    (ClaimComplete(), 'COMPLETION_VERIFIED', 'completed'),
+])
+@pytest.mark.parametrize('pause_after_restart', [False, True])
+def test_restart_settles_saved_control_without_resampling(tmp_path, monkeypatch, action, cut, status, pause_after_restart):
+    persist = EventLog._persist
+    def crash_after_decision(log, event):
+        persist(log, event)
+        if event.event_type == cut:
+            raise SystemExit('saved decision, action not started')
+    model = _ScriptedModel([action])
+    with monkeypatch.context() as patch:
+        patch.setattr(EventLog, '_persist', crash_after_decision)
+        organ = _organ(tmp_path, model)
+        (tmp_path / 'workspace' / 'answer.txt').write_text('42', encoding='utf-8')
+        try:
+            with pytest.raises(SystemExit, match='saved decision'):
+                organ.run_goal('Wait for actual input.', FileContentEquals('answer.txt', '42'))
+        finally:
+            organ.shutdown()
+    reopened_model = _ScriptedModel([])
+    organ = _organ(tmp_path, reopened_model)
+    try:
+        if pause_after_restart:
+            organ.interrupt()
+        result = organ.resume()
+        assert result.status == status
+        if status == 'waiting':
+            assert result.state.waiting_for == 'INPUT'
+        assert result.state.decision_count == 1
+        assert len(model.received_requests) == 1 and not reopened_model.received_requests
+        assert sum(e.event_type == 'MODEL_DECISION' for e in result.events) == 1
+        assert sum(e.event_type == ('ROOT_WAITING' if status == 'waiting' else 'COMPLETION_VERIFIED')
+                   for e in result.events) == 1
+    finally:
+        organ.shutdown()
+
+
+def test_cold_kernel_retires_unstarted_python_without_replaying_known_work(tmp_path, monkeypatch):
+    from pathlib import Path
+    from Execution.ipython_control import IPythonResult
+    class Namespace:
+        def __init__(self, epoch):
+            self.kernel_epoch = epoch
+            self.values, self.actions = {'Path': Path, 'workspace': tmp_path / 'workspace'}, []
+        def execute(self, code):
+            self.actions.append(code)
+            exec(code, self.values)
+            return IPythonResult(True)
+        def close(self):
+            pass
+    first = Namespace('first-kernel')
+    model = _ScriptedModel([IPythonCode('x = 41'),
+                           IPythonCode("(workspace / 'answer.txt').write_text(str(x + 1))")])
+    organ = _organ(tmp_path, model, max_decisions=6, max_decisions_per_advance=1, ipython_control=first)
+    persist = EventLog._persist
+    def crash(log, event):
+        persist(log, event)
+        if event.event_type == 'MODEL_DECISION' and event.payload['frame'].decision_id == 'decision-000002':
+            raise SystemExit('saved Python plan, no action start')
+    try:
+        organ.run_goal('Deliver the checked answer.', FileContentEquals('answer.txt', '42'))
+        with monkeypatch.context() as patch:
+            patch.setattr(EventLog, '_persist', crash)
+            with pytest.raises(SystemExit):
+                organ.resume()
+    finally:
+        organ.shutdown()
+    assert first.actions == ['x = 41']
+    cold = Namespace('second-kernel')
+    resumed_model = _ScriptedModel([IPythonCode("(workspace / 'answer.txt').write_text('42')"), ClaimComplete()])
+    organ = _organ(tmp_path, resumed_model, max_decisions=6, max_decisions_per_advance=1, ipython_control=cold)
+    try:
+        retired = organ.resume()
+        assert retired.status == 'running' and not cold.actions and not resumed_model.received_requests
+        assert organ.retired_decisions() == ('decision-000002',)
+        assert sum(e.event_type == 'IPYTHON_EXECUTION_RESULT' for e in retired.events) == 1
+        assert organ.resume().status == 'running'
+        assert organ.resume().status == 'completed'
+        assert len(cold.actions) == 1 and 'x + 1' not in cold.actions[0]
+        assert 'second-kernel' in resumed_model.received_requests[0].context
+        assert (tmp_path / 'workspace' / 'answer.txt').read_text() == '42'
+    finally:
+        organ.shutdown()
 
 
 def test_root_ipython_completion_uses_the_frozen_production_surface(tmp_path):

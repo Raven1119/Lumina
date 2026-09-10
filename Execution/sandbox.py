@@ -19,6 +19,26 @@ from Nervous.storage import canonical
 # Installed interpreter image; the tag identifies an artifact, not a runtime contract.
 IMAGE_TAG = 'lumina-execution-ipython:d2'
 
+_HISTORY_HELPER = r'''
+import hashlib, json, os
+from pathlib import Path
+def read_history(ref, offset=0, limit=8000):
+    if not isinstance(ref,str) or not ref.startswith('execution-history:') or len(ref)>256:
+        raise ValueError('Invalid history ref.')
+    if type(offset) is not int or offset<0 or type(limit) is not int or not 1<=limit<=8000:
+        raise ValueError('History reads require nonnegative offset and 1..8000 characters.')
+    root=Path(os.environ.get('LUMINA_HISTORY_DIRECTORY','/unavailable-history'))
+    key=hashlib.sha256(json.dumps(ref,ensure_ascii=False,separators=(',',':')).encode('utf-8')).hexdigest()
+    path=root/(key+'.json')
+    if path.is_symlink() or path.stat().st_size>1048576: raise ValueError('History record unavailable.')
+    record=json.loads(path.read_text(encoding='utf-8'))
+    if record['ref']!=ref: raise ValueError('History identity conflict.')
+    text=json.dumps(record['content'],ensure_ascii=False,separators=(',',':'))
+    return dict(ref=ref,offset=offset,text=text[offset:offset+limit],total_chars=len(text),
+                next_offset=offset+limit if offset+limit<len(text) else None,
+                scope='Saved owner action/result projection. Source output truncation is unchanged.')
+'''
+
 _KERNEL = r'''
 import contextlib, json, os, sys, tempfile
 from IPython.core.interactiveshell import InteractiveShell
@@ -40,6 +60,8 @@ def request_mind(question, evidence_files=(), model_ref=''):
     requests.append(text)
     return {'status':'queued_until_cell_commits'}
 shell.user_ns['request_mind']=request_mind
+''' + _HISTORY_HELPER + r'''
+shell.user_ns['read_history']=read_history
 for line in sys.stdin:
     request=json.loads(line)
     requests.clear()
@@ -76,10 +98,16 @@ class DockerIPython:
     Restriction flags reuse Lumina's existing Tycho-derived Docker pattern;
     provenance/license remain in the retained isolated-computation source audit.
     """
-    def __init__(self, workspace, *, image=IMAGE_TAG, timeout=20):
+    def __init__(self, workspace, *, image=IMAGE_TAG, timeout=20, history_directory=None):
         self.workspace = Path(workspace).resolve(strict=True)
         self.image, self.timeout = image, timeout
+        self.history_directory = Path(history_directory).resolve(strict=True) if history_directory is not None else None
+        if self.history_directory is not None and (not self.history_directory.is_dir()
+                or self.history_directory.is_relative_to(self.workspace)
+                or self.workspace.is_relative_to(self.history_directory)):
+            raise ValueError('history_projection_must_be_disjoint_from_workspace')
         self.name = 'lumina-execution-' + uuid.uuid4().hex
+        self.kernel_epoch = self.name
         self.process = None
         self.replies = queue.Queue(maxsize=1)
         self.closed = False
@@ -88,6 +116,8 @@ class DockerIPython:
         self._stderr_done = threading.Event()
 
     def command(self):
+        history = (['--mount', f'type=bind,source={self.history_directory},target=/lumina-history,readonly',
+                    '--env', 'LUMINA_HISTORY_DIRECTORY=/lumina-history'] if self.history_directory is not None else [])
         return ['docker', 'run', '--rm', '--pull', 'never', '--name', self.name,
                 '--init', '-i', '--network', 'none', '--log-driver', 'none',
                 '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
@@ -96,7 +126,7 @@ class DockerIPython:
                 '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777',
                 '--user', '65534:65534', '--workdir', '/workspace', '--env', 'HOME=/tmp',
                 '--mount', f'type=bind,source={self.workspace},target=/workspace',
-                self.image, 'python', '-I', '-B', '-u', '-c', _KERNEL]
+                *history, self.image, 'python', '-I', '-B', '-u', '-c', _KERNEL]
 
     def _start(self):
         self.process = subprocess.Popen(self.command(), stdin=subprocess.PIPE,
