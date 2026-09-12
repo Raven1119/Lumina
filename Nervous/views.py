@@ -28,7 +28,9 @@ def query_descriptors():
          'label': 'Current persistent pursuit commitments; optional ?intention_ref=ID or ?task_ref=ID '
                   'retrieves the requested owner record with its version.'},
         {'ref': 'view:mind.cognition', 'kind': 'owner_view_query',
-         'label': 'Accepted cognition catalogue; ?item_ref=ID retrieves the current item body before revision.'},
+         'label': 'Accepted cognition catalogue with bounded text previews for choosing relevant items; '
+                  '?item_ref=ID retrieves the complete current item before revision. Its basis refs name '
+                  'historical evidence; read those sources separately when needed. A preview is not a new judgment.'},
         {'ref': 'view:nervous.attention', 'kind': 'owner_view_query',
          'label': 'Resources and pending/deferred catalogue; ?offset=0&limit=4, limit 1..8. '
                   'Use ?event_ref=ID to retrieve the original attributed event, including completed history.'},

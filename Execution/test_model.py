@@ -109,6 +109,35 @@ def test_legacy_known_no_action_keeps_its_single_correction_and_recovery(tmp_pat
     assert calls.summary()['calls'] == 2
 
 
+def test_pending_no_tool_correction_keeps_its_frozen_request_when_current_projection_changes(tmp_path):
+    calls = ProviderCalls(tmp_path, {'calls': 2, 'output_tokens': 200, 'request_bytes': 100000},
+                          lambda *_: no_tool())
+    request = ModelRequest(canonical({'state': {'execution_id': 'run-1', 'decision_count': 0}}),
+                           ExecutionModel.tool_contracts, ())
+    original_history = ExecutionHistory(calls)
+    def first_send(wire, *, correction_of=None):
+        if correction_of is not None:
+            raise BudgetPause('correction not dispatched')
+        previous, metadata = original_history.attempt(wire)
+        assert previous is None
+        return calls.call('execution', wire, metadata=metadata)
+    with pytest.raises(BudgetPause, match='correction not dispatched'):
+        ExecutionModel(first_send, history=original_history, max_output_tokens=100).decide(request)
+    path, saved = calls.records()[0]
+    original_bytes = path.read_bytes()
+    current_history = ExecutionHistory(calls)
+    calls.transport = lambda *_: response()
+    def resumed_send(wire, **kwargs):
+        previous, metadata = current_history.attempt(wire, **kwargs)
+        return previous['response'] if previous else calls.call('execution', wire, metadata=metadata)
+    result = ExecutionModel(resumed_send, history=current_history, max_output_tokens=100,
+        role_prompt='Updated completion lifecycle explanation.',
+        execution_context=lambda *a, **k: pytest.fail('Frozen correction consulted a fresh projection')).decide(request)
+    assert result.action == Wait('INPUT')
+    assert result.provider_wire_request == correction_wire(saved['wire'], saved['response'])
+    assert path.read_bytes() == original_bytes and calls.summary()['calls'] == 2
+
+
 def test_fully_legacy_correction_chain_recovers_only_its_exact_request(tmp_path):
     answers = iter([no_tool(), response()])
     calls = ProviderCalls(tmp_path, {'calls': 2, 'output_tokens': 200, 'request_bytes': 100000},
@@ -224,4 +253,45 @@ def test_exact_owner_goal_and_original_advice_are_not_replaced_by_the_native_his
     assert result.action == Wait('INPUT')
     visible = json.loads(wires[0]['messages'][0]['content'][0]['text'])
     assert visible['goal'] == {'text': goal, 'original_chars': len(goal), 'truncated': False}
-    assert wires[0]['messages'][-1]['content'] == context['mind_supervisor_directive']
+    assert wires[0]['messages'][-2]['content'] == context['mind_supervisor_directive']
+    assert json.loads(wires[0]['messages'][-1]['content'])['state'] == context['state']
+
+
+@pytest.mark.parametrize('new_advice', [None, 'Preserve the observed scope when concluding.'])
+def test_current_checkpoint_follows_native_history_and_prior_guidance(new_advice):
+    task = {'business_goal': 'Finish the authorized report.', 'execution_protocol': 'Use the ordinary completion protocol.'}
+    old_advice = {'directive_id': 'direction-1', 'decision_id': 'decision-1',
+                 'text': 'Reassess the report against the new evidence.', 'owner_sequence': 1}
+    native_pair = [
+        {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': 'claim-1',
+                                         'name': 'claim_complete', 'input': {}}]},
+        {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'claim-1',
+                                    'content': canonical({'status': 'review_pending'})}]}]
+    goal = execution_goal(task)
+    context = {'goal': {'text': goal, 'original_chars': len(goal), 'truncated': False},
+        'state': {'execution_id': 'run-1', 'decision_count': 3, 'version': 12, 'status': 'running'},
+        'observation': {'report.txt': 'Corrections are present.'}, 'incoming_event': None,
+        'lifecycle': {'completion': None}}
+    feedback = {'completion_review_required': False,
+        'completion': {'run_status': 'running', 'deferred_claim_at_current_boundary': False}}
+    owner_inputs = [{'sequence': 2, 'text': 'The correction was applied; conclude within the authorized scope.'}]
+    projection = {'version': 'execution-context-1', 'mode': 'baseline',
+        'rounds': [{'decision': 1, 'native_messages': native_pair}],
+        'received_guidance': [old_advice], 'guidance_scope': 'Previously delivered advice, not a new delivery.',
+        'owner_inputs': owner_inputs, 'cognitive_feedback': feedback}
+    if new_advice is not None:
+        context['mind_supervisor_directive'] = new_advice
+    result = ExecutionModel(lambda *_: response(), owner_task=task,
+        execution_context=lambda _: projection).decide(ModelRequest(canonical(context), ExecutionModel.tool_contracts, ()))
+    messages = result.provider_wire_request['messages']
+    initial = json.loads(messages[0]['content'][0]['text'])
+    assert initial['received_guidance'] == [old_advice]
+    assert initial['guidance_scope'] == projection['guidance_scope']
+    assert initial['owner_inputs'] == owner_inputs
+    assert messages[1:3] == native_pair
+    checkpoint = json.loads(messages[-1]['content'])
+    assert checkpoint == {**{key: context[key] for key in ('state', 'observation', 'incoming_event', 'lifecycle')},
+                          'cognitive_feedback': feedback}
+    assert len(messages) == 4 + int(new_advice is not None)
+    if new_advice is not None:
+        assert messages[-2] == {'role': 'user', 'content': new_advice}

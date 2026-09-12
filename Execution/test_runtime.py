@@ -86,9 +86,9 @@ def test_guidance_survives_many_actions_restart_and_nochange_without_redelivery(
         owner = Execution(owner.directory, calls, ipython=control)
         assert owner.advance()
         latest = calls.records(role='execution')[-1][1]['wire']
-        guidance = [m for m in latest['messages'] if isinstance(m['content'], str)
-                    and 'received_guidance' in m['content']]
-        assert json.loads(guidance[0]['content'])['received_guidance'][0]['text'] == text
+        owner_context = json.loads(latest['messages'][0]['content'][0]['text'])
+        assert owner_context['received_guidance'][0]['text'] == text
+        assert json.loads(latest['messages'][-1]['content'])['state'] == owner_context['state']
         assert all(m['content'] != advisory(text) for m in latest['messages'])
         assert len(owner.state['deliveries']) == 1
         assert owner.state['deliveries'][0]['call_ref'] == original['call_ref']
@@ -218,7 +218,7 @@ def test_stale_guidance_is_not_delivered_and_original_snapshot_remains_visible(t
 
 def test_result_feedback_allows_completion_and_later_direction_creates_linked_run(tmp_path):
     answers = iter([native('ipython', {'code': "(workspace / 'report.txt').write_text('observed')\n(workspace / '.lumina-complete').write_text('done')"}),
-        native('claim_complete', {}), native('claim_complete', {}), native('wait', {'event_type': 'INPUT'})])
+        native('claim_complete', {}), native('wait', {'event_type': 'INPUT'})])
     owner, calls, control = runtime(tmp_path, answers)
     try:
         owner.handle(decision(owner, 'start', 'Deliver the observed report.'))
@@ -235,8 +235,33 @@ def test_result_feedback_allows_completion_and_later_direction_creates_linked_ru
             owner_input={'event_id': 'new', 'event_type': 'OWNER_EVIDENCE', 'text': 'A newly measured condition.'}))
         assert owner.status()['execution_ref'] != first_run
         assert owner.state['prior_runs'][0]['execution_ref'] == first_run
-        assert calls.summary()['calls'] == 3  # Binding successor does not call Execution.
+        assert calls.summary()['calls'] == 2  # Neither settling review nor binding successor calls Execution.
         assert owner.advance()
+    finally:
+        owner.close()
+
+
+def test_completion_review_direction_reaches_execution_instead_of_blocking_its_own_feedback(tmp_path):
+    owner, calls, control = runtime(tmp_path, iter([
+        native('claim_complete', {}), native('wait', {'event_type': 'UPDATED_INPUT'}),
+    ]))
+    try:
+        (owner.workspace / '.lumina-complete').write_text('done', encoding='utf-8')
+        owner.handle(decision(owner, 'start', 'Deliver the current result.'))
+        assert owner.advance() and owner.actor.completion_review_pending()
+        event = owner.poll()[0]
+        owner.published(event.event_id)
+        text = 'The delivery lacks the new observation; wait for its actual arrival.'
+        owner.handle(decision(owner, 'review', text))
+        assert owner.advance()
+        assert owner.run_state().waiting_for == 'UPDATED_INPUT'
+        assert calls.summary()['calls'] == 2 and control.actions == []
+        wire = calls.records(role='execution')[-1][1]['wire']
+        assert any(message['content'] == advisory(text) for message in wire['messages'])
+        feedback = json.loads(wire['messages'][0]['content'][0]['text'])['cognitive_feedback']
+        assert feedback['completion']['run_status'] == 'running'
+        assert feedback['completion']['deferred_claim_at_current_boundary'] is True
+        assert owner.run_state().status != 'completed'
     finally:
         owner.close()
 

@@ -69,10 +69,9 @@ def test_cold_unstarted_python_stays_barred_after_paused_external_event(tmp_path
         organ.shutdown()
 
 
-@pytest.mark.parametrize('cut', ['COMPLETION_CLAIMED', 'COMPLETION_VERIFIED'])
+@pytest.mark.parametrize('cut', ['COMPLETION_CLAIMED', 'COMPLETION_DEFERRED', 'COMPLETION_VERIFIED'])
 def test_saved_completion_claim_rechecks_later_owner_input(tmp_path, monkeypatch, cut):
-    answers = ([native('claim_complete', {}, 'first-claim')] if cut == 'COMPLETION_VERIFIED' else [])
-    owner, calls, control = runtime(tmp_path, iter(answers + [
+    owner, calls, control = runtime(tmp_path, iter([
         native('claim_complete', {}, 'old-claim'),
         native('wait', {'event_type': 'NEW_REQUIREMENT'}, 'new-control'),
     ]))
@@ -83,7 +82,7 @@ def test_saved_completion_claim_rechecks_later_owner_input(tmp_path, monkeypatch
         if cut == 'COMPLETION_VERIFIED':
             owner.advance()
             owner.handle(decision(owner, 'review-result', None))
-        initial_calls = 2 if cut == 'COMPLETION_VERIFIED' else 1
+        initial_calls = 1  # A cleared completion review resumes the original claim.
         with monkeypatch.context() as patch:
             _crash_after_persist(patch, cut)
             with pytest.raises(SystemExit, match='saved ' + cut):
@@ -357,6 +356,113 @@ def test_known_response_is_recovered_before_constructing_a_new_context(tmp_path,
         assert owner.run_state().waiting_for == 'INPUT' and calls.summary()['calls'] == 1
     finally:
         owner.close()
+
+
+def test_owner_change_retires_the_original_no_tool_correction_without_dispatching_it(tmp_path, monkeypatch):
+    from Execution.model import correction_wire
+    from Execution.test_model import no_tool
+    from Nervous.provider import BudgetPause
+    owner, calls, control = runtime(tmp_path, iter([
+        no_tool(), native('ipython', {'code': "(workspace / 'stale.txt').write_text('old decision')"}),
+        native('wait', {'event_type': 'CURRENT_INPUT'}),
+    ]))
+    ensure = calls.ensure
+    def pause_correction(wire, **kwargs):
+        last = wire['messages'][-1]['content']
+        if isinstance(last, str) and last.startswith('Protocol rejection:'):
+            raise BudgetPause('user_pause_requested')
+        return ensure(wire, **kwargs)
+    try:
+        owner.handle(decision(owner, 'start', 'Act under the original evidence.'))
+        with monkeypatch.context() as patch:
+            patch.setattr(calls, 'ensure', pause_correction)
+            with pytest.raises(BudgetPause, match='user_pause_requested'):
+                owner.advance()
+        path, original = calls.records(role='execution')[0]
+        original_bytes = path.read_bytes()
+        assert calls.summary()['calls'] == 1 and control.actions == []
+        owner.close()
+        owner = Execution(owner.directory, calls, ipython=control)
+        owner_text = 'The scope changed; preserve the original data and reconsider the current requirement.'
+        owner.handle(decision(owner, 'changed', None, owner_input={
+            'event_id': 'owner-update', 'event_type': 'OWNER_EVIDENCE', 'text': owner_text,
+        }))
+        assert owner.advance()
+        assert owner.actor.retired_decisions() == ('decision-000001',)
+        assert control.actions == [] and not (owner.workspace/'stale.txt').exists()
+        corrected = calls.records(role='execution')[1][1]
+        assert corrected['wire'] == correction_wire(original['wire'], original['response'])
+        assert owner_text not in canonical(corrected['wire'])
+        assert path.read_bytes() == original_bytes and calls.summary()['calls'] == 2
+        assert owner.advance()
+        assert owner.run_state().waiting_for == 'CURRENT_INPUT'
+        fresh = calls.records(role='execution')[2][1]['wire']
+        document = json.loads(fresh['messages'][0]['content'][0]['text'])
+        assert owner_text in canonical(fresh)
+        assert document['cognitive_feedback']['completion']['run_status'] == 'running'
+        assert document['cognitive_feedback']['completion']['deferred_claim_at_current_boundary'] is False
+        assert calls.summary()['calls'] == 3 and control.actions == []
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize('bound_owner_request', [True, False])
+def test_new_completion_continuation_does_not_skip_a_previously_received_model_decision(
+        tmp_path, monkeypatch, bound_owner_request):
+    from Execution.model import ExecutionHistory, ExecutionModel, execution_goal
+    from Nervous.provider import BudgetPause, ProviderCalls
+    answers = iter([native('claim_complete', {}), native('wait', {'event_type': 'KNOWN_INPUT'})])
+    calls = ProviderCalls(tmp_path/'calls', {'calls': 2, 'output_tokens': 200, 'request_bytes': 100000},
+                          lambda *_: next(answers))
+    task = {'business_goal': 'Deliver the answer.', 'execution_protocol': 'Use the completion controls.'}
+    def model(*, bind_owner=True):
+        history = ExecutionHistory(calls)
+        def send(wire, **kwargs):
+            previous, metadata = history.attempt(wire, **kwargs)
+            return previous['response'] if previous else calls.call('execution', wire, metadata=metadata)
+        return ExecutionModel(send, history=history if bind_owner else None, owner_task=task, max_output_tokens=100)
+    organ = _organ(tmp_path, model(), completion_review_required=lambda: True)
+    (tmp_path/'workspace'/'answer.txt').write_text('42', encoding='utf-8')
+    try:
+        deferred = organ.run_goal(execution_goal(task), FileContentEquals('answer.txt', '42'))
+        assert organ.completion_review_pending()
+    finally:
+        organ.shutdown()
+    # A caller using the former model-driven continuation saved a real response
+    # before committing its decision. Installing the fix must preserve it.
+    append = EventLog.append
+    def before_frame(log, kind, *args, **kwargs):
+        if kind == 'MODEL_DECISION' and args[0]['frame'].decision_id == 'decision-000002':
+            raise SystemExit('known response after deferred claim')
+        return append(log, kind, *args, **kwargs)
+    organ = _organ(tmp_path, model(bind_owner=bound_owner_request))
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(EventLog, 'append', before_frame)
+            with pytest.raises(SystemExit, match='known response'):
+                organ.resume()
+        assert organ.state == deferred.state and calls.summary()['calls'] == 2
+    finally:
+        organ.shutdown()
+    original_calls = {path: path.read_bytes() for path, _ in calls.records()}
+    calls.transport = lambda *_: pytest.fail('Known decision resampled')
+    organ = _organ(tmp_path, model(), completion_review_required=lambda: False)
+    try:
+        if not bound_owner_request:
+            with pytest.raises(BudgetPause, match='execution_owner_request_unavailable'):
+                organ.resume()
+            assert organ.state == deferred.state
+            assert all(path.read_bytes() == value for path, value in original_calls.items())
+            assert calls.summary()['calls'] == 2
+            return
+        result = organ.resume()
+        assert result.state.waiting_for == 'KNOWN_INPUT'
+        assert not any(e.event_type == 'EXECUTION_COMPLETED' for e in result.events)
+        assert result.events[:len(deferred.events)] == deferred.events
+        assert all(path.read_bytes() == value for path, value in original_calls.items())
+        assert calls.summary()['calls'] == 2
+    finally:
+        organ.shutdown()
 
 
 @pytest.mark.parametrize('pause', [False, True])

@@ -1898,7 +1898,7 @@ class EventLog:
                 raise ValueError("completion claim must match its model decision")
         elif event_type == "COMPLETION_VERIFIED":
             if (
-                previous.event_type != "COMPLETION_CLAIMED"
+                previous.event_type not in {"COMPLETION_CLAIMED", "COMPLETION_DEFERRED"}
                 or not _evidence_matches_spec(
                     payload["evidence"],
                     self._events[0].payload.get("completion_spec"),
@@ -1912,7 +1912,8 @@ class EventLog:
             observation = payload["observation"]
             deferred = event_type == "COMPLETION_DEFERRED"
             if (
-                previous.event_type not in {"COMPLETION_CLAIMED", "COMPLETION_VERIFIED"}
+                previous.event_type not in {"COMPLETION_CLAIMED", "COMPLETION_VERIFIED", "COMPLETION_DEFERRED"}
+                or deferred and previous.event_type == "COMPLETION_DEFERRED"
                 or not isinstance(observation, CompletionObservation)
                 or observation.status != ("review_pending" if deferred else "rejected")
                 or not _evidence_matches_spec(
@@ -3744,6 +3745,20 @@ class RootAgentProcess:
             result = self._settle_completion(control_event, steps, review_completion=review_completion)
             if result is not None:
                 return result
+        elif (control_event.event_type == 'COMPLETION_DEFERRED'
+              and decision_advisory is None
+              and self._completion_review_required is not None
+              and not control_event.payload.get('context_change')):
+            # A review is a yield within the existing claim. NoChange clears
+            # that yield, not business acceptance; verify the environment again.
+            if self._completion_review_required():
+                return self._result(steps)
+            recover_request = getattr(self._model, 'recover_request', None)
+            known_request = recover_request(state) if recover_request is not None else None
+            if known_request is None:
+                result = self._settle_completion(control_event, steps, review_completion=False)
+                if result is not None:
+                    return result
         state = self._current_state()
         last_event = self._event_log.events[-1]
         if state.status == "waiting" and _decision_advisory_for(
@@ -4673,12 +4688,14 @@ class RootAgentProcess:
             if self._suspend_if_requested_locked():
                 return self._result(steps)
             pending_event = claim_event
-            if claim_event.event_type == 'COMPLETION_VERIFIED':
+            while claim_event.event_type in {'COMPLETION_VERIFIED', 'COMPLETION_DEFERRED'}:
                 claim_event = next(e for e in self._event_log.events
-                                   if (e.event_id,) == pending_event.source_event_refs)
+                                   if (e.event_id,) == claim_event.source_event_refs)
             decision_event = next(e for e in self._event_log.events
                                   if (e.event_id,) == claim_event.source_event_refs)
             change = self._decision_context_change(decision_event)
+            if pending_event.event_type == 'COMPLETION_DEFERRED' and change is not None:
+                return None  # Changed conditions need a fresh Execution decision.
             action = claim_event.payload['claim']
             state = self._current_state()
             decision = state.decision_count
@@ -4706,7 +4723,7 @@ class RootAgentProcess:
                 verified_event = pending_event if pending_event.event_type == 'COMPLETION_VERIFIED' else self._event_log.append(
                     "COMPLETION_VERIFIED",
                     {"evidence": evidence},
-                    (claim_event.event_id,),
+                    (pending_event.event_id,),
                 )
                 steps.append(ExecutionStep(decision, action, None))
                 self._event_log.append(

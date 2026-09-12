@@ -16,14 +16,15 @@ from Nervous.provider import BudgetPause
 from Mind.contracts import (ActivationInput, ExecutionObservation, ActivationFailure,
     CapabilityRequest, parse_output, request_payload)
 from Mind.activity import start_activity, continue_activity, resume_native_activity, record_terminal
-from Mind.task_view import (COGNITIVE_CONTRACT_VERSION, context_limit, mind_task_view,
+from Mind.task_view import (COGNITIVE_CONTRACT_VERSION, COGNITIVE_INTERFACE_VERSION, context_limit, mind_task_view,
     project_observation, evidence_read_limits, execution_view_limits, directive_limit, analysis_question_limit)
 from Mind.trace import (MindTrace, TraceError, NATIVE_PROTOCOL_VERSION, CAPABILITY_OBSERVED,
     CAPABILITY_REQUESTED, _freeze, _thaw, _strict_json_object, _reject_json_constant,
     replay_activation, observation_ref, consultation_allowed, ACTIVITY_CALLS, cognitive_phase,
     ACTIVATION_STARTED, MODEL_OUTPUT_RECORDED)
 from Mind.intention import (COGNITIVE_VERSION as PURSUIT_CONTRACT, bind_pursuit,
-    effects_schema, apply_effects, source_refs as pursuit_source_refs, validate_task_projection)
+    effects_schema, apply_effects, source_refs as pursuit_source_refs, validate_task_projection,
+    COMMIT_INTEGRITY_VERSION)
 
 MAX_ACTIVATIONS=64
 MAX_JOURNAL_RECORDS=(ACTIVITY_CALLS+1)*MAX_ACTIVATIONS
@@ -234,7 +235,7 @@ def _basis(basis,sources,*,contract=None):
         if item['ref'] not in sources:raise ValueError('ungrounded_basis')
 
 
-def _apply_updates(items,updates,sources,event_id,*,contract=None,current=None):
+def _apply_updates(items,updates,sources,event_id,*,contract=None,current=None,retained_assumptions=None):
     if type(updates) is not list or len(updates)>16:raise ValueError('update_budget_exceeded')
     candidate=copy.deepcopy(items);labels={}
     for update in updates:
@@ -265,12 +266,17 @@ def _apply_updates(items,updates,sources,event_id,*,contract=None,current=None):
         active={ref:active[ref] for ref in selected}
     if len(_canonical_json(active))>MAX_COGNITIVE_STATE_CHARS:raise ValueError('cognitive_state_budget_exceeded')
     for item in active.values():
-        if item['kind']=='scenario' and any(ref not in active or active[ref]['kind']!='belief' for ref in item['assumptions']):raise ValueError('unknown_scenario_assumption')
+        if item['kind']=='scenario':
+            retained = (retained_assumptions or {}).get(item['id'], ())
+            if any((ref not in active or active[ref]['kind']!='belief') and ref not in retained
+                   for ref in item['assumptions']):raise ValueError('unknown_scenario_assumption')
     return active
 
 
 def apply_cognitive_commit(items, submitted, sources, event_id, context):
     """The model adapter and durable owner share exactly the same structural check."""
+    if context.get('cognitive_interface') == COGNITIVE_INTERFACE_VERSION and 'current' in submitted:
+        raise ValueError('use_explicit_updates_to_retire_cognition')
     current = submitted.get('current')
     pursuit = context.get('pursuit')
     if pursuit is not None:
@@ -282,9 +288,26 @@ def apply_cognitive_commit(items, submitted, sources, event_id, context):
             current = [*current, *(identity for identity in items if identity not in visible)]
     elif 'effects' in submitted:
         raise ValueError('pursuit_effects_not_enabled')
-    candidate = _apply_updates(items, submitted['updates'], sources, event_id, current=current)
-    revised, effects = apply_effects(pursuit, submitted, sources, candidate, event_id,
-                                   task_status=context.get('task_status'), activation_id=context.get('activation_id'))
+    # A complete accepted scenario proves its existing belief references, not
+    # their bodies or current truth. Preflight may retain those same references
+    # without making the beliefs editable. Final owner validation has all items
+    # and therefore no missing-body exception, including any retired belief.
+    retained_assumptions = {item['id']: set(item['assumptions']) - set(items)
+                            for item in context['items'] if item['kind'] == 'scenario'}
+    candidate = _apply_updates(items, submitted['updates'], sources, event_id, current=current,
+                               retained_assumptions=retained_assumptions)
+    integrity = context.get('commit_integrity')
+    candidate_ids = set(candidate)
+    if integrity is not None:
+        if integrity['version'] != COMMIT_INTEGRITY_VERSION:
+            raise ValueError('unsupported_commit_integrity')
+        # Preflight has visible bodies only; retained IDs preserve whole-state
+        # reference checks without disclosing unrelated cognition to the model.
+        candidate_ids.update(set(integrity['item_ids']) - visible)
+    revised, effects = apply_effects(pursuit, submitted, sources, candidate_ids, event_id,
+        task_status=context.get('task_status'), activation_id=context.get('activation_id'),
+        check_integrity=integrity is not None, execution_task=context.get('execution_task'),
+        execution_status=integrity['execution_status'] if integrity else None)
     return candidate, revised, effects
 
 
@@ -338,7 +361,7 @@ def context_with_cognitive_reads(context, events):
                     raise ValueError('cognitive_view_identity_conflict')
                 for revealed in [item, *view['content'].get('dependencies', [])]:
                     items[revealed['id']] = revealed
-                for basis in view['content']['basis_sources']:
+                for basis in view['content'].get('basis_sources', []):
                     if basis['ref'] in sources and basis != sources[basis['ref']]:
                         raise ValueError('evidence_identity_conflict')
                     sources[basis['ref']] = basis
@@ -450,10 +473,14 @@ class Cognition:
                 identity = ('item-' + _digest([event_id, update['id']])[:20]
                             if update['id'].startswith('new:') else update['id'])
                 metadata[identity] = {'task_ref': task_ref, 'last_revision': end['revision']}
-        return [{'id': item['id'], 'kind': item['kind'], 'status': item['status'],
-                 'basis_refs': [basis['ref'] for basis in item.get('basis', [])], **metadata[item['id']],
-                 **({'dependencies': list(item['assumptions'])} if item['kind'] == 'scenario' else {})}
-                for item in state['items'].values()]
+        headers = []
+        for item in state['items'].values():
+            text = item.get('claim', item.get('text', _canonical_json(item.get('steps', []))))
+            headers.append({'id': item['id'], 'kind': item['kind'], 'status': item['status'],
+                'basis_refs': [basis['ref'] for basis in item.get('basis', [])], **metadata[item['id']],
+                'preview': {'text': text[:240], 'truncated': len(text) > 240},
+                **({'dependencies': list(item['assumptions'])} if item['kind'] == 'scenario' else {})})
+        return headers
 
     def attention_catalogue(self):
         """Bounded headers derived from accepted knowledge; no extra authority store."""
@@ -462,31 +489,33 @@ class Cognition:
             return {'revision': state['revision'], 'items': self._item_headers(state, starts, ends)}
 
     @classmethod
-    def _item_view(cls, state, starts, ends, item_ref):
+    def _item_view(cls, state, starts, ends, item_ref, *, inline_basis=True):
         item = state['items'].get(item_ref)
         header = next((entry for entry in cls._item_headers(state, starts, ends) if entry['id'] == item_ref), None)
         dependencies = ([state['items'][ref] for ref in item['assumptions']]
-                        if item and item['kind'] == 'scenario' else [])
-        # A scenario's accepted assumptions are part of its complete read, just
-        # as they are part of the initial AttentionFrame's structural closure.
+                        if inline_basis and item and item['kind'] == 'scenario' else [])
+        # Legacy receipts inlined dependencies and sources. Current reads keep
+        # the target complete and retrieve referenced records separately.
         basis_refs = dict.fromkeys(basis['ref'] for record in ([item, *dependencies] if item else [])
                                    for basis in record.get('basis', []))
         view = {'owner': 'mind', 'revision': state['revision'],
                 'scope': {'kind': 'cognitive_item', 'item_ref': item_ref},
                 'content': {'item': copy.deepcopy(item), 'last_revision': header['last_revision'],
                             **({'dependencies': copy.deepcopy(dependencies)} if dependencies else {}),
-                            'basis_sources': [copy.deepcopy(state['sources'][ref])
-                                              for ref in basis_refs]} if item else None,
-                'missing': item is None, 'truncated': False}
+                             **({'basis_sources': [copy.deepcopy(state['sources'][ref])
+                                                 for ref in basis_refs]} if inline_basis else {})} if item else None,
+                 'missing': item is None, 'truncated': False}
+        if not inline_basis:
+            view['format'] = 'cognitive-item-v2'
         view['ref'] = 'mind-cognition:' + _digest(view)[:24]
         return view
 
     def cognitive_item_view(self, item_ref):
-        """Read the current complete record and its original basis, not a new truth assessment."""
+        """Read the complete record; its basis refs retrieve original sources separately."""
         _text(item_ref, 64)
         with self._lock:
             state, starts, ends = self._fold(self._load())
-            return self._item_view(state, starts, ends, item_ref)
+            return self._item_view(state, starts, ends, item_ref, inline_basis=False)
 
     @classmethod
     def _validate_cognitive_read(cls, request, observation, state, starts, ends):
@@ -499,10 +528,13 @@ class Cognition:
         sources = {source['ref']: source['text'] for source in body['sources']}
         expected_records = {}
         for item_ref in wanted:
-            expected = cls._item_view(state, starts, ends, item_ref)
-            expected_ref, expected_text = 'view-result:' + _digest(expected)[:24], _canonical_json(expected)
-            expected_records[item_ref] = (expected_ref, expected_text)
-            if sources.get(expected_ref) != expected_text:
+            # Preserve exact old receipts while admitting the compact current
+            # owner view. Neither representation grants truth to its citations.
+            expected_records[item_ref] = set()
+            for inline_basis in (False, True):
+                expected = cls._item_view(state, starts, ends, item_ref, inline_basis=inline_basis)
+                expected_records[item_ref].add(('view-result:' + _digest(expected)[:24], _canonical_json(expected)))
+            if not any(sources.get(ref) == text for ref, text in expected_records[item_ref]):
                 raise ValueError('cognitive_view_identity_conflict')
         for source in body['sources']:
             if not source['ref'].startswith('view-result:'):
@@ -511,7 +543,7 @@ class Cognition:
             scope = view.get('scope', {})
             if (view.get('owner') == 'mind' and isinstance(scope, dict)
                     and scope.get('kind') == 'cognitive_item' and scope.get('item_ref') in expected_records
-                    and (source['ref'], source['text']) != expected_records[scope['item_ref']]):
+                    and (source['ref'], source['text']) not in expected_records[scope['item_ref']]):
                 raise ValueError('cognitive_view_identity_conflict')
 
     def has_replayable_result(self, event_id: str) -> bool:
@@ -747,6 +779,8 @@ class Cognition:
                     raise ValueError("invalid_cognition_start")
                 value = record["input"]
                 context = record["context"]
+                if context.get('cognitive_interface') not in (None, COGNITIVE_INTERFACE_VERSION):
+                    raise ValueError('unsupported_cognitive_interface')
                 if (context.get("execution_ref") != value["execution_ref"]
                         or (value["execution_ref"] is None) != (value["execution_status"] is None)):
                     raise ValueError("execution_context_mismatch")
@@ -772,6 +806,10 @@ class Cognition:
                     validate_task_projection(value['pursuit'], value.get('owner_task'))
                     if context.get('pursuit') != state['pursuit']:
                         raise ValueError('pursuit_context_mismatch')
+                    if 'commit_integrity' in context and context['commit_integrity'] != {
+                            'version': COMMIT_INTEGRITY_VERSION, 'item_ids': sorted(state['items']),
+                            'execution_status': value['execution_status']}:
+                        raise ValueError('commit_integrity_context_mismatch')
                     if context.get('attention') != value.get('attention'):
                         raise ValueError('attention_context_mismatch')
                     if (context.get('task_status') != value['pursuit']['task_status']
@@ -934,7 +972,10 @@ class Cognition:
                        "contract_version": COGNITIVE_CONTRACT_VERSION}
             if pursuit is not None:
                 context.update(pursuit=pursuit, task_status=value.pursuit['task_status'],
-                               contract_version=PURSUIT_CONTRACT)
+                               contract_version=PURSUIT_CONTRACT,
+                               cognitive_interface=COGNITIVE_INTERFACE_VERSION)
+                context['commit_integrity'] = {'version': COMMIT_INTEGRITY_VERSION,
+                    'item_ids': sorted(state['items']), 'execution_status': value.execution_status}
                 context['activation_id'] = 'activation-' + _digest([value.event_id, document])[:24]
                 context['execution_task'] = value.pursuit.get('execution_task', value.pursuit['task'])
                 if value.attention is not None:
@@ -1093,7 +1134,10 @@ class Cognition:
                              if pursuit is None or ref in visible_ids}
             used = {basis["ref"] for item in visible_items.values() for basis in item.get("basis", [])}
             next_context = {**visible_context, "items": list(visible_items.values()),
-                            "evidence": [sources[ref] for ref in sorted(used)]}
+                            # Retained judgments can still cite their historical
+                            # basis after a compact owner read. Only evidence
+                            # actually read in this activity enters its context.
+                            "evidence": [sources[ref] for ref in sorted(used) if ref in sources]}
             if len(_canonical_json(next_context)) > context_limit():
                 raise ValueError("context_budget_exceeded")
         except (KeyError, TypeError, ValueError) as exc:

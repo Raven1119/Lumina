@@ -196,28 +196,90 @@ def test_finite_advance_preserves_kernel_and_is_not_a_business_event(tmp_path):
         organ.shutdown()
 
 
-def test_completion_handoff_survives_restart_without_finishing_or_replaying(tmp_path):
+@pytest.mark.parametrize('pause_after_restart', [False, True])
+def test_completion_handoff_survives_restart_without_finishing_or_replaying(tmp_path, pause_after_restart):
     pending = [True]
     model = _ScriptedModel([ClaimComplete()])
-    organ = _organ(tmp_path, model, completion_review_required=lambda: pending[0])
+    checkpoint = tmp_path/'state'/'checkpoint.json'
+    organ = _organ(tmp_path, model, completion_review_required=lambda: pending[0], checkpoint_path=checkpoint)
     (tmp_path/'workspace'/'answer.txt').write_text('42', encoding='utf-8')
     first = organ.run_goal('Deliver the answer.', FileContentEquals('answer.txt', '42'))
     assert first.status == 'running' and organ.completion_review_pending()
     assert first.state.latest_observation.status == 'review_pending'
     assert first.state.latest_observation.evidence.matched
     run_id = first.state.execution_id
+    saved = (tmp_path/'state'/'execution.jsonl').read_bytes()
     organ.shutdown()
-    resumed_model = _ScriptedModel([ClaimComplete()])
-    organ = _organ(tmp_path, resumed_model, completion_review_required=lambda: pending[0])
+    resumed_model = _ScriptedModel([])
+    organ = _organ(tmp_path, resumed_model, completion_review_required=lambda: pending[0], checkpoint_path=checkpoint)
     try:
         assert organ.completion_review_pending()
         assert len(resumed_model.received_requests) == 0
+        assert organ.resume().state == first.state  # Outstanding review is quiet.
+        assert (tmp_path/'state'/'execution.jsonl').read_bytes() == saved
+        if pause_after_restart:
+            organ.interrupt()
+            assert organ.completion_review_pending()
         pending[0] = False  # The trusted host accepted its result review.
         result = organ.resume()
         assert result.status == 'completed' and result.state.execution_id == run_id
         assert sum(e.event_type == 'COMPLETION_DEFERRED' for e in result.events) == 1
-        assert sum(e.event_type == 'COMPLETION_CLAIMED' for e in result.events) == 2
+        assert sum(e.event_type == 'COMPLETION_CLAIMED' for e in result.events) == 1
+        assert not resumed_model.received_requests
+        assert result.state.decision_count == 1
+        assert fold_execution_state(EventLog.load(tmp_path/'state'/'execution.jsonl').events) == result.state
+        assert (tmp_path/'state'/'execution.jsonl').read_bytes().startswith(saved)
         assert not any(e.event_type == 'ROOT_WAITING' for e in result.events)
+    finally:
+        organ.shutdown()
+
+
+def test_deferred_completion_rechecks_environment_instead_of_trusting_the_old_match(tmp_path):
+    pending = [True]
+    model = _ScriptedModel([ClaimComplete(), Wait('REPLACEMENT')])
+    organ = _organ(tmp_path, model, completion_review_required=lambda: pending[0])
+    output = tmp_path/'workspace'/'answer.txt'
+    output.write_text('42', encoding='utf-8')
+    try:
+        original = organ.run_goal('Deliver the answer.', FileContentEquals('answer.txt', '42'))
+        output.write_text('not the requested answer', encoding='utf-8')
+        pending[0] = False
+        result = organ.resume()
+        assert result.state.waiting_for == 'REPLACEMENT'
+        assert result.events[:len(original.events)] == original.events
+        rejection, = [e for e in result.events if e.event_type == 'COMPLETION_REJECTED']
+        assert not rejection.payload['observation'].evidence.matched
+        assert rejection.source_event_refs == (original.events[-1].event_id,)
+        assert sum(e.event_type == 'COMPLETION_CLAIMED' for e in result.events) == 1
+        assert not any(e.event_type == 'EXECUTION_COMPLETED' for e in result.events)
+        assert fold_execution_state(EventLog.load(tmp_path/'state'/'execution.jsonl').events) == result.state
+    finally:
+        organ.shutdown()
+
+
+def test_deferred_claim_is_not_resumed_after_a_later_completed_action(tmp_path):
+    pending = [True]
+    model = _ScriptedModel([ClaimComplete(), IPythonCode('pass')])
+    organ = _organ(tmp_path, model, completion_review_required=lambda: pending[0], max_decisions_per_advance=1)
+    (tmp_path/'workspace'/'answer.txt').write_text('42', encoding='utf-8')
+    try:
+        original = organ.run_goal('Deliver the answer.', FileContentEquals('answer.txt', '42'))
+        pending[0] = False
+        after_action = organ.resume(decision_advisory=('decision-000002', 'Investigate the newly raised condition.'))
+        assert after_action.status == 'running' and not organ.completion_review_pending()
+        assert after_action.state.decision_count == 2
+    finally:
+        organ.shutdown()
+    resumed_model = _ScriptedModel([Wait('CURRENT_INPUT')])
+    organ = _organ(tmp_path, resumed_model, completion_review_required=lambda: False)
+    try:
+        result = organ.resume()
+        assert result.state.waiting_for == 'CURRENT_INPUT'
+        assert result.events[:len(after_action.events)] == after_action.events
+        assert result.events[:len(original.events)] == original.events
+        assert sum(e.event_type == 'COMPLETION_CLAIMED' for e in result.events) == 1
+        assert not any(e.event_type == 'EXECUTION_COMPLETED' for e in result.events)
+        assert len(resumed_model.received_requests) == 1
     finally:
         organ.shutdown()
 

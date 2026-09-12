@@ -12,6 +12,8 @@ from Nervous.storage import canonical, fingerprint
 PURSUIT_VERSION = 'intention-stage1-v1'
 COGNITIVE_VERSION = 'mind-cognition-stage1-v1'
 EFFECTS_SCHEMA_VERSION = 'intention-effects-wire-v2'
+COMMIT_INTEGRITY_VERSION = 'pursuit-commit-v2'
+_UNSPECIFIED = object()
 MAX_INTENTIONS = 8
 MAX_TASKS = 32
 MAX_WATCHES = 32
@@ -126,12 +128,30 @@ def _identity(update, previous, event_id, prefix):
     return identity, previous[identity]['revision'] + 1
 
 
-def apply_effects(pursuit, submitted, sources, items, event_id, *, task_status=None, activation_id=None):
+def validate_commit_integrity(pursuit, items, execution_task, execution_status):
+    if pursuit is None:
+        return
+    if any(ref not in items for intention in pursuit['intentions'].values()
+           for ref in intention['understanding_refs']):
+        raise ValueError('unknown_pursuit_understanding')
+    if execution_task is not None and execution_status not in {'completed', 'failed'}:
+        intention = pursuit['intentions'].get(execution_task['intention_id'])
+        if intention and intention['commitment'] == 'closed':
+            raise ValueError('closed_intention_has_active_task')
+
+
+def apply_effects(pursuit, submitted, sources, items, event_id, *, task_status=None, activation_id=None,
+                  check_integrity=True, execution_task=_UNSPECIFIED, execution_status=None):
     """Return an atomic candidate and resolved outbox data, without side effects."""
     effects = submitted.get('effects')
+    if execution_task is _UNSPECIFIED:
+        execution_task = pursuit['task'] if pursuit else None
+    execution_status = task_status if execution_status is None else execution_status
     if effects is None:
         if pursuit is not None and pursuit['task'] is None and submitted['next']['type'] == 'directive':
             raise ValueError('directive_requires_task')
+        if check_integrity:
+            validate_commit_integrity(pursuit, items, execution_task, execution_status)
         return copy.deepcopy(pursuit), None
     if pursuit is None or not Draft202012Validator(effects_schema()).is_valid(effects):
         raise ValueError('invalid_pursuit_effects')
@@ -232,6 +252,8 @@ def apply_effects(pursuit, submitted, sources, items, event_id, *, task_status=N
         raise ValueError('pursuit_capacity_exhausted')
     if candidate['task'] is None and submitted['next']['type'] == 'directive':
         raise ValueError('directive_requires_task')
+    if check_integrity:
+        validate_commit_integrity(candidate, items, execution_task, execution_status)
     return candidate, resolved
 
 

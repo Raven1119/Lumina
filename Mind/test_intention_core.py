@@ -15,6 +15,17 @@ from Mind.trace import MindTrace
 AUTHORITY = {'ref': 'owner:research', 'text': 'Investigate the supplied records; choose bounded follow-up work within this workspace.'}
 
 
+@pytest.fixture
+def legacy_current_interface(monkeypatch):
+    """Retain the old selection interface in explicitly historical fixtures."""
+    original = Cognition._append
+    def append(self, record):
+        if record['kind'] == 'started':
+            record['context'].pop('cognitive_interface', None)
+        return original(self, record)
+    monkeypatch.setattr(Cognition, '_append', append)
+
+
 def pursuit_input(event_id='review-1', **extra):
     pursuit = {'version': 'intention-stage1-v1', 'mind_id': 'mind-research',
                'authorization': AUTHORITY, 'task': None, 'task_status': None, **extra}
@@ -198,7 +209,7 @@ def test_invalid_effects_do_not_partially_change_knowledge_or_pursuit(tmp_path, 
         assert not mind.inspect().items and mind.inspect().revision == 1
 
 
-def test_unseen_cognition_survives_visible_current_selection(tmp_path):
+def test_unseen_cognition_survives_visible_current_selection(tmp_path, legacy_current_interface):
     facts = [{'kind': 'belief', 'id': 'new:' + name, 'claim': 'Scoped observation ' + name,
               'status': 'supported', 'basis': [{'ref': AUTHORITY['ref']}]} for name in ('a', 'b')]
     with Cognition(directory=tmp_path, model=MindModel(Script(response(step(facts))))) as mind:
@@ -340,11 +351,13 @@ def test_task_selection_omits_old_claim_and_basis_then_explicit_read_allows_revi
         old = plain(mind.inspect().items[0])
         catalogue = mind.attention_catalogue()
         assert catalogue['items'] == [{'id': old['id'], 'kind': 'belief', 'status': 'supported',
-            'basis_refs': [old_source.ref], 'task_ref': {'id': task_a['id'], 'revision': 1}, 'last_revision': 2}]
-        assert old_claim['claim'] not in json.dumps(catalogue) and old_source.text not in json.dumps(catalogue)
+            'basis_refs': [old_source.ref], 'task_ref': {'id': task_a['id'], 'revision': 1}, 'last_revision': 2,
+            'preview': {'text': old_claim['claim'], 'truncated': False}}]
+        assert old_source.text not in json.dumps(catalogue)
     query = 'view:mind.cognition?item_ref=' + old['id']
     corrected = {**old, 'claim': 'The result remains limited to A; source B needs separate evidence.'}
-    script = Script(response({'refs': [query]}, 'read_evidence'), response(step([corrected])))
+    script = Script(response({'refs': [query]}, 'read_evidence'),
+                    response({'refs': [old_source.ref]}, 'read_evidence'), response(step([corrected])))
     with Cognition(directory=tmp_path, model=MindModel(script), available_capabilities=('read_evidence',)) as mind:
         waiting = mind.activate(task_input('check-b', task_b, 'running', visible_item_ids=[]))
         assert waiting.status == 'waiting'
@@ -360,11 +373,16 @@ def test_task_selection_omits_old_claim_and_basis_then_explicit_read_allows_revi
         observation = {'capability': 'read_evidence', 'origin': 'execution', 'text': canonical({
             'read_result': 'sources-v1', 'sources': [{'ref': 'view-result:' + fingerprint(view)[:24],
                 'text': canonical(view), 'origin': 'execution'}]})}
-        accepted = mind.accept_result(MindResultEvent(waiting.request.request_ref, observation))
+        reading_basis = mind.accept_result(MindResultEvent(waiting.request.request_ref, observation))
+        assert reading_basis.status == 'waiting'
+        assert old_source.text not in canonical(script.wires[-1])
+        observation = {'capability': 'read_evidence', 'origin': 'execution', 'text': canonical({
+            'read_result': 'sources-v1', 'sources': [dict(mind.read_source(old_source.ref))]})}
+        accepted = mind.accept_result(MindResultEvent(reading_basis.request.request_ref, observation))
         assert accepted.status == 'accepted' and not mind.inspect().items[0]['claim'].startswith('OLD')
-        assert len(script.wires) == 2
+        assert len(script.wires) == 3
         assert script.wires[1]['messages'][0] == script.wires[0]['messages'][0]
-        assert old_source.text in json.dumps(script.wires[1])
+        assert old_source.text in json.dumps(script.wires[2])
         assert mind.read_source(old_source.ref)['text'] == old_source.text
         assert mind.attention_catalogue()['items'][0]['task_ref'] == {'id': task_b['id'], 'revision': 1}
 
@@ -421,7 +439,7 @@ def test_owner_rejects_unread_item_mutation_without_native_schema(tmp_path):
         assert plain(mind.inspect().items[0]) == old
 
 
-def test_attention_catalogue_exposes_scenario_dependency_ids_without_bodies(tmp_path):
+def test_attention_catalogue_exposes_dependencies_and_bounded_previews(tmp_path):
     belief = {'kind': 'belief', 'id': 'new:premise', 'claim': 'A scoped premise.',
               'status': 'supported', 'basis': [{'ref': AUTHORITY['ref']}]}
     scenario = {'kind': 'scenario', 'id': 'new:scenario', 'status': 'active',
@@ -434,8 +452,10 @@ def test_attention_catalogue_exposes_scenario_dependency_ids_without_bodies(tmp_
         premise, conditional = catalogue['items']
         assert conditional['dependencies'] == [premise['id']]
         assert 'dependencies' not in premise
-        assert belief['claim'] not in json.dumps(catalogue)
-        assert 'Conditional scenario detail.' not in json.dumps(catalogue)
+        assert premise['preview']['text'] == 'A scoped premise.'
+        assert 'Conditional scenario detail.' in conditional['preview']['text']
+        assert all(len(header['preview']['text']) <= 240 for header in catalogue['items'])
+        assert AUTHORITY['text'] not in json.dumps(catalogue)
         assert mind.activate(pursuit_input('dependent-review', visible_item_ids=[
             conditional['id'], *conditional['dependencies']])).status == 'accepted'
 
@@ -474,8 +494,9 @@ def test_reading_omitted_scenario_preserves_its_dependencies_and_allows_commit(t
         assert mind.accept_result(MindResultEvent(pending.request.request_ref, observation)).status == 'accepted'
         assert len(script.wires) == 2
         assert script.wires[1]['messages'][0] == script.wires[0]['messages'][0]
-        assert source.text in canonical(script.wires[1])
-        assert premise['claim'] in canonical(script.wires[1])
+        assert source.text not in canonical(script.wires[1])
+        assert premise['id'] in canonical(script.wires[1])
+        assert premise['claim'] not in canonical(script.wires[1])
         assert hidden['claim'] not in canonical(script.wires[1])
         assert unrelated_source.text not in canonical(script.wires[1])
         saved = [plain(item) for item in mind.inspect().items]

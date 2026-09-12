@@ -81,6 +81,16 @@ blocked for an actual outcome check. A partially executed batch retains its real
 results; only its unstarted suffix is retired. Python variables are not restored
 after a process restart. Persistent files and source references survive.
 
+`COMPLETION_DEFERRED` preserves the original completion claim while its Mind
+review is pending. Once that review clears, Execution can resume the same claim
+and recheck the environment without another model-generated `claim_complete`.
+This applies only at the unchanged decision/authority boundary, with no new
+guidance or other intervening action. New owner input, guidance or changed
+conditions require the appropriate fresh decision. Existing provider-request
+responsibilities are recovered first; an unknown request cannot be bypassed by
+settling completion. A cleared review is not business acceptance, and failed
+completion verification remains a rejection.
+
 Optional working projections are fixed at initial launch and survive interrupted
 initialization and restarts:
 
@@ -195,13 +205,26 @@ other roles' complete reasoning or debugging history.
 ## Cognition, direction and source meaning
 
 Only a final cognitive_step commits selective updates. Unsubmitted items stay;
-explicit archived status/current selection retires obsolete knowledge without
-deleting history. A revised claim, status, basis and optional discriminator are
-one replacement. Status evaluates the new literal assertion, not task pass/fail.
-The previous prior_truth is an earlier judgment, not certified reality.
-In Stage1, `current` selects only within the activity's visible set; leaving
-attention does not retire an item or Intention. An unseen item must first be
-read at its current owner version before it can be updated.
+an explicit archived status retires obsolete knowledge without deleting history.
+A revised claim, status, basis and optional discriminator are one replacement.
+Status evaluates the new literal assertion, not task pass/fail. The previous
+prior_truth is an earlier judgment, not certified reality.
+
+New pursuit activities freeze `cognitive_interface="mind-cognitive-interface-v2"`:
+only `updates` adds, replaces or archives records; `current` is neither advertised
+nor accepted. Baseline and previously frozen activities retain their original
+interface. Old Stage1 `current` selects only within that activity's visible set;
+leaving attention never retires an item or Intention. An unseen item must first
+be read completely at its current owner version before it can be updated.
+
+Stage1 cognition catalogues offer 240-character previews with truncation metadata
+for selecting relevant records, not evidence or permission to edit unseen items.
+The current `cognitive-item-v2` owner read returns the target record with its
+original refs, without inlining basis-source or assumption bodies. Retrieve those
+separately when needed. Legacy complete receipts remain readable. Target-only
+reads reduce duplicated material but retain the existing capacity limit; a single
+extremely escaped or large item may still fail to fit. Failed or partial retrieval
+does not become a complete read.
 
 NoChange can close a successful review, including after cognitive revision.
 It does not erase previous guidance or create work. A Directive conveys the
@@ -215,6 +238,14 @@ received text remains visible across normal history trimming; visibility is
 not another delivery or proof of adoption. If the position or evidence changes
 before use, old advice is withdrawn and an attributed event returns to Mind
 for a fresh judgment, retaining the original owner input.
+
+In new Execution requests, previously received guidance remains in the owner
+context with its identity and scope. Historical native pairs follow it; the
+last message contains current checkpoint facts from the same owner projection.
+A newly bound one-shot Directive is still carried verbatim before that current
+checkpoint. This ordering does not redeliver old guidance or choose an action.
+The small repeated checkpoint fields count toward actual provider request size.
+Already frozen requests and pending corrections retain their original wire.
 
 Evidence is immutable by reference. Source kinds distinguish original owner
 statements, actor judgments, observed text, file metadata, catalogues and
@@ -265,6 +296,16 @@ state measured by the commit limit; this capacity accounting does not retire
 items. Stage1 attention may omit items from a request while retaining that state.
 Analysis is bounded to six calls/computations. World-model inputs have at most
 16 scalar fields, with strings at most 256 characters.
+
+New pursuit activities allow at most one protocol correction in that six-call
+budget. This includes a received `max_tokens`/`end_turn` response containing only
+text/thinking and no tool submission. Its original assistant blocks are preserved
+and followed by ordinary user feedback, without a fabricated `tool_result` or a
+host-selected conclusion. Complete-tool field corrections retain their real tool
+ID and share the same one-correction allowance. The original wire and responses
+stay frozen; cached responses are recovered without another charge. Old activities
+keep their previous rules. A second failed submission remains an explicit failure,
+and unknown dispatched requests are not eligible for this recovery.
 
 Default launch allocation is 40 calls, 200000 reserved output tokens and
 2800000 request bytes, shared across Mind, analysis and Execution. Explicit

@@ -1,8 +1,10 @@
 # Intention and Nervous Stage1 runtime contract
 
 Status: implemented, with partial bounded real acceptance. See the
-[implementation and verification result](INTENTION_STAGE1_RESULT.md): Task A
-completed; Task B's final review remains at the 32-call ceiling. Historical
+[implementation and verification result](INTENTION_STAGE1_RESULT.md): original
+Tasks A and B completed their feedback chains, but the separately authorized
+44-call continuation stopped before report correction and complete cognitive
+reconciliation. Its corrective guidance remains bound and unexecuted. Historical
 verdicts keep their original scope. The
 [approved design](../../docs/plan/INTENTION_NERVOUS_STAGE1.md) supplies intent and
 acceptance requirements, not evidence that every behavioral claim has passed.
@@ -58,6 +60,27 @@ work, and blocks unknown outcomes. Task proposals require explicit high-level
 direction; Execution still chooses implementation. Closing an Intention requires
 explicit treatment of its active Watches and any executing Task.
 
+New cognitive activities freeze `pursuit-commit-v2` integrity checks. An
+Intention cannot be closed while its actual accepted Task is nonterminal;
+`running` and `waiting` are not settlement, and a different proposal's
+`not_accepted` status does not settle that Task. Stage1 adds no cancellation
+operation: settle the accepted Task before closing its Intention.
+
+After cognition is retired, every Intention's
+`understanding_refs` must still resolve. Repair affected links explicitly in the
+same final submission. Hidden retained items remain valid by identity; a current
+owner read expands the visible set subject to retirement. Native preflight and
+the final owner use the same checks. Existing successful records and unfinished
+activities without this frozen rule version keep their original interpretation;
+recovery neither rewrites their records nor applies new rules retroactively.
+
+New pursuit activities also freeze
+`cognitive_interface="mind-cognitive-interface-v2"`. Their single write path is
+`updates`: add new records, replace existing records or submit `status=archived`
+to retire them. Unsubmitted records remain accepted. `current` is absent from the
+new tool schema and rejected by the final owner; activities without this interface
+version retain their original `current` semantics and frozen requests.
+
 These records extend the existing Cognition journal, Nervous mailbox and
 Execution owner state. Accepted effects and dependent dispatch use the existing
 outbox/receipt boundaries. There is no new TaskManager, parallel authority store,
@@ -71,12 +94,23 @@ event sources. Scenario headers expose assumption IDs for dependency closure.
 Selected IDs, source refs and inclusion/omission reasons are retained with the
 Frame; omitted item headers provide exact retrieval references.
 
-Unselected cognition stays accepted. Stage1 `current` retires only within the
-activity's visible set. Updating an unseen item first requires
-`view:mind.cognition?item_ref=ID`, whose current owner envelope contains the
-complete record and its original basis sources. Correlated, exact versioned
-results extend the model's IDs, citations and structural preflight together.
-The final owner still checks the full accepted state and immutable source identity.
+Unselected cognition stays accepted. Catalogue entries include an at-most
+240-character text preview with an explicit `truncated` flag. These previews help
+select reads; they are neither new evidence nor complete editable records.
+Updating an unseen item first requires `view:mind.cognition?item_ref=ID` at its
+current owner version. The `cognitive-item-v2` envelope contains the complete target
+record, retaining its basis and assumption references without inlining source or
+assumption bodies. Read those original sources or related items separately when
+needed; reading a judgment does not certify its premises. Exact correlated reads
+extend editable IDs and preflight without making unread bodies visible. The final
+owner still checks the full accepted state and immutable source identity.
+
+Old receipts that inlined basis sources and dependencies remain interpretable.
+For old activities that still accept `current`, its selection retires only within
+the activity's visible set. The existing read envelope remains bounded: a single
+unusually large or heavily escaped item can still exceed it. A capacity/read
+failure does not count as a complete read or authorize an unseen update; the
+interface does not promise that every possible item fits in one response.
 
 Previous Task goal/acceptance bodies become a compact ID/version/view-ref
 catalogue in the actual request. Current authority and accepted Task constraints
@@ -135,6 +169,16 @@ acknowledgements recover through their original owner records; known model
 responses keep their frozen requests and charges. Unknown action/provider
 outcomes remain stopped. Selection and successful transport do not establish
 semantic correctness, general autonomy or subjective experience.
+
+Under the new cognitive interface, a durably received text/thinking-only response
+ending in `max_tokens` or `end_turn` may use the activity's one protocol correction.
+All protocol corrections, including complete-tool field corrections, share that
+single allowance and the existing six-call activity/global budgets. A no-tool
+response continues with its original assistant blocks and ordinary user feedback;
+no `tool_result` ID, judgment or NoChange is invented. Saved requests/responses
+remain unchanged. A second invalid submission remains a failure; unknown dispatch
+outcomes are never retried by this mechanism. Old activities keep their original
+recovery rules.
 
 For mechanical validation use the affected Mind/Nervous/Execution suites with
 isolated state. Behavioral claims require the bounded, persisted acceptance in

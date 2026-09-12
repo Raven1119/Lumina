@@ -87,7 +87,9 @@ class ExecutionModel:
         if self.history is None:
             return None
         records = self.history._restore({'execution_id': state.execution_id, 'decision_count': state.decision_count})
-        if records and 'owner_request' in records[-1]['metadata']:
+        if records:
+            if 'owner_request' not in records[-1]['metadata']:
+                raise BudgetPause('execution_owner_request_unavailable')
             return _decode_value(records[-1]['metadata']['owner_request'])
         return None
 
@@ -208,14 +210,18 @@ class ExecutionModel:
                     document['execution_history_scope'] = 'Completed owner rounds; the current checkpoint does not rewrite their historical events or results.'
                     messages = [messages[0], *(message for _, pair in selected for message in pair)]
                 first['text'] = canonical({k: v for k, v in document.items()
-                    if k not in {'mind_supervisor_directive', 'received_guidance', 'guidance_scope'}})
-                if document.get('received_guidance'):
-                    messages.append({'role': 'user', 'content': canonical({
-                        'received_guidance': document['received_guidance'], 'scope': document['guidance_scope']})})
+                    if k != 'mind_supervisor_directive'})
             context = json.loads(request.context)
             # Carry the existing one-shot advisory through native continuation.
             if context.get('mind_supervisor_directive'):
                 messages.append({'role': 'user', 'content': context['mind_supervisor_directive']})
+            if self.owner_task is not None:
+                # Retain prior guidance with its owner history, then end the
+                # dialogue at today's checkpoint rather than an old instruction.
+                # The first copy still binds durable provider recovery identity.
+                messages.append({'role': 'user', 'content': canonical({key: document[key]
+                    for key in ('state', 'observation', 'incoming_event', 'lifecycle', 'cognitive_feedback')
+                    if key in document})})
             wire = {'model': MODEL, 'system': payload['messages'][0]['content'] + ('\n\n' + self.role_prompt if self.role_prompt else ''), 'messages': messages,
                 'tools': [{'name': t['function']['name'], 'description': t['function']['description'],
                            'input_schema': t['function']['parameters']} for t in payload['tools']],

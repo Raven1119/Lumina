@@ -25,6 +25,7 @@ from Execution.execution import (
     restore_execution_state,
     _action_sequence,
     _encode_value,
+    _PAUSE_EVENTS,
     _unsettled_action_start,
 )
 from Execution.ipython_control import PersistentIPython
@@ -136,8 +137,9 @@ class ExecutionOrgan:
 
     def completion_review_pending(self) -> bool:
         """A real completion claim yielded for host review; no business Wait was invented."""
-        events = self._event_log.events
-        return bool(events and events[-1].event_type == "COMPLETION_DEFERRED")
+        event = next((event for event in reversed(self._event_log.events)
+                      if event.event_type not in _PAUSE_EVENTS | {'EXTERNAL_EVENT_RECEIVED'}), None)
+        return event is not None and event.event_type == "COMPLETION_DEFERRED"
 
     @staticmethod
     def _load_or_create_event_log(path: Path) -> EventLog:

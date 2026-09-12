@@ -31,22 +31,60 @@ Production Recall gates, the supported Execution facade and licenses remain.
 
 ## Intention and Nervous Stage1 implementation
 
-Implemented as an explicit opt-in; bounded real acceptance is **partial**.
-Final validation: core **603 passed, 6 skipped**; maintained tree **936 passed,
-30 skipped**. Docker checks passed **31** tests with scripted model replies before
-the final field-schema/query adjustments, which the final core/full suites cover.
-See [Stage1 result](../Mind/docs/INTENTION_STAGE1_RESULT.md) for exact scope.
+Implemented as an explicit opt-in. The original real acceptance remains
+**PARTIAL**; the same Task B's correction chain has now closed with disclosed
+developer feedback and recovery. This is not acceptance of general autonomy. The
+2026-09-12/13 narrow repair rejects closing an Intention with an actual unsettled
+Task and rejects dangling understanding references after cognitive retirement.
+Native preflight and final commit share the check; its version is frozen only
+for new activities, preserving old accepted and unfinished records.
 
-The same real Mind revised its existing measurement belief, selected two distinct
-serial Tasks under one Intention, and delivered two original Directives. Task A
-completed its feedback chain; Task B wrote its report but has a known evidence
-result pending before final cognitive submission at the frozen **32-call** cap.
-Costs: **19 Mind + 13 Execution**, 59,579 reported output tokens and 1,247,950
-request bytes. An unrelated message preserved the pursuit; quiet restarts added
-zero calls. Four rejected cognitive submissions and remaining imprecise report
-wording are retained in the result. This is not full two-task live closure or a
-claim of general autonomy. No additional calls, commit or push followed the cap.
-Older results below retain their original scopes.
+Further source/trace diagnosis repaired oversized composed cognitive reads,
+unusable item selection, dual update/current submission and deferred completion
+continuation. New pursuit activities freeze `mind-cognitive-interface-v2`:
+selective updates plus explicit retirement; old activities retain their rules.
+Compact complete item reads keep references rather than forcing all dependency
+bodies inline. Known no-tool Mind responses have one shared bounded correction;
+unknown outcomes and unbound historical provider decisions remain blocked.
+
+The original **32-call PARTIAL** result remains in the
+[Stage1 report](../Mind/docs/INTENTION_STAGE1_RESULT.md). A separately authorized
+12-call extension completed original Task B at call 38. Later authorized batches
+delivered the corrective Directive at 46, corrected both reports at 48–49 and
+reviewed their results at 54–55. After explicit audit feedback and compact reads,
+61–62 repaired the retained causal overclaim and obsolete initial assumptions;
+correct historical knowledge remained. Current checkpoint projection now follows
+native history, with prior attributed guidance retained in the owner context.
+That ordering change alone did **not** stop repeated checks at 77–84.
+
+A second disclosed owner event reported the actual repetitive execution state.
+Mind updated its stage judgment with NoChange; Execution independently inspected
+the reports and claimed completion at 93. Mind accepted the completion feedback
+at 94. Normal retry-review settled both original failed activities at 95–96,
+retaining their failures. The same Mind now has revision 15, 15 effective items,
+two Tasks and the paused Intention; the correction Run is completed. No active
+or unresolved cognitive responsibility or pending mailbox remains. Restart with
+positive budget headroom added **zero** calls, then another ordinary resume also
+added zero. No new Directive caused this final exit, and developer feedback was
+necessary in this scene; autonomous stagnation discovery is not demonstrated.
+
+All **96** calls remain: **37 Mind + 59 Execution**, 154,649 reported output
+tokens and 3,975,138 request bytes. Original inputs, failure history and Task
+identities are preserved. Final maintained validation: **981 passed, 30 skipped**.
+An earlier run had one test assuming the old guidance message position; the
+assertion now checks the owner context and final checkpoint, preserving its
+delivery invariant. Its complete runtime file also passed **26** tests.
+Focused projection/recovery/core-loop coverage
+passed **129**, with 1 Docker opt-in skip. The real Docker loop and history
+checks passed; one separate Windows atomic-write refusal in that invocation
+passed isolated recheck. Standards and Spec review found no remaining scoped
+code blocker. Full detail and all intermediate failures remain in the report.
+
+Limits remain: extremely escaped single records can still exceed bounded read
+envelopes; basis arrays do not always separately cite each authoritative state
+observation, though original activity observations remain traceable. No Stage2,
+Chat/Memory wiring, default summary change, commit or push occurred. Older
+results below keep their scopes; test counts do not establish model ability.
 
 `start --pursuit` freezes the real owner's authorized scope, Mind identity,
 workspace and cumulative budget. Mind can commit versioned Intentions and propose

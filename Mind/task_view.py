@@ -3,6 +3,7 @@ from __future__ import annotations
 from Nervous.storage import fingerprint
 
 COGNITIVE_CONTRACT_VERSION = "mind-cognition-v1"
+COGNITIVE_INTERFACE_VERSION = "mind-cognitive-interface-v2"
 TASK_VIEW_VERSION = "owner-task-views-v1"
 EXPRESSION_OUTPUT_CHARS = 6000
 OWNER_TASK_GOAL_CHARS = 4000

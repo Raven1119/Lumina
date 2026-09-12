@@ -409,7 +409,14 @@ class Execution:
             'mode': mode, 'rounds': rounds, **projection,
             'received_guidance': self.received_guidance(count), 'owner_inputs': owners,
             'cognitive_feedback': {'last_reviewed': self.current_review(),
-                                  'completion_review_required': self.feedback_required()},
+                                  'completion_review_required': self.feedback_required(),
+                                  'completion': {
+                                      'run_status': state.status,
+                                      'deferred_claim_at_current_boundary': self.actor.completion_review_pending(),
+                                      'scope': 'Current runtime facts, not business acceptance. A cleared Mind review '
+                                          'or a matching marker alone does not finish a running Run. claim_complete '
+                                          'submits completion for runtime verification; text replies are not actions. '
+                                          'A historical review_pending result is not a fresh review requirement.'}},
             'guidance_scope': 'Exact prior advice in receiving-decision order, not a new delivery or verified fact. '
                 'NoChange does not revoke advice. Consider later guidance and owner inputs for current applicability.'}
 
@@ -853,7 +860,7 @@ class Execution:
             return True  # Nervous must deliver the changed observation before another action.
         if state.status == 'waiting' and guidance is None and not self.actor.has_unhandled_external_event():
             return False
-        if self.actor.completion_review_pending() and self.feedback_required():
+        if self.actor.completion_review_pending() and self.feedback_required() and guidance is None:
             return False
         before = state.version
         try:

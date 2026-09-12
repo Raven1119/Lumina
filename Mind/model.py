@@ -12,7 +12,7 @@ from Nervous.provider import MODEL, ProviderCalls, canonical
 from Nervous.storage import fingerprint, plain
 from Mind.cognition import cognitive_step_schema, observation_sources, apply_cognitive_commit
 from Mind.intention import COGNITIVE_VERSION as PURSUIT_CONTRACT
-from Mind.task_view import COGNITIVE_CONTRACT_VERSION, evidence_read_limits
+from Mind.task_view import COGNITIVE_CONTRACT_VERSION, COGNITIVE_INTERFACE_VERSION, evidence_read_limits
 from Mind.trace import (NATIVE_PROTOCOL_VERSION, cognitive_phase, native_call_limit, output_limit,
                         project_activity_context)
 
@@ -94,6 +94,16 @@ def _decode_native_response(response, wire):
             '. Return its complete input using the supplied schema. No input was interpreted or committed.'}], True
     return None, [{'validator': 'native_envelope', 'path': [],
                    'message': 'Expected one complete declared native tool return.'}], False
+
+
+def _received_without_submission(response):
+    """Only known text/thinking responses, never an unknown or partial tool action."""
+    blocks = response.get('content')
+    return (response.get('stop_reason') in {'max_tokens', 'end_turn'}
+            and isinstance(blocks, list) and bool(blocks)
+            and all(isinstance(block, dict) and block.get('type') in {'text', 'thinking'}
+                    and isinstance(block.get('text' if block['type'] == 'text' else 'thinking'), str)
+                    for block in blocks))
 
 
 class MindModel:
@@ -260,6 +270,13 @@ class MindModel:
             elif kind == 'directive':
                 option['description'] = 'New business direction for remaining work or changed conditions. Delivery creates further execution and feedback; not a completion acknowledgment.'
         commit['description'] = 'Commit affected cognitive revisions and their action consequence. Unsubmitted knowledge stays unchanged; current can explicitly select retained IDs. This function executes no action.'
+        if payload['cognition'].get('cognitive_interface') == COGNITIVE_INTERFACE_VERSION:
+            commit['input_schema']['properties'].pop('current', None)
+            commit['description'] = ('Commit only added or changed understanding and its action consequence. '
+                'Unsubmitted knowledge stays unchanged; status archived explicitly retires an item. '
+                'This function executes no action.')
+            wire['system'] = wire['system'].replace('Explicitly archive or use current to retire obsolete records.',
+                'Use status archived on an existing record to retire obsolete knowledge explicitly.')
         wire['tools'] = [commit, *consultations]
         return record
 
@@ -267,6 +284,8 @@ class MindModel:
         """Continue the durable activity, including known no-commit corrections."""
         record = self._prepare_call(**projection.as_model_call())
         base_wire = record['wire']
+        bounded_correction = (trace.events[0].payload.get('cognitive_context', {}).get('cognitive_interface')
+                              == COGNITIVE_INTERFACE_VERSION)
         phase = cognitive_phase(trace.events)
         if phase > 1:
             prior = trace.native_records()
@@ -299,14 +318,22 @@ class MindModel:
                 if not result['recoverable']:
                     raise ValueError('native_repair_unavailable')
                 response = result['response']
-                block = next(b for b in response['content'] if b['type'] == 'tool_use')
+                block = next((b for b in response['content'] if b['type'] == 'tool_use'), None)
                 feedback = {'submission_status': 'rejected_before_commit', 'field_errors': result['errors'],
                     'contract': 'Correct the specified structural or source error. No cognition or guidance was committed. '
                                 'This consumes the same activity call budget; substantive judgment remains yours.'}
+                if block is None:
+                    feedback['submission_status'] = 'no_submission_received'
+                    feedback['contract'] = ('The received response contains no native tool submission. '
+                        'Complete this decision with one declared native tool and its supplied schema. '
+                        'No cognition, guidance or consultation was committed. This is the activity\'s single '
+                        'protocol correction, charged to the same budget; substantive judgment remains yours.')
+                continuation = ([{'type': 'tool_result', 'tool_use_id': block['id'],
+                                  'is_error': True, 'content': canonical(feedback)}]
+                                if block is not None else canonical(feedback))
                 wire = {**base_wire, 'messages': [*history[-2]['wire']['messages'],
                     {'role': 'assistant', 'content': response['content']},
-                    {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': block['id'],
-                        'is_error': True, 'content': canonical(feedback)}]}]}
+                    {'role': 'user', 'content': continuation}]}
                 repair = True
             remaining = native_call_limit(trace.events) - sum(r['kind'] == 'call' for r in history)
             if remaining <= 0 and not pending:
@@ -362,6 +389,10 @@ class MindModel:
                 raise
             actual['response'] = response
             submission, errors, repairable_envelope = _decode_native_response(response, wire)
+            if bounded_correction and _received_without_submission(response):
+                repairable_envelope = True
+                errors = [{'validator': 'native_submission_missing', 'path': [], 'message':
+                    'Received ' + response['stop_reason'] + ' without a native tool submission.'}]
             value = canonical(submission) if submission is not None else ''
             limit = output_limit(trace.events[0].payload.get('cognitive_context', {}))
             if not errors and len(value) > limit:
@@ -378,7 +409,9 @@ class MindModel:
                     errors.append({'validator': 'effective_state', 'path': ['updates'],
                                    'message': 'Atomic state update rejected: ' + str(error)})
             trace.append_native(kind='result', response=response, errors=errors,
-                                accepted=not errors, recoverable=bool(errors and repairable_envelope))
+                accepted=not errors, recoverable=bool(errors and repairable_envelope
+                    and (not bounded_correction or not any(r['kind'] == 'call' and r['repair']
+                                                          for r in trace.native_records()))))
             actual['errors'] = errors
             if not errors:
                 actual['serialized_return'] = value
