@@ -48,6 +48,11 @@ New extraction receipts save the bounded raw response before JSON/structural
 parsing. Internal `grounded-formation-v2-progress-v1` receipts and verified
 batches record candidate indexes and pending/rejected processing issues. Old
 exact V2 records remain readable without re-extraction or evidence ID changes.
+New raw extraction receipts additionally carry `source_coverage_version=1`.
+Unmarked receipts retain their original parsing semantics; unknown markers fail
+closed. This marker does not change the ingestion key, Formation version or ID
+algorithm. Verified/completed and repair-verified checkpoints are read as saved,
+without retroactive source expansion or migration.
 Invalid mentions and identity links isolate their dependent candidates; every
 independently eligible result still passes the original strict verifier.
 Full-source fingerprints, occurrence offsets, provenance and identity-link
@@ -72,6 +77,30 @@ in that text. This deliberately conservative fallback can reject paraphrases;
 surface overlap alone cannot authorize an inserted name. Healthy identities
 use the unchanged verifier. Repair applies the same admission rule to new
 facts and never demotes a saved positive binding or rewrites prior facts.
+
+For marked receipts only, a candidate rejected by the detail guard may recover
+missing evidence from its own explicit named/new subject/object occurrences.
+Every missing identifier must come from those literal role surfaces; all cited
+spans and roles must resolve exactly within the same turn. The effective ref is
+the smallest continuous source interval covering the original refs and these
+role positions. Ordinary participants, unresolved identities, same-as chains,
+other turns and backend name candidates cannot supply this evidence. Absent
+attribute values remain unsupported. Originally valid units retain their refs
+and IDs unchanged, including ordinary names that never failed the detail guard.
+
+Expansion prepares a candidate, not a verified fact. The original mandatory
+verifier still checks pairing, speech acts, conditions and identity; the final
+identity veto remains unchanged. The effective ref travels with the unit through
+verification, stable ID creation, event metadata and restart validation. Raw
+extraction/repair responses and all SRV/text/roles remain immutable. Recovery of
+new candidates after source-ref repair uses the original receipt's marker too.
+The exact compact verifier input budget first reserves previously eligible
+units and the full bounded conversation. Initial formation reserves every
+mention; repair reserves the original subset's identity dependencies and counts
+each added candidate together with its additional required mentions. Expanded
+candidates fit in candidate order; excess candidates receive a pending
+`formation_source_coverage_budget_exceeded` issue without blocking independent
+units or gaining another repair attempt. No model call or prompt is added.
 
 ## Atomic state writes
 

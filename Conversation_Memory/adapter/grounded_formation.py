@@ -185,6 +185,7 @@ def form_grounded_memory_batch(
         response = _entity_model_response(model, payload, _ENTITY_FORMATION_PROMPT)
         extracted = {
             "schema_version": FORMATION_PROGRESS_VERSION,
+            "source_coverage_version": 1,
             "source_digest": _entity_source_digest(segment),
             "response": response if isinstance(response, str) else "",
         }
@@ -371,6 +372,7 @@ def repair_grounded_memory_batch(
     issues = list(base.issues)
     resolved: set[int] = set()
     eligible: list[tuple[int, GroundedMemoryUnit, GroundedUnitMentions, set[str]]] = []
+    covered_positions: set[int] = set()
     for index, item, role in candidates:
         refs = repairs[index]
         allowed_turns = {ref["turn_id"] for ref in item["source_refs"]}
@@ -384,6 +386,13 @@ def repair_grounded_memory_batch(
             key: value for key, value in candidate.items()
             if key not in {"subject_mention", "object_mention", "mentions"}
         }, segment)
+        covered = None
+        if unit is None and extracted_checkpoint.get("source_coverage_version") == 1:
+            covered = _complete_entity_role_source(
+                candidate, segment, mentions_by_id, role.subject, role.object,
+            )
+            if covered is not None:
+                unit = _validate_entity_unit(covered, segment)
         if unit is None:
             issues.append(_entity_unit_issue(candidate, segment, index))
             continue
@@ -400,8 +409,22 @@ def repair_grounded_memory_batch(
                 ))
             continue
         dependencies = _entity_role_dependencies(role, mentions_by_id)
+        if covered is not None:
+            covered_positions.add(len(eligible))
         eligible.append((index, unit, role, dependencies))
     additions: list[tuple[GroundedMemoryUnit, GroundedUnitMentions]] = []
+    if eligible:
+        necessary = set().union(*(item[3] for item in eligible))
+        mentions = tuple(mention for mention in base.mentions if mention.id in necessary)
+        omitted = _source_coverage_over_budget(
+            segment, [item[1] for item in eligible], [item[2] for item in eligible],
+            mentions, covered_positions, dependencies=[item[3] for item in eligible],
+        )
+        for position in sorted(omitted):
+            issues.append(FormationIssue(
+                "unit", eligible[position][0], "formation_source_coverage_budget_exceeded", "pending",
+            ))
+        eligible = [item for position, item in enumerate(eligible) if position not in omitted]
     if eligible:
         necessary = set().union(*(item[3] for item in eligible))
         mentions = tuple(mention for mention in base.mentions if mention.id in necessary)
@@ -837,6 +860,98 @@ def _entity_refs(
     )))
 
 
+def _complete_entity_role_source(
+    item: dict[str, Any], segment: ColdDraftSegment,
+    mentions: dict[str, GroundedEntityMention], subject: str | None, object_: str | None,
+) -> dict[str, Any] | None:
+    """Prepare missing literal role evidence, never invent a value or binding.
+
+    Only previously detail-rejected candidates are eligible. Original valid
+    facts keep their references and IDs; a new receipt opts into this parsing.
+    The enlarged source must still pass the unchanged semantic/identity gates.
+    """
+    if _entity_unit_issue(item, segment, 0).code != "formation_detail_unsupported":
+        return None
+    refs = _entity_refs(item["source_refs"], segment)
+    if refs is None or len({ref.turn_id for ref in refs}) != 1:
+        return None
+    turn = next(turn for turn in segment.turns if turn.turn_id == refs[0].turn_id)
+    source = "\n".join(ref.supporting_span for ref in refs)
+    missing = {
+        detail for key in ("text", "subject", "relation", "value")
+        for detail in _DETAIL.findall(item[key]) if detail not in source
+    }
+    role_details: set[str] = set()
+    starts = [turn.content.index(ref.supporting_span) for ref in refs]
+    ends = [start + len(ref.supporting_span) for start, ref in zip(starts, refs)]
+    for mid, field in ((subject, item["subject"]), (object_, item["value"])):
+        if mid is None:
+            continue
+        mention = mentions[mid]
+        if (
+            mention.identity not in {"named", "new"} or mention.same_as is not None
+            or mention.turn_id != turn.turn_id or mention.surface not in field
+        ):
+            return None
+        # Positions were validated by the mention parser. Do not find the first
+        # surface again: repeated names can refer to different occurrences.
+        starts.append(mention.source_start)
+        ends.append(mention.source_end)
+        role_details.update(_DETAIL.findall(mention.surface))
+    if not missing or not missing <= role_details:
+        return None
+    span = turn.content[min(starts):max(ends)]
+    if turn.content.count(span) != 1:
+        return None
+    return {
+        **{key: value for key, value in item.items()
+           if key not in {"subject_mention", "object_mention", "mentions"}},
+        "source_refs": [{"turn_id": turn.turn_id, "supporting_span": span}],
+    }
+
+
+def _source_coverage_over_budget(
+    segment: ColdDraftSegment, units, roles, mentions,
+    covered_positions: set[int], *, dependencies: list[set[str]] | None = None,
+) -> set[int]:
+    """Reserve original eligible input, then fit new candidates in source order."""
+    if not covered_positions:
+        return set()
+    items = [{"candidate": asdict(unit), "roles": asdict(role)}
+             for unit, role in zip(units, roles)]
+    original = [item for index, item in enumerate(items) if index not in covered_positions]
+    # Initial formation verifies every mention independently. Repair verifies
+    # only the dependency closure of its subset, including newly fitted facts.
+    necessary = (
+        {mention.id for mention in mentions} if dependencies is None
+        else set().union(*(refs for index, refs in enumerate(dependencies)
+                           if index not in covered_positions))
+    )
+    payload = {**_entity_source_payload(segment), "units": original,
+               "mentions": [asdict(mention) for mention in mentions if mention.id in necessary]}
+    size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    count = len(original)
+    omitted: set[int] = set()
+    for position in sorted(covered_positions):
+        extra = len(json.dumps(items[position], ensure_ascii=False, separators=(",", ":"))) + bool(count)
+        added_mentions = [
+            asdict(mention) for mention in mentions
+            if dependencies is not None
+            and mention.id in dependencies[position] - necessary
+        ]
+        if added_mentions:
+            extra += len(json.dumps(added_mentions, ensure_ascii=False, separators=(",", ":"))) - 2
+            extra += bool(payload["mentions"])
+        if size + extra > _MAX_OUTPUT_CHARS:
+            omitted.add(position)
+        else:
+            size += extra
+            count += 1
+            payload["mentions"].extend(added_mentions)
+            necessary.update(mention["id"] for mention in added_mentions)
+    return omitted
+
+
 def _validate_entity_unit(raw: Any, segment: ColdDraftSegment) -> GroundedMemoryUnit | None:
     if isinstance(raw, dict) and "referenced_time" not in raw:
         raw = {**raw, "referenced_time": None}
@@ -933,9 +1048,13 @@ def _entity_extraction_output(raw: Any, segment: ColdDraftSegment) -> dict[str, 
     elif raw.get("schema_version") == FORMATION_PROGRESS_VERSION:
         if (
             not {"schema_version", "source_digest", "response"} <= set(raw)
-            or set(raw) - {"schema_version", "source_digest", "response", "response_error"}
+            or set(raw) - {"schema_version", "source_digest", "response", "response_error", "source_coverage_version"}
             or not isinstance(raw["response"], str)
             or len(raw["response"]) > _MAX_OUTPUT_CHARS
+            or ("source_coverage_version" in raw and (
+                type(raw["source_coverage_version"]) is not int
+                or raw["source_coverage_version"] != 1
+            ))
         ):
             raise FormationError("formation_checkpoint_invalid")
         if "response_error" in raw:
@@ -1065,6 +1184,7 @@ def _parse_entity_extraction(raw: Any, segment: ColdDraftSegment) -> _EntityExtr
     units: list[GroundedMemoryUnit] = []
     roles: list[GroundedUnitMentions] = []
     unit_indexes: list[int] = []
+    covered_positions: set[int] = set()
     unit_required = {"text", "subject", "relation", "value", "source_refs"}
     unit_allowed = unit_required | {
         "referenced_time", "subject_mention", "object_mention", "mentions",
@@ -1103,6 +1223,13 @@ def _parse_entity_extraction(raw: Any, segment: ColdDraftSegment) -> _EntityExtr
             issues.append(FormationIssue("unit", index, "formation_mention_dependency_invalid", "pending"))
             continue
         unit = _validate_entity_unit({key: value for key, value in item.items() if key not in {"subject_mention", "object_mention", "mentions"}}, segment)
+        covered = None
+        if unit is None and raw.get("source_coverage_version") == 1:
+            covered = _complete_entity_role_source(
+                item, segment, mentions, handles.get(subject_handle), handles.get(object_handle),
+            )
+            if covered is not None:
+                unit = _validate_entity_unit(covered, segment)
         if unit is None:
             issues.append(_entity_unit_issue(item, segment, index))
             continue
@@ -1113,6 +1240,8 @@ def _parse_entity_extraction(raw: Any, segment: ColdDraftSegment) -> _EntityExtr
         if not _unit_identity_independent(unit, role, mentions, invalid_identity):
             issues.append(FormationIssue("unit", index, "formation_identity_dependency_invalid", "pending"))
             continue
+        if covered is not None:
+            covered_positions.add(len(units))
         units.append(unit)
         roles.append(role)
         unit_indexes.append(index)
@@ -1121,6 +1250,16 @@ def _parse_entity_extraction(raw: Any, segment: ColdDraftSegment) -> _EntityExtr
         mentions.values(),
         key=lambda mention: (turn_order[mention.turn_id], mention.source_start, mention.source_end),
     ))
+    omitted = _source_coverage_over_budget(
+        segment, units, roles, ordered_mentions, covered_positions,
+    )
+    for position in sorted(omitted):
+        issues.append(FormationIssue(
+            "unit", unit_indexes[position], "formation_source_coverage_budget_exceeded", "pending",
+        ))
+    units = [unit for position, unit in enumerate(units) if position not in omitted]
+    roles = [role for position, role in enumerate(roles) if position not in omitted]
+    unit_indexes = [index for position, index in enumerate(unit_indexes) if position not in omitted]
     batch = GroundedMemoryBatch(
         tuple(units), ordered_mentions, tuple(roles), tuple(dict.fromkeys(issues)),
     )
