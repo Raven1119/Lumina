@@ -31,20 +31,36 @@ Cold records remain unchanged; there is no automatic backfill.
 
 ```text
 absent -> pending -> in_progress -> completed
+                              \-> partial -> in_progress -> completed or partial
 ```
 
-V2 returns a failed result while retaining the last pending/in-progress durable
-stage. Retry resumes it; there is no separate V2 persisted `failed` status.
-An invalid stored extraction remains an explicit failure on retry rather than
-being silently replaced by a fresh model sample.
+V2 returns a failed result while retaining the last durable stage. `partial`
+means all independently verified results are durable but at least one candidate
+still has a processing issue. It never authorizes Cold consumption. Explicit
+semantic rejection is distinct from pending processing. There is no separate
+V2 persisted `failed` status. An invalid stored extraction remains an explicit
+failure on retry rather than being replaced by a fresh model sample.
 
 A V2 Formation record checkpoints `extracted`, `verified`, stable `mentions`
 bindings and private `memory_ids` in the existing state owner. Successful stages
 are reused on retry; malformed or missing stage dependencies fail closed.
+New extraction receipts save the bounded raw response before JSON/structural
+parsing. Internal `grounded-formation-v2-progress-v1` receipts and verified
+batches record candidate indexes and pending/rejected processing issues. Old
+exact V2 records remain readable without re-extraction or evidence ID changes.
+Invalid mentions and identity links isolate their dependent candidates; every
+independently eligible result still passes the original strict verifier.
 Full-source fingerprints, occurrence offsets, provenance and identity-link
 invariants are rechecked. A completed record covers mentions as well as facts.
 The V1 record/IDs remain readable for explicit historical compatibility; the
 legacy span record remains manifest-only.
+
+Source-verified local `same_as` follows the target's existing bound ref;
+unrelated namesakes in the lookup candidates do not negate that source link.
+Unresolved targets, rejected identity claims and actual `distinct_from`
+conflicts remain unresolved or fail validation. New and old namesakes retain
+separate refs and facts. Previously completed checkpoints are not rebound by
+this fix; there is no automatic historical migration.
 
 ## Atomic state writes
 
@@ -58,6 +74,19 @@ This simple file store assumes a single writer; it is not a multi-process
 transaction or lock.
 
 ## Checkpoints and retry
+
+Once independent results are durable, a later retry may make one local
+`source_refs` repair call for pending facts whose original turn IDs exist and
+whose structure and mention dependencies are valid. It cannot change text,
+subject/relation/value, roles, rejected candidates or existing mention bindings.
+The `repair` receipt is saved before parsing; it is never resampled after a
+response is saved. Repaired candidates alone pass the original verifier with
+their necessary verified mentions. A failed verifier resumes from that receipt.
+The original `extracted` and `verified` remain unchanged; `repair_verified`
+records the merged batch, preserves previous facts in order, and atomically
+returns the manifest to `in_progress` before any new graph writes. Remaining
+processing issues keep the result partial; a completed repair stage is never
+repeated. This is not general repair, re-extraction or automatic backfill.
 
 V2 persists graph-only mention metadata even when no facts are accepted, then
 persists each fact event/vector before recording progress. Stable IDs find

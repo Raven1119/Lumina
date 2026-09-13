@@ -23,7 +23,14 @@ window are scored together and
 returned as whole source evidence bundles; this changes scoring input while
 retaining original stored facts. No task-memory expansion, automatic backfill,
 Chat ingestion, provider migration or cognitive-organ wiring was added.
-Invalid source citations leave their window pending. Same-name identities can
+Invalid source citations now isolate their candidate and dependencies while
+independent verified facts and mentions persist. The raw extraction response
+is checkpointed before parsing; pending processing errors still prevent Cold
+consumption. A later explicit retry may perform one bounded source-ref repair,
+then verify only that new subset while retaining previous results and IDs.
+Verified local identity links reuse the new namesake's ref despite other name
+candidates; old completed bindings are not automatically rewritten.
+Same-name identities can
 remain unresolved, and Recall can mix evidence for different same-name people;
 complete entity/attribute coverage is not guaranteed. See the
 [Memory contract](../Conversation_Memory/docs/COLD_DRAFT_ADAPTER_DESIGN.md).

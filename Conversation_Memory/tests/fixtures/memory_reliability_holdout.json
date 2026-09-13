@@ -1,0 +1,77 @@
+{
+  "schema": "memory-reliability-holdout-v1",
+  "frozen_before_implementation": true,
+  "description": "Independent synthetic reliability set. Controlled corruption retains original provider responses separately; natural attributes and identity windows are never injected. Expected answers and interventions are frozen before baseline.",
+  "policy": {"top_k": 10, "max_graph_depth": 1, "max_nodes": 20, "max_evidence_items": 3, "max_chars": 5000, "final_min_score": 0.144},
+  "scenarios": [
+    {
+      "id": "attribute_fault_zh",
+      "experiment_kind": "controlled_extractor_output_corruption",
+      "fault_injection": {"kind": "unit_source_span", "subject_contains": "Plover-62", "value_without_spaces": "7.2V", "replacement_span": "[SOURCE_REFERENCE_NOT_PRESENT]"},
+      "independent_facts": ["capacity", "color", "mass"],
+      "faulted_fact": "voltage",
+      "segments": [[{"id": "rz1", "role": "user", "text": "设备 Plover-62 的容量是 48 GB，外壳是银灰色，额定电压为 7.2 V，质量为 1.46 kg。另列一个软件名称：Nightledger。"}]],
+      "mentions": [{"turn": "rz1", "surface": "Plover-62", "kind": "device"}, {"turn": "rz1", "surface": "Nightledger", "kind": "software"}],
+      "facts": [
+        {"id": "capacity", "turn": "rz1", "subject": ["Plover-62"], "relation": ["容量", "capacity"], "value": ["48 GB"]},
+        {"id": "color", "turn": "rz1", "subject": ["Plover-62"], "relation": ["外壳", "颜色", "color", "colour"], "value": ["银灰", "silver"]},
+        {"id": "voltage", "turn": "rz1", "subject": ["Plover-62"], "relation": ["电压", "voltage"], "value": ["7.2 V"]},
+        {"id": "mass", "turn": "rz1", "subject": ["Plover-62"], "relation": ["质量", "重量", "mass", "weight"], "value": ["1.46 kg"]}
+      ],
+      "queries": [{"id": "facts_and_mentions", "query": "Plover-62 的容量、外壳颜色和质量是什么？还列过 Nightledger 吗？", "required_facts": ["capacity", "color", "mass"], "required_mentions": ["Nightledger"]}]
+    },
+    {
+      "id": "attribute_fault_en_reordered",
+      "experiment_kind": "controlled_extractor_output_corruption",
+      "fault_injection": {"kind": "unit_source_span", "subject_contains": "Marshkit-41", "value_without_spaces": "11V", "replacement_span": "[SOURCE_REFERENCE_NOT_PRESENT]"},
+      "independent_facts": ["mass", "capacity", "color"],
+      "faulted_fact": "voltage",
+      "segments": [[{"id": "re1", "role": "user", "text": "Marshkit-41 has a rated voltage of 11 V. Its label reads Marshkit-41. Marshkit-41 has a mass of 0.63 kg. Marshkit-41 has a storage capacity of 72 GB. Marshkit-41 has a copper-colored enclosure. Also note the name of software Glintbook, without adding properties."}]],
+      "mentions": [{"turn": "re1", "surface": "Marshkit-41", "kind": "device"}, {"turn": "re1", "surface": "Glintbook", "kind": "software"}],
+      "facts": [
+        {"id": "voltage", "turn": "re1", "subject": ["Marshkit-41"], "relation": ["voltage", "电压"], "value": ["11 V"]},
+        {"id": "mass", "turn": "re1", "subject": ["Marshkit-41"], "relation": ["mass", "weight", "质量"], "value": ["0.63 kg"]},
+        {"id": "capacity", "turn": "re1", "subject": ["Marshkit-41"], "relation": ["capacity", "容量"], "value": ["72 GB"]},
+        {"id": "color", "turn": "re1", "subject": ["Marshkit-41"], "relation": ["enclosure", "color", "colour", "颜色"], "value": ["copper", "铜"]}
+      ],
+      "queries": [{"id": "facts_and_mentions", "query": "What are Marshkit-41's mass, storage capacity and enclosure color? Was Glintbook also mentioned?", "required_facts": ["mass", "capacity", "color"], "required_mentions": ["Glintbook"]}]
+    },
+    {
+      "id": "mention_dependency_fault",
+      "experiment_kind": "controlled_extractor_output_corruption",
+      "fault_injection": {"kind": "mention_occurrence", "surface": "Duskpanel", "replacement_occurrence": 999},
+      "independent_facts": ["mass"],
+      "faulted_fact": "software_uses",
+      "segments": [[{"id": "rm1", "role": "user", "text": "Duskpanel uses the module Quarryparse. Device Baymeter-12 has a mass of 3.18 kg. 请另外保留项目名“月苔计划”，不推断它与这些设备或软件有关系。"}]],
+      "mentions": [{"turn": "rm1", "surface": "Duskpanel", "kind": "software"}, {"turn": "rm1", "surface": "Quarryparse", "kind": "software"}, {"turn": "rm1", "surface": "Baymeter-12", "kind": "device"}, {"turn": "rm1", "surface": "月苔计划", "kind": "project"}],
+      "facts": [{"id": "software_uses", "turn": "rm1", "subject": ["Duskpanel"], "relation": ["uses", "使用"], "value": ["Quarryparse"], "object": "Quarryparse"}, {"id": "mass", "turn": "rm1", "subject": ["Baymeter-12"], "relation": ["mass", "weight", "质量"], "value": ["3.18 kg"]}],
+      "queries": [{"id": "facts_and_mentions", "query": "How much does Baymeter-12 weigh? Was 月苔计划 mentioned?", "required_facts": ["mass"], "required_mentions": ["月苔计划"]}]
+    },
+    {
+      "id": "natural_attributes_and_safety",
+      "experiment_kind": "natural_real_provider",
+      "segments": [[{"id": "rn1", "role": "user", "text": "样品 Cormorant-Q 的厚度为 0.42 mm，宽度为 16.8 mm。其编号 Cormorant-Q 对应的质量是 6.75 g。"}, {"id": "rn2", "role": "user", "text": "Cormorant-Q 的测量温度是 23.5 C，颜色是深蓝色。它的保管编号是 STORE-29-X。"}, {"id": "rn3", "role": "user", "text": "样品 Reedglass-R 的厚度是 0.19 mm。不要把这个厚度写到 Cormorant-Q 上。Cormorant-Q 已经被卖出了吗？这只是一个问题。"}, {"id": "rn4", "role": "assistant", "text": "Cormorant-Q 的所有者是泽岭公司。"}]],
+      "mentions": [{"turn": "rn1", "surface": "Cormorant-Q", "kind": "sample"}, {"turn": "rn2", "surface": "Cormorant-Q", "kind": "sample"}, {"turn": "rn3", "surface": "Reedglass-R", "kind": "sample"}, {"turn": "rn3", "surface": "Cormorant-Q", "kind": "sample"}, {"turn": "rn4", "surface": "泽岭公司", "kind": "organization"}],
+      "facts": [
+        {"id": "thickness_q", "turn": "rn1", "subject": ["Cormorant-Q"], "relation": ["厚度", "thickness"], "value": ["0.42 mm"]},
+        {"id": "width", "turn": "rn1", "subject": ["Cormorant-Q"], "relation": ["宽度", "width"], "value": ["16.8 mm"]},
+        {"id": "mass", "turn": "rn1", "subject": ["Cormorant-Q"], "relation": ["质量", "mass", "weight"], "value": ["6.75 g"]},
+        {"id": "temperature", "turn": "rn2", "subject": ["Cormorant-Q"], "relation": ["温度", "temperature"], "value": ["23.5 C"]},
+        {"id": "color", "turn": "rn2", "subject": ["Cormorant-Q"], "relation": ["颜色", "color", "colour"], "value": ["深蓝", "dark blue"]},
+        {"id": "storage_id", "turn": "rn2", "subject": ["Cormorant-Q"], "relation": ["保管", "编号", "storage"], "value": ["STORE-29-X"]},
+        {"id": "thickness_r", "turn": "rn3", "subject": ["Reedglass-R"], "relation": ["厚度", "thickness"], "value": ["0.19 mm"]}
+      ],
+      "forbidden_facts": [{"turn": "rn4", "reason": "Unconfirmed assistant ownership assertion is not an authorized world fact."}],
+      "queries": [{"id": "thickness", "query": "Cormorant-Q 有多厚？", "required_facts": ["thickness_q"]}, {"id": "width", "query": "Cormorant-Q 的宽度是多少？", "required_facts": ["width"]}, {"id": "mass", "query": "How much does Cormorant-Q weigh?", "required_facts": ["mass"]}, {"id": "temperature", "query": "Cormorant-Q 是在多少温度下测量的？", "required_facts": ["temperature"]}, {"id": "color", "query": "What color is Cormorant-Q?", "required_facts": ["color"]}, {"id": "storage", "query": "Cormorant-Q 的保管编号是什么？", "required_facts": ["storage_id"]}]
+    },
+    {
+      "id": "existing_namesake_new_same_as",
+      "experiment_kind": "natural_real_provider",
+      "segments": [[{"id": "ri1", "role": "user", "text": "Morgan Vale is a librarian and uses software Ferncatalog."}], [{"id": "ri2", "role": "user", "text": "I now mean a different person also named Morgan Vale, an engineer, not the librarian mentioned earlier. This new Morgan Vale uses device Junco-77."}, {"id": "ri3", "role": "user", "text": "Morgan Vale in this sentence is that same new engineer. Morgan Vale has employee ID ENG-914."}], [{"id": "ri4", "role": "user", "text": "Morgan Vale likes charcoal drawing. I have not specified which of the two people this last statement refers to."}]],
+      "mentions": [{"turn": "ri1", "surface": "Morgan Vale", "kind": "person"}, {"turn": "ri1", "surface": "Ferncatalog", "kind": "software"}, {"turn": "ri2", "surface": "Morgan Vale", "kind": "person"}, {"turn": "ri2", "surface": "Junco-77", "kind": "device"}, {"turn": "ri3", "surface": "Morgan Vale", "kind": "person"}, {"turn": "ri4", "surface": "Morgan Vale", "kind": "person", "unresolved": true}],
+      "facts": [{"id": "old_software", "turn": "ri1", "subject": ["Morgan Vale"], "relation": ["uses", "使用"], "value": ["Ferncatalog"], "object": "Ferncatalog"}, {"id": "new_device", "turn": "ri2", "subject": ["Morgan Vale"], "relation": ["uses", "使用"], "value": ["Junco-77"], "object": "Junco-77"}, {"id": "new_id", "turn": "ri3", "subject": ["Morgan Vale"], "relation": ["employee", "ID", "工号"], "value": ["ENG-914"]}],
+      "identity_checks": [{"kind": "different", "left_fact": "old_software", "right_fact": "new_device"}, {"kind": "same", "left_fact": "new_device", "right_fact": "new_id"}, {"kind": "unresolved", "turn": "ri4", "surface": "Morgan Vale"}],
+      "queries": [{"id": "engineer", "query": "What device does the engineer Morgan Vale use?", "required_facts": ["new_device"], "wrong_identity_facts": ["old_software"]}, {"id": "engineer_id", "query": "What is the new engineer Morgan Vale's employee ID?", "required_facts": ["new_id"], "wrong_identity_facts": ["old_software"]}, {"id": "librarian", "query": "Which software does the librarian Morgan Vale use?", "required_facts": ["old_software"], "wrong_identity_facts": ["new_device", "new_id"]}]
+    }
+  ]
+}

@@ -112,12 +112,16 @@ explicit trigger
 
 Dream passes the bounded source segment to the adapter. Configured real-model
 writes use DeepSeek-V4-Pro in non-thinking mode with a local 8192-token output
-budget. One extraction and one verification call process a new nonempty batch;
-each successful stage is checkpointed before continuing. Facts and independent
+budget. One extraction and one verification call process a healthy new batch;
+the raw response is checkpointed before parsing. Invalid candidates isolate
+their dependencies while independent verified results persist. Pending
+processing issues keep the parent segment pending. A later explicit retry may
+perform one checkpointed source-ref repair and verify only its new subset.
+Facts and independent
 mentions must both be durable before completion, including zero-fact windows.
 Retries reuse successful stages. Mock/legacy adapters retain deterministic
 `grounded-span-v2`; either path may produce `0..M` memory IDs. See the
-[current entity-memory contract and results](../../Conversation_Memory/docs/ENTITY_MEMORY_RESULT.md).
+[current entity-memory contract](../../Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md).
 
 ## Policy and ordering
 

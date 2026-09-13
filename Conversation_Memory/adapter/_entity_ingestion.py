@@ -12,6 +12,7 @@ from .grounded_formation import (
     FORMATION_ENTITY_VERSION,
     FormationError,
     form_grounded_memory_batch,
+    repair_grounded_memory_batch,
     serialize_grounded_memory_batch,
 )
 from .models import IngestionResult, SourceProvenance
@@ -59,9 +60,10 @@ def _bind_mentions(batch, segment, backend) -> list[dict[str, Any]]:
             elif mention.same_as:
                 prior = records[mention.same_as]
                 prior_ref = prior["entity_ref"]
-                # Explicit same-as may add a name; it cannot silently merge
-                # independently persisted identities with conflicting refs.
-                if prior_ref and not overflow and not (set(candidates) - {prior_ref}):
+                # Source-verified local identity takes precedence over a name
+                # candidate set. Reusing this ref does not merge its namesakes;
+                # the distinct-from guard below still forbids actual conflicts.
+                if prior_ref:
                     ref = prior_ref
             elif mention.identity == "new" or (
                 mention.identity == "named" and not overflow
@@ -173,6 +175,7 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
     digest = _source_digest(segment)
     try:
         state = store.get(key)
+        new_state = state is None
         if state is None:
             state = {
                 "schema_version": version, "source_digest": digest,
@@ -183,36 +186,59 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
             not set(state).issubset({
                 "schema_version", "source_digest", "segment_id", "ingestion_version",
                 "status", "memory_ids", "extracted", "verified", "mentions",
+                "repair", "repair_verified",
             })
             or state.get("schema_version") != version
             or state.get("source_digest") != digest
             or state.get("segment_id") != segment.segment_id
             or state.get("ingestion_version") != version
-            or state.get("status") not in {"pending", "in_progress", "completed"}
+            or state.get("status") not in {"pending", "in_progress", "partial", "completed"}
             or not isinstance(state.get("memory_ids"), list)
             or not all(isinstance(mid, str) and mid for mid in state["memory_ids"])
             or ("verified" in state and "extracted" not in state)
             or ("mentions" in state and "verified" not in state)
-            or (state.get("status") in {"in_progress", "completed"}
+            or ("repair" in state and not {"extracted", "verified", "mentions"} <= state.keys())
+            or ("repair_verified" in state and "repair" not in state)
+            or (state.get("status") in {"in_progress", "partial", "completed"}
                 and not {"extracted", "verified", "mentions"} <= state.keys())
         ):
             raise ValueError("state_corrupt")
     except (ValueError, OSError):
         return IngestionResult(segment.segment_id, version, "failed",
                                safe_error_code="state_corrupt")
+    if new_state:
+        try:
+            store.put(key, state)
+        except Exception:
+            return IngestionResult(segment.segment_id, version, "failed",
+                                   retryable=True, safe_error_code="state_write_failed")
 
     def checkpoint(stage, payload):
-        if stage not in {"extracted", "verified"}:
+        if stage not in {"extracted", "verified", "repair", "repair_verified"}:
             raise ValueError("formation_stage_invalid")
         state[stage] = payload
+        if stage == "repair_verified":
+            # The appended facts are not durable yet. Save both changes in the
+            # same atomic replacement so restart never sees a partial manifest
+            # claiming to cover the extended batch.
+            state["status"] = "in_progress"
         store.put(key, state)
 
     try:
         batch = form_grounded_memory_batch(
             segment, adapter.formation_model,
             extracted_checkpoint=state.get("extracted"),
-            verified_checkpoint=state.get("verified"), checkpoint=checkpoint,
+            verified_checkpoint=state.get("repair_verified", state.get("verified")),
+            checkpoint=checkpoint,
         )
+        if "repair_verified" in state:
+            original = form_grounded_memory_batch(
+                segment, adapter.formation_model, verified_checkpoint=state["verified"],
+            )
+            if (batch.mentions != original.mentions
+                    or batch.units[:len(original.units)] != original.units
+                    or batch.unit_mentions[:len(original.unit_mentions)] != original.unit_mentions):
+                raise FormationError("formation_checkpoint_invalid")
     except FormationError as error:
         return IngestionResult(segment.segment_id, version, "failed",
                                retryable=True, safe_error_code=error.code)
@@ -228,17 +254,47 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
             raise ValueError("state_corrupt")
         if len(state["memory_ids"]) > len(batch.units):
             raise ValueError("state_corrupt")
-        if state["status"] == "completed":
+        pending_issues = any(issue.status == "pending" for issue in batch.issues)
+        if state["status"] in {"completed", "partial"}:
+            if (state["status"] == "partial") != pending_issues:
+                raise ValueError("state_corrupt")
             if len(state["memory_ids"]) != len(batch.units):
                 raise ValueError("state_corrupt")
             if any(backend.find_memory_id(unit.id) != memory_id
                    for unit, memory_id in zip(batch.units, state["memory_ids"])):
                 raise ValueError("state_corrupt")
-            return IngestionResult(segment.segment_id, version, "completed",
-                                   tuple(state["memory_ids"]), already_ingested=True)
+            if pending_issues and "repair_verified" in state:
+                return IngestionResult(segment.segment_id, version, "failed",
+                                       tuple(state["memory_ids"]), retryable=True,
+                                       safe_error_code="formation_processing_incomplete")
+            if not pending_issues:
+                return IngestionResult(segment.segment_id, version, "completed",
+                                       tuple(state["memory_ids"]), already_ingested=True)
     except Exception:
         return IngestionResult(segment.segment_id, version, "failed",
                                retryable=True, safe_error_code="entity_consolidation_failed")
+
+    if state["status"] == "partial":
+        try:
+            batch = repair_grounded_memory_batch(
+                segment, adapter.formation_model,
+                extracted_checkpoint=state["extracted"],
+                verified_checkpoint=state["verified"],
+                repair_checkpoint=state.get("repair"), checkpoint=checkpoint,
+            )
+            if "repair_verified" not in state:
+                return IngestionResult(segment.segment_id, version, "failed",
+                                       tuple(state["memory_ids"]), retryable=True,
+                                       safe_error_code="formation_processing_incomplete")
+            pending_issues = any(issue.status == "pending" for issue in batch.issues)
+        except FormationError as error:
+            return IngestionResult(segment.segment_id, version, "failed",
+                                   tuple(state["memory_ids"]), retryable=True,
+                                   safe_error_code=error.code)
+        except Exception:
+            return IngestionResult(segment.segment_id, version, "failed",
+                                   tuple(state["memory_ids"]), retryable=True,
+                                   safe_error_code="state_write_failed")
 
     memory_ids = []
     try:
@@ -287,8 +343,11 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
             store.put(key, state)
         backend.create_relationships(memory_ids)
         backend.persist()
-        state["status"] = "completed"
+        state["status"] = "partial" if pending_issues else "completed"
         store.put(key, state)
+        if pending_issues:
+            return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
+                                   retryable=True, safe_error_code="formation_processing_incomplete")
         return IngestionResult(segment.segment_id, version, "completed", tuple(memory_ids))
     except Exception:
         return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),

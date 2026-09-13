@@ -1,0 +1,2 @@
+# Preserve the byte-frozen reliability fixture on Windows checkouts.
+Conversation_Memory/tests/fixtures/memory_reliability_holdout.json text eol=lf

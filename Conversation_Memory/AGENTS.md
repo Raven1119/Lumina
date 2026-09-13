@@ -29,22 +29,33 @@ Dream never selects them and never automatically reprocesses consumed Cold.
 `grounded_formation.py` extracts facts and mentions over the complete bounded
 source window, then verifies every structurally eligible proposition and its
 subject/object roles in one batch. Mention surface plus occurrence locates
-exact immutable source offsets. Invalid or missing positions, malformed model
-output, provider failure and overflow leave the segment pending; semantic
-rejection is a normal result. A single complete JSON fence is tolerated;
+exact immutable source offsets. Invalid positions or references isolate the
+candidate and its dependencies; independent valid results still pass the
+mandatory verifier and persist. Processing issues keep the segment partial
+and Cold pending; explicit semantic rejection is a normal result. Malformed
+top-level output, provider failure and overflow cannot become empty success.
+A single complete JSON fence is tolerated;
 arbitrary surrounding prose is not.
 
 The source-grounded `GroundedMemoryUnit` remains the fact representation.
 `_entity_ingestion.py` uses the existing `IngestionStateStore` to checkpoint
-extraction, verification and bindings before graph writes. Retry reuses each
-successful stage. A completed manifest includes both mentions and facts; a
-zero-fact window must still persist its mentions. Source fingerprints and
+the bounded raw extraction response before parsing, then verification and
+bindings before graph writes. Retry reuses each saved stage. A later partial
+retry may repair only invalid fact source refs once, using a separately saved
+response and original verification of the new subset. Original facts, roles,
+mentions and stage history stay unchanged. See the provenance contract for
+the internal progress schema and repair eligibility. A completed manifest
+includes both mentions and facts; a zero-fact window must still persist its
+mentions. Source fingerprints and
 stage/identity invariants are rechecked on restart.
 
 One shared batch view binds subject/object/other mentions. Name lookup happens
 before candidate limits. Explicit aliases/coreference require source evidence;
 explicit new same-name identities separate; ambiguity and unresolved references
-remain occurrences with bounded candidates. Current-user identity is `E_001`
+remain occurrences with bounded candidates. Verified local `same_as` reuses
+the target's bound ref even when name lookup also finds other identities;
+actual `distinct_from` conflicts still forbid the binding. Existing completed
+bindings are not automatically rewritten. Current-user identity is `E_001`
 only when source roles support it. Assistant assertions do not by themselves
 authorize facts about the world, user or successful actions.
 

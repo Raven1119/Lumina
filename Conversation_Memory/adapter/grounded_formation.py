@@ -20,6 +20,7 @@ from .models import ColdDraftSegment
 
 FORMATION_VERSION = "grounded-formation-v1"
 FORMATION_ENTITY_VERSION = "grounded-formation-v2"
+FORMATION_PROGRESS_VERSION = "grounded-formation-v2-progress-v1"
 _MAX_ENTITY_UNITS = 96
 _MAX_MENTIONS = 192
 _MAX_OUTPUT_CHARS = 160_000
@@ -116,10 +117,27 @@ class GroundedUnitMentions:
 
 
 @dataclass(frozen=True)
+class FormationIssue:
+    candidate: str
+    index: int
+    code: str
+    status: str
+
+
+@dataclass(frozen=True)
 class GroundedMemoryBatch:
     units: tuple[GroundedMemoryUnit, ...]
     mentions: tuple[GroundedEntityMention, ...]
     unit_mentions: tuple[GroundedUnitMentions, ...]
+    issues: tuple[FormationIssue, ...] = ()
+
+
+@dataclass(frozen=True)
+class _EntityExtraction:
+    batch: GroundedMemoryBatch
+    unit_indexes: tuple[int, ...]
+    mention_indexes: tuple[int, ...]
+    mention_handles: tuple[tuple[str, str], ...]
 
 
 _ENTITY_FORMATION_PROMPT = """Extract source-grounded atomic facts AND entity mentions from the ENTIRE bounded conversation. Return strict JSON only: {"mentions":[...],"units":[...]}.
@@ -133,6 +151,9 @@ subject_mention/object_mention reference actual semantic roles in this fact, ind
 _ENTITY_VERIFICATION_PROMPT = """Verify ONLY against the supplied bounded conversation, candidates, exact source locations and speaker roles. Return strict JSON only: {"units":[{"supported":bool}],"mentions":[{"supported":bool,"identity_supported":bool}]} with one result per input item in the same order, including empty lists. Do not return reasoning.
 For EVERY unit verify complete proposition entailment AND correct subject/relation/value binding AND cited subject/object/participant mention roles. Mere lexical overlap is insufficient: 'A likes tea, B likes coffee' does not support A likes coffee. Permit faithful paraphrase/translation and source-supported cross-turn coreference. Reject invented details, incorrect measurements, changed dates, omitted negation/uncertainty/conditions, question-to-answer or hypothesis-to-fact conversion, or report-to-world-fact conversion. Preserve the speaker and speech-act: assistant claims do not authorize user/world facts or prove completed assistant actions without explicit cited user confirmation. Cited refs must carry the evidence, not merely unrelated words in the broader window. Null object is correct for a literal attribute or a proposition without a safely identifiable binary entity object.
 For each mention supported verifies that this exact occurrence really refers to an entity (entities in questions/hypotheses/quotes are allowed; numbers/units/generic categories alone are not). identity_supported separately verifies its identity kind and every same_as/distinct_from link using the supplied identity_source_refs. current_user must be the actual user, not 'my colleague', plural 'we' or a quoted speaker. new requires explicit difference/new-identity evidence; exact spelling alone does not justify identity reuse or merging. Unsupported pronoun identity must be unresolved. A mention can be supported while its proposed identity is unsupported; keep these decisions separate."""
+
+_ENTITY_SOURCE_REPAIR_PROMPT = """Repair ONLY invalid source_refs for the supplied immutable fact candidates. Return strict JSON only: {"repairs":[{"index":int,"source_refs":[{"turn_id":str,"supporting_span":str}]}]} with exactly one repair per supplied candidate index. Return no other fields.
+Do not change or regenerate any fact text, subject, relation, value, referenced_time, or mention roles. For each candidate use ONLY turn IDs already listed in its original source_refs. supporting_span must be an exact, uniquely occurring substring of that turn; include enough context to preserve the complete proposition, pairing, speaker role, negation, uncertainty, conditions and reported speech. A whole turn is allowed when a shorter substring is ambiguous. Questions and hypotheses do not establish unconditional facts, and assistant claims do not authorize user/world facts or completed assistant actions. Use source_refs=[] if those turns do not support the unchanged candidate. Do not invent or repair entities or identities."""
 
 
 def form_grounded_memory_batch(
@@ -160,19 +181,27 @@ def form_grounded_memory_batch(
         return batch
     if extracted_checkpoint is None:
         payload = _entity_source_payload(segment)
-        parsed = _entity_model_json(model, payload, _ENTITY_FORMATION_PROMPT)
-        if parsed == {"error": "formation_output_too_large"}:
-            raise FormationError("formation_output_too_large")
+        response = _entity_model_response(model, payload, _ENTITY_FORMATION_PROMPT)
         extracted = {
-            "schema_version": FORMATION_ENTITY_VERSION,
+            "schema_version": FORMATION_PROGRESS_VERSION,
             "source_digest": _entity_source_digest(segment),
-            "output": parsed,
+            "response": response if isinstance(response, str) else "",
         }
+        if not isinstance(response, str):
+            extracted["response_error"] = "formation_output_invalid"
+        elif len(response) > _MAX_OUTPUT_CHARS:
+            # A marked diagnostic prefix is never parsed as a complete response.
+            extracted["response"] = response[:_MAX_OUTPUT_CHARS]
+            extracted["response_error"] = "formation_output_too_large"
+        if checkpoint is not None:
+            checkpoint("extracted", extracted)
     else:
         extracted = extracted_checkpoint
-    mentions, units, roles = _parse_entity_extraction(extracted, segment)
-    if extracted_checkpoint is None and checkpoint is not None:
-        checkpoint("extracted", extracted)
+    parsed = _parse_entity_extraction(extracted, segment)
+    mentions, units, roles = (
+        parsed.batch.mentions, parsed.batch.units, parsed.batch.unit_mentions,
+    )
+    issues = list(parsed.batch.issues)
     if mentions or units:
         verification = _entity_model_json(
             model,
@@ -194,7 +223,14 @@ def form_grounded_memory_batch(
         unit_decisions, mention_decisions = (), ()
     accepted_mentions: list[GroundedEntityMention] = []
     turns = {turn.turn_id: turn for turn in segment.turns}
-    for mention, (supported, identity_supported) in zip(mentions, mention_decisions):
+    for mention, index, (supported, identity_supported) in zip(
+        mentions, parsed.mention_indexes, mention_decisions,
+    ):
+        if not supported:
+            issues.append(FormationIssue(
+                "mention", index, "formation_mention_rejected", "rejected",
+            ))
+            continue
         identity_claim = (
             mention.identity in {"current_user", "new"}
             or mention.same_as is not None or bool(mention.distinct_from)
@@ -204,11 +240,17 @@ def form_grounded_memory_batch(
             for ref in mention.identity_source_refs
         ):
             identity_supported = False
-        if supported:
-            accepted_mentions.append(mention if identity_supported else replace(
-                mention, identity="unresolved", same_as=None, distinct_from=(),
-                identity_source_refs=(),
+        if not identity_supported and not any(
+            issue.candidate == "identity" and issue.index == index
+            and issue.status == "pending" for issue in issues
+        ):
+            issues.append(FormationIssue(
+                "identity", index, "formation_identity_rejected", "rejected",
             ))
+        accepted_mentions.append(mention if identity_supported else replace(
+            mention, identity="unresolved", same_as=None, distinct_from=(),
+            identity_source_refs=(),
+        ))
     accepted_ids = {mention.id for mention in accepted_mentions}
     # A rejected target cannot survive as an identity assertion in another record.
     accepted_mentions = [
@@ -220,34 +262,347 @@ def form_grounded_memory_batch(
         for mention in accepted_mentions
     ]
     accepted_units: dict[str, tuple[GroundedMemoryUnit, GroundedUnitMentions]] = {}
-    for unit, role, supported in zip(units, roles, unit_decisions):
+    for unit, role, index, supported in zip(
+        units, roles, parsed.unit_indexes, unit_decisions,
+    ):
         participating = {ref for ref in (role.subject, role.object, *role.mentions) if ref}
         if supported and participating <= accepted_ids:
             accepted_units.setdefault(unit.id, (unit, role))
+        else:
+            issues.append(FormationIssue(
+                "unit", index,
+                "formation_semantic_rejected" if not supported
+                else "formation_mention_dependency_rejected",
+                "rejected",
+            ))
     batch = GroundedMemoryBatch(
         units=tuple(item[0] for item in accepted_units.values()),
         mentions=tuple(accepted_mentions),
         unit_mentions=tuple(item[1] for item in accepted_units.values()),
+        issues=tuple(dict.fromkeys(issues)),
     )
     if checkpoint is not None:
         checkpoint("verified", serialize_grounded_memory_batch(batch))
     return batch
 
 
+def repair_grounded_memory_batch(
+    segment: ColdDraftSegment,
+    model: FormationModel,
+    *,
+    extracted_checkpoint: dict[str, Any],
+    verified_checkpoint: dict[str, Any],
+    repair_checkpoint: dict[str, Any] | None = None,
+    checkpoint: Callable[[str, dict[str, Any]], None] | None = None,
+) -> GroundedMemoryBatch:
+    """Locate failed citations once, without changing accepted facts or identities.
+
+    The owner retains the original verified checkpoint and persists the merged
+    ``repair_verified`` result separately, even when some issues remain pending.
+    A saved repair receipt is reused after parsing or verification failures.
+    """
+    base = form_grounded_memory_batch(
+        segment, model, verified_checkpoint=verified_checkpoint,
+    )
+    output = _entity_extraction_output(extracted_checkpoint, segment)
+    parsed = _parse_entity_extraction(extracted_checkpoint, segment)
+    candidates = _entity_source_repair_candidates(output, parsed, base, segment)
+    if not candidates:
+        return base
+    indexes = tuple(index for index, _item, _role in candidates)
+    if repair_checkpoint is None:
+        selected_turns = {
+            ref["turn_id"] for _index, item, _role in candidates
+            for ref in item["source_refs"]
+        }
+        response = _entity_model_response(
+            model,
+            {
+                "turns": [
+                    turn for turn in _entity_source_payload(segment)["turns"]
+                    if turn["turn_id"] in selected_turns
+                ],
+                "units": [
+                    {"index": index, "candidate": item}
+                    for index, item, _role in candidates
+                ],
+            },
+            _ENTITY_SOURCE_REPAIR_PROMPT,
+            error_code="formation_repair_failed",
+        )
+        receipt = {
+            "schema_version": FORMATION_PROGRESS_VERSION,
+            "source_digest": _entity_source_digest(segment),
+            "unit_indexes": list(indexes),
+            "response": response if isinstance(response, str) else "",
+        }
+        if not isinstance(response, str):
+            receipt["response_error"] = "formation_output_invalid"
+        elif len(response) > _MAX_OUTPUT_CHARS:
+            receipt["response"] = response[:_MAX_OUTPUT_CHARS]
+            receipt["response_error"] = "formation_output_too_large"
+        if checkpoint is not None:
+            checkpoint("repair", receipt)
+    else:
+        receipt = repair_checkpoint
+    repairs = _entity_source_repair_output(receipt, indexes, segment)
+    mentions_by_id = {mention.id: mention for mention in base.mentions}
+    unresolved = {
+        mention.id for mention in base.mentions if mention.identity == "unresolved"
+    }
+    existing = {unit.id: role for unit, role in zip(base.units, base.unit_mentions)}
+    issues = list(base.issues)
+    resolved: set[int] = set()
+    eligible: list[tuple[int, GroundedMemoryUnit, GroundedUnitMentions, set[str]]] = []
+    for index, item, role in candidates:
+        refs = repairs[index]
+        allowed_turns = {ref["turn_id"] for ref in item["source_refs"]}
+        if any(ref["turn_id"] not in allowed_turns for ref in refs):
+            raise FormationError("formation_repair_output_invalid")
+        if not refs or _entity_refs(refs, segment) is None:
+            continue
+        resolved.add(index)
+        candidate = {**item, "source_refs": refs}
+        unit = _validate_entity_unit({
+            key: value for key, value in candidate.items()
+            if key not in {"subject_mention", "object_mention", "mentions"}
+        }, segment)
+        if unit is None:
+            issues.append(_entity_unit_issue(candidate, segment, index))
+            continue
+        role = replace(role, unit_id=unit.id)
+        if not _unit_identity_independent(unit, role, mentions_by_id, unresolved):
+            issues.append(FormationIssue(
+                "unit", index, "formation_identity_dependency_invalid", "pending",
+            ))
+            continue
+        if unit.id in existing:
+            if role != existing[unit.id]:
+                issues.append(FormationIssue(
+                    "unit", index, "formation_repair_role_conflict", "pending",
+                ))
+            continue
+        dependencies = _entity_role_dependencies(role, mentions_by_id)
+        eligible.append((index, unit, role, dependencies))
+    additions: list[tuple[GroundedMemoryUnit, GroundedUnitMentions]] = []
+    if eligible:
+        necessary = set().union(*(item[3] for item in eligible))
+        mentions = tuple(mention for mention in base.mentions if mention.id in necessary)
+        verification = _entity_model_json(
+            model,
+            {
+                **_entity_source_payload(segment),
+                "units": [
+                    {"candidate": asdict(unit), "roles": asdict(role)}
+                    for _index, unit, role, _dependencies in eligible
+                ],
+                "mentions": [asdict(mention) for mention in mentions],
+            },
+            _ENTITY_VERIFICATION_PROMPT,
+            error_code="formation_verification_failed",
+        )
+        unit_decisions, mention_decisions = _parse_entity_decisions(
+            verification, len(eligible), len(mentions),
+        )
+        supported_mentions = {
+            mention.id for mention, (supported, identity_supported)
+            in zip(mentions, mention_decisions) if supported and identity_supported
+        }
+        for (index, unit, role, dependencies), supported in zip(eligible, unit_decisions):
+            if not supported or not dependencies <= supported_mentions:
+                issues.append(FormationIssue(
+                    "unit", index,
+                    "formation_semantic_rejected" if not supported
+                    else "formation_mention_dependency_rejected", "rejected",
+                ))
+            elif unit.id not in existing:
+                additions.append((unit, role))
+                existing[unit.id] = role
+            elif role != existing[unit.id]:
+                issues.append(FormationIssue(
+                    "unit", index, "formation_repair_role_conflict", "pending",
+                ))
+    original_source_issues = {
+        issue for issue in base.issues
+        if issue.candidate == "unit" and issue.index in resolved
+        and issue.status == "pending" and issue.code == "formation_output_invalid"
+    }
+    issues = [
+        replace(issue, status="repaired") if issue in original_source_issues else issue
+        for issue in issues
+    ]
+    merged = GroundedMemoryBatch(
+        base.units + tuple(unit for unit, _role in additions),
+        base.mentions,
+        base.unit_mentions + tuple(role for _unit, role in additions),
+        tuple(dict.fromkeys(issues)),
+    )
+    if not validate_persisted_grounded_memory_batch(merged, segment):
+        raise FormationError("formation_checkpoint_invalid")
+    if checkpoint is not None:
+        checkpoint("repair_verified", serialize_grounded_memory_batch(merged))
+    return merged
+
+
+def _entity_source_repair_candidates(
+    output: dict[str, Any], parsed: _EntityExtraction,
+    base: GroundedMemoryBatch, segment: ColdDraftSegment,
+) -> tuple[tuple[int, dict[str, Any], GroundedUnitMentions], ...]:
+    """Keep only citation failures with independently valid bodies and roles."""
+    pending = {
+        issue.index for issue in base.issues if issue.candidate == "unit"
+        and issue.code == "formation_output_invalid" and issue.status == "pending"
+    }
+    rejected = {
+        issue.index for issue in base.issues
+        if issue.candidate == "unit" and issue.status == "rejected"
+    }
+    verified_ids = {mention.id for mention in base.mentions}
+    handles = {
+        handle: mention_id for handle, mention_id in parsed.mention_handles
+        if mention_id in verified_ids
+    }
+    turns = {turn.turn_id: turn for turn in segment.turns}
+    required = {"text", "subject", "relation", "value", "source_refs"}
+    allowed = required | {"referenced_time", "subject_mention", "object_mention", "mentions"}
+    candidates: list[tuple[int, dict[str, Any], GroundedUnitMentions]] = []
+    for index, item in enumerate(output["units"]):
+        if (
+            index not in pending or index in rejected
+            or not isinstance(item, dict) or not required <= set(item)
+            or set(item) - allowed
+        ):
+            continue
+        refs = item["source_refs"]
+        if (
+            not isinstance(refs, list) or not refs or len(refs) > _MAX_TURNS
+            or any(
+                not isinstance(ref, dict) or set(ref) != {"turn_id", "supporting_span"}
+                or not isinstance(ref["turn_id"], str) or ref["turn_id"] not in turns
+                or not isinstance(ref["supporting_span"], str)
+                for ref in refs
+            )
+            or _entity_refs(refs, segment) is not None
+        ):
+            continue
+        participants = item.get("mentions", [])
+        subject, object_ = item.get("subject_mention"), item.get("object_mention")
+        if (
+            not isinstance(participants, list)
+            or not all(isinstance(ref, str) and ref in handles for ref in participants)
+            or any(
+                ref is not None and (not isinstance(ref, str) or ref not in handles)
+                for ref in (subject, object_)
+            )
+        ):
+            continue
+        referenced_time = item.get("referenced_time")
+        if referenced_time is not None and (
+            not isinstance(referenced_time, str) or not referenced_time.strip()
+            or len(referenced_time) > _MAX_FIELD_CHARS
+        ):
+            continue
+        # A whole-turn structural probe is not semantic approval. It prevents
+        # spending repair calls on non-atomic, unauthorized or impossible details.
+        probe = _validate_entity_unit({
+            **{key: value for key, value in item.items() if key not in {
+                "subject_mention", "object_mention", "mentions",
+            }},
+            "source_refs": [
+                {"turn_id": ref["turn_id"], "supporting_span": turns[ref["turn_id"]].content}
+                for ref in refs
+            ],
+        }, segment)
+        if probe is None:
+            continue
+        role = GroundedUnitMentions(
+            probe.id, handles.get(subject), handles.get(object_),
+            tuple(dict.fromkeys(handles[ref] for ref in participants)),
+        )
+        candidates.append((index, item, role))
+    return tuple(candidates)
+
+
+def _entity_role_dependencies(
+    role: GroundedUnitMentions, mentions: dict[str, GroundedEntityMention],
+) -> set[str]:
+    needed = {ref for ref in (role.subject, role.object, *role.mentions) if ref}
+    pending = list(needed)
+    while pending:
+        mention = mentions[pending.pop()]
+        for target in (mention.same_as, *mention.distinct_from):
+            if target is not None and target not in needed:
+                needed.add(target)
+                pending.append(target)
+    return needed
+
+
+def _entity_source_repair_output(
+    raw: Any, indexes: tuple[int, ...], segment: ColdDraftSegment,
+) -> dict[int, list[dict[str, str]]]:
+    required = {"schema_version", "source_digest", "unit_indexes", "response"}
+    if (
+        not isinstance(raw, dict) or not required <= set(raw)
+        or set(raw) - required - {"response_error"}
+        or raw["schema_version"] != FORMATION_PROGRESS_VERSION
+        or raw["source_digest"] != _entity_source_digest(segment)
+        or not isinstance(raw["unit_indexes"], list)
+        or not all(type(index) is int for index in raw["unit_indexes"])
+        or raw["unit_indexes"] != list(indexes)
+        or not isinstance(raw["response"], str) or len(raw["response"]) > _MAX_OUTPUT_CHARS
+    ):
+        raise FormationError("formation_checkpoint_invalid")
+    if "response_error" in raw:
+        if not isinstance(raw["response_error"], str) or raw["response_error"] not in {
+            "formation_output_invalid", "formation_output_too_large",
+        }:
+            raise FormationError("formation_checkpoint_invalid")
+        raise FormationError(raw["response_error"])
+    output = _parse_entity_model_json(raw["response"], error_code="formation_repair_output_invalid")
+    if (
+        set(output) != {"repairs"} or not isinstance(output["repairs"], list)
+        or len(output["repairs"]) != len(indexes)
+    ):
+        raise FormationError("formation_repair_output_invalid")
+    repairs: dict[int, list[dict[str, str]]] = {}
+    for item in output["repairs"]:
+        if (
+            not isinstance(item, dict) or set(item) != {"index", "source_refs"}
+            or type(item["index"]) is not int or item["index"] not in indexes
+            or item["index"] in repairs or not isinstance(item["source_refs"], list)
+            or len(item["source_refs"]) > _MAX_TURNS
+            or any(
+                not isinstance(ref, dict) or set(ref) != {"turn_id", "supporting_span"}
+                or not isinstance(ref["turn_id"], str) or not isinstance(ref["supporting_span"], str)
+                or not ref["supporting_span"] for ref in item["source_refs"]
+            )
+        ):
+            raise FormationError("formation_repair_output_invalid")
+        repairs[item["index"]] = item["source_refs"]
+    return repairs
+
+
 def serialize_grounded_memory_batch(batch: GroundedMemoryBatch) -> dict[str, Any]:
     # Return a JSON-shaped object even before the owner's file roundtrip.
     return json.loads(json.dumps({
-        "schema_version": FORMATION_ENTITY_VERSION,
+        "schema_version": FORMATION_PROGRESS_VERSION,
         "units": serialize_grounded_memory_units(batch.units),
         "mentions": [asdict(mention) for mention in batch.mentions],
         "unit_mentions": [asdict(role) for role in batch.unit_mentions],
+        "issues": [asdict(issue) for issue in batch.issues],
     }, ensure_ascii=False))
 
 
 def deserialize_grounded_memory_batch(raw: Any) -> GroundedMemoryBatch:
-    if not isinstance(raw, dict) or set(raw) != {
-        "schema_version", "units", "mentions", "unit_mentions",
-    } or raw["schema_version"] != FORMATION_ENTITY_VERSION:
+    if not isinstance(raw, dict):
+        raise ValueError("formed_batch_invalid")
+    legacy = raw.get("schema_version") == FORMATION_ENTITY_VERSION
+    expected = {"schema_version", "units", "mentions", "unit_mentions"}
+    if not legacy:
+        expected.add("issues")
+    if set(raw) != expected or raw["schema_version"] not in {
+        FORMATION_ENTITY_VERSION, FORMATION_PROGRESS_VERSION,
+    }:
         raise ValueError("formed_batch_invalid")
     if not isinstance(raw["mentions"], list) or len(raw["mentions"]) > _MAX_MENTIONS:
         raise ValueError("formed_batch_invalid")
@@ -261,7 +616,11 @@ def deserialize_grounded_memory_batch(raw: Any) -> GroundedMemoryBatch:
             **item, "mentions": tuple(item["mentions"]),
         }) for item in raw["unit_mentions"])
         units = deserialize_grounded_memory_units(raw["units"])
-        batch = GroundedMemoryBatch(units, mentions, roles)
+        raw_issues = [] if legacy else raw["issues"]
+        if not isinstance(raw_issues, list):
+            raise ValueError()
+        issues = tuple(FormationIssue(**item) for item in raw_issues)
+        batch = GroundedMemoryBatch(units, mentions, roles, issues)
         if not _entity_batch_links_valid(batch):
             raise ValueError()
     except (TypeError, ValueError, KeyError, AttributeError):
@@ -336,15 +695,35 @@ def _entity_model_json(
     model: FormationModel, payload: dict[str, Any], prompt: str,
     *, error_code: str = "formation_failed",
 ) -> dict[str, Any]:
+    return _parse_entity_model_json(
+        _entity_model_response(model, payload, prompt, error_code=error_code),
+        error_code=error_code,
+    )
+
+
+def _entity_model_response(
+    model: FormationModel, payload: dict[str, Any], prompt: str,
+    *, error_code: str = "formation_failed",
+) -> str:
     try:
         serialized_payload = json.dumps(
             payload, ensure_ascii=False, separators=(",", ":"),
         )
         if len(serialized_payload) > _MAX_OUTPUT_CHARS:
             raise FormationError("formation_verification_window_too_large")
-        raw = model.generate(
+        return model.generate(
             [], serialized_payload, system_prompt=prompt,
         )
+    except FormationError:
+        raise
+    except Exception:
+        raise FormationError(error_code) from None
+
+
+def _parse_entity_model_json(
+    raw: str, *, error_code: str = "formation_failed",
+) -> dict[str, Any]:
+    try:
         if not isinstance(raw, str) or len(raw) > _MAX_OUTPUT_CHARS:
             raise FormationError("formation_output_too_large")
         # A complete JSON-only Markdown fence changes transport formatting, not
@@ -489,20 +868,35 @@ def _locate_entity_mention(item: dict[str, Any], content: str) -> tuple[int, int
     return start, end
 
 
-def _parse_entity_extraction(
-    raw: Any, segment: ColdDraftSegment,
-) -> tuple[
-    tuple[GroundedEntityMention, ...], tuple[GroundedMemoryUnit, ...],
-    tuple[GroundedUnitMentions, ...],
-]:
+def _entity_extraction_output(raw: Any, segment: ColdDraftSegment) -> dict[str, Any]:
     if (
         not isinstance(raw, dict)
-        or set(raw) != {"schema_version", "source_digest", "output"}
-        or raw["schema_version"] != FORMATION_ENTITY_VERSION
-        or raw["source_digest"] != _entity_source_digest(segment)
+        or raw.get("source_digest") != _entity_source_digest(segment)
     ):
         raise FormationError("formation_checkpoint_invalid")
-    output = raw["output"]
+    if raw.get("schema_version") == FORMATION_ENTITY_VERSION:
+        if set(raw) != {"schema_version", "source_digest", "output"}:
+            raise FormationError("formation_checkpoint_invalid")
+        output = raw["output"]
+    elif raw.get("schema_version") == FORMATION_PROGRESS_VERSION:
+        if (
+            not {"schema_version", "source_digest", "response"} <= set(raw)
+            or set(raw) - {"schema_version", "source_digest", "response", "response_error"}
+            or not isinstance(raw["response"], str)
+            or len(raw["response"]) > _MAX_OUTPUT_CHARS
+        ):
+            raise FormationError("formation_checkpoint_invalid")
+        if "response_error" in raw:
+            if raw["response_error"] not in {
+                "formation_output_invalid", "formation_output_too_large",
+            }:
+                raise FormationError("formation_checkpoint_invalid")
+            raise FormationError(raw["response_error"])
+        output = _parse_entity_model_json(raw["response"])
+    else:
+        raise FormationError("formation_checkpoint_invalid")
+    if output == {"error": "formation_output_too_large"}:
+        raise FormationError("formation_output_too_large")
     if (
         not isinstance(output, dict) or set(output) != {"mentions", "units"}
         or not isinstance(output["mentions"], list)
@@ -513,9 +907,22 @@ def _parse_entity_extraction(
         raise FormationError("formation_output_too_large")
     if len(json.dumps(output, ensure_ascii=False)) > _MAX_OUTPUT_CHARS:
         raise FormationError("formation_output_too_large")
+    return output
+
+
+def _parse_entity_extraction(raw: Any, segment: ColdDraftSegment) -> _EntityExtraction:
+    """Isolate malformed proposals and only their actual identity/role dependencies."""
+    output = _entity_extraction_output(raw, segment)
     turns = {turn.turn_id: turn for turn in segment.turns}
+    issues: list[FormationIssue] = []
     handles: dict[str, str] = {}
-    parsed: list[tuple[dict[str, Any], GroundedEntityMention]] = []
+    parsed: dict[int, tuple[dict[str, Any], GroundedEntityMention]] = {}
+    invalid_identity: set[str] = set()
+    handle_counts: dict[str, int] = {}
+    for item in output["mentions"]:
+        if isinstance(item, dict) and isinstance(item.get("handle"), str):
+            handle = item["handle"]
+            handle_counts[handle] = handle_counts.get(handle, 0) + 1
     mention_required = {
         "handle", "surface", "turn_id", "identity",
     }
@@ -523,32 +930,48 @@ def _parse_entity_extraction(
         "occurrence", "source_start", "source_end",
         "same_as", "distinct_from", "identity_source_refs",
     }
-    for item in output["mentions"]:
+    for index, item in enumerate(output["mentions"]):
         if (
             not isinstance(item, dict) or not mention_required <= set(item)
             or set(item) - mention_allowed
         ):
-            raise FormationError("formation_output_invalid")
+            issues.append(FormationIssue("mention", index, "formation_output_invalid", "pending"))
+            continue
         handle = item["handle"]
-        if not isinstance(handle, str) or not handle or handle in handles:
-            raise FormationError("formation_output_invalid")
+        if not isinstance(handle, str) or not handle or handle_counts[handle] != 1:
+            issues.append(FormationIssue("mention", index, "formation_mention_handle_invalid", "pending"))
+            continue
         turn_id, surface = item["turn_id"], item["surface"]
         if not isinstance(turn_id, str) or turn_id not in turns:
-            raise FormationError("formation_mention_source_invalid")
-        start, end = _locate_entity_mention(item, turns[turn_id].content)
-        if not isinstance(item["identity"], str) or item["identity"] not in {"named", "current_user", "new", "unresolved"}:
-            raise FormationError("formation_output_invalid")
+            issues.append(FormationIssue("mention", index, "formation_mention_source_invalid", "pending"))
+            continue
+        try:
+            start, end = _locate_entity_mention(item, turns[turn_id].content)
+        except FormationError as error:
+            issues.append(FormationIssue("mention", index, error.code, "pending"))
+            continue
+        mention_id = _mention_id(segment, turn_id, start, end)
+        identity = item["identity"]
+        if not isinstance(identity, str) or identity not in {"named", "current_user", "new", "unresolved"}:
+            identity = "unresolved"
+            invalid_identity.add(mention_id)
+            issues.append(FormationIssue("identity", index, "formation_identity_invalid", "pending"))
         refs = _entity_refs(
             item.get("identity_source_refs", []), segment,
             allow_empty=True, expand_repeated=True,
         )
         if refs is None:
-            raise FormationError("formation_mention_source_invalid")
-        mention_id = _mention_id(segment, turn_id, start, end)
+            refs = ()
+            invalid_identity.add(mention_id)
+            issues.append(FormationIssue("identity", index, "formation_mention_source_invalid", "pending"))
         handles[handle] = mention_id
-        parsed.append((item, GroundedEntityMention(mention_id, surface, turn_id, start, end, turns[turn_id].role, item["identity"], identity_source_refs=refs)))
+        parsed[index] = (item, GroundedEntityMention(
+            mention_id, surface, turn_id, start, end, turns[turn_id].role,
+            identity, identity_source_refs=refs,
+        ))
     mentions: dict[str, GroundedEntityMention] = {}
-    for item, mention in parsed:
+    conflicting_positions: set[str] = set()
+    for index, (item, mention) in parsed.items():
         same = item.get("same_as")
         distinct = item.get("distinct_from", [])
         if (
@@ -556,37 +979,65 @@ def _parse_entity_extraction(
             or not isinstance(distinct, list)
             or not all(isinstance(ref, str) and ref in handles for ref in distinct)
         ):
-            raise FormationError("formation_mention_link_invalid")
+            invalid_identity.add(mention.id)
+            issues.append(FormationIssue("identity", index, "formation_mention_link_invalid", "pending"))
+            # Retain valid constraints for dependency propagation, never binding.
+            same = same if isinstance(same, str) and same in handles else None
+            distinct = [ref for ref in distinct if isinstance(ref, str) and ref in handles] if isinstance(distinct, list) else []
         if (same is not None or distinct or mention.identity in {"current_user", "new"}) and not mention.identity_source_refs:
-            raise FormationError("formation_mention_source_invalid")
+            invalid_identity.add(mention.id)
+            issues.append(FormationIssue("identity", index, "formation_mention_source_invalid", "pending"))
         mention = replace(mention, same_as=handles.get(same), distinct_from=tuple(dict.fromkeys(handles[ref] for ref in distinct)))
         if mention.id in mentions and mentions[mention.id] != mention:
-            raise FormationError("formation_mention_link_invalid")
+            conflicting_positions.add(mention.id)
         mentions[mention.id] = mention
+    if conflicting_positions:
+        for index, (_item, mention) in parsed.items():
+            if mention.id in conflicting_positions:
+                issues.append(FormationIssue("mention", index, "formation_mention_position_conflict", "pending"))
+        mentions = {mid: mention for mid, mention in mentions.items() if mid not in conflicting_positions}
+        handles = {handle: mid for handle, mid in handles.items() if mid in mentions}
+    invalid_identity = _invalid_identity_dependencies(mentions, invalid_identity)
+    for index, (_item, mention) in parsed.items():
+        if mention.id in mentions and mention.id in invalid_identity and not any(
+            issue.candidate == "identity" and issue.index == index
+            for issue in issues
+        ):
+            issues.append(FormationIssue("identity", index, "formation_identity_dependency_invalid", "pending"))
+    mentions = {
+        mid: replace(mention, identity="unresolved", same_as=None,
+                     distinct_from=(), identity_source_refs=())
+        if mid in invalid_identity else mention
+        for mid, mention in mentions.items()
+    }
     units: list[GroundedMemoryUnit] = []
     roles: list[GroundedUnitMentions] = []
+    unit_indexes: list[int] = []
     unit_required = {"text", "subject", "relation", "value", "source_refs"}
     unit_allowed = unit_required | {
         "referenced_time", "subject_mention", "object_mention", "mentions",
     }
-    for item in output["units"]:
+    for index, item in enumerate(output["units"]):
         if (
             not isinstance(item, dict) or not unit_required <= set(item)
             or set(item) - unit_allowed
         ):
-            raise FormationError("formation_output_invalid")
+            issues.append(FormationIssue("unit", index, "formation_output_invalid", "pending"))
+            continue
         if not all(
             isinstance(item[key], str) and item[key].strip()
             and len(item[key]) <= _MAX_FIELD_CHARS
             for key in ("text", "subject", "relation", "value")
         ) or _entity_refs(item["source_refs"], segment) is None:
-            raise FormationError("formation_output_invalid")
+            issues.append(FormationIssue("unit", index, "formation_output_invalid", "pending"))
+            continue
         if item.get("referenced_time") is not None and (
             not isinstance(item["referenced_time"], str)
             or not item["referenced_time"].strip()
             or len(item["referenced_time"]) > _MAX_FIELD_CHARS
         ):
-            raise FormationError("formation_output_invalid")
+            issues.append(FormationIssue("unit", index, "formation_referenced_time_invalid", "pending"))
+            continue
         participant_handles = item.get("mentions", [])
         subject_handle, object_handle = item.get("subject_mention"), item.get("object_mention")
         if (
@@ -597,21 +1048,112 @@ def _parse_entity_extraction(
                 for ref in (subject_handle, object_handle)
             )
         ):
-            raise FormationError("formation_mention_link_invalid")
+            issues.append(FormationIssue("unit", index, "formation_mention_dependency_invalid", "pending"))
+            continue
         unit = _validate_entity_unit({key: value for key, value in item.items() if key not in {"subject_mention", "object_mention", "mentions"}}, segment)
         if unit is None:
+            issues.append(_entity_unit_issue(item, segment, index))
+            continue
+        role = GroundedUnitMentions(
+            unit.id, handles.get(subject_handle), handles.get(object_handle),
+            tuple(dict.fromkeys(handles[ref] for ref in participant_handles)),
+        )
+        if not _unit_identity_independent(unit, role, mentions, invalid_identity):
+            issues.append(FormationIssue("unit", index, "formation_identity_dependency_invalid", "pending"))
             continue
         units.append(unit)
-        roles.append(GroundedUnitMentions(unit.id, handles.get(subject_handle), handles.get(object_handle), tuple(dict.fromkeys(handles[ref] for ref in participant_handles))))
+        roles.append(role)
+        unit_indexes.append(index)
     turn_order = {turn.turn_id: index for index, turn in enumerate(segment.turns)}
     ordered_mentions = tuple(sorted(
         mentions.values(),
         key=lambda mention: (turn_order[mention.turn_id], mention.source_start, mention.source_end),
     ))
-    batch = GroundedMemoryBatch(tuple(units), ordered_mentions, tuple(roles))
+    batch = GroundedMemoryBatch(
+        tuple(units), ordered_mentions, tuple(roles), tuple(dict.fromkeys(issues)),
+    )
     if not _entity_batch_links_valid(batch, allow_duplicate_units=True):
         raise FormationError("formation_mention_link_invalid")
-    return batch.mentions, batch.units, batch.unit_mentions
+    indexes_by_id: dict[str, int] = {}
+    for index, (_item, mention) in parsed.items():
+        indexes_by_id.setdefault(mention.id, index)
+    return _EntityExtraction(
+        batch, tuple(unit_indexes),
+        tuple(indexes_by_id[mention.id] for mention in ordered_mentions),
+        tuple(handles.items()),
+    )
+
+
+def _invalid_identity_dependencies(
+    mentions: dict[str, GroundedEntityMention], invalid: set[str],
+) -> set[str]:
+    invalid = set(invalid)
+    for mention in mentions.values():
+        if (
+            mention.same_as is not None and mention.same_as not in mentions
+            or any(ref not in mentions for ref in mention.distinct_from)
+            or mention.id in mention.distinct_from
+            or mention.same_as in mention.distinct_from
+        ):
+            invalid.add(mention.id)
+        seen: set[str] = set()
+        current = mention.id
+        while current in mentions:
+            if current in seen:
+                invalid.update(seen)
+                break
+            seen.add(current)
+            current = mentions[current].same_as
+    while True:
+        previous = set(invalid)
+        for mention in mentions.values():
+            if mention.same_as in invalid or any(ref in invalid for ref in mention.distinct_from):
+                invalid.add(mention.id)
+            if mention.id in invalid:
+                # DISTINCT_FROM is a symmetric anti-merge constraint.
+                invalid.update(mention.distinct_from)
+        if invalid == previous:
+            return invalid
+
+
+def _entity_unit_issue(raw: dict[str, Any], segment: ColdDraftSegment, index: int) -> FormationIssue:
+    source = "\n".join(ref["supporting_span"] for ref in raw["source_refs"])
+    turns = {turn.turn_id: turn for turn in segment.turns}
+    if len([part for part in _ATOMIC_BOUNDARY.split(raw["text"]) if part.strip()]) > 1:
+        return FormationIssue("unit", index, "formation_unit_non_atomic", "pending")
+    if raw.get("referenced_time") is not None and raw["referenced_time"] not in source:
+        return FormationIssue("unit", index, "formation_referenced_time_invalid", "pending")
+    if not any(turns[ref["turn_id"]].role == "user" for ref in raw["source_refs"]):
+        return FormationIssue("unit", index, "formation_role_unsupported", "rejected")
+    if any(
+        detail not in source for key in ("text", "subject", "relation", "value")
+        for detail in _DETAIL.findall(raw[key])
+    ):
+        return FormationIssue("unit", index, "formation_detail_unsupported", "rejected")
+    return FormationIssue("unit", index, "formation_unit_invalid", "pending")
+
+
+def _unit_identity_independent(
+    unit: GroundedMemoryUnit, role: GroundedUnitMentions,
+    mentions: dict[str, GroundedEntityMention], invalid_identity: set[str],
+) -> bool:
+    """A failed identity cannot supply missing names to an otherwise valid fact.
+
+    Literal participation remains eligible for the unchanged semantic verifier;
+    the mention is unresolved and cannot create a positive entity binding.
+    """
+    source = "\n".join(ref.supporting_span for ref in unit.source_refs)
+    for ref, field in ((role.subject, unit.subject), (role.object, unit.value)):
+        if ref in invalid_identity:
+            surface = mentions[ref].surface
+            if surface not in source or surface not in field:
+                return False
+    for ref in role.mentions:
+        if ref in invalid_identity:
+            surface = mentions[ref].surface
+            if surface not in source or surface not in unit.text:
+                return False
+    return True
 
 
 def _parse_entity_decisions(
@@ -643,6 +1185,8 @@ def _parse_entity_decisions(
 
 
 def _entity_batch_links_valid(batch: GroundedMemoryBatch, *, allow_duplicate_units: bool = False) -> bool:
+    if not _formation_issues_valid(batch.issues):
+        return False
     ids = {mention.id for mention in batch.mentions}
     unit_ids = {unit.id for unit in batch.units}
     if (
@@ -678,6 +1222,25 @@ def _entity_batch_links_valid(batch: GroundedMemoryBatch, *, allow_duplicate_uni
             seen.add(target)
             target = by_id[target].same_as
     return True
+
+
+def _formation_issues_valid(issues: tuple[FormationIssue, ...]) -> bool:
+    if not isinstance(issues, tuple) or len(issues) > 4 * (_MAX_MENTIONS + _MAX_ENTITY_UNITS):
+        return False
+    for issue in issues:
+        if (
+            not isinstance(issue, FormationIssue)
+            or issue.candidate not in {"unit", "mention", "identity"}
+            or type(issue.index) is not int
+            or not 0 <= issue.index < (
+                _MAX_ENTITY_UNITS if issue.candidate == "unit" else _MAX_MENTIONS
+            )
+            or not isinstance(issue.code, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]{0,79}", issue.code) is None
+            or issue.status not in {"pending", "rejected", "repaired"}
+        ):
+            return False
+    return len(set(issues)) == len(issues)
 
 
 def form_grounded_memory_units(

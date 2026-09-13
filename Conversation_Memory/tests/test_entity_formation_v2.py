@@ -211,8 +211,9 @@ def test_wrong_mention_offset_is_a_visible_extraction_failure():
     bad = mention("p", "项目R", source)
     bad["source_start"] = 1
     model = Model({"units": [], "mentions": [bad]})
-    with pytest.raises(FormationError, match="formation_mention_source_invalid"):
-        form_grounded_memory_batch(segment(("u1", "user", source)), model)
+    batch = form_grounded_memory_batch(segment(("u1", "user", source)), model)
+    assert batch.mentions == batch.units == ()
+    assert [(issue.candidate, issue.index, issue.status) for issue in batch.issues] == [("mention", 0, "pending")]
     assert len(model.calls) == 1
 
 
@@ -242,8 +243,9 @@ def test_occurrence_ordinals_distinguish_same_name_different_people():
 def test_invalid_occurrence_is_a_visible_failure_even_if_surface_is_real(occurrence):
     source = "林舟喜欢茶，林舟研究陶瓷。"
     model = Model({"units": [], "mentions": [{"handle": "p", "surface": "林舟", "turn_id": "u1", "occurrence": occurrence, "identity": "named"}]})
-    with pytest.raises(FormationError, match="formation_mention_source_invalid"):
-        form_grounded_memory_batch(segment(("u1", "user", source)), model)
+    batch = form_grounded_memory_batch(segment(("u1", "user", source)), model)
+    assert batch.mentions == batch.units == ()
+    assert [(issue.candidate, issue.index, issue.status) for issue in batch.issues] == [("mention", 0, "pending")]
     assert len(model.calls) == 1
 
 
@@ -251,8 +253,9 @@ def test_conflicting_repeated_ordinal_and_legacy_offset_cannot_choose_one():
     source = "林舟喜欢茶，林舟研究陶瓷。"
     item = mention("p", "林舟", source)
     item["occurrence"] = 1
-    with pytest.raises(FormationError, match="formation_mention_source_invalid"):
-        form_grounded_memory_batch(segment(("u1", "user", source)), Model({"units": [], "mentions": [item]}))
+    batch = form_grounded_memory_batch(segment(("u1", "user", source)), Model({"units": [], "mentions": [item]}))
+    assert batch.mentions == batch.units == ()
+    assert any(issue.candidate == "mention" and issue.status == "pending" for issue in batch.issues)
 
 
 def test_output_budget_overflow_is_not_a_prefix_success():
@@ -306,8 +309,9 @@ def test_malformed_unit_structure_does_not_become_a_valid_empty_result():
     source = "项目R正在推进。"
     candidate = unit(source, "项目R", "正在", "推进", source)
     candidate["subject"] = []
-    with pytest.raises(FormationError, match="formation_output_invalid"):
-        form_grounded_memory_batch(segment(("u1", "user", source)), Model({"units": [candidate], "mentions": []}))
+    batch = form_grounded_memory_batch(segment(("u1", "user", source)), Model({"units": [candidate], "mentions": []}))
+    assert batch.units == ()
+    assert [(issue.candidate, issue.index, issue.status) for issue in batch.issues] == [("unit", 0, "pending")]
 
 
 def test_model_output_order_cannot_move_new_identity_before_earlier_occurrence():
@@ -379,5 +383,6 @@ def test_repeated_identity_span_is_expanded_and_verified_with_full_modality(sour
 def test_repeated_fact_source_remains_invalid_without_unambiguous_fact_evidence():
     source = "林舟喜欢茶。林舟喜欢茶。"
     candidate = unit("林舟喜欢茶。", "林舟", "喜欢", "茶", "林舟喜欢茶。")
-    with pytest.raises(FormationError, match="formation_output_invalid"):
-        form_grounded_memory_batch(segment(("u1", "user", source)), Model({"mentions": [], "units": [candidate]}))
+    batch = form_grounded_memory_batch(segment(("u1", "user", source)), Model({"mentions": [], "units": [candidate]}))
+    assert batch.units == ()
+    assert [(issue.candidate, issue.index, issue.status) for issue in batch.issues] == [("unit", 0, "pending")]

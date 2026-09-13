@@ -53,8 +53,14 @@ characters, with explicit overflow failure. Mention surface and occurrence
 ordinal are deterministically resolved to exact source offsets. Facts retain
 subject/relation/value and verified subject/object mention roles.
 
-Extraction, verification and bindings are durably checkpointed in the existing
-state record before graph mutation. Isolated mentions persist even in a
+The bounded extraction response is checkpointed before parsing; verification
+and bindings are checkpointed before graph mutation. Candidate processing
+errors isolate their dependencies while independently verified results persist.
+Pending processing errors block segment completion; semantic rejections do not.
+One later source-ref repair attempt may re-evidence eligible pending facts and
+verify that subset without changing saved results or repeating extraction.
+See [provenance and recovery](PROVENANCE_AND_IDEMPOTENCY.md) for exact stages.
+Isolated mentions persist even in a
 zero-fact window. `recall_mentions` returns source occurrences through public
 DTOs, without asserting their proposed content. The deterministic
 `grounded-span-v2` path and explicit historical V1 compatibility remain separate
@@ -94,7 +100,7 @@ Durable ingestion key:
 (segment_id, ingestion_version)
 ```
 
-The adapter checkpoints pending/in-progress/completed state, validated units,
+The adapter checkpoints pending/in-progress/partial/completed state, validated units,
 source occurrence records, stable bindings and private memory IDs written so far. Stable unit IDs allow retry to converge after partial graph/vector
 persistence, while a same-version manifest mismatch fails closed.
 
