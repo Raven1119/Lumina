@@ -1,0 +1,50 @@
+{
+  "schema": "entity-memory-development-budget-v1",
+  "policy": {
+    "top_k": 10,
+    "max_graph_depth": 1,
+    "max_nodes": 20,
+    "max_evidence_items": 3,
+    "max_chars": 5000,
+    "final_min_score": 0.144
+  },
+  "expected_explicit_facts": 24,
+  "scenarios": [
+    {
+      "id": "budget_24_attributes",
+      "segments": [
+        [
+          {
+            "id": "d0",
+            "role": "user",
+            "text": "Fallow-1 has mass 1.25 kg. Fallow-1 has rated voltage 24 V. Fallow-1 has sample rate 480 Hz. Fallow-1 has serial number DEV-604-Q. Fallow-1 has enclosure color violet. Fallow-1 has storage capacity 96 GB."
+          },
+          {
+            "id": "d1",
+            "role": "user",
+            "text": "Bramble-2 has mass 1.25 kg. Bramble-2 has rated voltage 24 V. Bramble-2 has sample rate 480 Hz. Bramble-2 has serial number DEV-604-Q. Bramble-2 has enclosure color violet. Bramble-2 has storage capacity 96 GB."
+          },
+          {
+            "id": "d2",
+            "role": "user",
+            "text": "Tussock-3 has mass 1.25 kg. Tussock-3 has rated voltage 24 V. Tussock-3 has sample rate 480 Hz. Tussock-3 has serial number DEV-604-Q. Tussock-3 has enclosure color violet. Tussock-3 has storage capacity 96 GB."
+          },
+          {
+            "id": "d3",
+            "role": "user",
+            "text": "Sorrel-4 has mass 1.25 kg. Sorrel-4 has rated voltage 24 V. Sorrel-4 has sample rate 480 Hz. Sorrel-4 has serial number DEV-604-Q. Sorrel-4 has enclosure color violet. Sorrel-4 has storage capacity 96 GB."
+          }
+        ]
+      ],
+      "mentions": [],
+      "facts": [],
+      "queries": [
+        {
+          "id": "mass",
+          "query": "How much does Fallow-1 weigh?",
+          "required_facts": []
+        }
+      ]
+    }
+  ]
+}

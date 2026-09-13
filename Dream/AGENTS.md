@@ -54,9 +54,9 @@ second Cold owner or a second resident MAGMA backend.
 explicit Dream trigger
 -> bounded complete pending segments from ColdDraftStore
 -> ColdDraftSegmentConverter
--> one bounded DeepSeek-V4-Pro Formation call in non-thinking mode with
-   max_tokens=2000 when a real model is configured
--> validated units checkpointed before MemoryIngestor MAGMA writes
+-> bounded DeepSeek-V4-Pro fact/mention extraction and batch verification
+   in non-thinking mode with max_tokens=8192 per call
+-> each successful stage and stable bindings checkpointed before MAGMA writes
 -> durable graph/vector persistence and ingestion checkpoint
 -> verify complete IngestionResult
 -> ColdDraftStore.mark_consumed(segment_id)
@@ -75,7 +75,7 @@ app uses the shared adapter's Formation version:
 ```text
 max_segments = 10
 stop_on_error = false
-ingestion_version = grounded-formation-v1
+ingestion_version = grounded-formation-v2
 ```
 
 Mock/legacy injected adapters retain `grounded-span-v2`. Execution is serial

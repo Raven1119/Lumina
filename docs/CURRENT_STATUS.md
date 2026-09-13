@@ -7,6 +7,27 @@ Single-goal operation remains the default; `--pursuit` opts into the Stage1
 continuing-Mind implementation described below. Production Chat still runs its separate Recall gate;
 the manual Execution API is also separate.
 
+## Conversation Memory entity enhancement
+
+Configured manual Dream now uses source-grounded `grounded-formation-v2` fact
+and mention extraction with batch proposition/identity verification. Exact
+occurrences survive zero-fact windows; explicit subject/object roles and literal
+attributes persist through the existing graph/checkpoint owners. The public
+Memory facade exposes bounded occurrence lookup as well as fact Recall.
+
+Name/lexical indexes cover stored history before limiting candidates; bounded
+multiple-identity retrieval and two-fact relationship projection retain fixed
+BGE/Hindsight and the production score floor. Cold consumption remains explicit
+and follows durable completion. Valid two-fact paths that fit BGE's fixed input
+window are scored together and
+returned as whole source evidence bundles; this changes scoring input while
+retaining original stored facts. No task-memory expansion, automatic backfill,
+Chat ingestion, provider migration or cognitive-organ wiring was added.
+Invalid source citations leave their window pending. Same-name identities can
+remain unresolved, and Recall can mix evidence for different same-name people;
+complete entity/attribute coverage is not guaranteed. See the
+[Memory contract](../Conversation_Memory/docs/COLD_DRAFT_ADAPTER_DESIGN.md).
+
 ## Current implementation
 
 | Part | Responsibility |

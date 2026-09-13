@@ -4,6 +4,7 @@ from .models import (
     ColdDraftSegment,
     IngestionResult,
     MemoryContext,
+    EntityMentionContext,
     RecallPolicy,
 )
 
@@ -14,3 +15,7 @@ class MemoryIngestor(Protocol):
 
 class MemoryRetriever(Protocol):
     def recall(self, query: str, policy: RecallPolicy) -> MemoryContext: ...
+
+    def recall_mentions(
+        self, query: str, *, limit: int = 20,
+    ) -> EntityMentionContext: ...

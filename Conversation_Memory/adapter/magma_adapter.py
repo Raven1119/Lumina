@@ -13,7 +13,7 @@ from ingestion.state_store import IngestionStateStore
 from ingestion.temporal import normalize_temporal_references
 from recall.bge_reranker import BgeReranker
 from recall.hindsight_scoring import score_hindsight_post_rerank
-from recall.rendering import bound_evidence
+from recall.rendering import bound_evidence_groups
 
 from ._grounded_spans import GroundedSpanUnit, build_grounded_spans
 from .backend import MemoryBackend
@@ -45,6 +45,8 @@ from .models import (
     MemoryEvidence,
     RecallPolicy,
     SourceProvenance,
+    EntityMention,
+    EntityMentionContext,
 )
 from .user_self import (
     CURRENT_USER_ENTITY_REF,
@@ -80,7 +82,7 @@ class MagmaMemoryAdapter:
     ):
         if (
             formation_model is not None
-            and ingestion_version != FORMATION_VERSION
+            and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2"}
         ):
             raise ValueError("formation_ingestion_version_required")
         self.backend = backend
@@ -141,6 +143,12 @@ class MagmaMemoryAdapter:
         return None
 
     def ingest(self, segment: ColdDraftSegment) -> IngestionResult:
+        if self.ingestion_version == "grounded-formation-v2":
+            if self.formation_model is None:
+                return IngestionResult(segment.segment_id, self.ingestion_version,
+                                       "failed", safe_error_code="formation_model_unavailable")
+            from ._entity_ingestion import ingest_entity_formation
+            return ingest_entity_formation(self, segment)
         if self.formation_model is not None:
             return _ingest_grounded_formation(
                 segment,
@@ -157,14 +165,47 @@ class MagmaMemoryAdapter:
             ingestion_version=self.ingestion_version,
             configured_entities=self.configured_entities,
         )
+    def recall_mentions(self, query: str, *, limit: int = 20) -> EntityMentionContext:
+        """Read bounded occurrence records through Lumina DTOs, without inference."""
+        if not isinstance(query, str) or not query.strip():
+            return EntityMentionContext(query if isinstance(query, str) else "",
+                                        safe_error_code="invalid_query")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            return EntityMentionContext(query, safe_error_code="invalid_limit")
+        try:
+            rows = self.backend.list_entity_mentions(query.strip(), limit=limit + 1)
+            mentions = tuple(EntityMention(
+                mention_id=row["mention_id"], surface=row["surface"],
+                source_start=row["source_start"], source_end=row["source_end"],
+                provenance=SourceProvenance(**row["provenance"]),
+                resolved=row.get("entity_ref") is not None,
+                ambiguous=bool(row.get("candidate_entity_refs")),
+            ) for row in rows[:limit])
+            return EntityMentionContext(query.strip(), mentions, len(rows) > limit)
+        except Exception:
+            return EntityMentionContext(query.strip(), safe_error_code="recall_unavailable")
+
     def recall(self, query: str, policy: RecallPolicy) -> MemoryContext:
         if not isinstance(query, str) or not query.strip():
             return MemoryContext(query if isinstance(query, str) else "", safe_error_code="invalid_query")
         normalized_query = query.strip()
+        target_entity_refs = ()
+        entity_candidates_truncated = False
         try:
             if _user_self_binding_enabled():
                 target_entity_ref = classify_target_entity_ref(normalized_query)
-                if target_entity_ref is None:
+                resolver = getattr(self.backend, "resolve_target_entity_refs", None)
+                if callable(resolver):
+                    entity_limit = min(20, policy.max_nodes)
+                    target_entity_refs = tuple(resolver(
+                        normalized_query, limit=entity_limit + 1,
+                    ))
+                    if target_entity_ref is not None:
+                        target_entity_refs = tuple(dict.fromkeys((target_entity_ref, *target_entity_refs)))
+                    entity_candidates_truncated = len(target_entity_refs) > entity_limit
+                    target_entity_ref = target_entity_refs[0] if len(target_entity_refs) == 1 else None
+                    target_entity_refs = target_entity_refs[:entity_limit]
+                elif target_entity_ref is None:
                     # ordinary persisted entities: deterministic exact-surface
                     # lookup, only when CURRENT_USER classification found none
                     target_entity_ref = self.backend.resolve_target_entity_ref(
@@ -174,18 +215,32 @@ class MagmaMemoryAdapter:
                 target_entity_ref = None
         except Exception:
             target_entity_ref = None
+            target_entity_refs = ()
         try:
-            candidates = tuple(
-                self.backend.recall(normalized_query, policy)
-                if target_entity_ref is None
-                else self.backend.recall(
-                    normalized_query,
-                    policy,
-                    target_entity_ref=target_entity_ref,
+            if target_entity_refs:
+                candidates = tuple(self.backend.recall(
+                    normalized_query, policy, target_entity_refs=target_entity_refs,
+                ))
+            else:
+                candidates = tuple(
+                    self.backend.recall(normalized_query, policy)
+                    if target_entity_ref is None
+                    else self.backend.recall(
+                        normalized_query,
+                        policy,
+                        target_entity_ref=target_entity_ref,
+                    )
                 )
-            )
         except Exception:
             return MemoryContext(normalized_query, safe_error_code="recall_unavailable")
+
+        try:
+            stats = getattr(self.backend, "last_recall_stats", {})
+            retrieval_truncated = entity_candidates_truncated or bool(
+                isinstance(stats, dict) and stats.get("budget_exhausted", False)
+            )
+        except Exception:
+            retrieval_truncated = entity_candidates_truncated
 
         try:
             query_relation_ids = _RELATION_RESOLVER.resolve_query_relations(
@@ -206,7 +261,7 @@ class MagmaMemoryAdapter:
                 safe_error_code="recall_unavailable",
             )
         if not rerankable:
-            return MemoryContext(normalized_query)
+            return MemoryContext(normalized_query, truncated=retrieval_truncated)
 
         try:
             reranker = self._get_bge_reranker()
@@ -235,8 +290,8 @@ class MagmaMemoryAdapter:
                     for item in ranked
                     if item[1].final_score >= minimum_final_score
                 ]
-            projected = []
-            for (_original_index, candidate), _score in ranked:
+            projected = {}
+            for _original_index, candidate in rerankable:
                 raw = candidate.metadata.get("provenance")
                 evidence_id = candidate.metadata.get("evidence_id")
                 if not isinstance(raw, dict) or not isinstance(evidence_id, str):
@@ -245,20 +300,33 @@ class MagmaMemoryAdapter:
                     provenance = SourceProvenance(**raw)
                 except (TypeError, ValueError):
                     continue
-                projected.append((candidate, MemoryEvidence(
+                projected.setdefault(evidence_id, MemoryEvidence(
                     evidence_id,
                     candidate.text,
                     candidate.timestamp,
                     provenance,
-                )))
+                ))
 
-            items = [item for _, item in projected]
-            evidence, rendered, truncated = bound_evidence(
-                items,
+            by_id = {candidate.metadata.get("evidence_id"): candidate
+                     for _, candidate in rerankable}
+            groups = []
+            missing_dependency = False
+            for (_original_index, candidate), _score in ranked:
+                evidence_id = candidate.metadata.get("evidence_id")
+                if evidence_id not in projected:
+                    continue
+                chain = _association_evidence_ids(candidate, by_id)
+                if chain is None or any(eid not in projected for eid in chain):
+                    missing_dependency = True
+                    continue
+                groups.append([projected[eid] for eid in chain])
+            evidence, rendered, truncated = bound_evidence_groups(
+                groups,
                 count=policy.max_evidence_items,
                 max_chars=policy.max_chars,
             )
-            return MemoryContext(normalized_query, evidence, rendered, truncated)
+            return MemoryContext(normalized_query, evidence, rendered,
+                                 truncated or retrieval_truncated or missing_dependency)
         except Exception:
             return MemoryContext(normalized_query, safe_error_code="recall_unavailable")
 
@@ -280,31 +348,80 @@ def _create_bge_reranker():
     return BgeReranker()
 
 
+def _association_evidence_ids(candidate, by_id) -> tuple[str, ...] | None:
+    """Only an actual two-fact role projection can carry a bridge dependency."""
+    evidence_id = candidate.metadata.get("evidence_id")
+    raw = candidate.metadata.get("association_chain_evidence_ids")
+    if raw is None:
+        return (evidence_id,)
+    if (not isinstance(raw, (list, tuple)) or len(raw) != 2
+            or not all(isinstance(eid, str) and eid for eid in raw)
+            or raw[1] != evidence_id or raw[0] == raw[1]
+            or candidate.metadata.get("association_bridge_evidence_ids") != [raw[0]]
+            or raw[0] not in by_id):
+        return None
+    bridge = by_id[raw[0]]
+    bridge_roles = {bridge.metadata.get("subject_entity_ref"),
+                    bridge.metadata.get("object_entity_ref")}
+    endpoint_roles = {candidate.metadata.get("subject_entity_ref"),
+                      candidate.metadata.get("object_entity_ref")}
+    if (not all(isinstance(ref, str) and ref for ref in bridge_roles)
+            or not (bridge_roles & endpoint_roles)):
+        return None
+    try:
+        for item in (bridge, candidate):
+            SourceProvenance(**item.metadata.get("provenance", {}))
+    except (TypeError, ValueError):
+        return None
+    return tuple(raw)
+
+
 def _score_candidates(
     reranker,
     normalized_query: str,
     target_entity_ref: str | None,
     rerankable,
 ) -> tuple[float, ...]:
-    """Score candidates with the per-pair SAME_ENTITY scoring projection.
+    """Score source facts or complete two-fact paths using the fixed BGE model.
 
     The entity marker enters a (query, candidate) pair only when both sides
     carry the same non-null entity ref; every other pair is scored with the
-    byte-identical current texts. BGE scores pairs independently, so
-    splitting into two score calls does not change per-pair semantics.
+    current fact text. A verified role path scores its bridge plus endpoint as
+    one retrieval view; selection must subsequently include both original
+    evidence items. This changes the scoring input, never stored fact text or
+    the BGE/Hindsight formula. Missing, invalid, or over-window paths cannot
+    gain context; token-fit is checked on the actual marked scoring pair.
     """
     marked_texts: list[str] = []
     marked_positions: list[int] = []
     plain_texts: list[str] = []
     plain_positions: list[int] = []
+    by_id = {candidate.metadata.get("evidence_id"): candidate
+             for _, candidate in rerankable}
     for position, (_index, candidate) in enumerate(rerankable):
+        chain = _association_evidence_ids(candidate, by_id)
+        text = candidate.text
         ref = candidate_entity_ref(candidate.metadata)
-        if target_entity_ref is not None and ref == target_entity_ref:
+        marked = target_entity_ref is not None and ref == target_entity_ref
+        if chain is not None and len(chain) == 2:
+            # Both pieces already passed the same candidate compatibility and
+            # source-provenance boundary. No summary or inferred fact is made.
+            combined = "\n".join(by_id[eid].text for eid in chain)
+            fit_query = entity_marked_text(ref, normalized_query) if marked else normalized_query
+            fit_text = entity_marked_text(ref, combined) if marked else combined
+            fits_pair = getattr(reranker, "fits_pair", None)
+            try:
+                complete_pair_fits = callable(fits_pair) and fits_pair(fit_query, fit_text) is True
+            except Exception:
+                complete_pair_fits = False
+            if complete_pair_fits:
+                text = combined
+        if marked:
             marked_positions.append(position)
-            marked_texts.append(entity_marked_text(ref, candidate.text))
+            marked_texts.append(entity_marked_text(ref, text))
         else:
             plain_positions.append(position)
-            plain_texts.append(candidate.text)
+            plain_texts.append(text)
     scores: list[float | None] = [None] * len(rerankable)
     if marked_texts:
         marked_scores = _validate_reranker_scores(

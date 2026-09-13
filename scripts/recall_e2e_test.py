@@ -185,11 +185,13 @@ class _TimedSwitchingBackend:
         self.last_count = 0
         self.last_candidates = ()
 
-    def recall(self, query: str, policy: RecallPolicy, target_entity_ref: str | None = None):
+    def recall(self, query: str, policy: RecallPolicy, target_entity_ref: str | None = None,
+               target_entity_refs: tuple[str, ...] = ()):
         delegate = self._require_delegate()
         started = perf_counter()
         try:
-            candidates = delegate.recall(query, policy, target_entity_ref=target_entity_ref)
+            candidates = delegate.recall(query, policy, target_entity_ref=target_entity_ref,
+                                         target_entity_refs=target_entity_refs)
             self.last_count = len(candidates)
             self.last_candidates = tuple(candidates)
             return candidates

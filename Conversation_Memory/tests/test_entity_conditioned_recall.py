@@ -257,12 +257,16 @@ def _build_mention_corpus(tmp_path):
     return backend
 
 
-def test_subject_only_corpus_recall_byte_identical_without_generic_edges(
+def test_subject_only_corpus_preserves_necessary_user_facts_and_provenance(
     tmp_path, monkeypatch,
 ):
-    """Legacy subject-only corpus: no generic edges exist, so dropping the
-    role filter changes nothing — candidates and evidence are the pinned
-    pre-Slice-2 baseline."""
+    """Required user facts survive bounded traversal and its candidate changes.
+
+    The old paths[:10] projection also pinned one irrelevant question-mention
+    distractor. Removing that truncation changes ev-d21 to ev-d71; this is not
+    a change to the necessary gold facts, and full byte identity is no longer
+    the retrieval contract.
+    """
     monkeypatch.setenv("LUMINA_USER_SELF_BINDING_ENABLED", "true")
     backend = _build_corpus(tmp_path)
     from memory.graph_db import LinkSubType, LinkType
@@ -277,16 +281,24 @@ def test_subject_only_corpus_recall_byte_identical_without_generic_edges(
     assert generic_edges == []
 
     context = _adapter(backend, tmp_path).recall("我是谁？", _POLICY)
-    assert [item.evidence_id for item in context.evidence] == [
-        "ev-u1", "ev-u2", "ev-d21",
-    ]
+    assert [item.evidence_id for item in context.evidence[:2]] == ["ev-u1", "ev-u2"]
+    assert len(context.evidence) <= _POLICY.max_evidence_items
+    for item in context.evidence:
+        source_id = backend.find_memory_id(item.evidence_id)
+        assert source_id is not None
+        source = backend.trg.graph_db.get_node(source_id)
+        assert item.text == source.content_narrative
+        assert item.provenance.turn_id == source.attributes["provenance"]["turn_id"]
+    if len(context.evidence) > 2:
+        assert context.evidence[2].evidence_id.startswith("ev-d")
+        assert context.evidence[2].text.endswith("问我是谁。")
     third_party = _adapter(backend, tmp_path).recall("小林是谁？", _POLICY)
     assert [item.evidence_id for item in third_party.evidence] == ["ev-x1"]
     absent = _adapter(backend, tmp_path).recall("我的银行卡号是多少？", _POLICY)
     assert absent.evidence == ()
 
 
-def test_generic_mention_edge_recovers_crowded_event_via_target_ref(tmp_path):
+def test_generic_mention_edge_recovers_crowded_event_via_target_ref(tmp_path, monkeypatch):
     """Query resolved to 王老师's ref: the crowded global path alone misses
     ev1; the generic mention edge carries it into the E_WANG subset channel.
 
@@ -296,6 +308,11 @@ def test_generic_mention_edge_recovers_crowded_event_via_target_ref(tmp_path):
     """
     backend = _build_mention_corpus(tmp_path)
     query = "王老师的学生是谁？"
+
+    # The new full-history name-aware lexical channel can independently find
+    # ev1. Disable that one channel in both arms to keep this a causal test of
+    # generic mention edges, without changing its required evidence answer.
+    monkeypatch.setattr(backend._lexical_index, "rank", lambda **_kwargs: [])
 
     global_only = backend.recall(query, _POLICY)
     global_texts = [candidate.text for candidate in global_only]

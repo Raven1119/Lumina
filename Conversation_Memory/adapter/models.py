@@ -138,6 +138,27 @@ class MemoryContext:
 
 
 @dataclass(frozen=True)
+class EntityMention:
+    """A source occurrence, never an assertion about the named object."""
+
+    mention_id: str
+    surface: str
+    source_start: int
+    source_end: int
+    provenance: SourceProvenance
+    resolved: bool
+    ambiguous: bool = False
+
+
+@dataclass(frozen=True)
+class EntityMentionContext:
+    query: str
+    mentions: tuple[EntityMention, ...] = ()
+    truncated: bool = False
+    safe_error_code: str | None = None
+
+
+@dataclass(frozen=True)
 class BackendCandidate:
     text: str
     timestamp: str | None

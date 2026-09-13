@@ -8,7 +8,7 @@ The durable key is:
 segment_id + ":" + ingestion_version
 ```
 
-Configured real-model manual Dream uses `grounded-formation-v1`. Each unit ID
+Configured real-model manual Dream uses `grounded-formation-v2`. Each unit ID
 is a stable hash of the atomic SRV/text, exact source refs, optional referenced
 time, and Formation version. Mock/legacy ingestion retains
 `grounded-span-v2`; for every deterministic eligible user or assistant span,
@@ -23,18 +23,28 @@ is introduced and role is not duplicated in the ID because `turn_id` is
 globally unique. Immutable `source_role` is stored in provenance.
 MAGMA UUID4 node IDs are retained only as private backend handles.
 
+V2 source occurrence IDs derive from conversation/turn identity and checked
+source offsets, independently of facts. Original V1 evidence IDs and consumed
+Cold records remain unchanged; there is no automatic backfill.
+
 ## State machine
 
 ```text
 absent -> pending -> in_progress -> completed
-                             \-> failed -> in_progress (retry)
 ```
 
-A Formation state record contains validated `formed_units`, ordered
-`unit_ids`, and private `memory_ids`; it is written before MAGMA. The legacy
-span record remains manifest-only. A completed key returns
-`already_ingested=true` without writing nodes. Failures never write a completed
-status, and a same-version rebuilt-manifest mismatch fails closed.
+V2 returns a failed result while retaining the last pending/in-progress durable
+stage. Retry resumes it; there is no separate V2 persisted `failed` status.
+An invalid stored extraction remains an explicit failure on retry rather than
+being silently replaced by a fresh model sample.
+
+A V2 Formation record checkpoints `extracted`, `verified`, stable `mentions`
+bindings and private `memory_ids` in the existing state owner. Successful stages
+are reused on retry; malformed or missing stage dependencies fail closed.
+Full-source fingerprints, occurrence offsets, provenance and identity-link
+invariants are rechecked. A completed record covers mentions as well as facts.
+The V1 record/IDs remain readable for explicit historical compatibility; the
+legacy span record remains manifest-only.
 
 ## Atomic state writes
 
@@ -49,17 +59,16 @@ transaction or lock.
 
 ## Checkpoints and retry
 
-Ingestion persists MAGMA after every new grounded event, then atomically records
-progress. Before writing a unit, the adapter searches existing MAGMA metadata by
-the stable unit ID. A Formation retry deserializes and revalidates the durable
-units against immutable Cold, reuses found events, and never calls Formation
-again. Legacy span retry still deterministically rebuilds its manifest.
+V2 persists graph-only mention metadata even when no facts are accepted, then
+persists each fact event/vector before recording progress. Stable IDs find
+already-written events. A graph-before-vector failure is repaired from the
+stored event embedding without new extraction or a duplicate event.
 
-After all manifest events are confirmed present, existing relationship creation
-runs, MAGMA is persisted again, and only then is the key marked completed.
-Completed zero-output manifests are valid. Tests cover event-write failure,
-failure after event persistence but before completion, restart recovery, and
-manifest mismatch.
+After every manifest item is present, relationship creation runs idempotently,
+graph/vectors persist again, and only then is the checkpoint completed. Tests
+cover extraction/verification failures, graph/vector and state-write windows,
+zero-fact mentions, restart, source mismatch and invalid stage dependencies.
+
 ## Provenance fields
 
 Every grounded event stores:
@@ -67,7 +76,7 @@ Every grounded event stores:
 - the grounded span evidence/unit ID;
 - source `turn_id`;
 - exact `source_start` and `source_end` offsets;
-- `role=user`;
+- original `source_role=user|assistant`;
 - `segment_id` and `conversation_id`;
 - exact aware `source_timestamp`;
 - declared `source_timezone`;
@@ -102,7 +111,7 @@ scores and vectors are not exposed by `MemoryEvidence`.
 The separately authorized manual Dream consumer may mark a real segment
 consumed only after all of the following are durable:
 
-1. every derived memory event and vector;
+1. every source occurrence, derived memory event and vector;
 2. required graph relationships;
 3. provenance metadata;
 4. the completed idempotency checkpoint.

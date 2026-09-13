@@ -272,7 +272,7 @@ def test_production_final_selection_may_be_empty_without_failure(
         assert max_chars == 1000
         return (), "", False
 
-    monkeypatch.setattr(magma_adapter_module, "bound_evidence", select_none)
+    monkeypatch.setattr(magma_adapter_module, "bound_evidence_groups", select_none)
 
     context = adapter.recall("query", _policy())
 

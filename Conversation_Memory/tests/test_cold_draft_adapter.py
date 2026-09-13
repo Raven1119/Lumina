@@ -478,9 +478,9 @@ def test_context_linearization_preserves_order_roles_and_bounds():
         False,
     )
     assert "[2026-" not in default[1]
-    legacy_truncated = bound_evidence(items, count=1, max_chars=11)
-    assert legacy_truncated[0][0].text == "late"
-    assert legacy_truncated[1:] == ("[USER]\nlate", True)
+    # An admitted source fact is atomic: the character limit must not remove
+    # a negation, qualifier, or tail of the statement.
+    assert bound_evidence(items, count=1, max_chars=11) == ((), "", True)
 
 
 
@@ -491,9 +491,9 @@ def test_context_linearization_character_bound_and_empty_have_no_shell():
     evidence, rendered, truncated = bound_evidence(
         [item], count=1, max_chars=11
     )
-    assert rendered == "[USER]\norig"
+    assert rendered == ""
     assert truncated is True
-    assert evidence[0].text == "orig"
+    assert evidence == ()
     assert item.text == "original text"
 
     assert bound_evidence([], count=1, max_chars=25) == (

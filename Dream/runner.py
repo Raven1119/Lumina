@@ -20,12 +20,12 @@ from .models import DreamRunPolicy, DreamRunReport, SegmentDigestResult
 _ROOT = Path(__file__).resolve().parents[1]
 _CONVERSATION_MEMORY_ROOT = _ROOT / "Conversation_Memory"
 _LEGACY_INGESTION_VERSION = "grounded-span-v2"
-_FORMATION_MAX_TOKENS = 2000
+_FORMATION_MAX_TOKENS = 8192
 if str(_CONVERSATION_MEMORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_CONVERSATION_MEMORY_ROOT))
 
 from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.grounded_formation import FORMATION_VERSION  # noqa: E402
+from adapter.grounded_formation import FORMATION_ENTITY_VERSION as FORMATION_VERSION  # noqa: E402
 from adapter.interfaces import MemoryIngestor  # noqa: E402
 from ingestion.state_store import IngestionStateStore  # noqa: E402
 
@@ -43,6 +43,8 @@ class RealMemoryIngestorProvider:
         self._cache: dict[str, MemoryIngestor] = {}
 
     def get(self, ingestion_version: str) -> MemoryIngestor:
+        if ingestion_version not in {FORMATION_VERSION, _LEGACY_INGESTION_VERSION}:
+            raise RuntimeError("unsupported_ingestion_version")
         if (
             ingestion_version == FORMATION_VERSION
             and self._formation_model is None

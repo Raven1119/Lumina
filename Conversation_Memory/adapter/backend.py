@@ -5,10 +5,40 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
+from copy import deepcopy
 
 from ._recall_execution import _execute_fixed_recall
+from ._anchor_fusion import LexicalEventIndex
 from .entity_consolidation import EntityCandidate
 from .models import BackendCandidate, RecallPolicy
+
+
+_NON_NAME_REFERENCE_SURFACES = frozenset({
+    "我", "我们", "咱", "咱们", "你", "您", "你们", "他", "她", "它",
+    "他们", "她们", "它们", "自己", "本人", "其", "这", "那", "这个", "那个",
+    "这些", "那些", "当前用户", "当前说话者", "current_user", "current user",
+    "the current user", "you", "your", "yours", "yourself", "yourselves",
+    "he", "him", "his", "himself", "she", "her", "hers", "herself",
+    "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
+    "this", "that", "these", "those", "myself", "ours", "ourselves",
+})
+
+
+def _is_persistent_name_surface(surface: str) -> bool:
+    # Reuse the established user-role surfaces. This guard only controls a
+    # derived name index: source occurrences and supported local bindings are
+    # retained, and an explicit user name is still a searchable name.
+    from .user_self import (
+        _EN_FIRST_PERSON_SUBJECTS, _ZH_FIRST_PERSON_SUBJECTS,
+        _is_formation_user_surface,
+    )
+    normalized = surface.strip().casefold()
+    return bool(normalized) and not (
+        normalized in _NON_NAME_REFERENCE_SURFACES
+        or normalized in _EN_FIRST_PERSON_SUBJECTS
+        or normalized in _ZH_FIRST_PERSON_SUBJECTS
+        or _is_formation_user_surface(normalized)
+    )
 
 
 class MemoryBackend(Protocol):
@@ -18,6 +48,11 @@ class MemoryBackend(Protocol):
     def list_entity_candidates(
         self, *, limit: int,
     ) -> tuple[EntityCandidate, ...]: ...
+    def find_entity_candidates(self, surface: str, *, limit: int) -> tuple[EntityCandidate, ...]: ...
+    def resolve_target_entity_refs(self, query: str, *, limit: int = 20) -> tuple[str, ...]: ...
+    def upsert_entity_mentions(self, records: list[dict]) -> None: ...
+    def list_entity_mentions(self, query: str, *, limit: int) -> tuple[dict, ...]: ...
+    def ensure_event_persisted(self, memory_id: str) -> None: ...
     def persist(self) -> None: ...
     def resolve_target_entity_ref(self, query: str) -> str | None: ...
     def recall(
@@ -25,6 +60,7 @@ class MemoryBackend(Protocol):
         query: str,
         policy: RecallPolicy,
         target_entity_ref: str | None = None,
+        target_entity_refs: tuple[str, ...] = (),
     ) -> list[BackendCandidate]: ...
 
 
@@ -49,17 +85,33 @@ class UnavailableMemoryBackend:
     ) -> tuple[EntityCandidate, ...]:
         self._raise()
 
+    def find_entity_candidates(self, surface: str, *, limit: int) -> tuple[EntityCandidate, ...]:
+        self._raise()
+
+    def resolve_target_entity_refs(self, query: str, *, limit: int = 20) -> tuple[str, ...]:
+        return ()
+
+    def upsert_entity_mentions(self, records: list[dict]) -> None:
+        self._raise()
+
+    def list_entity_mentions(self, query: str, *, limit: int) -> tuple[dict, ...]:
+        self._raise()
+
     def persist(self) -> None:
         self._raise()
 
     def resolve_target_entity_ref(self, query: str) -> str | None:
         return None
 
+    def ensure_event_persisted(self, memory_id: str) -> None:
+        self._raise()
+
     def recall(
         self,
         query: str,
         policy: RecallPolicy,
         target_entity_ref: str | None = None,
+        target_entity_refs: tuple[str, ...] = (),
     ) -> list[BackendCandidate]:
         self._raise()
 
@@ -92,6 +144,15 @@ class RealMagmaBackend:
             all-EVENT production graph this override is behavior-identical to
             upstream. The pinned upstream source stays unmodified.
             """
+
+            def _extract_event(self, content, metadata=None):
+                # Lumina supplies already-grounded bounded source facts.
+                # Upstream's basic extraction silently takes content[:500],
+                # which can discard a negation or exact-value suffix. Keep its
+                # keyword/entity metadata but encode and persist the full fact.
+                extraction = super()._extract_event(content, metadata)
+                extraction.content_narrative = content
+                return extraction
 
             def _create_temporal_links(self, event_node):
                 # Imported lazily so controlled test doubles that stub
@@ -146,6 +207,135 @@ class RealMagmaBackend:
         graph_path = self.persist_dir / "graph.json"
         if graph_path.exists():
             self.trg.graph_db.load(str(graph_path))
+        self._rebuild_indexes()
+
+    def _rebuild_indexes(self) -> None:
+        """Derived views only: graph.json remains the single durable authority."""
+        self._surface_refs: dict[str, dict[str, None]] = {}
+        self._surface_mentions: dict[str, dict[str, dict]] = {}
+        self._surface_lengths: set[int] = set()
+        self._lexical_index = LexicalEventIndex()
+        for node in self.trg.graph_db.nodes.values():
+            self._index_node(node)
+        self._indexed_node_count = len(self.trg.graph_db.nodes)
+
+    def _index_node(self, node) -> None:
+        if getattr(node, "node_type", None) == self._node_type.EVENT:
+            self._lexical_index.add(node)
+            return
+        if getattr(node, "node_type", None) != getattr(self._node_type, "ENTITY", None):
+            return
+        metadata = getattr(node, "attributes", {})
+        if not isinstance(metadata, dict):
+            return
+        ref, surface = metadata.get("entity_ref"), metadata.get("canonical_surface")
+        if (isinstance(ref, str) and ref.strip() and isinstance(surface, str)
+                and _is_persistent_name_surface(surface)):
+            self._surface_refs.setdefault(surface.strip(), {})[ref.strip()] = None
+            self._surface_lengths.add(len(surface.strip()))
+        for record in metadata.get("mentions", ()):
+            if not isinstance(record, dict):
+                continue
+            surface, mention_id = record.get("surface"), record.get("mention_id")
+            if not isinstance(surface, str) or not surface or not isinstance(mention_id, str):
+                continue
+            self._surface_mentions.setdefault(surface, {})[mention_id] = deepcopy(record)
+            self._surface_lengths.add(len(surface))
+            if isinstance(ref, str) and ref.strip() and _is_persistent_name_surface(surface):
+                self._surface_refs.setdefault(surface, {})[ref.strip()] = None
+
+    def _ensure_indexes(self) -> None:
+        if (not hasattr(self, "_surface_refs") or
+                self._indexed_node_count != len(self.trg.graph_db.nodes)):
+            self._rebuild_indexes()
+
+    def _matching_surfaces(self, query: str):
+        """Probe query substrings against indexed names, not every stored name."""
+        seen = set()
+        lengths = sorted(self._surface_lengths, reverse=True)
+        start = 0
+        while start < len(query):
+            matched_length = 0
+            for length in lengths:
+                if start + length > len(query):
+                    continue
+                surface = query[start:start + length]
+                if (surface and surface[0].isascii() and surface[0].isalnum()
+                        and start > 0 and query[start - 1].isascii() and query[start - 1].isalnum()):
+                    continue
+                if (surface and surface[-1].isascii() and surface[-1].isalnum()
+                        and start + length < len(query)
+                        and query[start + length].isascii() and query[start + length].isalnum()):
+                    continue
+                if surface not in seen and (surface in self._surface_refs or surface in self._surface_mentions):
+                    seen.add(surface)
+                    yield surface
+                    matched_length = length
+                    break
+            start += matched_length or 1
+
+    def find_entity_candidates(self, surface: str, *, limit: int) -> tuple[EntityCandidate, ...]:
+        self._ensure_indexes()
+        if limit <= 0 or not isinstance(surface, str):
+            return ()
+        normalized = surface.strip()
+        from itertools import islice
+        return tuple(EntityCandidate(ref, normalized) for ref in
+                     islice(self._surface_refs.get(normalized, {}), limit))
+
+    def resolve_target_entity_refs(self, query: str, *, limit: int = 20) -> tuple[str, ...]:
+        self._ensure_indexes()
+        if limit <= 0 or not isinstance(query, str):
+            return ()
+        hits: dict[str, None] = {}
+        for surface in self._matching_surfaces(query):
+            for ref in self._surface_refs.get(surface, {}):
+                hits.setdefault(ref, None)
+                if len(hits) >= limit:
+                    return tuple(hits)
+        return tuple(hits)
+
+    def upsert_entity_mentions(self, records: list[dict]) -> None:
+        """Persist source occurrences without adding assertions or vectors."""
+        from memory.graph_db import EventNode, NodeType
+        self._ensure_indexes()
+        for raw in records:
+            record = deepcopy(raw)
+            mention_id, surface, ref = record.get("mention_id"), record.get("surface"), record.get("entity_ref")
+            if not isinstance(mention_id, str) or not mention_id or not isinstance(surface, str) or not surface:
+                raise ValueError("entity_mention_invalid")
+            if ref is not None and (not isinstance(ref, str) or not ref.strip()):
+                raise ValueError("entity_mention_ref_invalid")
+            # One metadata carrier retains unresolved source occurrences. It
+            # has no EntityRef and asserts no shared identity among them.
+            node_id = f"entity:{ref.casefold()}" if ref else "entity:unresolved_mentions"
+            node = self.trg.graph_db.get_node(node_id)
+            if node is None:
+                node = EventNode(node_id=node_id, node_type=NodeType.ENTITY,
+                                 content_narrative="", embedding_vector=None,
+                                 attributes={"entity_ref": ref, "canonical_surface": surface if ref else "",
+                                             "mentions": []})
+                self.trg.graph_db.add_node(node)
+            mentions = node.attributes.setdefault("mentions", [])
+            existing = next((item for item in mentions if item.get("mention_id") == mention_id), None)
+            if existing is None:
+                mentions.append(record)
+            elif existing != record:
+                raise ValueError("entity_mention_provenance_conflict")
+            self._index_node(node)
+        self._indexed_node_count = len(self.trg.graph_db.nodes)
+
+    def list_entity_mentions(self, query: str, *, limit: int) -> tuple[dict, ...]:
+        self._ensure_indexes()
+        if limit <= 0 or not isinstance(query, str):
+            return ()
+        records: dict[str, dict] = {}
+        for surface in self._matching_surfaces(query):
+            for mention_id, record in self._surface_mentions.get(surface, {}).items():
+                records.setdefault(mention_id, deepcopy(record))
+                if len(records) >= limit:
+                    return tuple(records.values())
+        return tuple(records.values())
 
     def find_memory_id(self, evidence_id: str) -> str | None:
         for node_id, node in self.trg.graph_db.nodes.items():
@@ -153,8 +343,30 @@ class RealMagmaBackend:
                 return node_id
         return None
 
+    def ensure_event_persisted(self, memory_id: str) -> None:
+        """Repair upstream's graph-before-vector failure using stored embedding."""
+        node = self.trg.graph_db.get_node(memory_id)
+        if node is None or getattr(node, "node_type", None) != self._node_type.EVENT:
+            raise ValueError("memory_event_missing")
+        vector_db = self.trg.vector_db
+        if memory_id in vector_db.id_to_index:
+            return
+        import numpy as np
+        vector = getattr(node, "embedding_vector", None)
+        if not isinstance(vector, list) or not vector:
+            raise ValueError("memory_event_embedding_missing")
+        metadata = node.attributes
+        vector_db.add_vector(vector_id=memory_id, vector=np.asarray(vector, dtype=np.float32),
+                             metadata={"timestamp": node.timestamp.isoformat(),
+                                       "keywords": metadata.get("keywords", []),
+                                       "entities": metadata.get("entities", [])})
+
     def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any]) -> str:
-        return self.trg.add_event(text, timestamp=timestamp, metadata=metadata)
+        self._ensure_indexes()
+        memory_id = self.trg.add_event(text, timestamp=timestamp, metadata=metadata)
+        self._index_node(self.trg.graph_db.get_node(memory_id))
+        self._indexed_node_count = len(self.trg.graph_db.nodes)
+        return memory_id
 
     def create_relationships(self, memory_ids: list[str]) -> None:
         existing = {
@@ -171,7 +383,18 @@ class RealMagmaBackend:
                     self.trg.graph_db.add_link(link)
                     existing.add(identity)
         self._create_subject_entity_ref_links(memory_ids)
+        self._create_object_entity_ref_links(memory_ids)
         self._create_mention_entity_ref_links(memory_ids)
+
+    def _create_object_entity_ref_links(self, memory_ids: list[str]) -> None:
+        for memory_id in memory_ids:
+            node = self.trg.graph_db.get_node(memory_id)
+            metadata = getattr(node, "attributes", {})
+            ref = metadata.get("object_entity_ref")
+            surface = metadata.get("object_entity_surface")
+            if isinstance(ref, str) and ref.strip() and isinstance(surface, str) and surface.strip():
+                self._ensure_entity_refers_to_link(memory_id, ref=ref.strip(),
+                                                   surface=surface.strip(), role="object")
 
     def _create_subject_entity_ref_links(self, memory_ids: list[str]) -> None:
         """Find-or-create graph-only EntityNodes and canonical REFERS_TO edges.
@@ -263,6 +486,9 @@ class RealMagmaBackend:
                 link_type=LinkType.ENTITY,
                 properties=properties,
             ))
+        if hasattr(self, "_surface_refs"):
+            self._index_node(self.trg.graph_db.get_node(entity_node_id))
+            self._indexed_node_count = len(self.trg.graph_db.nodes)
 
     def _create_mention_entity_ref_links(self, memory_ids: list[str]) -> None:
         """Find-or-create graph-only EntityNodes and generic REFERS_TO edges
@@ -366,37 +592,17 @@ class RealMagmaBackend:
         dedups by ``entity:{ref.casefold()}``); the distinct-ref set handles
         both shapes.
         """
-        if not isinstance(query, str) or not query.strip():
-            return None
-        # Imported lazily so controlled test doubles that stub
-        # ``memory.graph_db`` with event-only symbols stay valid.
-        from memory.graph_db import NodeType
-
-        hits: set[str] = set()
-        for node in self.trg.graph_db.nodes.values():
-            if getattr(node, "node_type", None) != NodeType.ENTITY:
-                continue
-            attributes = getattr(node, "attributes", None)
-            if not isinstance(attributes, dict):
-                continue
-            surface = attributes.get("canonical_surface")
-            ref = attributes.get("entity_ref")
-            if not isinstance(surface, str) or not surface.strip():
-                continue
-            if not isinstance(ref, str) or not ref.strip():
-                continue
-            if surface.strip() in query:
-                hits.add(ref.strip())
-        if len(hits) == 1:
-            return next(iter(hits))
-        return None
+        hits = self.resolve_target_entity_refs(query, limit=2)
+        return hits[0] if len(hits) == 1 else None
 
     def recall(
         self,
         query: str,
         policy: RecallPolicy,
         target_entity_ref: str | None = None,
+        target_entity_refs: tuple[str, ...] = (),
     ) -> list[BackendCandidate]:
+        self._ensure_indexes()
         context = _execute_fixed_recall(
             trg=self.trg,
             constraints_type=self._constraints_type,
@@ -405,7 +611,11 @@ class RealMagmaBackend:
             query=query,
             policy=policy,
             target_entity_ref=target_entity_ref,
+            target_entity_refs=target_entity_refs,
+            lexical_index=self._lexical_index,
+            entity_surfaces=tuple(self._matching_surfaces(query)),
         )
+        self.last_recall_stats = dict(context.metadata.get("bounded_recall_stats", {}))
         scores = context.metadata.get("search_scores", [])
 
         def to_candidate(node: Any, score: float | None) -> BackendCandidate:
@@ -414,7 +624,8 @@ class RealMagmaBackend:
                 text=getattr(node, "content_narrative", ""),
                 timestamp=timestamp.isoformat() if timestamp else None,
                 score=score,
-                metadata=dict(getattr(node, "attributes", {})),
+                metadata={**dict(getattr(node, "attributes", {})),
+                          **context.metadata.get("association_metadata", {}).get(node.node_id, {})},
             )
 
         candidates: list[BackendCandidate] = []

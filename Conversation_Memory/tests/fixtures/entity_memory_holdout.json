@@ -1,0 +1,73 @@
+{
+  "schema": "entity-memory-holdout-v1",
+  "frozen_before_model_run": true,
+  "description": "Independent synthetic bilingual acceptance. Expected answers and source positions are frozen before baseline/candidate calls; surface checks are conservative lower bounds, not semantic judges.",
+  "policy": {"top_k": 10, "max_graph_depth": 1, "max_nodes": 20, "max_evidence_items": 3, "max_chars": 5000, "final_min_score": 0.144},
+  "scenarios": [
+    {
+      "id": "mentions_only",
+      "segments": [[{"id": "m1", "role": "user", "text": "先只列出三个名称：Project Kestrel、材料 Oxyn-7、软件 Loompad。不要给它们补充任何属性。"}]],
+      "mentions": [{"turn": "m1", "surface": "Project Kestrel", "kind": "project"}, {"turn": "m1", "surface": "Oxyn-7", "kind": "material"}, {"turn": "m1", "surface": "Loompad", "kind": "software"}],
+      "facts": [],
+      "forbidden_facts": [{"turn": "m1", "reason": "Names alone do not authorize attributes or relations."}],
+      "queries": [{"id": "mention_lookup", "query": "之前列出的 Loompad 是哪个名称？", "required_mentions": ["Loompad"], "required_facts": []}]
+    },
+    {
+      "id": "mixed_types",
+      "segments": [[{"id": "t1", "role": "user", "text": "许澄任职于北汀研究所。北汀研究所位于青岬港。"}, {"id": "t2", "role": "user", "text": "论文《Quiet Lattices》描述材料 Virex-4。软件 Cedarnote 控制设备 Tern-6。"}]],
+      "mentions": [{"turn": "t1", "surface": "许澄", "kind": "person"}, {"turn": "t1", "surface": "北汀研究所", "kind": "organization"}, {"turn": "t1", "surface": "青岬港", "kind": "place"}, {"turn": "t2", "surface": "Quiet Lattices", "kind": "paper"}, {"turn": "t2", "surface": "Virex-4", "kind": "material"}, {"turn": "t2", "surface": "Cedarnote", "kind": "software"}, {"turn": "t2", "surface": "Tern-6", "kind": "device"}],
+      "facts": [
+        {"id": "employment", "turn": "t1", "subject": ["许澄"], "relation": ["任职", "工作", "work", "employ"], "value": ["北汀研究所"], "object": "北汀研究所"},
+        {"id": "location", "turn": "t1", "subject": ["北汀研究所"], "relation": ["位于", "所在地", "locat", "based"], "value": ["青岬港"], "object": "青岬港"},
+        {"id": "paper", "turn": "t2", "subject": ["Quiet Lattices"], "relation": ["描述", "介绍", "describe", "discuss"], "value": ["Virex-4"], "object": "Virex-4"},
+        {"id": "control", "turn": "t2", "subject": ["Cedarnote"], "relation": ["控制", "control"], "value": ["Tern-6"], "object": "Tern-6"}
+      ],
+      "queries": [{"id": "object_endpoint", "query": "什么软件控制 Tern-6？", "required_facts": ["control"]}, {"id": "place_endpoint", "query": "青岬港的研究所叫什么？", "required_facts": ["location"]}]
+    },
+    {
+      "id": "exact_attributes",
+      "segments": [[{"id": "a1", "role": "user", "text": "设备 Osprey-8 的质量为 2.75 kg，额定电压为 18 V。设备 Finch-3 的质量为 0.85 kg。"}, {"id": "a2", "role": "user", "text": "Osprey-8 的序列号是 QA-731-B，外壳颜色是琥珀色，采样频率是 640 Hz。"}]],
+      "mentions": [{"turn": "a1", "surface": "Osprey-8", "kind": "device"}, {"turn": "a1", "surface": "Finch-3", "kind": "device"}, {"turn": "a2", "surface": "Osprey-8", "kind": "device"}],
+      "facts": [
+        {"id": "mass1", "turn": "a1", "subject": ["Osprey-8"], "relation": ["质量", "重量", "mass", "weight"], "value": ["2.75 kg"]},
+        {"id": "voltage", "turn": "a1", "subject": ["Osprey-8"], "relation": ["电压", "voltage"], "value": ["18 V"]},
+        {"id": "mass2", "turn": "a1", "subject": ["Finch-3"], "relation": ["质量", "重量", "mass", "weight"], "value": ["0.85 kg"]},
+        {"id": "serial", "turn": "a2", "subject": ["Osprey-8"], "relation": ["序列号", "serial"], "value": ["QA-731-B"]},
+        {"id": "color", "turn": "a2", "subject": ["Osprey-8"], "relation": ["颜色", "color", "colour"], "value": ["琥珀", "amber"]},
+        {"id": "frequency", "turn": "a2", "subject": ["Osprey-8"], "relation": ["频率", "frequency", "sampling rate"], "value": ["640 Hz"]}
+      ],
+      "queries": [{"id": "mass", "query": "Osprey-8 有多重？", "required_facts": ["mass1"]}, {"id": "voltage", "query": "Osprey-8 的额定电压是多少？", "required_facts": ["voltage"]}, {"id": "serial", "query": "What is the serial number of Osprey-8?", "required_facts": ["serial"]}, {"id": "color", "query": "Osprey-8 的外壳是什么颜色？", "required_facts": ["color"]}, {"id": "frequency", "query": "Osprey-8 每秒采样多少次？", "required_facts": ["frequency"]}]
+    },
+    {
+      "id": "relation_chain",
+      "segments": [[{"id": "c1", "role": "user", "text": "赤鹭计划由陶苇负责。"}, {"id": "c2", "role": "user", "text": "陶苇 researches the material Nexite-9."}]],
+      "mentions": [{"turn": "c1", "surface": "赤鹭计划", "kind": "project"}, {"turn": "c1", "surface": "陶苇", "kind": "person"}, {"turn": "c2", "surface": "陶苇", "kind": "person"}, {"turn": "c2", "surface": "Nexite-9", "kind": "material"}],
+      "facts": [
+        {"id": "leader", "turn": "c1", "subject": ["赤鹭计划"], "relation": ["负责", "lead", "manag", "responsib"], "value": ["陶苇"], "object": "陶苇", "inverse": {"subject": ["陶苇"], "value": ["赤鹭计划"]}},
+        {"id": "research", "turn": "c2", "subject": ["陶苇"], "relation": ["研究", "research", "stud"], "value": ["Nexite-9"], "object": "Nexite-9"}
+      ],
+      "queries": [{"id": "chain_zh", "query": "负责赤鹭计划的人研究什么材料？", "required_facts": ["leader", "research"]}, {"id": "chain_paraphrase", "query": "Which substance is investigated by the person in charge of 赤鹭计划?", "required_facts": ["leader", "research"]}, {"id": "semantic", "query": "What substance does 陶苇 investigate?", "required_facts": ["research"]}]
+    },
+    {
+      "id": "identity",
+      "segments": [[{"id": "i1", "role": "user", "text": "实验员沈岚使用软件 Birchplot。"}], [{"id": "i2", "role": "user", "text": "实验员沈岚的工号是 LAB-82。实验员沈岚也叫沈青。"}], [{"id": "i3", "role": "user", "text": "另一位同名的沈岚是摄影师，不是上面那位实验员。摄影师沈岚使用设备 Heron-5。"}], [{"id": "i4", "role": "user", "text": "沈岚喜欢素描。这里没有说明是哪一位沈岚。"}]],
+      "mentions": [{"turn": "i1", "surface": "沈岚", "kind": "person"}, {"turn": "i1", "surface": "Birchplot", "kind": "software"}, {"turn": "i2", "surface": "沈岚", "kind": "person"}, {"turn": "i2", "surface": "沈青", "kind": "person"}, {"turn": "i3", "surface": "沈岚", "kind": "person"}, {"turn": "i3", "surface": "Heron-5", "kind": "device"}, {"turn": "i4", "surface": "沈岚", "kind": "person", "unresolved": true}],
+      "facts": [
+        {"id": "software", "turn": "i1", "subject": ["沈岚"], "relation": ["使用", "use"], "value": ["Birchplot"], "object": "Birchplot"},
+        {"id": "staff_id", "turn": "i2", "subject": ["沈岚"], "relation": ["工号", "编号", "staff", "employee"], "value": ["LAB-82"]},
+        {"id": "alias", "turn": "i2", "subject": ["沈岚"], "relation": ["叫", "别名", "also", "alias", "name"], "value": ["沈青"]},
+        {"id": "camera", "turn": "i3", "subject": ["沈岚"], "relation": ["使用", "use"], "value": ["Heron-5"], "object": "Heron-5"}
+      ],
+      "identity_checks": [{"kind": "same", "left_fact": "software", "right_fact": "staff_id"}, {"kind": "different", "left_fact": "software", "right_fact": "camera"}, {"kind": "unresolved", "turn": "i4", "surface": "沈岚"}, {"kind": "alias", "fact": "software", "surface": "沈青"}],
+      "queries": [{"id": "alias_lookup", "query": "沈青使用什么软件？", "required_facts": ["software"]}, {"id": "photographer", "query": "摄影师沈岚使用什么设备？", "required_facts": ["camera"]}]
+    },
+    {
+      "id": "modality",
+      "segments": [[{"id": "n1", "role": "user", "text": "罗桐加入了南汐社吗？"}, {"id": "n2", "role": "user", "text": "假如叶舟使用材料 Calyx-2，实验会更快。"}, {"id": "n3", "role": "user", "text": "闻杉没有购买设备 Lark-11。"}, {"id": "n4", "role": "user", "text": "我听说顾栩加入了白桦会，但尚未确认。"}, {"id": "n5", "role": "assistant", "text": "纪苓的工作单位是暮桥实验室。"}, {"id": "n6", "role": "user", "text": "请不要把上一句未经确认的说法记成事实。"}]],
+      "mentions": [{"turn": "n1", "surface": "罗桐", "kind": "person"}, {"turn": "n1", "surface": "南汐社", "kind": "organization"}, {"turn": "n2", "surface": "叶舟", "kind": "person"}, {"turn": "n2", "surface": "Calyx-2", "kind": "material"}, {"turn": "n3", "surface": "闻杉", "kind": "person"}, {"turn": "n3", "surface": "Lark-11", "kind": "device"}, {"turn": "n4", "surface": "顾栩", "kind": "person"}, {"turn": "n4", "surface": "白桦会", "kind": "organization"}, {"turn": "n5", "surface": "纪苓", "kind": "person"}, {"turn": "n5", "surface": "暮桥实验室", "kind": "organization"}],
+      "facts": [{"id": "negative", "turn": "n3", "subject": ["闻杉"], "relation": ["购买", "买", "purchas", "buy", "bought"], "value": ["Lark-11"], "polarity": "negative", "object": "Lark-11"}],
+      "forbidden_facts": [{"turn": "n1", "reason": "Question must not become a certain membership fact."}, {"turn": "n2", "reason": "Hypothesis must not become a certain material-use fact.", "allow_qualified": true}, {"turn": "n4", "reason": "Hearsay must retain attribution and uncertainty.", "allow_qualified": true}, {"turn": "n5", "reason": "Unaccepted assistant assertion has no world-fact authority."}],
+      "queries": [{"id": "negative", "query": "闻杉买过 Lark-11 吗？", "required_facts": ["negative"]}]
+    }
+  ]
+}

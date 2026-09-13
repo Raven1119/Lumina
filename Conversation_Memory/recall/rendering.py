@@ -26,37 +26,38 @@ def bound_evidence(
     count: int,
     max_chars: int,
 ) -> tuple[tuple[MemoryEvidence, ...], str, bool]:
+    return bound_evidence_groups([[item] for item in items], count=count, max_chars=max_chars)
+
+
+def bound_evidence_groups(
+    groups: list[list[MemoryEvidence]],
+    *,
+    count: int,
+    max_chars: int,
+) -> tuple[tuple[MemoryEvidence, ...], str, bool]:
+    """Render whole source facts and whole dependency bundles, or omit them.
+
+    A group is supplied by evidence selection, never inferred by rendering.
+    Shared bridge facts are rendered once. An over-budget group is skipped so
+    a later independent fact can still fit; truncated truthfully records this.
+    """
     selected: list[MemoryEvidence] = []
     parts: list[str] = []
     used = 0
-    truncated = len(items) > count
-    for item in items[:count]:
-        prefix = "\n" if parts else ""
-        available = max_chars - used - len(prefix)
-        if available <= 0:
+    truncated = False
+    seen: set[str] = set()
+    for group in groups:
+        pending: dict[str, MemoryEvidence] = {}
+        for item in group:
+            if item.evidence_id not in seen:
+                pending.setdefault(item.evidence_id, item)
+        lines = [f"{_render_header(item)}\n{item.text}" for item in pending.values()]
+        extra = sum(map(len, lines)) + max(0, len(lines) - 1) + bool(parts and lines)
+        if len(selected) + len(pending) > count or used + extra > max_chars:
             truncated = True
-            break
-        header = _render_header(item)
-        if available <= len(header) + 1:
-            truncated = True
-            break
-        full_line = f"{header}\n{item.text}"
-        line = full_line
-        if len(line) > available:
-            line = line[:available]
-            truncated = True
-        visible_text_chars = max(0, len(line) - len(header) - 1)
-        text = item.text[:visible_text_chars]
-        selected.append(
-            MemoryEvidence(
-                item.evidence_id,
-                text,
-                item.timestamp,
-                item.provenance,
-            )
-        )
-        parts.append(line)
-        used += len(prefix) + len(line)
-        if len(line) < len(full_line):
-            break
+            continue
+        selected.extend(pending.values())
+        seen.update(pending)
+        parts.extend(lines)
+        used += extra
     return tuple(selected), "\n".join(parts), truncated

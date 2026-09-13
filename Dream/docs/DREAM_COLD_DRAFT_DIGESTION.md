@@ -25,7 +25,7 @@ The HTTP client cannot supply policy fields. Current defaults are:
 ```text
 max_segments = 10
 stop_on_error = false
-ingestion_version = grounded-formation-v1  # configured real-model app
+ingestion_version = grounded-formation-v2  # configured real-model app
 ```
 
 ### CLI
@@ -99,11 +99,9 @@ explicit trigger
 -> ColdDraftStore.list_pending(limit)
 -> complete logical Cold segment
 -> ColdDraftSegmentConverter
--> one bounded DeepSeek-V4-Pro Formation call (non-thinking, max_tokens=2000)
-   for a new segment
--> deterministic source-grounding validation plus bounded semantic fallback
-   and value-only guard
--> formed-unit checkpoint
+-> bounded DeepSeek-V4-Pro extraction of facts and full-window mentions
+-> extraction checkpoint, then batch proposition/role/identity verification
+-> verified batch and stable bindings checkpointed in Memory
 -> MemoryIngestor.ingest(ColdDraftSegment)
 -> MAGMA graph/vector persistence
 -> ingestion checkpoint completed
@@ -112,13 +110,14 @@ explicit trigger
 -> DreamRunReport
 ```
 
-Dream passes the bounded source segment to the adapter. With a configured real
-model, the adapter sends that segment once to dedicated DeepSeek-V4-Pro Formation
-in non-thinking mode with `max_tokens=2000`, accepts only units admitted by the
-current grounding validator and bounded semantic fallback, and checkpoints them
-before MAGMA. Retry after a MAGMA failure reuses the checkpoint. Mock/legacy adapters
-retain deterministic `grounded-span-v2`; either path may produce `0..M`
-memory IDs.
+Dream passes the bounded source segment to the adapter. Configured real-model
+writes use DeepSeek-V4-Pro in non-thinking mode with a local 8192-token output
+budget. One extraction and one verification call process a new nonempty batch;
+each successful stage is checkpointed before continuing. Facts and independent
+mentions must both be durable before completion, including zero-fact windows.
+Retries reuse successful stages. Mock/legacy adapters retain deterministic
+`grounded-span-v2`; either path may produce `0..M` memory IDs. See the
+[current entity-memory contract and results](../../Conversation_Memory/docs/ENTITY_MEMORY_RESULT.md).
 
 ## Policy and ordering
 

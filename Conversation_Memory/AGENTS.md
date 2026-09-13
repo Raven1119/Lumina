@@ -1,225 +1,109 @@
-# AGENTS.md
+# Working on Conversation Memory
 
-## Scope
+This scope implements the Lumina-owned Memory facade over pinned, unmodified
+MAGMA. Follow root AGENTS, the current task, `docs/COLD_DRAFT.md`,
+`docs/CURRENT_STATUS.md`, and the local provenance/temporal contracts. The
+current task authorizes the entity/relationship/attribute enhancement; older
+stage descriptions are historical evidence, not gates.
 
-This file applies to all work under `Conversation_Memory/`.
+## Current boundary
 
-Conversation Memory v1 is an implemented Lumina-owned ingestion and Recall
-facade over a pinned, unmodified MAGMA backend. It is no longer an initial
-integration milestone.
+Production callers use only Lumina DTOs and the adapter:
 
-Current chain:
+- `ingest(ColdDraftSegment) -> IngestionResult`;
+- `recall(query, RecallPolicy) -> MemoryContext`;
+- `recall_mentions(query, limit=20) -> EntityMentionContext`.
 
-```text
-ColdDraftSegment
--> MagmaMemoryAdapter.ingest(...)
--> one bounded Formation call for configured real-model Dream
--> deterministic validation of atomic GroundedMemoryUnit values
--> durable formed-unit checkpoint
--> 0..M MAGMA events + graph/vector persistence
+The last method reports source occurrences, including unresolved references;
+it does not assert that the mentioned proposition is true. Graph objects,
+EntityRefs, MAGMA UUIDs, vectors, backend scores and candidate paths remain
+private. No UI or automatic ingestion is introduced.
 
-query + RecallPolicy
--> query target_entity_ref classification (CURRENT_USER -> E_001, or
-   deterministic exact-surface lookup over persisted EntityNode
-   canonical_surface values: unique hit -> that ref, 0 or multi -> None)
--> dense + bounded lexical rankings
--> entity-conditioned FAISS subset list when a target_entity_ref is present
-   (that EntityNode's REFERS_TO events — role=subject and role-less mention
-   edges alike; adds candidates only)
--> RRF anchors
--> fixed bounded traversal
--> fail-open controlled relation compatibility for supplied relation surfaces
--> fixed BGE batch rerank (per-pair [SAME_ENTITY] projection on equal refs)
--> pinned Hindsight post-rerank score composition
--> bounded MemoryEvidence / MemoryContext
-```
+## Current write path
 
-## Authority
+Configured DeepSeek-V4-Pro manual Dream uses `grounded-formation-v2`.
+`grounded-span-v2` remains the deterministic mock/legacy path. Formation v1
+functions/checkpoints remain for explicit historical compatibility; default
+Dream never selects them and never automatically reprocesses consumed Cold.
 
-Also obey:
+`grounded_formation.py` extracts facts and mentions over the complete bounded
+source window, then verifies every structurally eligible proposition and its
+subject/object roles in one batch. Mention surface plus occurrence locates
+exact immutable source offsets. Invalid or missing positions, malformed model
+output, provider failure and overflow leave the segment pending; semantic
+rejection is a normal result. A single complete JSON fence is tolerated;
+arbitrary surrounding prose is not.
 
-- root `AGENTS.md`;
-- `docs/CURRENT_STATUS.md`;
-- `docs/COLD_DRAFT.md`;
-- `Conversation_Memory/docs/COLD_DRAFT_ADAPTER_DESIGN.md`;
-- `Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md`;
-- `Conversation_Memory/docs/CHINESE_TEMPORAL_PARSER.md`.
+The source-grounded `GroundedMemoryUnit` remains the fact representation.
+`_entity_ingestion.py` uses the existing `IngestionStateStore` to checkpoint
+extraction, verification and bindings before graph writes. Retry reuses each
+successful stage. A completed manifest includes both mentions and facts; a
+zero-fact window must still persist its mentions. Source fingerprints and
+stage/identity invariants are rechecked on restart.
 
-When instructions conflict, preserve Cold-first provenance and the narrow
-Lumina-owned facade before optimizing MAGMA behavior.
+One shared batch view binds subject/object/other mentions. Name lookup happens
+before candidate limits. Explicit aliases/coreference require source evidence;
+explicit new same-name identities separate; ambiguity and unresolved references
+remain occurrences with bounded candidates. Current-user identity is `E_001`
+only when source roles support it. Assistant assertions do not by themselves
+authorize facts about the world, user or successful actions.
 
-## Current public boundary
+Facts are EVENT nodes with vectors; identities and occurrence metadata use
+existing graph-only ENTITY nodes. One graph-only carrier holds unresolved
+occurrences without an EntityRef. Explicit `REFERS_TO(role=subject|object)`
+links differ from ordinary mention links. Attribute values stay literal; a
+measurement is not an entity. Entity nodes never enter temporal event chains.
 
-Production callers may use only Lumina-owned interfaces and DTOs:
+MAGMA writes converge on stable evidence IDs. Retry repairs an existing graph
+node whose vector write was interrupted. Relationships and graph/vectors must
+be durable before the checkpoint becomes completed and Cold's owner consumes.
 
-```text
-MemoryIngestor.ingest(ColdDraftSegment) -> IngestionResult
-MemoryRetriever.recall(query, RecallPolicy) -> MemoryContext
-```
+## Current read path
 
-`MagmaMemoryAdapter` implements both interfaces. MAGMA nodes, UUIDs, NetworkX,
-FAISS, embeddings, graph paths, backend scores, and narrative context remain
-private.
+Dense MiniLM, indexed lexical candidates and bounded entity-conditioned FAISS
+candidates use existing RRF(k=60), fixed BGE and pinned Hindsight scoring.
+Name and lexical indexes are rebuildable views over the existing graph, updated
+on writes; query limits apply after indexed lookup, not to a history prefix.
+Multiple matching refs keep the entity channel; ambiguous refs do not receive
+a shared SAME_ENTITY certainty marker.
 
-## Current ingestion behavior
+The adapter reads lazy graph adjacency within `max_nodes`, bypassing upstream's
+unbounded neighbor materialization and first-ten-path truncation. Positive
+`max_graph_depth` also allows one fixed, two-fact projection through explicit
+subject/object roles; depth zero stays anchor-only. This does not change global
+semantic/temporal depth or write an inferred relationship back to memory.
 
-- Configured real-model manual Dream uses `grounded-formation-v1` with
-  DeepSeek-V4-Pro in non-thinking mode and a Formation-only 2000-token output
-  budget;
-  the deterministic `grounded-span-v2` path remains for mock/legacy callers.
-- A deterministic, LLM-free self-name coverage guard runs inside Formation
-  after model-call validation: when an explicit user self-identification
-  (我叫X / 我的名字是X / 你可以叫我X) is missing from the accepted units,
-  exactly one source-grounded identity unit (exact-span value) is built from
-  the raw source and admitted only through the unchanged strict validator. It
-  never duplicates an equivalent accepted unit and never widens fact
-  authorization (`adapter/identity_coverage.py`).
-- Formation makes one call for a newly seen bounded segment, then validates
-  atomic subject/relation/value units, exact source refs, role authorization,
-  negation, uncertainty, and exact details.
-- One accepted `GroundedMemoryUnit` becomes one MAGMA event. A source segment may produce
-  `0..M` events, and a completed empty manifest is valid.
-- A validated unit whose subject is the current user persists generic
-  retrieval metadata `subject_entity_ref="E_001"`; ordinary named subjects
-  use deterministic exact-surface EntityRef binding (unique match REUSE, no
-  match stable CREATE, ambiguity fail-open). Grounded entity mentions are
-  extracted once per unique `(turn_id, supporting_span)` from the source span
-  (never `unit.text`), exact-span gated, subset-selected per unit only when a
-  span backs multiple units, bound by the same exact-surface rule (a mention
-  equal to the unit's subject surface reuses the subject ref), and checkpointed
-  durably before any MAGMA write. At `create_relationships` time each event
-  gets one `ENTITY/REFERS_TO(role=subject)` edge for its subject ref plus one
-  generic role-less `ENTITY/REFERS_TO` edge per additional mention ref, into
-  graph-only `entity:<ref>` EntityNodes; EntityNodes never enter the vector
-  index, and a Lumina-owned backend subclass keeps temporal links EVENT-only
-  (pinned upstream is unmodified).
-- Cold remains immutable. Unit source refs preserve source turn identity, role,
-  exact unambiguous span offsets, timestamp, and timezone.
-- Stable evidence IDs are derived from grounded-unit identity and ingestion
-  version.
-- Provenance includes segment, conversation, turn, exact offsets, timestamp,
-  timezone, and ingestion version.
-- Temporal normalization uses each source turn's own timestamp/timezone.
-- English and Chinese temporal mentions are stored as aware UTC half-open
-  intervals `[start, end)` without replacing the original text.
-- Formation checkpoints contain the validated units and ordered IDs before any
-  MAGMA event. A downstream retry revalidates and reuses them without another
-  Formation call.
-- Memory completion must be established before Dream may consume the source
-  Cold segment.
+Single facts are rendered whole or omitted with `truncated=true`; source roles
+and negation are preserved. A valid two-fact role path supplies both original
+facts to the same BGE scorer; selecting its endpoint requires the complete
+source chain to fit. A complete marked query/pair must also fit BGE's fixed
+token window; otherwise scoring uses the original single fact. This changes
+scoring input, not stored facts, the model,
+Hindsight or the score floor. Budgets include items, rendered characters, queried
+identities and actual adjacency reads. Recall remains read-only and fail-soft.
+See `docs/COLD_DRAFT_ADAPTER_DESIGN.md` for selection, evidence packing and
+capability limits. Experiment reports and captured provider outputs are local
+artifacts, not runtime dependencies.
 
-## Current RecallPolicy
+## Preserved boundaries
 
-The current policy surface contains:
+- Immutable Cold source text, turn/segment IDs, order, roles, times and timezone.
+- Single writer; no competing checkpoint, database, manager or query planner.
+- No automatic Dream, chat-time ingestion, backfill, fact rewriting,
+  supersession, forgetting, contradiction resolution or task-memory expansion.
+- No changes to Mind, Nervous, Execution, runtime provider policy or MAGMA.
+- Keep original fact text, uncertainty, conditions, reported speech and precise
+  values. Valid provenance proves source support, not external world truth.
+- Preserve BGE model/revision, RRF constants, Hindsight formula and caller floor
+  unless independently authorized and supported by evidence.
 
-```text
-top_k
-max_chars
-max_evidence_items
-max_graph_depth
-max_nodes
-final_min_score
-relation_surfaces
-```
+## Validation
 
-Semantics:
+Use isolated synthetic state. The root prepared Python runs maintained tests;
+real MAGMA uses `Conversation_Memory/.venv/Scripts/python.exe`.
 
-- `top_k` limits fused dense/lexical RRF anchors;
-- `max_evidence_items` limits final public anchors plus graph expansions;
-- `max_graph_depth=0` is valid and means anchor-only;
-- `max_nodes` is a hard internal scan/traversal budget;
-- `final_min_score` is an optional inclusive floor over the composed Hindsight
-  post-rerank score; production sets it to `0.144`;
-- `relation_surfaces` accepts explicit caller-supplied relation text. Resolved
-  incompatibility rejects a candidate; compatible or either-side `UNRESOLVED`
-  keeps existing Recall behavior. Normal Chat currently supplies `None`;
-- fixed traversal failure returns a safe empty context.
-
-## Current anchor and traversal behavior
-
-- Dense MiniLM and bounded lexical rankings are fused with RRF using `k=60`.
-- Lexical failure safely falls back to dense-only.
-- Fixed traversal projects valid event expansions behind anchors.
-- Internal graph nodes may participate in traversal, but only event nodes with
-  valid text, aware timestamp, stable evidence ID, and provenance may become
-  public evidence.
-- Cross-turn context is only partially supported through semantic/temporal
-  adjacency and joint recall; there is no explicit coreference resolution.
-
-## Context Linearization
-
-- Rendering preserves retrieval order, obeys `max_chars`, and never exposes
-  internal metadata.
-
-## Frozen production boundaries
-
-Do not change the following without an explicit task and supporting evidence:
-
-- bounded, source-grounded atomic unit granularity;
-- `N` source turns to `0..M` grounded events with at most one Formation call
-  for a newly seen configured real-model segment;
-- Cold-first source authority;
-- Lumina-owned DTO/facade boundary;
-- stable evidence/provenance projection;
-- fixed traversal semantics;
-- RRF constants and validated GENERAL weights;
-- safe empty/failure behavior;
-- fixed production BGE batch reranking with private scores and lazy per-adapter
-  reuse;
-- pinned Hindsight post-rerank normalization, linear recency, and
-  multiplicative composition with neutral unsupported signals; final scores
-  remain private;
-- pinned upstream MAGMA revision.
-
-Justify behavior changes with a reproducible bug, a real failure sample, or an
-explicit caller-contract requirement. Follow the root task-scope and validation
-rules; routine repairs do not require a separate Mind design or a new experiment.
-
-## Not authorized by default
-
-Do not add or infer authorization for:
-
-- automatic Dream or chat-time ingestion;
-- custom coreference resolution, event rewriting, segment merging, or
-  contextual-window embeddings;
-- custom temporal anchor ranking where the pinned upstream has no generic
-  implementation;
-- fact supersession, contradiction resolution, forgetting, deletion, or memory
-  rewriting;
-- automatic intent/query classification or Recall scheduling;
-- Evidence Organizer/Ledger, LLM Judge, another cross-encoder, or relevance
-  gate;
-- PostgreSQL, Neo4j, another graph database, or a new vector backend;
-- public exposure of MAGMA internals;
-- modification of `upstream/MAGMA/`.
-
-## Upstream policy
-
-The upstream checkout is pinned by `MAGMA_COMMIT.txt`. Keep its worktree clean.
-Reuse upstream algorithms through Lumina-owned adapters; do not copy research
-routers, benchmark heuristics, answer formatters, or narrative generators into
-the production path.
-
-## Testing
-
-Use synthetic data and temporary/marker-owned paths. Never use real user Draft
-or memory data in committed tests.
-
-Choose relevant tests for the affected behavior under the root validation
-rules. Ordinary fixes may use focused cases; Markdown-only changes use static
-checks. Broader memory regression uses:
-
-```bash
-python -m pytest Conversation_Memory/tests -q
-```
-
-Recall behavior changes also require the existing isolated real-MAGMA E2E.
-From the repository root, use its required environment and the isolation
-contract in `docs/RECALL_E2E_ACCEPTANCE.md`:
-
-```powershell
-.\Conversation_Memory\.venv\Scripts\python.exe -m scripts.recall_e2e_test
-git diff --check
-git -C Conversation_Memory/upstream/MAGMA status --short
-git -C Conversation_Memory/upstream/MAGMA diff --stat
-```
+Run affected Memory/Dream/Chat regressions. Recall changes additionally require
+`scripts.recall_e2e_test` under `docs/RECALL_E2E_ACCEPTANCE.md` isolation rules.
+Run `git diff --check` and verify pinned upstream HEAD/worktree unchanged.
+Report real and deterministic results separately; test counts do not establish
+universal entity coverage or model reliability.

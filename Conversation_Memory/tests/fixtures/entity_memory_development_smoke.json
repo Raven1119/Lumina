@@ -1,0 +1,39 @@
+{
+  "schema": "entity-memory-development-smoke-v1",
+  "policy": {
+    "top_k": 10,
+    "max_graph_depth": 1,
+    "max_nodes": 20,
+    "max_evidence_items": 3,
+    "max_chars": 5000,
+    "final_min_score": 0.144
+  },
+  "scenarios": [
+    {
+      "id": "dense_smoke",
+      "segments": [
+        [
+          {
+            "id": "s1",
+            "role": "user",
+            "text": "陆萤负责灰雀计划。陆萤研究材料 Asterion-6。"
+          },
+          {
+            "id": "s2",
+            "role": "user",
+            "text": "灰雀计划的预算是 7300 CNY。软件 Mistralpad 处理灰雀计划的样本。"
+          }
+        ]
+      ],
+      "mentions": [],
+      "facts": [],
+      "queries": [
+        {
+          "id": "chain",
+          "query": "负责灰雀计划的人研究什么材料？",
+          "required_facts": []
+        }
+      ]
+    }
+  ]
+}

@@ -1002,6 +1002,7 @@ def test_formation_failure_writes_no_checkpoint_or_magma(tmp_path):
 
 def test_app_and_cli_wiring_select_formation_only_with_model(monkeypatch, tmp_path):
     from Conversation_Memory.adapter import magma_adapter as packaged_magma
+    from adapter.grounded_formation import FORMATION_ENTITY_VERSION
     from Dream.runner import RealMemoryIngestorProvider
     from core import main as core_main
 
@@ -1018,7 +1019,7 @@ def test_app_and_cli_wiring_select_formation_only_with_model(monkeypatch, tmp_pa
         staticmethod(fake_create_real),
     )
     assert core_main._build_memory_retriever(model) is not None
-    assert created[-1][1]["ingestion_version"] == FORMATION_VERSION
+    assert created[-1][1]["ingestion_version"] == FORMATION_ENTITY_VERSION
     assert created[-1][1]["formation_model"] is model
 
     monkeypatch.setattr(
@@ -1029,17 +1030,18 @@ def test_app_and_cli_wiring_select_formation_only_with_model(monkeypatch, tmp_pa
     provider = RealMemoryIngestorProvider(
         tmp_path / "magma", tmp_path / "state.json", model,
     )
-    provider.get(FORMATION_VERSION)
+    provider.get(FORMATION_ENTITY_VERSION)
     assert created[-1][1]["formation_model"] is model
     provider.get("grounded-span-v2")
     assert created[-1][1]["formation_model"] is None
     with pytest.raises(RuntimeError, match="formation_model_unavailable"):
         RealMemoryIngestorProvider(
             tmp_path / "magma-2", tmp_path / "state-2.json",
-        ).get(FORMATION_VERSION)
+        ).get(FORMATION_ENTITY_VERSION)
 
 
 def test_cli_default_version_tracks_effective_model_and_explicit_value(monkeypatch):
+    from adapter.grounded_formation import FORMATION_ENTITY_VERSION
     import Dream.runner as runner_module
     from Dream.models import DreamRunReport
     from core.model_client import MockModelClient
@@ -1060,7 +1062,7 @@ def test_cli_default_version_tracks_effective_model_and_explicit_value(monkeypat
 
     monkeypatch.setattr(runner_module, "build_model_client_from_env", build_mock)
     assert runner_module.main([]) == 0
-    assert requested_models[-1] == (None, 2000)
+    assert requested_models[-1] == (None, 8192)
     assert observed[-1] == "grounded-span-v2"
 
     real = FakeFormationModel([])
@@ -1071,8 +1073,8 @@ def test_cli_default_version_tracks_effective_model_and_explicit_value(monkeypat
 
     monkeypatch.setattr(runner_module, "build_model_client_from_env", build_real)
     assert runner_module.main([]) == 0
-    assert requested_models[-1] == (None, 2000)
-    assert observed[-1] == FORMATION_VERSION
+    assert requested_models[-1] == (None, 8192)
+    assert observed[-1] == FORMATION_ENTITY_VERSION
     assert runner_module.main(["--ingestion-version", "grounded-span-v2"]) == 0
     assert observed[-1] == "grounded-span-v2"
 
@@ -1102,7 +1104,7 @@ def test_default_runner_uses_dedicated_formation_model(monkeypatch, tmp_path):
         str(tmp_path / "magma"),
     )
     runner_module.build_default_runner()
-    assert requested_models == [(None, 2000)]
+    assert requested_models == [(None, 8192)]
 
 
 def test_multi_turn_referenced_time_uses_the_unique_source_turn_timestamp(tmp_path):

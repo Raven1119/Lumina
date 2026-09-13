@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from itertools import islice
+import re
 from typing import Any, Iterable, Sequence
 
 _STOP_WORDS = {
@@ -57,6 +58,82 @@ _TIMEZONE_SOURCES = {
     "configured_default",
     "legacy_segment_fallback",
 }
+
+
+def _query_features(text: str) -> tuple[str, ...]:
+    """Index exact words and CJK bigrams without a tokenizer/model change."""
+    features = dict.fromkeys(_text_index_keys(text))
+    for word in text.lower().split():
+        if len(word) >= 4:
+            for index in range(len(word) - 2):
+                features.setdefault("part:" + word[index:index + 3], None)
+    for run in re.findall(r"[\u3400-\u9fffA-Za-z0-9]+", text.lower()):
+        if any("\u3400" <= char <= "\u9fff" for char in run):
+            for index in range(len(run) - 1):
+                features.setdefault("cjk:" + run[index:index + 2], None)
+    return tuple(features)
+
+
+class LexicalEventIndex:
+    """Rebuildable graph view; queries read matching postings, never history prefixes.
+
+    Construction/update may inspect stored text. A query projects and scores at
+    most max_nodes events. Rare posting lists are visited first; no full-corpus
+    score pass is hidden behind the output bound.
+    """
+
+    def __init__(self):
+        self.postings: dict[str, dict[str, None]] = {}
+        self.node_features: dict[str, tuple[str, ...]] = {}
+
+    def add(self, node: Any) -> None:
+        node_id = getattr(node, "node_id", None)
+        text = getattr(node, "content_narrative", None)
+        if not isinstance(node_id, str) or not isinstance(text, str):
+            return
+        features = _query_features(text)
+        previous = self.node_features.get(node_id, ())
+        if previous == features:
+            return
+        for feature in previous:
+            posting = self.postings.get(feature, {})
+            posting.pop(node_id, None)
+        self.node_features[node_id] = features
+        for feature in features:
+            self.postings.setdefault(feature, {})[node_id] = None
+
+    def rank(self, *, graph_db, query, max_nodes, event_node_type, node_type,
+             entity_surfaces=()):
+        features = _query_features(query)
+        postings = [(feature, self.postings[feature]) for feature in features
+                    if self.postings.get(feature)]
+        postings.sort(key=lambda item: (len(item[1]), item[0]))
+        selected: dict[str, None] = {}
+        for _feature, posting in postings:
+            for node_id in posting:
+                selected.setdefault(node_id, None)
+                if len(selected) >= max_nodes:
+                    break
+            if len(selected) >= max_nodes:
+                break
+        ranked = []
+        for node_id in selected:
+            node = graph_db.get_node(node_id)
+            if not _is_projectable_event(node, event_node_type=event_node_type,
+                                         node_type=node_type):
+                continue
+            score = _lexical_score(query, node.content_narrative)
+            # A persisted entity surface is a source-grounded lexical token in
+            # unsegmented Chinese. Arbitrary CJK bigram overlap is deliberately
+            # not a ranking signal: it promoted repeated question quotations
+            # over identity facts in the crowded real-MAGMA regression.
+            if score is None and entity_surfaces:
+                matches = sum(surface in node.content_narrative for surface in entity_surfaces)
+                score = 5 * matches if matches else None
+            if score is not None:
+                ranked.append((score, _stable_node_key(node), node))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [item[2] for item in ranked[:_LEXICAL_LIMIT]]
 
 
 def _is_projectable_event(

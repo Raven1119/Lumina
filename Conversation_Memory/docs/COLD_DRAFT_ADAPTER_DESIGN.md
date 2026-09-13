@@ -17,14 +17,14 @@ query + RecallPolicy
 -> MemoryContext
 ```
 
-Production Cold ownership, Dream scheduling, and Chat injection remain outside
-this workspace.
+Cold ownership, Dream scheduling and Chat injection remain with their existing owners.
 
 ## Lumina-owned interfaces
 
 ```text
 MemoryIngestor.ingest(ColdDraftSegment) -> IngestionResult
 MemoryRetriever.recall(query, RecallPolicy) -> MemoryContext
+MemoryRetriever.recall_mentions(query, limit=20) -> EntityMentionContext
 ```
 
 `MagmaMemoryAdapter` implements both. `MemoryBackend` is the private
@@ -45,12 +45,20 @@ FAISS never cross the facade.
 
 ## Ingestion conversion
 
-Configured real-model Dream sends one bounded Cold segment to dedicated
-DeepSeek-V4-Pro Grounded Formation in non-thinking mode with `max_tokens=2000`.
-Accepted atomic `GroundedMemoryUnit` values pass the deterministic grounding
-validator, bounded semantic fallback, and value-only guard before checkpointing
-and MAGMA writes. Mock/legacy ingestion deterministically builds exact
-`GroundedSpanUnit` spans. Either path may produce `0..M` events.
+Configured real-model Dream uses `grounded-formation-v2`: one bounded
+DeepSeek-V4-Pro extraction over the complete source window, then batch
+verification of every structurally eligible proposition and mention identity.
+The local output budget is 8192 tokens per call; input remains 32 turns/20,000
+characters, with explicit overflow failure. Mention surface and occurrence
+ordinal are deterministically resolved to exact source offsets. Facts retain
+subject/relation/value and verified subject/object mention roles.
+
+Extraction, verification and bindings are durably checkpointed in the existing
+state record before graph mutation. Isolated mentions persist even in a
+zero-fact window. `recall_mentions` returns source occurrences through public
+DTOs, without asserting their proposed content. The deterministic
+`grounded-span-v2` path and explicit historical V1 compatibility remain separate
+from the configured real-model writer. Old evidence IDs are unchanged.
 
 For configured real-model Formation, event text is `GroundedMemoryUnit.text`,
 the public evidence ID is the stable grounded-unit ID, and private metadata
@@ -86,9 +94,8 @@ Durable ingestion key:
 (segment_id, ingestion_version)
 ```
 
-The adapter checkpoints pending/in-progress/completed state plus the ordered
-grounded unit-ID manifest and private memory IDs written so far. It stores no
-span text. Stable unit IDs allow retry to converge after partial graph/vector
+The adapter checkpoints pending/in-progress/completed state, validated units,
+source occurrence records, stable bindings and private memory IDs written so far. Stable unit IDs allow retry to converge after partial graph/vector
 persistence, while a same-version manifest mismatch fails closed.
 
 Dream may consume the source segment only after the adapter returns a complete,
@@ -119,13 +126,16 @@ MiniLM dense ranking
 + bounded deterministic lexical ranking
 + entity-conditioned FAISS IDSelectorBatch subset ranking when the query
   carries a target_entity_ref (bounded to that EntityNode's
-  REFERS_TO(role=subject) events; adds candidates only)
+  REFERS_TO subject/object/mention events; adds candidates only)
 -> RRF(k=60)
 -> stable fused top_k anchors
 ```
 
-Lexical ranking scans at most `max_nodes` graph entries and only projects valid
-event nodes. Lexical failure safely falls back to dense-only.
+A rebuildable lexical index selects and scores at most `max_nodes` matching
+events across history. Exact entity-name matches support unsegmented Chinese;
+generic CJK overlap is not a second semantic ranker. Lexical failure safely
+falls back to dense-only. A rebuildable name index supports bounded multiple
+identities and aliases without treating local pronouns as global names.
 
 `top_k` limits anchors only. The final public evidence total is separately
 limited to `0..max_evidence_items`. Zero selected evidence is a successful
@@ -135,8 +145,11 @@ automatic relevance abstention.
 
 ## Fixed traversal
 
-The default path uses the current MAGMA graph traversal under
-`max_graph_depth`/`max_nodes` constraints.
+The adapter uses lazy MAGMA adjacency under the existing depth/node budgets,
+counting actual neighbor reads rather than materializing full neighbor lists.
+It bypasses the upstream first-ten-path truncation. With positive graph depth,
+explicit subject/object roles also permit one fixed two-fact evidence projection;
+depth zero remains anchor-only. Inferred relationships are never written back.
 
 - Anchors are projected first.
 - Valid non-anchor event expansions may be projected afterward.
@@ -177,7 +190,11 @@ a free-text query parser.
 ## Context Linearization
 
 - Preserve retrieval order and render plain role-labelled evidence text.
-- Rendering obeys `max_chars`; final-line truncation is allowed and reported.
+- Rendering obeys `max_chars`; facts are kept whole or omitted with honest
+  `truncated=true`. A selected relationship endpoint requires its original
+  bridge fact; the complete group must fit item and rendered-character limits.
+  BGE scores the combined pair only if the complete marked query and both facts
+  fit its fixed token window; otherwise it uses the original single fact.
 
 ## Chat injection boundary
 
@@ -200,12 +217,13 @@ Empty or failed Recall falls back to ordinary Chat.
 - Production uses the fixed BGE reranker and inclusive
   `final_min_score=0.144`; neither constitutes a reliable semantic no-answer
   contract.
-- No automatic intent/query classification, free-text relation parser, entity
-  resolver, or Recall scheduler.
+- No automatic intent/query classification, free-text query relation parser,
+  general cross-conversation identity resolution, or Recall scheduler.
 - No Evidence Organizer/Ledger, conflict/current-state resolver, fact
   supersession, or semantic deduplication.
-- Cross-turn reference is only partially supported through joint recall and
-  graph adjacency; there is no explicit coreference resolution.
+- Explicit source-supported aliases/coreference within the bounded Formation
+  window can share identity. Unresolved references retain their occurrences;
+  there is no general coreference solver.
 - Knowledge updates are preserved as new/old events and interpreted by the
   final model; no memory is automatically invalidated.
 

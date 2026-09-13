@@ -33,6 +33,22 @@ class BgeReranker:
         if getattr(self._model.config, "_commit_hash", None) != BGE_REVISION:
             raise RuntimeError("BGE reranker revision mismatch")
 
+    def fits_pair(self, query: str, candidate_text: str) -> bool:
+        """Whether the exact pair, including special tokens, fits without loss.
+
+        Association scoring may only borrow bridge context when the fixed
+        tokenizer window contains both complete source facts. This performs
+        no inference and does not change the scorer's 512-token limit.
+        """
+        if (not isinstance(query, str) or not query.strip()
+                or not isinstance(candidate_text, str) or not candidate_text.strip()):
+            return False
+        encoded = self._tokenizer(
+            query, candidate_text, add_special_tokens=True, truncation=False,
+            return_attention_mask=False, return_token_type_ids=False,
+        )
+        return len(encoded["input_ids"]) <= BGE_MAX_LENGTH
+
     def score(
         self,
         query: str,
