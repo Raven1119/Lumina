@@ -98,9 +98,10 @@ invented dependencies: the selector must include the actual supporting facts.
 Their omission remains a semantic failure even if an answer value is correct.
 
 An intentional empty selection leaves Answer with the original background and
-conversation. The additional Answer guidance prevents unresolved reference or
-old source age from being treated as evidence that a proposition is false or an
+conversation. Additional Answer guidance instructs the model not to treat
+unresolved reference or old source age as evidence that a proposition is false or an
 attribute currently absent; it does not assert that every old fact remains true.
+This is a prompt instruction, and semantic acceptance must check actual answers.
 
 Selector/provider/subset failure restores the same complete prepared context.
 Unavailable prepared metadata preserves that original context and fails
