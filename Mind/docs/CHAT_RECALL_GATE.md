@@ -4,7 +4,7 @@ The production Chat path owns one `MindGate.decide(original_message, recent_cont
 
 ## Selection
 
-The default `LUMINA_MIND_GATE_MODE=llm` retains `mind-gate-v2`, its original boolean prompt and eight-token budget. Set the existing variable to `contextual` to opt into `mind-gate-v3` and the bounded query protocol below. Direct injected callers use `LlmMindGate(model_client, contextual=True)`. This capability is implemented but is not promoted as the default; real semantic benefit has not been established. Mock model mode and `constant` retain the original-query Constant gate, and client construction failure still falls back to it.
+The default `LUMINA_MIND_GATE_MODE=llm` retains `mind-gate-v2`, its original boolean prompt and eight-token budget. Set the existing variable to `contextual` to opt into `mind-gate-v3` and the bounded query protocol below. Direct injected callers use `LlmMindGate(model_client, contextual=True)`. This capability is implemented but is not promoted as the default; query faithfulness remains a limitation of the explicit mode. Mock model mode and `constant` retain the original-query Constant gate, and client construction failure still falls back to it.
 
 ## Decision and source boundary
 
