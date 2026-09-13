@@ -18,6 +18,9 @@ from Execution.model import EXECUTION_PROTOCOL, EXECUTION_ROLE, ExecutionHistory
 from Execution.organ import ExecutionOrgan
 from Execution.sandbox import DockerIPython
 
+REPETITION_THRESHOLD = 3
+REPETITION_VERSION = 'execution-repetition-2'
+
 
 def reply(event, kind, data):
     return Event(kind + '-' + fingerprint(event.event_id)[:24], 'execution',
@@ -32,7 +35,7 @@ def advisory(text):
 class Execution:
     """One authorized workspace; handlers persist intent before any action."""
     def __init__(self, directory, calls, workspace=None, ipython=None, *, context_mode=None,
-                 stage1_authority=None):
+                 stage1_authority=None, repetition_mode=None):
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / 'run.json'
@@ -69,6 +72,13 @@ class Execution:
             raise ValueError('context_mode_is_fixed_at_start')
         if context_mode is not None:
             self.state['context_mode'] = context_mode
+        if repetition_mode not in (None, 'off', 'execution', 'mind'):
+            raise ValueError('unsupported_repetition_mode')
+        if (self.path.exists() and repetition_mode is not None
+                and repetition_mode != self.state.get('repetition_mode', 'off')):
+            raise ValueError('repetition_mode_is_fixed_at_start')
+        if repetition_mode not in (None, 'off'):
+            self.state['repetition_mode'] = repetition_mode
         self.workspace = Path(self.state['workspace']).resolve(strict=True)
         if (not self.workspace.is_dir() or self.directory.is_relative_to(self.workspace)
                 or self.workspace.is_relative_to(self.directory)
@@ -279,7 +289,11 @@ class Execution:
 
     def refresh_environment(self):
         """Explicitly sample the authorized workspace, unlike saved views/status."""
-        return self.capture()
+        snapshot = self.capture()
+        # The delivered observation may advance repetition's source boundary.
+        # Persist it before Nervous can acknowledge the query across a crash.
+        self.save()
+        return snapshot
 
     def source_observation(self, relative):
         """Sample one authorized source; Nervous owns watch occurrence identity."""
@@ -358,6 +372,11 @@ class Execution:
             owners.append(value)
         mode = self.state.get('context_mode', 'baseline')
         projection = {}
+        if self.state.get('repetition_mode', 'off') != 'off':
+            repetition = self.observe_repetition(self.evidence.snapshot(self.watched())['files'])
+            if repetition:
+                projection['repetition_observation'] = repetition
+            self.save()
         limit = 6 if mode == 'baseline' else 120
         rounds = self.history.history(count, state.execution_id,
             self.actor.committed_tool_calls(limit=limit), limit=limit,
@@ -547,7 +566,80 @@ class Execution:
                          'recent_outcome': canonical(outcome), 'failure': state.failure} if state else None)
         if 'stage1_authority' in self.state:
             content['task_contract'] = self.state['task_contract']
+        repetition = self.observe_repetition(content['files'])
+        if repetition:
+            content['repetition_observation'] = repetition
         return content
+
+    def observe_repetition(self, files):
+        """Derive a bounded fact, retaining only its notification cursor in owner state.
+
+        A source sampling change advances the boundary even without an Actor action,
+        so A-B-A cannot revive an old suffix. Reviews/queries never advance it.
+        """
+        if self.state.get('repetition_mode', 'off') == 'off':
+            return None
+        state = self.run_state()
+        if state is None:
+            return None
+        binding = {'files': files,
+            'owner_inputs': [x['source_ref'] for x in self.task_scoped(self.state['owners'])]}
+        # A review or its new advice is not an actual observation/action. It must
+        # neither erase the fact before Execution sees it nor rearm notification.
+        # Guidance applicability remains independently enforced by the Actor binding.
+        scope = fingerprint([REPETITION_VERSION, state.execution_id, self.task_binding(), binding, self.watched()])
+        cursor = self.state.get('repetition_monitor')
+        if cursor is None or cursor['scope'] != scope:
+            cursor = {'scope': scope, 'after_decision': state.decision_count if cursor else 0,
+                      'notified': None, 'evidence': None}
+            self.state['repetition_monitor'] = cursor
+        cursor['evidence'] = None
+        if (state.status != 'running' or self.state.get('unknown_action')
+                or self.actor.completion_review_pending()
+                or (self.state.get('control') or {}).get('action') in {'stop', 'revoke'}):
+            return None
+        tail = self.actor.repetition_tail()
+        if not tail or tail[-1]['decision'] != f'decision-{state.decision_count:06d}':
+            return None
+        # Metadata is used only after the wire has been authenticated by a committed
+        # owner frame. It cannot create an action or fill a missing/truncated result.
+        bindings = {fingerprint(r['wire']): self.history.request_metadata(r).get('execution_binding')
+                    for _, r in self.calls.records(role='execution')
+                    if r.get('status') == 'received' and 'metadata' in r}
+        repeated, signature = [], fingerprint([tail[-1]['code'], tail[-1]['result']])
+        for record in reversed(tail):
+            before = bindings.get(fingerprint(plain(record['wire']))) if record['wire'] else None
+            if (int(record['decision'][9:]) <= cursor['after_decision'] or before is None
+                    or any(before.get(key) != value for key, value in binding.items())
+                    or fingerprint([record['code'], record['result']]) != signature):
+                break
+            repeated.append(record)
+        if len(repeated) < REPETITION_THRESHOLD:
+            return None
+        repeated.reverse()
+        identity = 'repetition-' + fingerprint([scope, repeated[0]['action_ref']])[:24]
+        sample = self.evidence.put(canonical({'code': repeated[0]['code'], 'result': repeated[0]['result'],
+            'scope': 'Committed action and observed output, not independent verification of printed assertions.'}),
+            'repetition sample ' + repeated[0]['result_ref'])
+        sources = self.evidence.put(canonical({'files': files, 'watched': self.watched()}),
+                                    'repetition observed source versions', kind='catalogue')
+        records = self.evidence.put(canonical({
+            'records': [{key: r[key] for key in ('decision', 'action_ref', 'result_ref', 'history_ref')}
+                        for r in repeated[:REPETITION_THRESHOLD]],
+            'latest_result_ref': repeated[-1]['result_ref'], 'action_result_sha256': signature}),
+            'repetition records ' + identity, kind='catalogue')
+        cursor['evidence'] = {'version': REPETITION_VERSION, 'id': identity,
+            'execution_ref': state.execution_id, 'task_binding': self.task_binding(),
+            'count': len(repeated), 'threshold': REPETITION_THRESHOLD,
+            'records_ref': records['ref'], 'first_decision': repeated[0]['decision'],
+            'last_decision': repeated[-1]['decision'],
+            'sample_ref': sample['ref'],
+            'source_versions_ref': sources['ref'], 'source_count': len(files), 'run_status': state.status,
+            'review_activity': (self.current_review() or {}).get('activity_id'),
+            'scope': 'Exact consecutive completed cells and full outputs match within sampled sources; '
+                'not proof of no progress, failure or completion. Memory/external changes are unobserved. '
+                'Read records/sample/source refs for details.'}
+        return cursor['evidence']
 
     @staticmethod
     def target(snapshot):
@@ -894,6 +986,11 @@ class Execution:
         if state is None and not self.state['predictions']:
             return ()
         snapshot = self.capture()
+        from Nervous.triggers import repetition_route
+        repetition = snapshot.get('repetition_observation')
+        route = repetition_route(self.state.get('repetition_mode', 'off'), repetition)
+        notify_repetition = (route['mind']
+            and self.state['repetition_monitor']['notified'] != repetition['id'])
         requests = ([item for item in self.actor.cognitive_requests()
                      if item[0] not in self.state['handled_requests']] if self.actor else [])
         review = self.state['last_reviewed']
@@ -912,7 +1009,7 @@ class Execution:
                                        'before': {'ref': previous}, 'after': {'ref': observed}})
         dependencies = self.dependencies(snapshot['files'])
         same_files = review and review['execution_ref'] == snapshot['execution_ref'] and review['files'] == snapshot['files']
-        if (not requests and not changed_predictions and review
+        if (not requests and not changed_predictions and not notify_repetition and review
                 and self.target(snapshot) == self.target(review)):
             # Unread comparisons remain pending, but an accepted review already
             # handled this notification. Waiting alone is not new evidence.
@@ -920,6 +1017,7 @@ class Execution:
             return ()
         from Nervous.triggers import execution_reasons
         reasons = execution_reasons({
+            'repetition_observed': notify_repetition,
             'requests': bool(requests), 'changed_predictions': bool(changed_predictions),
             'budget_feedback': self.state['stop_reason'] == 'feedback_budget_reserved' and any(dependencies),
             'completion_feedback': bool(self.actor and self.actor.completion_review_pending() and any(dependencies)),
@@ -934,6 +1032,8 @@ class Execution:
         # Publishing its request must not enqueue a second review merely because
         # the next poll now notices its pending prediction comparison instead.
         identity = self.outcome_identity(snapshot)
+        if notify_repetition:
+            identity = fingerprint([identity, repetition['id']])
         if identity in self.state['announced']:
             self.save()
             return ()
@@ -944,6 +1044,8 @@ class Execution:
         self.state['announced'].append(identity)
         self.state['handled_requests'].extend(item[0] for item in requests)
         self.state['outbox'].append(event.document())
+        if notify_repetition:
+            self.state['repetition_monitor']['notified'] = repetition['id']
         self.save()
         return (event,)
 

@@ -77,7 +77,20 @@ OUTCOME_TRIGGERS = tuple(
          'Execution proposed completion; outstanding guidance or computation results require business-result feedback.'),
         ('execution.result', 'significant_result',
          'Execution reached a significant result or outside wait; assess current business evidence and remaining conditions.'),
-    ))
+    )) + (
+    TriggerSpec('execution.repetition', 1, 'execution', 'mind', 'execution.outcome', 2, 'related',
+                lambda facts: bool(facts.get('repetition_observed', False)),
+                'Execution observed repeated completed actions and results under unchanged observed sources; '
+                'this does not establish no progress, business failure or completion.'),
+)
+
+
+def repetition_route(mode, evidence):
+    """Route owner-produced repetition facts without judging their business meaning."""
+    if mode not in ('off', 'execution', 'mind'):
+        raise ValueError('unsupported_repetition_mode')
+    return {'execution': bool(evidence) and mode != 'off',
+            'mind': bool(evidence) and mode == 'mind'}
 
 
 def execution_reasons(facts):

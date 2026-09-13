@@ -19,6 +19,7 @@ from Execution.execution import (
     EventLog,
     ExecutionResult,
     ExecutionState,
+    IPythonCode,
     Model,
     SharedEnvironment,
     ToolHost,
@@ -247,6 +248,36 @@ class ExecutionOrgan:
                      if event.event_type == 'MODEL_DECISION'
                      and (event.event_id in retired
                           or getattr(event.payload['frame'].raw_model_response, 'retirement_reason', None) is not None))
+
+    def repetition_tail(self) -> list[dict]:
+        """Read the consecutive suffix of single, fully observed IPython actions.
+
+        No normalization of code or output, no unfinished/retired/control actions,
+        and no provider answer promoted to an action. Internal wire references
+        authenticate the pre-action source binding; callers must not project them.
+        """
+        events = self._event_log.events
+        positions = [i for i, e in enumerate(events) if e.event_type == 'MODEL_DECISION']
+        tail, end = [], len(events)
+        for position in reversed(positions):
+            group = events[position:end]
+            frame = group[0].payload['frame']
+            results = [e for e in group if e.event_type == 'IPYTHON_EXECUTION_RESULT']
+            starts = [e for e in group if e.event_type == 'IPYTHON_EXECUTION_STARTED']
+            if (not isinstance(frame.resulting_action, IPythonCode) or len(results) != 1 or len(starts) != 1
+                    or any(e.event_type in {'DECISION_RETIRED', 'ACTION_RECONCILED'} for e in group)
+                    or _unsettled_action_start(events[:end]) is not None):
+                break
+            result = results[0].payload['observation'].result
+            if not result.ok or result.truncated or result.cognitive_request is not None:
+                break
+            tail.append({'decision': frame.decision_id, 'action_ref': starts[0].event_id,
+                'result_ref': results[0].event_id,
+                'history_ref': 'execution-history:' + self.state.execution_id + ':' + frame.decision_id,
+                'code': frame.resulting_action.code, 'result': asdict(result),
+                'wire': frame.provider_wire_request})
+            end = position
+        return list(reversed(tail))
 
     def latest_transport_failure(self) -> tuple[str, str] | None:
         """Stable owner evidence for the latest IPython transport outcome."""

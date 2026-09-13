@@ -31,6 +31,32 @@ Production Recall gates, the supported Execution facade and licenses remain.
 
 ## Intention and Nervous Stage1 implementation
 
+### Opt-in repetition observation follow-up
+
+`start --repetition-mode execution|mind` adds bounded exact repeated-action facts;
+default remains off. Execution owns action/result evidence and sampling boundaries;
+Nervous optionally routes one event per unchanged segment to the same Mind.
+NoChange or new advice does not erase/rearm the fact. The existing completion,
+authority, recovery and context mechanisms remain in place.
+
+The one-scenario A/B/C comparison used 24 new real calls, eight per arm. All three
+produced correct dependency indexes and none completed its Run inside the frozen
+allowance. Baseline did not continue the seeded exact repetition. Frozen C also
+lost the raw fact before Execution received new advice, invalidating a same-evidence
+B-C claim. Verdict **INCONCLUSIVE; neither path promoted**. After-comparison v2
+fixes preserve the fact across advice, persist explicit observation-query boundaries
+and keep large samples out of event bodies. These fixes have deterministic
+verification, not a new real-model evaluation. Original 96-call state and workspace
+hashes remain unchanged. See the [result and cost report](../Mind/docs/REPETITION_REASSESSMENT_RESULT.md).
+
+Final v2 maintained validation: **1,023 passed, 30 skipped**; related Docker
+checks: **14 passed** with scripted model replies. The two existing upstream
+deprecation warnings remain. Source/document review and `git diff --check` passed.
+All **24** new real requests are retained separately from deterministic setup;
+post-comparison fixes did not consume or claim another real-model evaluation.
+
+### Stage1 baseline and historical result
+
 Implemented as an explicit opt-in. The original real acceptance remains
 **PARTIAL**; the same Task B's correction chain has now closed with disclosed
 developer feedback and recovery. This is not acceptance of general autonomy. The

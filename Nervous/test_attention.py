@@ -49,6 +49,38 @@ def test_existing_execution_trigger_precedence_and_ordinary_round_quiet():
     assert [spec.id for spec in reasons] == ['execution.request', 'prediction.changed']
 
 
+@pytest.mark.parametrize('mode, expected', [
+    ('off', {'execution': False, 'mind': False}),
+    ('execution', {'execution': True, 'mind': False}),
+    ('mind', {'execution': True, 'mind': True}),
+])
+def test_repetition_evidence_routes_without_changing_owner_facts(mode, expected):
+    from Nervous.triggers import repetition_route
+    evidence = {'ref': 'repetition:run-a:1', 'action_refs': ['action:1', 'action:2', 'action:3']}
+    original = copy.deepcopy(evidence)
+    assert repetition_route(mode, evidence) == expected
+    assert evidence == original
+    for absent in (None, {}, []):
+        assert repetition_route(mode, absent) == {'execution': False, 'mind': False}
+
+
+@pytest.mark.parametrize('mode', [None, '', 'baseline', 'automatic', True])
+def test_repetition_route_rejects_unregistered_modes(mode):
+    from Nervous.triggers import repetition_route
+    with pytest.raises(ValueError, match='unsupported_repetition_mode'):
+        repetition_route(mode, {'ref': 'repetition:run-a:1'})
+
+
+def test_repetition_feedback_keeps_existing_request_and_completion_precedence():
+    from Nervous.triggers import execution_reasons
+    facts = dict(requests=False, changed_predictions=False, budget_feedback=False,
+                 completion_feedback=False, significant_result=False, repetition_observed=True)
+    assert [spec.id for spec in execution_reasons(facts)] == ['execution.repetition']
+    reasons = execution_reasons({**facts, 'requests': True, 'completion_feedback': True})
+    assert [spec.id for spec in reasons] == [
+        'execution.request', 'execution.completion_feedback', 'execution.repetition']
+
+
 def test_source_selection_preserves_original_attribution_and_catalogue():
     from Nervous.attention import inline_refs, delivery_sources
     records = [{'ref': 'source:a', 'text': 'observed', 'origin': 'execution'},

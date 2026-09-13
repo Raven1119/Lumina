@@ -56,6 +56,26 @@ With no new information, baseline resume stays quiet without model calls.
 Stage1 resume also checks foreground source/due Watches; `status` is read-only
 in both modes.
 
+Optional exact repetition observation is fixed at start; its default is off:
+
+```powershell
+.venv/Scripts/python.exe -m Mind start --state .mind-state/observed-task --workspace <task-directory> --goal-file <goal.txt> --repetition-mode execution --max-calls 40
+```
+
+`execution` presents a bounded fact to Execution after three consecutive identical
+completed IPython cells, full results and unchanged sampled sources in one Run/Task.
+`mind` also routes that fact to the same Mind through Nervous. Reads and original
+high-level advice use their existing paths. NoChange and new advice neither erase
+the observation before Execution sees it nor rearm notification. Changed sampled
+sources/owner input or a new Task/Run can begin a new segment. Repetition is not
+proof of no progress; unobserved memory and external changes remain unknown.
+Full samples stay external, and oversized reads retain their existing capacity
+limits. Waiting, pending/unknown actions, truncated results and completed quiet
+restarts do not become new repetition reviews. Original completion continuation
+still has priority. Resume takes no mode override. This foreground feature is
+opt-in; no default or behavioral superiority is promoted by the
+[diagnostic comparison](REPETITION_REASSESSMENT_RESULT.md).
+
 Single-goal `--goal` / `--goal-file` remains the baseline launch. The opt-in
 `start --pursuit "<original authorized scope>"` keeps the same Mind across
 serial bounded Tasks, with explicit Intention/Watch effects and Nervous attention

@@ -524,7 +524,7 @@ class NervousOrgan:
             views['execution_state'] = execution.view('execution.state')
         return self.freeze_attention(event, views)
 
-    def initialize(self, *, goal=None, workspace=None, context_mode=None, pursuit=None):
+    def initialize(self, *, goal=None, workspace=None, context_mode=None, pursuit=None, repetition_mode=None):
         """Retain immutable launch input before constructing its receiving organs.
 
         These are original routing/authorization arguments, never mutable task
@@ -535,7 +535,10 @@ class NervousOrgan:
         previous = self.settings.get('initial_input')
         if context_mode not in (None, 'baseline', 'mask', 'summary'):
             raise ValueError('unsupported_context_mode')
-        if goal is not None or workspace is not None or context_mode is not None or pursuit is not None:
+        if repetition_mode not in (None, 'off', 'execution', 'mind'):
+            raise ValueError('unsupported_repetition_mode')
+        if (goal is not None or workspace is not None or context_mode is not None or pursuit is not None
+                or repetition_mode is not None):
             text = pursuit if pursuit is not None else goal
             if (type(text) is not str or not text.strip() or len(text) > 4000 or workspace is None
                     or (goal is not None and pursuit is not None)):
@@ -548,6 +551,9 @@ class NervousOrgan:
             mode = context_mode or (previous or {}).get('context_mode', 'baseline')
             if mode != 'baseline':
                 initial['context_mode'] = mode
+            repetition = repetition_mode or (previous or {}).get('repetition_mode', 'off')
+            if repetition != 'off':
+                initial['repetition_mode'] = repetition
             if previous is not None and previous != initial:
                 raise ValueError('initial_input_identity_conflict')
             if previous is None:

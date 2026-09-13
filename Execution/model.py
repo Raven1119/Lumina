@@ -179,6 +179,8 @@ class ExecutionModel:
                     document['guidance_scope'] = decision_context['guidance_scope']
                     document['decision_context_version'] = decision_context['version']
                     document['cognitive_feedback'] = decision_context.get('cognitive_feedback')
+                    if decision_context.get('repetition_observation'):
+                        document['repetition_observation'] = decision_context['repetition_observation']
                     for key in ('derived_history_handoff', 'masked_execution_history', 'unpaired_execution_history', 'history_catalogue', 'history_read'):
                         if key in decision_context:
                             document[key] = decision_context[key]
@@ -220,7 +222,7 @@ class ExecutionModel:
                 # dialogue at today's checkpoint rather than an old instruction.
                 # The first copy still binds durable provider recovery identity.
                 messages.append({'role': 'user', 'content': canonical({key: document[key]
-                    for key in ('state', 'observation', 'incoming_event', 'lifecycle', 'cognitive_feedback')
+                    for key in ('state', 'observation', 'incoming_event', 'lifecycle', 'cognitive_feedback', 'repetition_observation')
                     if key in document})})
             wire = {'model': MODEL, 'system': payload['messages'][0]['content'] + ('\n\n' + self.role_prompt if self.role_prompt else ''), 'messages': messages,
                 'tools': [{'name': t['function']['name'], 'description': t['function']['description'],

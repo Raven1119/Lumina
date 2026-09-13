@@ -37,6 +37,8 @@ def main(argv=None):
     parser.add_argument('--max-request-bytes', type=int)
     parser.add_argument('--context-mode', choices=('baseline', 'mask', 'summary'),
                         help='Experimental working projection, fixed at start; default baseline.')
+    parser.add_argument('--repetition-mode', choices=('off', 'execution', 'mind'),
+                        help='Opt-in repetition evidence routing, fixed at start; default off.')
     parser.add_argument('--add-calls', type=int)
     parser.add_argument('--add-output-tokens', type=int)
     parser.add_argument('--add-request-bytes', type=int)
@@ -52,8 +54,9 @@ def main(argv=None):
             parser.error('state and workspace must be disjoint directories')
     elif not (directory / 'nervous' / 'settings.json').exists():
         parser.error('state does not exist')
-    if args.action != 'start' and (args.workspace or args.goal or args.goal_file or args.pursuit or args.context_mode):
-        parser.error('workspace and goal are fixed at start')
+    if args.action != 'start' and (args.workspace or args.goal or args.goal_file or args.pursuit
+                                   or args.context_mode or args.repetition_mode):
+        parser.error('workspace, goal and modes are fixed at start')
     if args.action != 'resume' and (args.message is not None or args.event or args.retry_review or args.retry_context or args.review_at or args.add_calls is not None):
         parser.error('new events and budget extensions require resume')
     if args.data and not args.event:
@@ -94,14 +97,15 @@ def main(argv=None):
         previous_handler = signal.signal(signal.SIGINT, lambda *_: nervous.calls.request_pause())
         stack.callback(signal.signal, signal.SIGINT, previous_handler)
         initial = nervous.initialize(goal=goal_text, workspace=args.workspace, context_mode=args.context_mode,
-                                     pursuit=args.pursuit)
+                                     pursuit=args.pursuit, repetition_mode=args.repetition_mode)
         mode = initial.get('context_mode', 'baseline')
         from Nervous.storage import fingerprint
         authority = ({'mind_id': initial['mind_id'], 'text': initial['pursuit'],
                       'ref': 'owner-scope:' + fingerprint([initial['mind_id'], initial['pursuit']])[:24]}
                      if 'pursuit' in initial else None)
         execution = Execution(directory / 'execution', nervous.calls, workspace=Path(initial['workspace']),
-                              context_mode=mode, **({'stage1_authority': authority} if authority else {}))
+                              context_mode=mode, repetition_mode=initial.get('repetition_mode', 'off'),
+                              **({'stage1_authority': authority} if authority else {}))
         stack.callback(execution.close)
         mind = MindOrgan(directory / 'mind', nervous.calls, goal=initial.get('goal'),
                          execution_protocol=EXECUTION_PROTOCOL, context_mode=mode,

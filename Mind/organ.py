@@ -194,6 +194,9 @@ class MindOrgan:
 
     def readable_sources(self):
         refs = [x['ref'] for x in self.snapshot().get('files', [])]
+        repetition = self.snapshot().get('repetition_observation')
+        if repetition:
+            refs += [repetition[key] for key in ('sample_ref', 'source_versions_ref', 'records_ref')]
         if self.state.get('stage1_authority'):
             refs += ['view:execution.state', 'view:execution.history', 'view:execution.environment',
                      'view:nervous.attention', 'view:mind.intentions']
@@ -526,6 +529,13 @@ class MindOrgan:
             evidence.append(self.evidence(canonical({'received_guidance': snapshot['received_guidance'],
                 'scope': 'Prior advice and receiving decision; delivery is not adoption or correctness.'}),
                 'guidance under review'))
+        if snapshot.get('repetition_observation'):
+            # This owner projection already bounds records and externalizes action
+            # bodies/source versions. Deliver the same fact as Execution receives,
+            # rather than replacing it with a second directory pointer.
+            text = canonical(snapshot['repetition_observation'])
+            ref = self.source(text, 'Execution repetition observation', 'execution', 'observed_text')
+            evidence.append(Evidence(ref, text, 'execution'))
         comparisons = self.compare_predictions(snapshot)
         if comparisons:
             evidence.append(self.evidence(canonical(comparisons), 'declared prediction feedback',

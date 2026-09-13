@@ -115,6 +115,68 @@ def test_original_launch_and_budget_are_not_replaced_on_reopen(tmp_path):
         assert nervous.calls.limits['calls'] == 6
 
 
+@pytest.mark.parametrize('mode', [None, 'off', 'execution', 'mind'])
+def test_repetition_launch_mode_is_opt_in_and_immutable_after_restart(tmp_path, mode):
+    workspace = tmp_path / 'work'
+    workspace.mkdir()
+    launch = {'goal': 'Inspect the supplied material.', 'workspace': workspace}
+    expected = {'goal': launch['goal'], 'workspace': str(workspace)}
+    if mode not in (None, 'off'):
+        expected['repetition_mode'] = mode
+    with NervousOrgan(tmp_path / 'nervous') as nervous:
+        assert nervous.initialize(**launch, repetition_mode=mode) == expected
+        original_event, = nervous.pending('mind')
+    with NervousOrgan(tmp_path / 'nervous') as nervous:
+        assert nervous.initialize() == expected
+        assert nervous.initialize(**launch) == expected
+        assert nervous.pending('mind') == (original_event,)
+        changed = 'off' if mode in ('execution', 'mind') else 'execution'
+        with pytest.raises(ValueError, match='initial_input_identity_conflict'):
+            nervous.initialize(**launch, repetition_mode=changed)
+        assert nervous.initialize() == expected
+
+
+def test_invalid_repetition_mode_does_not_persist_launch_or_publish_input(tmp_path):
+    workspace = tmp_path / 'work'
+    workspace.mkdir()
+    with NervousOrgan(tmp_path / 'nervous') as nervous:
+        with pytest.raises(ValueError, match='unsupported_repetition_mode'):
+            nervous.initialize(goal='Inspect the supplied material.', workspace=workspace,
+                               repetition_mode='automatic')
+        assert 'initial_input' not in nervous.settings
+        assert nervous.pending('mind') == ()
+
+
+@pytest.mark.parametrize('mode', [None, 'off', 'execution', 'mind'])
+def test_cli_retains_repetition_mode_before_execution_construction(tmp_path, monkeypatch, mode):
+    workspace, state = tmp_path / 'work', tmp_path / 'private'
+    workspace.mkdir()
+    received = []
+
+    class ConstructionCut(BaseException):
+        pass
+
+    def execution(*args, **kwargs):
+        received.append(kwargs['repetition_mode'])
+        raise ConstructionCut()
+
+    monkeypatch.setattr(cli, 'Execution', execution)
+    args = ['start', '--state', str(state), '--workspace', str(workspace),
+            '--goal', 'Inspect the supplied material.']
+    if mode is not None:
+        args.extend(['--repetition-mode', mode])
+    with pytest.raises(ConstructionCut):
+        cli.main(args)
+    with pytest.raises(ConstructionCut):
+        cli.main(['resume', '--state', str(state)])
+    assert received == [mode or 'off', mode or 'off']
+    for action in ('resume', 'status'):
+        with pytest.raises(SystemExit) as stopped:
+            cli.main([action, '--state', str(state), '--repetition-mode', mode or 'off'])
+        assert stopped.value.code == 2
+    assert len(received) == 2
+
+
 def test_explicit_cli_retry_retains_failure_and_closes_obligation(tmp_path, monkeypatch, capsys):
     workspace, state = tmp_path / 'work', tmp_path / 'private'
     workspace.mkdir()
