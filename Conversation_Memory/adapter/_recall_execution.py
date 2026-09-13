@@ -34,6 +34,7 @@ def _execute_fixed_recall(
     target_entity_refs: tuple[str, ...] = (),
     lexical_index: Any = None,
     entity_surfaces: tuple[str, ...] = (),
+    entity_membership: dict[str, Any] | None = None,
 ) -> Any:
     scan_stats = {"entity_adjacency_links_read": 0}
     constraints = constraints_type(
@@ -92,6 +93,7 @@ def _execute_fixed_recall(
                 event_node_type=event_node_type,
                 node_type=node_type,
                 scan_stats=scan_stats,
+                entity_membership=entity_membership,
             )
         except Exception:
             entity_subset_nodes = []
@@ -142,49 +144,36 @@ def _entity_subset_events(
     event_node_type: type[Any],
     node_type: Any,
     scan_stats: dict | None = None,
+    entity_membership: dict[str, Any] | None = None,
 ) -> list[Any]:
-    """Entity-conditioned semantic channel.
+    """Search complete cached entity membership in the existing vector index.
 
-    When the query resolved a target entity ref, rank that entity's
-    ``REFERS_TO`` events — both the ``role=subject`` edges and the role-less
-    generic mention edges written for ``mention_entity_refs`` — by the same
-    enriched-query embedding the dense path
-    uses, via a FAISS ``IDSelectorBatch`` subset search, and return them as a
-    third RRF list. The subset only adds candidates; ranking and admission
-    are unchanged. No ref, no EntityNode, or any failure yields an empty list
-    and the two-list fusion is byte-identical to before.
-    Shadow evidence: ``docs/experiments/entity_conditioned_retrieval/``,
-    ``docs/experiments/multi_entity_recall_gain/RESULT_CROWDED.md``.
+    The backend derives eligible EVENT positions from actual REFERS_TO edges
+    during load/write, covering subject, object and ordinary mention roles.
+    Query-time work combines cached selectors; it never walks an entity's
+    adjacency or limits historical eligibility to a neighbor prefix. FAISS
+    work depends on index/member/ref counts, separately from the max_nodes
+    bounds on returned candidates and subsequent graph adjacency reads.
+    Missing or invalid membership disables only this optional RRF channel.
     """
     refs = tuple(dict.fromkeys((*target_entity_refs,
                                *((target_entity_ref,) if target_entity_ref else ()))))
     if not refs:
         return []
-    # Imported lazily so controlled test doubles that stub
-    # ``memory.graph_db`` with event-only symbols stay valid.
-    from memory.graph_db import LinkSubType, LinkType
-
-    event_ids: dict[str, None] = {}
-    reads = 0
-    # Reserve expansion capacity when a two-fact chain is requested. Iterate
-    # multiple queried identities fairly instead of consuming the first hub.
-    scan_limit = max(1, policy.max_nodes // 3) if policy.max_graph_depth > 0 else policy.max_nodes
-    iterators = deque((f"entity:{ref.casefold()}", iter(_iter_adjacent_links(trg.graph_db, f"entity:{ref.casefold()}")))
-                      for ref in refs)
-    while iterators and reads < scan_limit:
-        entity_id, iterator = iterators.popleft()
-        try:
-            link = next(iterator)
-        except StopIteration:
-            continue
-        reads += 1
-        if (link.link_type == LinkType.ENTITY and link.target_node_id == entity_id
-                and link.properties.get("sub_type") == LinkSubType.REFERS_TO.value):
-            event_ids.setdefault(link.source_node_id, None)
-        iterators.append((entity_id, iterator))
+    members = [
+        entity_membership[key] for key in dict.fromkeys(f"entity:{ref.casefold()}" for ref in refs)
+        if entity_membership is not None and key in entity_membership
+        and len(entity_membership[key].positions)
+    ]
     if scan_stats is not None:
-        scan_stats["entity_adjacency_links_read"] = reads
-    if not event_ids:
+        scan_stats.update(
+            entity_adjacency_links_read=0,
+            entity_membership_unavailable=entity_membership is None,
+            entity_membership_refs=len(members),
+            # Sum of membership sizes, not the size of their deduplicated union.
+            entity_membership_entries=sum(len(member.positions) for member in members),
+        )
+    if not members:
         return []
     vector_db = trg.vector_db
     index = getattr(vector_db, "index", None)
@@ -192,12 +181,6 @@ def _entity_subset_events(
     index_to_id = getattr(vector_db, "index_to_id", None)
     if index is None or not id_to_index or not index_to_id:
         return []
-    positions = [
-        id_to_index[event_id] for event_id in event_ids if event_id in id_to_index
-    ]
-    if not positions:
-        return []
-
     import faiss
     import numpy as np
 
@@ -207,25 +190,40 @@ def _entity_subset_events(
     query_vector = np.asarray(
         trg.encoder.encode(enriched_query), dtype=np.float32,
     ).reshape(1, -1)
-    selector = faiss.IDSelectorBatch(np.asarray(positions, dtype=np.int64))
+    # Array uses IndexFlat's direct subset fast path for a single identity.
+    # OR uses cached Batch selectors, whose native membership checks avoid
+    # scanning every selected position for each index row. Keep `members` and
+    # intermediate OR selectors alive for the complete native search call.
+    selectors = []
+    selector = members[0].array_selector if len(members) == 1 else members[0].batch_selector
+    for member in members[1:]:
+        selector = faiss.IDSelectorOr(selector, member.batch_selector)
+        selectors.append(selector)
     params = faiss.SearchParameters(sel=selector)
-    k = min(policy.top_k, policy.max_nodes, len(positions))
-    _distances, indices = index.search(query_vector, k, params=params)
+    k = min(policy.top_k, policy.max_nodes, sum(len(member.positions) for member in members))
+    distances, indices = index.search(query_vector, k, params=params)
 
     nodes = []
-    for position in indices[0]:
+    seen = set()
+    for distance, position in zip(distances[0], indices[0]):
         if position == -1:
             continue
         node_id = index_to_id.get(int(position))
-        if not node_id:
+        if not node_id or node_id in seen:
             continue
         node = trg.graph_db.get_node(node_id)
         if (
             isinstance(node, event_node_type)
             and getattr(node, "node_type", None) == node_type.EVENT
         ):
-            nodes.append(node)
-    return nodes
+            seen.add(node_id)
+            nodes.append((float(distance), str(node.attributes.get("evidence_id", node_id)), node_id, node))
+    nodes.sort(key=lambda item: item[:3])
+    if scan_stats is not None:
+        scan_stats.update(entity_selector_union_nodes=len(selectors),
+                          entity_vector_index_size=int(index.ntotal),
+                          entity_search_candidates_returned=len(nodes))
+    return [item[3] for item in nodes]
 
 
 def _iter_adjacent_links(graph_db, node_id):

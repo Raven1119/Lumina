@@ -121,7 +121,7 @@ Current fields:
 | `max_chars` | 2000 | maximum rendered context characters |
 | `max_evidence_items` | 5 | maximum public anchors + expansions |
 | `max_graph_depth` | 5 | graph depth; `0` is valid anchor-only |
-| `max_nodes` | 100 | bounded lexical/traversal candidate budget |
+| `max_nodes` | 100 | bounds returned retrieval candidates, projected nodes and actual graph adjacency reads; not historical vector membership |
 | `final_min_score` | `None` | optional inclusive composed-score floor; Chat uses `0.144` |
 | `relation_surfaces` | `None` | explicit caller-supplied relation surfaces |
 
@@ -130,9 +130,9 @@ Current fields:
 ```text
 MiniLM dense ranking
 + bounded deterministic lexical ranking
-+ entity-conditioned FAISS IDSelectorBatch subset ranking when the query
-  carries a target_entity_ref (bounded to that EntityNode's
-  REFERS_TO subject/object/mention events; adds candidates only)
++ entity-conditioned FAISS subset ranking over the complete eligible
+  REFERS_TO subject/object/mention membership of the resolved entity refs
+  (bounded returned candidates; adds candidates only)
 -> RRF(k=60)
 -> stable fused top_k anchors
 ```
@@ -142,6 +142,27 @@ events across history. Exact entity-name matches support unsegmented Chinese;
 generic CJK overlap is not a second semantic ranker. Lexical failure safely
 falls back to dense-only. A rebuildable name index supports bounded multiple
 identities and aliases without treating local pronouns as global names.
+
+Entity membership is another rebuildable backend view over authoritative graph
+relationships and available EVENT vector positions in the existing single
+FAISS index. It is built on load and maintained by relationship writes and
+vector repair; it changes no stored facts, identities or persistence format.
+Sorted immutable sparse position buffers keep cached selectors alive. A single
+ref uses `IDSelectorArray`; multiple refs combine cached `IDSelectorBatch`
+selectors with native OR, so overlapping roles/refs cannot duplicate results.
+The bounded returned set is ordered by distance and stable evidence ID;
+equal-distance cutoff membership remains deterministic for the fixed vector
+positions and sorted selectors. Adjacency insertion order is not eligibility.
+
+Normal queries reuse this view without enumerating entity history. Missing or
+stale membership disables only the entity channel until an owner load/write
+rebuild; it never falls back to a truncated neighbor prefix. Building and
+updating the derived membership may inspect the full stored relationship set
+or affected members. Sparse selector storage is proportional to memberships,
+not copied embeddings. Native search and selector union costs depend on index
+size, membership sizes and the number of queried refs; `max_nodes` does not
+claim constant-time search or cap those internal computations. Private backend
+statistics distinguish that work from bounded graph expansion and output.
 
 `top_k` limits anchors only. The final public evidence total is separately
 limited to `0..max_evidence_items`. Zero selected evidence is a successful
@@ -194,6 +215,14 @@ not supply relation surfaces; this is a structured caller/future Mind seam, not
 a free-text query parser.
 
 ## Context Linearization
+
+BGE returns raw logits, including values that happen to lie in `[0, 1]`.
+The Hindsight-style composition applies one numerically stable sigmoid to
+each logit without inspecting other scores or batch boundaries. Normalized
+retrieval scores are not calibrated probabilities of factual correctness.
+Recency weights, the source-snapshot reference time and the inclusive final
+floor remain unchanged; a newer source in a different candidate snapshot can
+still change the recency contribution.
 
 - Preserve retrieval order and render plain role-labelled evidence text.
 - Rendering obeys `max_chars`; facts are kept whole or omitted with honest

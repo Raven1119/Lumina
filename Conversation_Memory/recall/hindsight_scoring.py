@@ -6,7 +6,7 @@ from math import exp
 from typing import Sequence
 
 
-# Mirrors the post-rerank scoring defaults in vectorize-io/hindsight at
+# Mirrors the post-rerank weighting defaults in vectorize-io/hindsight at
 # f1c825d88471d069aec0480446d071c589ab10bd (MIT). Lumina deliberately keeps
 # temporal proximity and proof count neutral because its current read path has
 # no equivalent truthful per-candidate signals.
@@ -31,14 +31,12 @@ class HindsightPostRerankScore:
 def normalize_cross_encoder_scores(
     raw_scores: Sequence[float],
 ) -> tuple[float, ...]:
-    """Apply Hindsight's batch-level pass-through-or-sigmoid rule."""
+    """Normalize BGE raw logits once, independently of value range or batch.
 
-    scores = tuple(float(score) for score in raw_scores)
-    if not scores:
-        return ()
-    if min(scores) >= 0.0 and max(scores) <= 1.0:
-        return scores
-    return tuple(_sigmoid(score) for score in scores)
+    BGE does not return probabilities, including when a logit lies in [0, 1].
+    The normalized retrieval score is not a calibrated probability of truth.
+    """
+    return tuple(_sigmoid(float(score)) for score in raw_scores)
 
 
 def compute_linear_recency(

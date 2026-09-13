@@ -54,6 +54,7 @@ class BgeReranker:
         query: str,
         candidate_texts: Sequence[str],
     ) -> tuple[float, ...]:
+        """Return finite raw model logits; normalization belongs to Recall."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be non-empty")
         texts = tuple(candidate_texts)

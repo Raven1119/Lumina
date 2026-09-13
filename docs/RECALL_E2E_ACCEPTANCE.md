@@ -167,11 +167,14 @@ and
 The upstream license is
 [`MIT`](https://github.com/vectorize-io/hindsight/blob/f1c825d88471d069aec0480446d071c589ab10bd/LICENSE).
 
-The imported behavior is deliberately narrow:
+The imported weighting behavior is deliberately narrow. Lumina's BGE boundary
+always returns raw logits, so normalization explicitly applies one sigmoid per
+score, independently of its numeric range or batch. This replaces the previous
+upstream-style range heuristic; the historical measurements below retain their
+original results and do not establish calibration for the corrected contract.
 
 ```text
-normCE = raw score unchanged when the complete batch is in [0, 1],
-         otherwise sigmoid(raw score) for the complete batch
+normCE = sigmoid(raw BGE logit), exactly once for every candidate
 recency = linear over 365 days with floor 0.1; missing = 0.5; future = 1.0
 temporal = 0.5
 proof = 0.5

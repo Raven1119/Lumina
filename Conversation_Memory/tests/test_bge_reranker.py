@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import UTC, datetime
+from math import log
 
 import pytest
 
@@ -291,7 +292,8 @@ def test_hindsight_final_floor_is_inclusive_and_can_return_successful_empty(
     kept, _ = _candidate('kept', 'kept memory', 0.9)
     removed, _ = _candidate('removed', 'removed memory', 0.8)
     adapter, _backend = _adapter(tmp_path, [kept, removed])
-    reranker = _FakeReranker((0.5, 0.4))
+    # The floor test needs normalized scores 0.5 and 0.4; BGE supplies logits.
+    reranker = _FakeReranker((0.0, log(0.4 / 0.6)))
     _install_reranker(monkeypatch, reranker, [])
 
     filtered = adapter.recall(

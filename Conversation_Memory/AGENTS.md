@@ -73,10 +73,20 @@ be durable before the checkpoint becomes completed and Cold's owner consumes.
 
 Dense MiniLM, indexed lexical candidates and bounded entity-conditioned FAISS
 candidates use existing RRF(k=60), fixed BGE and pinned Hindsight scoring.
+BGE raw logits receive one stable sigmoid regardless of range or batching;
+Hindsight weights and the source-snapshot reference time remain unchanged.
 Name and lexical indexes are rebuildable views over the existing graph, updated
 on writes; query limits apply after indexed lookup, not to a history prefix.
 Multiple matching refs keep the entity channel; ambiguous refs do not receive
 a shared SAME_ENTITY certainty marker.
+
+The backend's derived entity membership covers all available EVENT vectors
+linked by actual subject/object/ordinary REFERS_TO edges. Load and owner writes
+maintain cached selectors over the same FAISS index; queries do not truncate
+entity history to an adjacency prefix. Candidate output and graph expansion
+remain bounded by `max_nodes`. Membership build/update, selector union and
+native vector search have separately measured, nonconstant costs; stale or
+unavailable membership fails softly for the entity channel only.
 
 The adapter reads lazy graph adjacency within `max_nodes`, bypassing upstream's
 unbounded neighbor materialization and first-ten-path truncation. Positive

@@ -17,7 +17,12 @@ Memory facade exposes bounded occurrence lookup as well as fact Recall.
 
 Name/lexical indexes cover stored history before limiting candidates; bounded
 multiple-identity retrieval and two-fact relationship projection retain fixed
-BGE/Hindsight and the production score floor. Cold consumption remains explicit
+BGE, Hindsight weights and the production score floor. BGE raw logits receive
+one stable sigmoid, independent of their range or batching. Entity-conditioned
+search uses complete available EVENT membership from actual REFERS_TO edges,
+with selectors maintained during load and writes over the existing FAISS index.
+Returned candidates and graph expansion remain bounded; membership construction
+and native vector search have nonconstant costs. Cold consumption remains explicit
 and follows durable completion. Valid two-fact paths that fit BGE's fixed input
 window are scored together and
 returned as whole source evidence bundles; this changes scoring input while

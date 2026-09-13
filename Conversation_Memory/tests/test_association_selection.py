@@ -1,4 +1,5 @@
 from dataclasses import replace
+from math import log
 
 import pytest
 
@@ -45,7 +46,8 @@ class Reranker:
     def score(self, query, texts):
         assert len(texts) == 2
         self.texts = tuple(texts)
-        return (0.01, 0.9)
+        # Preserve the low bridge/high endpoint selection using raw logits.
+        return (log(0.01 / 0.99), log(0.9 / 0.1))
 
 
 @pytest.mark.parametrize("count,max_chars,complete", [(2, 1000, True), (1, 1000, False), (2, 20, False)])

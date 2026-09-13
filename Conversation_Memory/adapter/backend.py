@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from datetime import datetime
+from numbers import Integral
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Protocol
 from copy import deepcopy
 
@@ -11,6 +14,15 @@ from ._recall_execution import _execute_fixed_recall
 from ._anchor_fusion import LexicalEventIndex
 from .entity_consolidation import EntityCandidate
 from .models import BackendCandidate, RecallPolicy
+
+
+@dataclass(frozen=True)
+class _EntityMembership:
+    """Sparse vector positions; selectors retain this immutable backing array."""
+
+    positions: Any
+    array_selector: Any
+    batch_selector: Any
 
 
 _NON_NAME_REFERENCE_SURFACES = frozenset({
@@ -209,7 +221,7 @@ class RealMagmaBackend:
             self.trg.graph_db.load(str(graph_path))
         self._rebuild_indexes()
 
-    def _rebuild_indexes(self) -> None:
+    def _rebuild_indexes(self, *, rebuild_entity_membership: bool = True) -> None:
         """Derived views only: graph.json remains the single durable authority."""
         self._surface_refs: dict[str, dict[str, None]] = {}
         self._surface_mentions: dict[str, dict[str, dict]] = {}
@@ -218,6 +230,131 @@ class RealMagmaBackend:
         for node in self.trg.graph_db.nodes.values():
             self._index_node(node)
         self._indexed_node_count = len(self.trg.graph_db.nodes)
+        if rebuild_entity_membership:
+            self._rebuild_entity_membership()
+
+    def _entity_membership_signature(self):
+        """Constant-size source check, without iterating nodes, links or members."""
+        graph = self.trg.graph_db
+        vectors = getattr(self.trg, "vector_db", None)
+        index = getattr(vectors, "index", None)
+        forward = getattr(vectors, "id_to_index", None)
+        reverse = getattr(vectors, "index_to_id", None)
+        if (index is None or not isinstance(forward, dict)
+                or not isinstance(reverse, dict)):
+            return None
+        return (id(graph), id(graph.nodes), len(graph.nodes),
+                id(graph.links), len(graph.links), id(vectors), id(index),
+                int(index.ntotal), id(forward), len(forward), id(reverse), len(reverse))
+
+    def _entity_membership_for_recall(self) -> dict[str, _EntityMembership] | None:
+        """Read a prepared view; unexpected source changes disable this channel."""
+        try:
+            source = self._entity_membership_signature()
+            if source is not None and source == getattr(self, "_entity_membership_source", None):
+                return self._entity_membership
+        except Exception:
+            pass
+        return None
+
+    def _eligible_entity_vector_position(self, memory_id: str) -> int | None:
+        node = self.trg.graph_db.get_node(memory_id)
+        if (not isinstance(node, self._event_node_type)
+                or getattr(node, "node_type", None) != self._node_type.EVENT):
+            return None
+        vectors = self.trg.vector_db
+        position = vectors.id_to_index.get(memory_id)
+        if (not isinstance(position, Integral) or isinstance(position, bool)
+                or not 0 <= position < vectors.index.ntotal
+                or vectors.index_to_id.get(int(position)) != memory_id):
+            return None
+        return int(position)
+
+    def _compile_entity_membership(self, entity_id: str) -> None:
+        import faiss
+        import numpy as np
+
+        positions = sorted({position for memory_id in self._entity_member_events[entity_id]
+                            if (position := self._eligible_entity_vector_position(memory_id)) is not None})
+        previous = self._entity_membership.pop(entity_id, None)
+        self._entity_membership_stats["memberships"] -= len(previous.positions) if previous else 0
+        if positions:
+            buffer = np.asarray(positions, dtype=np.int64)
+            buffer.setflags(write=False)
+            member = _EntityMembership(buffer, faiss.IDSelectorArray(buffer),
+                                       faiss.IDSelectorBatch(buffer))
+            self._entity_membership[entity_id] = member
+            self._entity_membership_stats["memberships"] += len(buffer)
+            self._entity_membership_stats["selector_builds"] += 1
+
+    def _rebuild_entity_membership(self) -> None:
+        """Load/write-time reconstruction; each entity's positions are sorted."""
+        started = perf_counter()
+        stats = getattr(self, "_entity_membership_stats", None)
+        if stats is None:
+            stats = self._entity_membership_stats = {
+                "rebuilds": 0, "updates": 0, "links_scanned": 0,
+                "selector_builds": 0, "memberships": 0, "failures": 0,
+                "rebuild_seconds": 0.0, "update_seconds": 0.0,
+            }
+        self._entity_membership = {}
+        self._entity_member_events: dict[str, set[str]] = {}
+        self._event_entity_memberships: dict[str, set[str]] = {}
+        self._entity_membership_source = None
+        stats["memberships"] = 0
+        stats["rebuilds"] += 1
+        try:
+            source = self._entity_membership_signature()
+            if source is None:
+                return
+            from memory.graph_db import LinkSubType, LinkType
+
+            graph = self.trg.graph_db
+            for link in graph.links.values():
+                stats["links_scanned"] += 1
+                target = graph.get_node(link.target_node_id)
+                node = graph.get_node(link.source_node_id)
+                if (link.link_type != LinkType.ENTITY
+                        or link.properties.get("sub_type") != LinkSubType.REFERS_TO.value
+                        or target is None
+                        or getattr(target, "node_type", None) != getattr(self._node_type, "ENTITY", None)
+                        or not isinstance(node, self._event_node_type)
+                        or getattr(node, "node_type", None) != self._node_type.EVENT):
+                    continue
+                self._entity_member_events.setdefault(link.target_node_id, set()).add(link.source_node_id)
+                self._event_entity_memberships.setdefault(link.source_node_id, set()).add(link.target_node_id)
+            for entity_id in self._entity_member_events:
+                self._compile_entity_membership(entity_id)
+            self._entity_membership_source = source
+        except Exception:
+            # A derived selector cannot veto a durable ingestion or other channels.
+            self._entity_membership_source = None
+            stats["failures"] += 1
+        finally:
+            stats["rebuild_seconds"] += perf_counter() - started
+
+    def _prepare_entity_membership_write(self) -> None:
+        if self._entity_membership_for_recall() is None:
+            self._rebuild_entity_membership()
+
+    def _refresh_entity_membership(self, memory_id: str | None = None, entity_id: str | None = None) -> None:
+        """Refresh an event, or acknowledge a graph-only occurrence write."""
+        started = perf_counter()
+        try:
+            if getattr(self, "_entity_membership_source", None) is None:
+                return
+            if entity_id is not None and memory_id is not None:
+                self._entity_member_events.setdefault(entity_id, set()).add(memory_id)
+                self._event_entity_memberships.setdefault(memory_id, set()).add(entity_id)
+            for ref in self._event_entity_memberships.get(memory_id, ()):
+                self._compile_entity_membership(ref)
+            self._entity_membership_source = self._entity_membership_signature()
+        except Exception:
+            self._entity_membership_source = None
+            self._entity_membership_stats["failures"] += 1
+        finally:
+            self._entity_membership_stats["updates"] += 1
+            self._entity_membership_stats["update_seconds"] += perf_counter() - started
 
     def _index_node(self, node) -> None:
         if getattr(node, "node_type", None) == self._node_type.EVENT:
@@ -247,7 +384,9 @@ class RealMagmaBackend:
     def _ensure_indexes(self) -> None:
         if (not hasattr(self, "_surface_refs") or
                 self._indexed_node_count != len(self.trg.graph_db.nodes)):
-            self._rebuild_indexes()
+            # Name/lexical views retain their compatibility recovery. Entity
+            # membership is reconstructed explicitly on load or owner writes.
+            self._rebuild_indexes(rebuild_entity_membership=False)
 
     def _matching_surfaces(self, query: str):
         """Probe query substrings against indexed names, not every stored name."""
@@ -299,6 +438,7 @@ class RealMagmaBackend:
         """Persist source occurrences without adding assertions or vectors."""
         from memory.graph_db import EventNode, NodeType
         self._ensure_indexes()
+        self._prepare_entity_membership_write()
         for raw in records:
             record = deepcopy(raw)
             mention_id, surface, ref = record.get("mention_id"), record.get("surface"), record.get("entity_ref")
@@ -324,6 +464,7 @@ class RealMagmaBackend:
                 raise ValueError("entity_mention_provenance_conflict")
             self._index_node(node)
         self._indexed_node_count = len(self.trg.graph_db.nodes)
+        self._refresh_entity_membership()
 
     def list_entity_mentions(self, query: str, *, limit: int) -> tuple[dict, ...]:
         self._ensure_indexes()
@@ -345,11 +486,13 @@ class RealMagmaBackend:
 
     def ensure_event_persisted(self, memory_id: str) -> None:
         """Repair upstream's graph-before-vector failure using stored embedding."""
+        self._prepare_entity_membership_write()
         node = self.trg.graph_db.get_node(memory_id)
         if node is None or getattr(node, "node_type", None) != self._node_type.EVENT:
             raise ValueError("memory_event_missing")
         vector_db = self.trg.vector_db
         if memory_id in vector_db.id_to_index:
+            self._refresh_entity_membership(memory_id)
             return
         import numpy as np
         vector = getattr(node, "embedding_vector", None)
@@ -359,13 +502,16 @@ class RealMagmaBackend:
         vector_db.add_vector(vector_id=memory_id, vector=np.asarray(vector, dtype=np.float32),
                              metadata={"timestamp": node.timestamp.isoformat(),
                                        "keywords": metadata.get("keywords", []),
-                                       "entities": metadata.get("entities", [])})
+                                        "entities": metadata.get("entities", [])})
+        self._refresh_entity_membership(memory_id)
 
     def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any]) -> str:
         self._ensure_indexes()
+        self._prepare_entity_membership_write()
         memory_id = self.trg.add_event(text, timestamp=timestamp, metadata=metadata)
         self._index_node(self.trg.graph_db.get_node(memory_id))
         self._indexed_node_count = len(self.trg.graph_db.nodes)
+        self._refresh_entity_membership(memory_id)
         return memory_id
 
     def create_relationships(self, memory_ids: list[str]) -> None:
@@ -385,6 +531,7 @@ class RealMagmaBackend:
         self._create_subject_entity_ref_links(memory_ids)
         self._create_object_entity_ref_links(memory_ids)
         self._create_mention_entity_ref_links(memory_ids)
+        self._prepare_entity_membership_write()
 
     def _create_object_entity_ref_links(self, memory_ids: list[str]) -> None:
         for memory_id in memory_ids:
@@ -457,6 +604,7 @@ class RealMagmaBackend:
         )
 
         entity_node_id = f"entity:{ref.casefold()}"
+        self._prepare_entity_membership_write()
         if self.trg.graph_db.get_node(entity_node_id) is None:
             self.trg.graph_db.add_node(EventNode(
                 node_id=entity_node_id,
@@ -489,6 +637,7 @@ class RealMagmaBackend:
         if hasattr(self, "_surface_refs"):
             self._index_node(self.trg.graph_db.get_node(entity_node_id))
             self._indexed_node_count = len(self.trg.graph_db.nodes)
+        self._refresh_entity_membership(memory_id, entity_node_id)
 
     def _create_mention_entity_ref_links(self, memory_ids: list[str]) -> None:
         """Find-or-create graph-only EntityNodes and generic REFERS_TO edges
@@ -614,6 +763,7 @@ class RealMagmaBackend:
             target_entity_refs=target_entity_refs,
             lexical_index=self._lexical_index,
             entity_surfaces=tuple(self._matching_surfaces(query)),
+            entity_membership=self._entity_membership_for_recall(),
         )
         self.last_recall_stats = dict(context.metadata.get("bounded_recall_stats", {}))
         scores = context.metadata.get("search_scores", [])

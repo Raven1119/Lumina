@@ -21,12 +21,12 @@ def test_logits_are_sigmoid_normalized_for_the_entire_batch():
     ))
 
 
-def test_scores_already_entirely_in_unit_interval_pass_through():
-    assert normalize_cross_encoder_scores((0.0, 0.25, 1.0)) == (
-        0.0,
-        0.25,
-        1.0,
-    )
+def test_raw_logits_inside_unit_interval_are_still_normalized():
+    assert normalize_cross_encoder_scores((0.0, 0.25, 1.0)) == pytest.approx((
+        0.5,
+        1.0 / (1.0 + exp(-0.25)),
+        1.0 / (1.0 + exp(-1.0)),
+    ))
 
 
 def test_missing_timestamp_is_neutral_recency():
