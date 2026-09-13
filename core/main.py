@@ -33,7 +33,7 @@ from core.draft_store import JsonlDraftStore
 from core.env_loader import load_env_file
 from core.hot_draft_compactor import HotDraftCompactor
 from core.message_runtime import MessageRuntime
-from core.model_client import ModelClient, build_model_client_from_env
+from core.model_client import ModelClient, MockModelClient, build_model_client_from_env
 from core.turn_provenance import Clock, TurnIdFactory
 from Dream.cold_draft_digest import ColdDraftDigestionTask
 from Dream.models import DreamRunPolicy
@@ -41,7 +41,8 @@ from Dream.runner import DreamRunner, build_formation_model_client
 from Execution import ExecutionOrgan, FileContentEquals
 from Mind.constant_gate import ConstantMindGate
 from Mind.decision_log import JsonlDecisionLog
-from Mind.interfaces import MindGate
+from Mind.interfaces import EvidenceSelector, MindGate
+from Mind.evidence_selector import LlmEvidenceSelector
 from Mind.llm_gate import LlmMindGate
 
 
@@ -193,6 +194,19 @@ def _default_mind_gate(chat_model: ModelClient) -> MindGate:
     return LlmMindGate(gate_client)
 
 
+def _default_evidence_selector(chat_model: ModelClient) -> EvidenceSelector:
+    if _model_kind(chat_model) == "mock":
+        return LlmEvidenceSelector(chat_model)
+    try:
+        client = build_model_client_from_env(
+            max_tokens_override=1024, temperature_override=0.0,
+        )
+    except Exception:
+        client = MockModelClient()
+    # Unavailable/mock output causes an audited fallback to the prepared context.
+    return LlmEvidenceSelector(client)
+
+
 def _load_chat_background(path: Path) -> str:
     try:
         content = path.read_text(encoding="utf-8-sig").strip()
@@ -246,6 +260,7 @@ def create_app(
     memory_retriever: MemoryRetriever | None = None,
     recall_policy: RecallPolicy | None = None,
     mind_gate: MindGate | None = None,
+    evidence_selector: EvidenceSelector | None = None,
     mind_decision_log_path: str | Path | None = None,
     execution_root: str | Path | None = None,
     execution_model: object | None = None,
@@ -262,7 +277,9 @@ def create_app(
             os.environ.get("LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED")
         )
     )
-    direct_memory_use = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower() == "direct"
+    memory_mode = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
+    post_read_selection = memory_mode == "select" or evidence_selector is not None
+    direct_memory_use = memory_mode == "direct" or post_read_selection
     effective_memory = memory_retriever
     effective_dream_policy = _DREAM_POLICY
     effective_recall_policy = (
@@ -332,12 +349,16 @@ def create_app(
             retain_recent_raw_turns=retain_recent_raw_turns,
             max_raw_turns_before_compression=max_raw_turns_before_compression,
         )
-    # Direct mode has no pre-read semantic call, including with Recall disabled.
-    # All other modes preserve their existing gate selection and fail-open path.
+    # Read-first modes have no pre-read gate, including injected gates.
+    # Default/constant modes preserve their existing gate and fail-open path.
     effective_mind_gate = (
         None if direct_memory_use
         else mind_gate if mind_gate is not None else _default_mind_gate(effective_model)
     )
+    effective_selector = (
+        evidence_selector if evidence_selector is not None
+        else _default_evidence_selector(effective_model)
+    ) if post_read_selection and effective_recall_enabled else None
     mind_decision_log = JsonlDecisionLog(
         _mind_decision_log_path(mind_decision_log_path)
     )
@@ -358,6 +379,7 @@ def create_app(
         memory_retriever=runtime_retriever,
         recall_policy=effective_recall_policy,
         mind_gate=effective_mind_gate,
+        evidence_selector=effective_selector,
         mind_decision_log=mind_decision_log,
     )
 

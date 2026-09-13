@@ -24,6 +24,7 @@ Cold ownership, Dream scheduling and Chat injection remain with their existing o
 ```text
 MemoryIngestor.ingest(ColdDraftSegment) -> IngestionResult
 MemoryRetriever.recall(query, RecallPolicy) -> MemoryContext
+MemoryRetriever.prepare_recall(query, RecallPolicy) -> PreparedRecall
 MemoryRetriever.recall_mentions(query, limit=20) -> EntityMentionContext
 ```
 
@@ -38,7 +39,8 @@ Public DTOs include:
 - `IngestionResult`;
 - `RecallPolicy`;
 - `MemoryEvidence`;
-- `MemoryContext`.
+- `MemoryContext`;
+- `PreparedRecall` (request-local immutable context, exact blocks and dependencies).
 
 MAGMA classes, graph nodes, UUIDs, paths, scores, embeddings, NetworkX, and
 FAISS never cross the facade.
@@ -254,6 +256,33 @@ All source-context header characters enter the same item/group packing budget
 before selection. A larger header can cause a whole fact or chain to be omitted;
 no header is appended after `max_chars` has been enforced. The default `False`
 branch keeps the prior speaker-only headers unchanged.
+
+## Prepared evidence subsets
+
+`prepare_recall(query, policy)` shares the existing single retrieval, scoring,
+source projection and packing path with `recall`. It retains the successful
+rendered blocks while packing, without parsing the joined text back into facts.
+`PreparedRecall.context` is the same public bounded result. `selection_items`
+returns immutable `(evidence_id, exact_block)` pairs for only those visible facts.
+
+`subset(tuple_of_existing_ids)` validates the IDs, closes actual association
+bridge dependencies and emits unchanged whole blocks in the original order.
+Shared bridges appear once; source time, speaker, identity labels, query and
+original truncation/error status stay intact. The operation reads no graph and
+performs no scoring or writes. Its output is a subset of the already bounded
+view, so it cannot exceed that view's item/character budget.
+
+Selection metadata validation is isolated from ordinary Recall. If a visible
+bridge itself has an invalid or missing dependency, preparation retains the
+original `context`, but `selection_items` and `subset` raise
+`prepared_recall_unavailable`. Callers can use the original result without
+retrieving again. The original MemoryContext/MemoryEvidence shapes and default
+speaker-only rendering remain unchanged.
+
+Mechanical dependency closure does not establish which occupation or identity
+qualifier a question needs. A semantic selector must retain the corresponding
+complete source facts. Neither local labels nor answer-string agreement can
+replace that evidence.
 
 ## Chat injection boundary
 

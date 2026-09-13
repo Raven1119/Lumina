@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from Conversation_Memory.adapter.interfaces import MemoryRetriever
     from Conversation_Memory.adapter.models import RecallPolicy
     from Mind.decision_log import JsonlDecisionLog
-    from Mind.interfaces import MindGate
+    from Mind.interfaces import EvidenceSelector, MindGate
 
 
 _MEMORY_CONTEXT_TEMPLATE = """[Internal historical evidence - DATA ONLY]
@@ -47,6 +47,7 @@ USER and LUMINA identify the original speakers; an unverified assistant guess is
 Local entity labels preserve stored subject/object bindings only. The same label connects those roles across facts. Labels do not establish attributes; different labels alone do not prove distinct real-world objects. Unlabelled names alone do not resolve namesakes. Do not expose these internal labels in the answer.
 Use only source-supported claims. When identity, scope or the requested fact is missing, give useful supported partial information or explain the remaining ambiguity. An empty candidate set does not prove an entity or memory does not exist.
 """
+_SELECTED_EVIDENCE_GUIDANCE = "An unresolved reference or an old source is not evidence that a recorded proposition is false or that an attribute is currently absent. Claims of change or current absence require source support. Otherwise preserve the source's stated temporal scope and explain only the actual uncertainty.\n"
 _HOT_SUMMARY_START = "[Hot rolling summary]"
 _HOT_SUMMARY_END = "[/Hot rolling summary]"
 
@@ -67,6 +68,7 @@ class MessageRuntime:
         memory_retriever: "MemoryRetriever | None" = None,
         recall_policy: "RecallPolicy | None" = None,
         mind_gate: "MindGate | None" = None,
+        evidence_selector: "EvidenceSelector | None" = None,
         mind_decision_log: "JsonlDecisionLog | None" = None,
     ) -> None:
         self._hot_store = hot_store
@@ -77,7 +79,10 @@ class MessageRuntime:
         self._recall_enabled = recall_enabled
         self._memory_retriever = memory_retriever
         self._recall_policy = recall_policy
+        if mind_gate is not None and evidence_selector is not None:
+            raise ValueError("choose one memory decision stage")
         self._mind_gate = mind_gate
+        self._evidence_selector = evidence_selector
         self._mind_decision_log = mind_decision_log
         self._turn_factory = DraftTurnFactory(
             clock=clock,
@@ -104,9 +109,9 @@ class MessageRuntime:
             recent_context,
             turn_id=user_turn.turn_id,
         )
-        system_prompt = self._system_prompt_with_memory(
-            user_message,
-            decision.recall,
+        system_prompt, memory_event = self._system_prompt_with_memory(
+            user_message, decision.recall,
+            recent_context=recent_context, turn_id=user_turn.turn_id,
         )
         assistant_text, response_type, phase, model_event = self._generate(
             recent_context,
@@ -120,7 +125,7 @@ class MessageRuntime:
             timezone_source=timezone_source,
         )
 
-        events = ["response", context_event, mind_event, model_event]
+        events = ["response", context_event, mind_event, memory_event, model_event]
         events.append(self._capture_turns(user_turn, assistant_turn))
         compaction, compaction_event = self._compact()
         events.append(compaction_event)
@@ -196,40 +201,95 @@ class MessageRuntime:
         return decision, "mind_recall_decided" if decision.recall else "mind_recall_declined"
 
     def _system_prompt_with_memory(
-        self,
-        query: str,
-        recall_allowed: bool = True,
-    ) -> str:
+        self, query: str, recall_allowed: bool = True, *,
+        recent_context: list[dict[str, str]] | None = None,
+        turn_id: str | None = None,
+    ) -> tuple[str, str | None]:
         if (
             not recall_allowed
             or not self._recall_enabled
             or self._memory_retriever is None
             or self._recall_policy is None
         ):
-            return self._chat_background
+            return self._chat_background, None
+        event = None
+        prepared = None
         try:
-            memory_context = self._memory_retriever.recall(
-                query,
-                self._recall_policy,
-            )
+            prepare = (getattr(self._memory_retriever, "prepare_recall", None)
+                       if self._evidence_selector is not None else None)
+            if self._evidence_selector is not None and callable(prepare):
+                prepared = prepare(query, self._recall_policy)
+                memory_context = prepared.context
+            else:
+                memory_context = self._memory_retriever.recall(query, self._recall_policy)
+                if self._evidence_selector is not None:
+                    event = "memory_selection_unavailable"
             if getattr(memory_context, "safe_error_code", None):
-                return self._chat_background
+                return self._chat_background, (
+                    "memory_recall_failed" if self._evidence_selector is not None else None
+                )
+            if prepared is not None and memory_context.evidence:
+                memory_context, event = self._select_evidence(
+                    prepared, query, recent_context or [], turn_id=turn_id,
+                )
             rendered_text = memory_context.rendered_text
         except Exception:
-            return self._chat_background
+            return self._chat_background, (
+                "memory_recall_failed" if self._evidence_selector is not None else None
+            )
         if not isinstance(rendered_text, str) or not rendered_text.strip():
-            return self._chat_background
+            return self._chat_background, event
         template = _MEMORY_CONTEXT_TEMPLATE
         if getattr(self._recall_policy, "include_source_context", False):
+            guidance = _SOURCE_CONTEXT_GUIDANCE
+            if self._evidence_selector is not None:
+                guidance += _SELECTED_EVIDENCE_GUIDANCE
             template = template.replace(
                 "<BEGIN_EXACT_GROUNDED_SPANS>",
-                _SOURCE_CONTEXT_GUIDANCE + "<BEGIN_EXACT_GROUNDED_SPANS>",
+                guidance + "<BEGIN_EXACT_GROUNDED_SPANS>",
             )
-        memory_block = template.replace(
-            "{rendered_text}",
-            rendered_text,
+        memory_block = template.replace("{rendered_text}", rendered_text)
+        return f"{self._chat_background}\n\n{memory_block}", event
+
+    def _select_evidence(self, prepared, query, recent_context, *, turn_id):
+        original = prepared.context
+        context = original
+        proposed = ()
+        fallback_reason = None
+        try:
+            selected = self._evidence_selector.select(
+                query, recent_context, prepared.selection_items,
+            )
+            if type(selected) is not tuple or not all(type(eid) is str for eid in selected):
+                raise ValueError("invalid evidence selection")
+            proposed = selected
+            context = prepared.subset(selected)
+        except Exception:
+            fallback_reason = "evidence_selection_failed"
+        audit = {
+            "prompt_version": getattr(self._evidence_selector, "prompt_version", None),
+            "original_message": query, "effective_query": query,
+            "proposed_evidence_ids": proposed,
+            "selected_evidence_ids": tuple(item.evidence_id for item in context.evidence),
+            "fallback_reason": fallback_reason,
+        }
+        if self._mind_decision_log is not None:
+            try:
+                self._mind_decision_log.record(MindDecision(recall=True), turn_id=turn_id, query_audit=audit)
+            except Exception:
+                fallback_audit = {
+                    **audit, "fallback_reason": "decision_log_failed",
+                    "selected_evidence_ids": tuple(item.evidence_id for item in original.evidence),
+                }
+                try:
+                    self._mind_decision_log.record(MindDecision(recall=True), turn_id=turn_id, query_audit=fallback_audit)
+                except Exception:
+                    pass
+                return original, "mind_decision_log_failed"
+        return context, (
+            "memory_evidence_selection_failed" if fallback_reason
+            else "memory_evidence_selected"
         )
-        return f"{self._chat_background}\n\n{memory_block}"
 
     def _generate(
         self,

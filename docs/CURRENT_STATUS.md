@@ -24,10 +24,18 @@ conditions; unverified assistant guesses cannot stand in for established facts.
 Memory discovery, fixed BGE, source validation, persistence and write semantics
 remain with their existing owners.
 
+`LUMINA_MIND_GATE_MODE=select` explicitly adds one semantic decision after that
+same read. Memory retains a request-local immutable prepared view, and validates
+selected IDs plus complete association dependencies. The selector receives the
+original question, near context and exact source blocks; Answer receives their
+validated subset. No pre-read gate is added. Model/parse/subset/log failures
+restore the original prepared context without a second read. Source age or an
+unresolved reference is not evidence that a fact is false or currently absent.
+
 V3/v4 query-generation experiments remain frozen local evidence; their active
 query editors and dedicated protocol tests are retired. Default `llm` is unchanged,
-with `constant` and mock fallback still supported. The direct mode remains
-explicit-only. See the maintained [Chat Memory read contract](../Mind/docs/CHAT_RECALL_GATE.md)
+with `constant` and mock fallback still supported. Both read-first modes remain
+explicit-only; independent semantic acceptance is separate from the mechanism. See the maintained [Chat Memory read contract](../Mind/docs/CHAT_RECALL_GATE.md)
 for bounds and failure semantics. Experimental corpora, outputs and reports remain
 local and are not runtime or CI dependencies.
 

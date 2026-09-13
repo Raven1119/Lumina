@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from math import isfinite
 from typing import Any, Literal
@@ -138,6 +138,79 @@ class MemoryContext:
     rendered_text: str = ""
     truncated: bool = False
     safe_error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class PreparedRecall:
+    """One bounded read, with exact blocks and private selection dependencies.
+
+    Subsets preserve source facts, labels, ordering and retrieval status. They
+    neither retrieve again nor infer semantic identity/occupation support.
+    If preparation metadata is unavailable, ``context`` remains usable as the
+    original fallback; selection operations raise a stable, safe error.
+    """
+
+    context: MemoryContext
+    _rendered_blocks: tuple[str, ...] = field(default=(), repr=False)
+    _dependencies: tuple[tuple[str, tuple[str, ...]], ...] | None = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self._rendered_blocks) is not tuple:
+            raise ValueError("invalid_prepared_recall")
+        if self._dependencies is None:
+            if self._rendered_blocks:
+                raise ValueError("invalid_prepared_recall")
+            return
+        ids = tuple(item.evidence_id for item in self.context.evidence)
+        if (type(self.context.evidence) is not tuple
+                or any(type(eid) is not str or not eid for eid in ids)
+                or len(set(ids)) != len(ids)
+                or len(self._rendered_blocks) != len(ids)
+                or any(type(block) is not str for block in self._rendered_blocks)
+                or "\n".join(self._rendered_blocks) != self.context.rendered_text
+                or type(self._dependencies) is not tuple
+                or len(self._dependencies) != len(ids)):
+            raise ValueError("invalid_prepared_recall")
+        known = set(ids)
+        keys = []
+        for edge in self._dependencies:
+            if (type(edge) is not tuple or len(edge) != 2
+                    or type(edge[0]) is not str or edge[0] not in known
+                    or type(edge[1]) is not tuple
+                    or any(type(dep) is not str or dep not in known for dep in edge[1])
+                    or len(set(edge[1])) != len(edge[1])):
+                raise ValueError("invalid_prepared_recall")
+            keys.append(edge[0])
+        if tuple(keys) != ids:
+            raise ValueError("invalid_prepared_recall")
+
+    @property
+    def selection_items(self) -> tuple[tuple[str, str], ...]:
+        if self._dependencies is None:
+            raise ValueError("prepared_recall_unavailable")
+        return tuple((item.evidence_id, block)
+                     for item, block in zip(self.context.evidence, self._rendered_blocks))
+
+    def subset(self, evidence_ids: tuple[str, ...]) -> MemoryContext:
+        if self._dependencies is None:
+            raise ValueError("prepared_recall_unavailable")
+        dependencies = dict(self._dependencies)
+        if (type(evidence_ids) is not tuple
+                or any(type(eid) is not str or eid not in dependencies for eid in evidence_ids)
+                or len(set(evidence_ids)) != len(evidence_ids)):
+            raise ValueError("invalid_recall_selection")
+        wanted = set(evidence_ids)
+        pending = list(evidence_ids)
+        while pending:
+            for dependency in dependencies[pending.pop()]:
+                if dependency not in wanted:
+                    wanted.add(dependency)
+                    pending.append(dependency)
+        selected = tuple((item, block) for item, block in
+                         zip(self.context.evidence, self._rendered_blocks)
+                         if item.evidence_id in wanted)
+        return replace(self.context, evidence=tuple(item for item, _ in selected),
+                       rendered_text="\n".join(block for _, block in selected))
 
 
 @dataclass(frozen=True)

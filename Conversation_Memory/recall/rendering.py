@@ -58,6 +58,7 @@ def bound_evidence_groups(
     count: int,
     max_chars: int,
     source_context_roles: dict[str, tuple[str | None, str | None]] | None = None,
+    _rendered_blocks: list[str] | None = None,
 ) -> tuple[tuple[MemoryEvidence, ...], str, bool]:
     """Render whole source facts and whole dependency bundles, or omit them.
 
@@ -85,4 +86,7 @@ def bound_evidence_groups(
         seen.update(pending)
         parts.extend(lines)
         used += extra
+    if _rendered_blocks is not None:
+        # Capture exact successful blocks; callers never split/paraphrase text.
+        _rendered_blocks.extend(parts)
     return tuple(selected), "\n".join(parts), truncated

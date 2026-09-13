@@ -12,9 +12,10 @@ Production callers use only Lumina DTOs and the adapter:
 
 - `ingest(ColdDraftSegment) -> IngestionResult`;
 - `recall(query, RecallPolicy) -> MemoryContext`;
+- `prepare_recall(query, RecallPolicy) -> PreparedRecall`;
 - `recall_mentions(query, limit=20) -> EntityMentionContext`.
 
-The last method reports source occurrences, including unresolved references;
+The occurrence method reports source mentions, including unresolved references;
 it does not assert that the mentioned proposition is true. Graph objects,
 EntityRefs, MAGMA UUIDs, vectors, backend scores and candidate paths remain
 private. No UI or automatic ingestion is introduced.
@@ -111,6 +112,12 @@ attributes; different labels alone do not prove different real-world people.
 Ordinary mentions do not supply roles, and occupational distinctions must come
 from complete source facts. All added header characters count before whole-group
 packing. This changes no public persistent refs, facade, stored facts or writes.
+The opt-in prepared result retains exact packed blocks and validated association
+dependencies from that same read. Its immutable `subset(ids)` selects only within
+the visible result and preserves source labels, order and retrieval status.
+Unavailable preparation metadata keeps the original context usable and makes
+selection fail visibly. Subsetting performs no I/O and invents no identity or
+occupation dependency.
 See `docs/COLD_DRAFT_ADAPTER_DESIGN.md` for selection, evidence packing and
 capability limits. Experiment reports and captured provider outputs are local
 artifacts, not runtime dependencies.
@@ -121,7 +128,8 @@ artifacts, not runtime dependencies.
 - Single writer; no competing checkpoint, database, manager or query planner.
 - No automatic Dream, chat-time ingestion, backfill, fact rewriting,
   supersession, forgetting, contradiction resolution or task-memory expansion.
-- No changes to Mind, Nervous, Execution, runtime provider policy or MAGMA.
+- No changes to the persistent cognitive loop, Nervous, Execution, runtime
+  provider policy or MAGMA. Chat read selection remains a read-only consumer.
 - Keep original fact text, uncertainty, conditions, reported speech and precise
   values. Valid provenance proves source support, not external world truth.
 - Preserve BGE model/revision, RRF constants, Hindsight formula and caller floor

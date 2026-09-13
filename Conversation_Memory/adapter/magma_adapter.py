@@ -42,6 +42,7 @@ from .models import (
     ColdDraftTurn,
     IngestionResult,
     MemoryContext,
+    PreparedRecall,
     MemoryEvidence,
     RecallPolicy,
     SourceProvenance,
@@ -186,6 +187,24 @@ class MagmaMemoryAdapter:
             return EntityMentionContext(query.strip(), safe_error_code="recall_unavailable")
 
     def recall(self, query: str, policy: RecallPolicy) -> MemoryContext:
+        return self._recall(query, policy)
+
+    def prepare_recall(self, query: str, policy: RecallPolicy) -> PreparedRecall:
+        """Perform the same single read and retain its exact subset view."""
+        metadata = {}
+        context = self._recall(query, policy, _prepared_data=metadata)
+        if not context.evidence:
+            return PreparedRecall(context)
+        try:
+            return PreparedRecall(context, metadata["blocks"], metadata["dependencies"])
+        except Exception:
+            # Bad private selection metadata must not erase a successful read
+            # or require another retrieval to recover its original context.
+            return PreparedRecall(context, _dependencies=None)
+
+    def _recall(
+        self, query: str, policy: RecallPolicy, *, _prepared_data: dict | None = None,
+    ) -> MemoryContext:
         if not isinstance(query, str) or not query.strip():
             return MemoryContext(query if isinstance(query, str) else "", safe_error_code="invalid_query")
         normalized_query = query.strip()
@@ -320,13 +339,32 @@ class MagmaMemoryAdapter:
                     missing_dependency = True
                     continue
                 groups.append([projected[eid] for eid in chain])
+            blocks = [] if _prepared_data is not None else None
             evidence, rendered, truncated = bound_evidence_groups(
                 groups,
                 count=policy.max_evidence_items,
                 max_chars=policy.max_chars,
                 **({"source_context_roles": _source_context_roles(rerankable, projected)}
                    if policy.include_source_context else {}),
+                **({"_rendered_blocks": blocks} if blocks is not None else {}),
             )
+            if _prepared_data is not None:
+                _prepared_data["blocks"] = tuple(blocks)
+                try:
+                    # A visible bridge may itself have a dependency, even when
+                    # its own packing group failed. Validate every visible item;
+                    # preparation never infers dependencies from rendered labels.
+                    dependencies = []
+                    for item in evidence:
+                        candidate = by_id[item.evidence_id]
+                        if (candidate.text != item.text
+                                or SourceProvenance(**candidate.metadata["provenance"]) != item.provenance):
+                            raise ValueError("prepared_source_mismatch")
+                        dependencies.append((item.evidence_id,
+                                             _association_evidence_ids(candidate, by_id)))
+                    _prepared_data["dependencies"] = tuple(dependencies)
+                except Exception:
+                    pass
             return MemoryContext(normalized_query, evidence, rendered,
                                  truncated or retrieval_truncated or missing_dependency)
         except Exception:
