@@ -75,7 +75,11 @@ class DreamRunner:
 
     def run_once(self, policy: DreamRunPolicy) -> DreamRunReport:
         try:
-            records = self._owner.list_pending(limit=policy.max_segments)
+            records = (
+                self._owner.list_pending(limit=policy.max_segments)
+                if policy.stop_on_error
+                else self._owner.list_pending_page(limit=policy.max_segments)
+            )
         except Exception:
             return DreamRunReport.from_results((
                 SegmentDigestResult(
@@ -84,6 +88,7 @@ class DreamRunner:
                     False,
                     False,
                     "cold_draft_read_failed",
+                    retryable=True,
                 ),
             ))
 
@@ -98,10 +103,20 @@ class DreamRunner:
                     False,
                     False,
                     "unexpected_digestion_failure",
+                    retryable=True,
                 )
             results.append(result)
             if result.status == "failed" and policy.stop_on_error:
                 break
+            if not policy.stop_on_error:
+                try:
+                    # The owner key comes from the selected record, never the
+                    # sanitized diagnostic identifier in the digest result.
+                    saved = self._owner.advance_pending_cursor(record["segment_id"])
+                except Exception:
+                    saved = False
+                if not saved:
+                    return DreamRunReport.from_results(tuple(results), progress_saved=False)
         return DreamRunReport.from_results(tuple(results))
 
 
@@ -179,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         ))
     print(json.dumps(asdict(report), ensure_ascii=False, separators=(",", ":")))
-    return 1 if report.failed else 0
+    return 1 if report.failed or not report.progress_saved else 0
 
 
 if __name__ == "__main__":

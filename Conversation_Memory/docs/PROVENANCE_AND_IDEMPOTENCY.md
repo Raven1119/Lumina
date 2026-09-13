@@ -62,6 +62,17 @@ conflicts remain unresolved or fail validation. New and old namesakes retain
 separate refs and facts. Previously completed checkpoints are not rebound by
 this fix; there is no automatic historical migration.
 
+Before saving a new verified batch, final mention and identity decisions also
+constrain fact admission. Rejected or missing same-as targets invalidate their
+dependents, including transitive links and conflicting distinct-from claims;
+unrelated co-occurrences and independent ancestors are not invalidated. An
+unresolved occurrence remains visible. A fact using it may remain unbound only
+when its complete text is literal in a cited span and its subject/value appear
+in that text. This deliberately conservative fallback can reject paraphrases;
+surface overlap alone cannot authorize an inserted name. Healthy identities
+use the unchanged verifier. Repair applies the same admission rule to new
+facts and never demotes a saved positive binding or rewrites prior facts.
+
 ## Atomic state writes
 
 `IngestionStateStore.put` reads the state map, writes compact JSON to a temporary
@@ -87,6 +98,17 @@ records the merged batch, preserves previous facts in order, and atomically
 returns the manifest to `in_progress` before any new graph writes. Remaining
 processing issues keep the result partial; a completed repair stage is never
 repeated. This is not general repair, re-extraction or automatic backfill.
+
+`IngestionResult.retryable` describes an executable next step for the same
+input and protocol. Provider/unsaved verification failures, checkpoint/backend
+write failures, an unused eligible source-ref repair, and a saved valid repair
+awaiting verification remain retryable. Saved invalid extraction/repair output,
+partial batches without eligible repairs, exhausted repairs with pending issues,
+and invalid source/checkpoint state do not. Pending is not consumed in either
+case. A later explicit run can retry recoverable work without replacing saved
+responses; corrected source can arrive as a new Cold segment while the original
+failed record and its diagnostics remain intact. No checkpoint deletion is
+required to process later source.
 
 V2 persists graph-only mention metadata even when no facts are accepted, then
 persists each fact event/vector before recording progress. Stable IDs find

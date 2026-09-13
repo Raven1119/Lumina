@@ -58,6 +58,12 @@ segments, not lines.
 Incomplete, duplicate-indexed, mixed-state, conflicting-metadata, or invalid
 provenance groups are not returned to Dream, counted, or consumed.
 
+The same file may also contain one owner-managed `dream_selection_cursor`
+record with `schema_version=1` and `after_segment_id` (no `segment_id` field).
+It is mechanical manual-Dream progress, not source or ingestion state. The
+owner writes it at a segment boundary and preserves it across append/consume;
+turn reconstruction, history and pending counts ignore it.
+
 The former one-line nested turns-array format is not read, migrated, or
 supported in parallel. Existing old-format bytes are not rewritten merely by
 reading the store and remain unrelated raw bytes during atomic rewrites.
@@ -79,6 +85,18 @@ conflicting reuse is rejected.
 mark_consumed performs one atomic full-file rewrite. Every line in the target
 segment becomes consumed with the same aware consumed_at. A segment cannot be
 partly pending and partly consumed; unrelated valid and malformed lines remain.
+
+`list_pending_page(limit)` returns at most `limit` unique pending segments in
+file order after the cursor, wrapping at most once. The anchor uses all valid
+segments, including consumed ones. `advance_pending_cursor(segment_id)` replaces
+only the owner's single cursor record using the same atomic writer; it leaves
+every source line unchanged. Missing cursors start at the beginning; invalid
+or duplicate cursors fail visibly instead of silently resetting selection.
+The original read-only `list_pending` prefix contract is unchanged.
+
+These operations still reconstruct the full Cold file. Page output and Dream
+attempts are bounded, not total file-read complexity. Each attempted default
+Dream segment also incurs at most one full-file atomic cursor update.
 
 ## Cold-first compaction
 

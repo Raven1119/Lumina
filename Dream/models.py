@@ -39,6 +39,7 @@ class SegmentDigestResult:
     already_ingested: bool
     consumed: bool
     error_code: str | None = None
+    retryable: bool = False
 
     def __post_init__(self) -> None:
         if self.status not in _DIGEST_STATUSES:
@@ -53,11 +54,13 @@ class DreamRunReport:
     skipped: int
     failed: int
     results: tuple[SegmentDigestResult, ...]
+    progress_saved: bool = True
 
     @classmethod
     def from_results(
         cls,
         results: tuple[SegmentDigestResult, ...],
+        *, progress_saved: bool = True,
     ) -> "DreamRunReport":
         consumed = sum(item.status == "consumed" for item in results)
         return cls(
@@ -70,4 +73,5 @@ class DreamRunReport:
             skipped=sum(item.status == "skipped" for item in results),
             failed=sum(item.status == "failed" for item in results),
             results=results,
+            progress_saved=progress_saved,
         )

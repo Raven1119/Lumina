@@ -11,6 +11,7 @@ from .entity_consolidation import EntityBinding, stable_entity_ref
 from .grounded_formation import (
     FORMATION_ENTITY_VERSION,
     FormationError,
+    can_repair_grounded_memory_batch,
     form_grounded_memory_batch,
     repair_grounded_memory_batch,
     serialize_grounded_memory_batch,
@@ -203,9 +204,13 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 and not {"extracted", "verified", "mentions"} <= state.keys())
         ):
             raise ValueError("state_corrupt")
-    except (ValueError, OSError):
+    except (ValueError, OSError) as error:
+        # The existing store wraps both read I/O and invalid JSON as ValueError;
+        # retain its cause so a temporary read failure is not called corruption.
+        retryable = isinstance(error, OSError) or isinstance(error.__cause__, OSError)
         return IngestionResult(segment.segment_id, version, "failed",
-                               safe_error_code="state_corrupt")
+                               retryable=retryable,
+                               safe_error_code="state_read_failed" if retryable else "state_corrupt")
     if new_state:
         try:
             store.put(key, state)
@@ -241,7 +246,7 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 raise FormationError("formation_checkpoint_invalid")
     except FormationError as error:
         return IngestionResult(segment.segment_id, version, "failed",
-                               retryable=True, safe_error_code=error.code)
+                               retryable=error.retryable, safe_error_code=error.code)
     except Exception:
         return IngestionResult(segment.segment_id, version, "failed",
                                retryable=True, safe_error_code="state_write_failed")
@@ -265,11 +270,15 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 raise ValueError("state_corrupt")
             if pending_issues and "repair_verified" in state:
                 return IngestionResult(segment.segment_id, version, "failed",
-                                       tuple(state["memory_ids"]), retryable=True,
+                                       tuple(state["memory_ids"]), retryable=False,
                                        safe_error_code="formation_processing_incomplete")
             if not pending_issues:
                 return IngestionResult(segment.segment_id, version, "completed",
                                        tuple(state["memory_ids"]), already_ingested=True)
+    except ValueError as error:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               retryable=isinstance(error.__cause__, OSError),
+                               safe_error_code="entity_consolidation_failed")
     except Exception:
         return IngestionResult(segment.segment_id, version, "failed",
                                retryable=True, safe_error_code="entity_consolidation_failed")
@@ -284,12 +293,12 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
             )
             if "repair_verified" not in state:
                 return IngestionResult(segment.segment_id, version, "failed",
-                                       tuple(state["memory_ids"]), retryable=True,
+                                       tuple(state["memory_ids"]), retryable=False,
                                        safe_error_code="formation_processing_incomplete")
             pending_issues = any(issue.status == "pending" for issue in batch.issues)
         except FormationError as error:
             return IngestionResult(segment.segment_id, version, "failed",
-                                   tuple(state["memory_ids"]), retryable=True,
+                                   tuple(state["memory_ids"]), retryable=error.retryable,
                                    safe_error_code=error.code)
         except Exception:
             return IngestionResult(segment.segment_id, version, "failed",
@@ -347,7 +356,9 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
         store.put(key, state)
         if pending_issues:
             return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
-                                   retryable=True, safe_error_code="formation_processing_incomplete")
+                                   retryable="repair" not in state and can_repair_grounded_memory_batch(
+                                       segment, extracted_checkpoint=state["extracted"], batch=batch,
+                                   ), safe_error_code="formation_processing_incomplete")
         return IngestionResult(segment.segment_id, version, "completed", tuple(memory_ids))
     except Exception:
         return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),

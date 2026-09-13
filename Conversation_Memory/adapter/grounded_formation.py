@@ -69,9 +69,10 @@ class FormationModel(Protocol):
 class FormationError(RuntimeError):
     """A safe formation failure that must leave the Cold segment pending."""
 
-    def __init__(self, code: str = "formation_failed") -> None:
+    def __init__(self, code: str = "formation_failed", *, retryable: bool = False) -> None:
         super().__init__(code)
         self.code = code
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -252,27 +253,43 @@ def form_grounded_memory_batch(
             identity_source_refs=(),
         ))
     accepted_ids = {mention.id for mention in accepted_mentions}
-    # A rejected target cannot survive as an identity assertion in another record.
+    original_mentions = {mention.id: mention for mention in mentions}
+    invalid_identity = _rejected_identity_dependencies(
+        original_mentions,
+        set(original_mentions) - accepted_ids | {
+            mention.id for mention in accepted_mentions if mention.identity == "unresolved"
+        },
+    )
+    for mention, index in zip(mentions, parsed.mention_indexes):
+        if mention.id in accepted_ids & invalid_identity and not any(
+            issue.candidate == "identity" and issue.index == index for issue in issues
+        ) and mention.identity != "unresolved":
+            issues.append(FormationIssue(
+                "identity", index, "formation_identity_dependency_rejected", "rejected",
+            ))
+    # Keep the occurrence, but never preserve a claim through a rejected target.
     accepted_mentions = [
-        replace(mention, identity="unresolved", same_as=None, distinct_from=())
-        if (
-            mention.same_as is not None and mention.same_as not in accepted_ids
-            or any(ref not in accepted_ids for ref in mention.distinct_from)
-        ) else mention
+        replace(mention, identity="unresolved", same_as=None, distinct_from=(),
+                identity_source_refs=()) if mention.id in invalid_identity else mention
         for mention in accepted_mentions
     ]
+    final_mentions = {mention.id: mention for mention in accepted_mentions}
     accepted_units: dict[str, tuple[GroundedMemoryUnit, GroundedUnitMentions]] = {}
     for unit, role, index, supported in zip(
         units, roles, parsed.unit_indexes, unit_decisions,
     ):
         participating = {ref for ref in (role.subject, role.object, *role.mentions) if ref}
-        if supported and participating <= accepted_ids:
+        identity_independent = participating <= accepted_ids and _verified_unit_identity_independent(
+            unit, role, final_mentions, invalid_identity,
+        )
+        if supported and identity_independent:
             accepted_units.setdefault(unit.id, (unit, role))
         else:
             issues.append(FormationIssue(
                 "unit", index,
                 "formation_semantic_rejected" if not supported
-                else "formation_mention_dependency_rejected",
+                else "formation_mention_dependency_rejected" if not participating <= accepted_ids
+                else "formation_identity_dependency_rejected",
                 "rejected",
             ))
     batch = GroundedMemoryBatch(
@@ -406,14 +423,35 @@ def repair_grounded_memory_batch(
         )
         supported_mentions = {
             mention.id for mention, (supported, identity_supported)
-            in zip(mentions, mention_decisions) if supported and identity_supported
+            in zip(mentions, mention_decisions) if supported
         }
+        rejected_identity = _rejected_identity_dependencies(
+            mentions_by_id,
+            unresolved | {
+                mention.id for mention, (supported, identity_supported)
+                in zip(mentions, mention_decisions) if not supported or not identity_supported
+            },
+        )
         for (index, unit, role, dependencies), supported in zip(eligible, unit_decisions):
+            participating = {ref for ref in (role.subject, role.object, *role.mentions) if ref}
+            identity_independent = _verified_unit_identity_independent(
+                unit, role, mentions_by_id, rejected_identity,
+            ) and not any(
+                # Repair cannot demote a saved binding. A literal fact is safe
+                # through an already-unresolved occurrence, not through a saved
+                # positive identity which this new verification has rejected.
+                mid in rejected_identity and mentions_by_id[mid].identity != "unresolved"
+                for mid in participating
+            )
             if not supported or not dependencies <= supported_mentions:
                 issues.append(FormationIssue(
                     "unit", index,
                     "formation_semantic_rejected" if not supported
                     else "formation_mention_dependency_rejected", "rejected",
+                ))
+            elif not identity_independent:
+                issues.append(FormationIssue(
+                    "unit", index, "formation_identity_dependency_rejected", "rejected",
                 ))
             elif unit.id not in existing:
                 additions.append((unit, role))
@@ -442,6 +480,17 @@ def repair_grounded_memory_batch(
     if checkpoint is not None:
         checkpoint("repair_verified", serialize_grounded_memory_batch(merged))
     return merged
+
+
+def can_repair_grounded_memory_batch(
+    segment: ColdDraftSegment, *, extracted_checkpoint: dict[str, Any],
+    batch: GroundedMemoryBatch,
+) -> bool:
+    """Report the existing one-shot repair eligibility without calling a model."""
+    return bool(_entity_source_repair_candidates(
+        _entity_extraction_output(extracted_checkpoint, segment),
+        _parse_entity_extraction(extracted_checkpoint, segment), batch, segment,
+    ))
 
 
 def _entity_source_repair_candidates(
@@ -695,10 +744,13 @@ def _entity_model_json(
     model: FormationModel, payload: dict[str, Any], prompt: str,
     *, error_code: str = "formation_failed",
 ) -> dict[str, Any]:
-    return _parse_entity_model_json(
-        _entity_model_response(model, payload, prompt, error_code=error_code),
-        error_code=error_code,
-    )
+    response = _entity_model_response(model, payload, prompt, error_code=error_code)
+    try:
+        return _parse_entity_model_json(response, error_code=error_code)
+    except FormationError as error:
+        # Verification has no saved successful stage yet. Saved extraction and
+        # repair receipts use the parser directly and cannot be resampled.
+        raise FormationError(error.code, retryable=True) from None
 
 
 def _entity_model_response(
@@ -717,7 +769,7 @@ def _entity_model_response(
     except FormationError:
         raise
     except Exception:
-        raise FormationError(error_code) from None
+        raise FormationError(error_code, retryable=True) from None
 
 
 def _parse_entity_model_json(
@@ -1116,6 +1168,47 @@ def _invalid_identity_dependencies(
             return invalid
 
 
+def _rejected_identity_dependencies(
+    mentions: dict[str, GroundedEntityMention], rejected: set[str],
+) -> set[str]:
+    """Close final rejected claims over their local directed dependencies.
+
+    A same-as class cannot also be distinct from itself. Reject the conflicting
+    assertion and its dependents, without invalidating unrelated co-occurrences
+    or the target's independent identity. This does not revisit saved batches.
+    """
+    invalid = set(rejected)
+    roots: dict[str, str | None] = {}
+    for mid in mentions:
+        seen: set[str] = set()
+        current = mid
+        while current in mentions and current not in seen:
+            seen.add(current)
+            parent = mentions[current].same_as
+            if parent is None:
+                break
+            current = parent
+        else:
+            current = None
+        roots[mid] = current
+    for mention in mentions.values():
+        if roots[mention.id] is None or any(
+            roots[mention.id] == roots.get(target)
+            for target in mention.distinct_from
+        ):
+            invalid.add(mention.id)
+    while True:
+        previous = len(invalid)
+        for mention in mentions.values():
+            if any(
+                target is not None and (target not in mentions or target in invalid)
+                for target in (mention.same_as, *mention.distinct_from)
+            ):
+                invalid.add(mention.id)
+        if len(invalid) == previous:
+            return invalid
+
+
 def _entity_unit_issue(raw: dict[str, Any], segment: ColdDraftSegment, index: int) -> FormationIssue:
     source = "\n".join(ref["supporting_span"] for ref in raw["source_refs"])
     turns = {turn.turn_id: turn for turn in segment.turns}
@@ -1156,6 +1249,28 @@ def _unit_identity_independent(
     return True
 
 
+def _verified_unit_identity_independent(
+    unit: GroundedMemoryUnit, role: GroundedUnitMentions,
+    mentions: dict[str, GroundedEntityMention], invalid_identity: set[str],
+) -> bool:
+    """After an identity veto, retain only independently literal propositions.
+
+    Surface overlap alone admits e.g. ``She (Nadia)`` after ``She -> Nadia``
+    was rejected. Check the whole proposition and its literal arguments; the
+    unchanged verifier cannot override its own rejected identity dependency.
+    Parsing still uses the original eligibility check before verification.
+    """
+    if not _unit_identity_independent(unit, role, mentions, invalid_identity):
+        return False
+    participating = {ref for ref in (role.subject, role.object, *role.mentions) if ref}
+    if not participating & invalid_identity:
+        return True
+    return (
+        any(unit.text in ref.supporting_span for ref in unit.source_refs)
+        and unit.subject in unit.text and unit.value in unit.text
+    )
+
+
 def _parse_entity_decisions(
     raw: Any, unit_count: int, mention_count: int,
 ) -> tuple[tuple[bool, ...], tuple[tuple[bool, bool], ...]]:
@@ -1166,7 +1281,7 @@ def _parse_entity_decisions(
         or len(raw["units"]) != unit_count
         or len(raw["mentions"]) != mention_count
     ):
-        raise FormationError("formation_verification_failed")
+        raise FormationError("formation_verification_failed", retryable=True)
     if not all(
         isinstance(item, dict) and set(item) == {"supported"}
         and type(item["supported"]) is bool
@@ -1177,7 +1292,7 @@ def _parse_entity_decisions(
         and type(item["identity_supported"]) is bool
         for item in raw["mentions"]
     ):
-        raise FormationError("formation_verification_failed")
+        raise FormationError("formation_verification_failed", retryable=True)
     return (
         tuple(item["supported"] for item in raw["units"]),
         tuple((item["supported"], item["identity_supported"]) for item in raw["mentions"]),

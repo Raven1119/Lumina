@@ -96,7 +96,7 @@ remain unchanged across the state transition.
 ```text
 explicit trigger
 -> DreamRunner.run_once(policy)
--> ColdDraftStore.list_pending(limit)
+-> ColdDraftStore.list_pending_page(limit)
 -> complete logical Cold segment
 -> ColdDraftSegmentConverter
 -> bounded DeepSeek-V4-Pro extraction of facts and full-window mentions
@@ -126,12 +126,29 @@ Retries reuse successful stages. Mock/legacy adapters retain deterministic
 ## Policy and ordering
 
 - Processing is serial.
-- Segment order is deterministic.
+- Default selection follows the Cold owner's persisted round-robin cursor in
+  source file order, wrapping at most once per page without duplicates.
 - `max_segments` bounds one run.
-- By default one segment failure does not block later segments.
-- `stop_on_error=True` is available only to direct Python/CLI callers.
-- Dream initiates no unbounded graph or Cold scan beyond the owner interfaces
-  and configured run bounds.
+- After each actual default attempt, including failure, the owner saves the
+  selected record's cursor. Ten pending failures cannot starve a healthy
+  eleventh segment: the next explicit run starts there, including after restart.
+  Failures stay pending; selection does not assert ingestion completion.
+- `stop_on_error=True` is available only to direct Python/CLI callers. It uses
+  the original pending prefix, stops on failure and leaves the cursor unchanged.
+- A cursor write failure stops further attempts and sets the internal report's
+  `progress_saved=false` while preserving actual segment outcomes. HTTP reports
+  the existing safe Dream failure; CLI exits unsuccessfully. Already completed
+  ingestion/consumption is retained and later retries remain idempotent.
+- Cold still reconstructs its complete file, and each cursor update atomically
+  replaces that file. Only page output and digest attempts are bounded by
+  `max_segments`; overall I/O is not `O(max_segments)`.
+
+Segment results project the adapter's `retryable` flag: unfinished provider,
+verification, eligible repair or persistence work can resume; saved bad output
+or exhausted/no eligible repair cannot advance under the same protocol. Neither
+kind is blacklisted or consumed on failure. A later page can still reach them,
+and later corrected source need not delete the old checkpoint. No timer,
+background worker, automatic run or additional model call is introduced.
 
 ## Completion and consumed transition
 

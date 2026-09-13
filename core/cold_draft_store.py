@@ -23,6 +23,7 @@ _PENDING = "pending_digest"
 _CONSUMED = "consumed"
 _DEFAULT_SOURCE = "hot_draft_precompression"
 _RECORD_TYPE = "cold_turn"
+_CURSOR_RECORD_TYPE = "dream_selection_cursor"
 _TURN_KEYS = {
     "role", "text", "turn_id", "created_at", "source_timezone", "timezone_source"
 }
@@ -129,6 +130,80 @@ class ColdDraftStore:
         if limit is not None:
             pending = pending[: self._safe_limit(limit)]
         return deepcopy(pending)
+
+    def list_pending_page(self, limit: int) -> list[dict[str, Any]]:
+        """Return one unique pending page after the durable selection cursor.
+
+        Like list_pending, this reconstructs the whole Cold file. Selection then
+        visits at most one cycle of the valid segments, returning at most limit
+        items. Consumed segments remain cursor anchors; the cursor never grants
+        consumption authority. Read or cursor errors propagate to the caller.
+        """
+        if type(limit) is not int or limit < 1:
+            raise ValueError("cold_draft_page_limit_invalid")
+        lines = self._physical_lines(self._read_bytes())
+        segments, _ = self._reconstruct_segments(lines)
+        after, _ = self._pending_cursor(lines, segments)
+        ordered = tuple(segments)
+        start = ordered.index(after) + 1 if after is not None else 0
+        page: list[dict[str, Any]] = []
+        for offset in range(len(ordered)):
+            aggregate = segments[ordered[(start + offset) % len(ordered)]].aggregate
+            if aggregate["state"] == _PENDING:
+                page.append(aggregate)
+                if len(page) == limit:
+                    break
+        return deepcopy(page)
+
+    def advance_pending_cursor(self, segment_id: str) -> bool:
+        """Atomically record mechanical progress, preserving every source line."""
+        if not isinstance(segment_id, str) or not segment_id:
+            return False
+        try:
+            lines = self._physical_lines(self._read_bytes())
+            segments, _ = self._reconstruct_segments(lines)
+            previous, cursor_position = self._pending_cursor(lines, segments)
+            if segment_id not in segments:
+                return False
+            if previous == segment_id and cursor_position == len(lines) - 1:
+                return True
+            preserved = b"".join(
+                line.raw for position, line in enumerate(lines)
+                if position != cursor_position
+            )
+            separator = b"\n" if preserved and not preserved.endswith((b"\n", b"\r")) else b""
+            cursor = self._encode_record({
+                "record_type": _CURSOR_RECORD_TYPE,
+                "schema_version": 1,
+                "after_segment_id": segment_id,
+            })
+            self._replace_bytes(preserved + separator + cursor)
+        except (OSError, ValueError):
+            return False
+        return True
+
+    @staticmethod
+    def _pending_cursor(
+        lines: list[_PhysicalLine], segments: OrderedDict[str, _Segment],
+    ) -> tuple[str | None, int | None]:
+        cursors = [
+            (position, line.record) for position, line in enumerate(lines)
+            if line.record is not None
+            and line.record.get("record_type") == _CURSOR_RECORD_TYPE
+        ]
+        if not cursors:
+            return None, None
+        if len(cursors) != 1:
+            raise ValueError("cold_draft_progress_invalid")
+        position, cursor = cursors[0]
+        if (
+            set(cursor) != {"record_type", "schema_version", "after_segment_id"}
+            or type(cursor["schema_version"]) is not int or cursor["schema_version"] != 1
+            or not isinstance(cursor["after_segment_id"], str)
+            or cursor["after_segment_id"] not in segments
+        ):
+            raise ValueError("cold_draft_progress_invalid")
+        return cursor["after_segment_id"], position
 
     def list_all_turns(self) -> list[DraftTurn]:
         """Return turns from every valid segment in stable file/index order."""

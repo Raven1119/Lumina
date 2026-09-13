@@ -494,6 +494,10 @@ def create_app(
         app.state.dream_running = True
         try:
             report = runner.run_once(effective_dream_policy)
+            if not report.progress_saved:
+                # Completed work remains durable; the normal safe failure
+                # response makes an unsaved queue position visible to callers.
+                raise RuntimeError("cold_draft_progress_write_failed")
             return DreamRunResponse(
                 attempted=report.attempted,
                 ingested=report.ingested,

@@ -224,6 +224,8 @@ def test_real_compaction_created_pending_then_consumed(kept_acceptance):
             sandbox / "draft" / "cold_drafts.jsonl"
         ).read_text(encoding="utf-8").splitlines()
     ]
+    assert sum(record["record_type"] == "dream_selection_cursor" for record in records) == 1
+    records = [record for record in records if record["record_type"] == "cold_turn"]
     assert len(records) == len(FIXED_TURNS)
     assert {record["record_type"] for record in records} == {"cold_turn"}
     assert len({record["segment_id"] for record in records}) == 1

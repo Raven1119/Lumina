@@ -57,6 +57,7 @@ class FakeOwner:
         self.list_limits: list[int | None] = []
         self.consume_calls: list[str] = []
         self.raise_on_list = False
+        self.cursor = None
 
     def list_pending(self, limit=None):
         if self.raise_on_list:
@@ -79,6 +80,18 @@ class FakeOwner:
                 item["state"] = "consumed"
                 return True
         return False
+
+    def list_pending_page(self, limit):
+        records = self.list_pending(limit=None)
+        self.list_limits[-1] = limit
+        ids = [record.get("segment_id") for record in self.records]
+        start = ids.index(self.cursor) + 1 if self.cursor in ids else 0
+        order = ids[start:] + ids[:start]
+        return sorted(records, key=lambda item: order.index(item["segment_id"]))[:limit]
+
+    def advance_pending_cursor(self, segment_id):
+        self.cursor = segment_id
+        return True
 
 
 class FakeMemorySystem:
@@ -240,6 +253,8 @@ def test_real_owner_reads_production_record_ingests_and_consumes(tmp_path):
         json.loads(line)
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
+    assert sum(item["record_type"] == "dream_selection_cursor" for item in after) == 1
+    after = [item for item in after if item["record_type"] == "cold_turn"]
     assert {item["state"] for item in after} == {"consumed"}
     assert len({item["consumed_at"] for item in after}) == 1
 
@@ -253,7 +268,7 @@ def test_multiple_segments_use_owner_order():
 
 def test_max_segments_is_enforced_even_if_owner_over_returns():
     runner, owner, _ = make_runner([make_record("a"), make_record("b"), make_record("c")])
-    owner.list_pending = lambda limit=None: owner.records
+    owner.list_pending_page = lambda limit: owner.records
     report = runner.run_once(DreamRunPolicy(max_segments=2))
     assert [item.segment_id for item in report.results] == ["a", "b"]
 
@@ -503,6 +518,8 @@ def test_consumed_transition_changes_only_state_metadata_not_raw_turns(tmp_path)
         json.loads(line)
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
+    assert sum(item["record_type"] == "dream_selection_cursor" for item in after) == 1
+    after = [item for item in after if item["record_type"] == "cold_turn"]
     assert len(before) == len(after) == 2
     assert {item["state"] for item in before} == {"pending_digest"}
     assert {item["state"] for item in after} == {"consumed"}
@@ -641,6 +658,12 @@ class FailConsumeOwner:
     def list_pending(self, limit=None):
         return self.delegate.list_pending(limit)
 
+    def list_pending_page(self, limit):
+        return self.delegate.list_pending_page(limit)
+
+    def advance_pending_cursor(self, segment_id):
+        return self.delegate.advance_pending_cursor(segment_id)
+
     def mark_consumed(self, segment_id):
         return False
 
@@ -747,6 +770,7 @@ def test_dream_runner_is_only_triggered_by_explicit_http_request(tmp_path):
                 consumed=1,
                 skipped=0,
                 failed=0,
+                progress_saved=True,
             )
 
     app = create_app(

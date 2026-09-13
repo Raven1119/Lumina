@@ -41,6 +41,7 @@ _SAFE_INGESTION_ERRORS = {
     "invalid_source_timezone",
     "invalid_timezone_source",
     "state_corrupt",
+    "state_read_failed",
     "state_write_failed",
     "grounded_manifest_mismatch",
     "memory_write_failed",
@@ -249,6 +250,7 @@ class ColdDraftDigestionTask:
                 False,
                 False,
                 "memory_unavailable",
+                retryable=True,
             )
 
         already_ingested = bool(getattr(ingestion, "already_ingested", False))
@@ -259,6 +261,7 @@ class ColdDraftDigestionTask:
                 already_ingested,
                 False,
                 self._safe_ingestion_error(ingestion),
+                retryable=getattr(ingestion, "retryable", False) is True,
             )
         if (
             getattr(ingestion, "segment_id", None) != segment.segment_id
@@ -295,6 +298,7 @@ class ColdDraftDigestionTask:
                 already_ingested,
                 False,
                 "cold_draft_consume_failed",
+                retryable=True,
             )
         return SegmentDigestResult(
             segment_id,
