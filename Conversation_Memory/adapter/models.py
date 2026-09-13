@@ -77,8 +77,11 @@ class RecallPolicy:
     max_nodes: int = 100
     final_min_score: float | None = None
     relation_surfaces: tuple[str, ...] | None = None
+    include_source_context: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.include_source_context) is not bool:
+            raise ValueError("include_source_context must be a bool")
         for name in (
             "top_k",
             "max_chars",

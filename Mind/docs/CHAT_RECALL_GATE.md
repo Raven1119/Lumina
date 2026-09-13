@@ -1,29 +1,88 @@
-# Chat Recall decision contract
+# Chat Memory read contract
 
-The production Chat path owns one `MindGate.decide(original_message, recent_context)` call before the Recall guard. This is separate from the persistent Mind/Nervous/Execution cognitive loop. No new model owner, memory store or query planner is introduced.
+Production Chat is separate from the persistent Mind/Nervous/Execution loop.
+MessageRuntime loads the current conversation once, retains the original user
+question for Answer and Hot, and performs at most one bounded Memory read.
+There is no query editor, second memory store or read-time ingestion.
 
-## Selection
+## Modes
 
-The default `LUMINA_MIND_GATE_MODE=llm` retains `mind-gate-v2`, its original boolean prompt and eight-token budget. Set the existing variable to `contextual` to opt into `mind-gate-v3` and the bounded query protocol below. Direct injected callers use `LlmMindGate(model_client, contextual=True)`. This capability is implemented but is not promoted as the default; query faithfulness remains a limitation of the explicit mode. Mock model mode and `constant` retain the original-query Constant gate, and client construction failure still falls back to it.
+`LUMINA_MIND_GATE_MODE` is read when the app is created; restart to change it.
 
-## Decision and source boundary
+| Mode | Read path |
+| --- | --- |
+| `llm` (default) | Original v2 boolean gate, then existing bounded Recall if allowed. |
+| `constant` | Constant allow decision, then the same bounded Recall. |
+| `direct` (explicit experiment) | No pre-read gate; original question reads whole bounded candidates for Answer. |
 
-`MindDecision(recall: bool, query: str | None = None, context_refs: tuple[MindContextRef, ...] = ())` preserves old boolean callers. `MindContextRef(index, span)` identifies a position in this call's existing context view, not a persistent turn ID or EntityRef. The view is loaded once; a rolling summary can occupy a position but cannot authorize a query rewrite. Source spans must come from original user/assistant messages and occur exactly in both the cited message and the proposed query. This is a literal provenance check, not proof of semantic coreference.
+The default v2 prompt, boolean parser, temperature 0 and eight-token output
+budget are unchanged. Mock models use the constant gate unless `direct` was
+explicitly selected. Gate-client construction failure falls back to the constant
+gate. Other mode strings use the existing default selection.
 
-The contextual protocol is one complete JSON object with exactly `recall`, `query` and `context_refs`. Its bounds are 256 query characters, two references, 96 characters per span and 2048 output characters. Query completion must preserve the requested attribute, direction, time, negation, conditions and corrections. Self-contained questions, missing antecedents and unresolved ambiguity use `query=null`; `recall=false` cannot carry an executable query. Assistant guesses must not become fact assertions or answers inside a query. Legacy bare boolean responses remain accepted.
+V3 free-query generation and v4 character replacement are retired from maintained
+execution. Their frozen source and outcomes remain local experimental evidence;
+`contextual` no longer enables a query-generation protocol. They are not runtime
+or CI dependencies. The default is not promoted to `direct` by these changes.
 
-The contextual gate budget is 1024 output tokens with the existing temperature 0 and DeepSeek provider. Oversized or incomplete output fails validation; no partial query is executed. The existing view is not replaced by a whole-history read or truncated inside a message.
+## Default gate and audit
 
-## Execution and audit
+`MindGate.decide(original_message, recent_context) -> MindDecision(recall: bool)`
+runs before the enabled/available/policy guards. Invalid decisions or provider
+failure fail open with the original question. The gate does not edit text.
 
-Only the effective query is passed to the existing `MemoryRetriever.recall(query, policy)`. The original message, original recent context, Answer prompt, Answer parameters and Hot user turn stay unchanged. The query is never evidence and is never ingested as a new fact. Memory policy, candidates, ranking, scoring and evidence packing remain owned by the existing Memory implementation.
+The existing append-only decision log retains `turn_id`, `recall` and
+`decided_at`. Runtime also records `prompt_version`, `original_message`,
+`effective_query` and `fallback_reason`. Old lines are never rewritten. An audit
+failure restores allow and attempts one fallback append; if both writes fail,
+Chat remains available with a log-failure event. Direct `record` callers without
+an audit still use the original three-field format. Injected boolean gates may
+omit a logger as before.
 
-The existing append-only decision log retains `turn_id`, `recall` and `decided_at`. Runtime records also contain `original_message`, `candidate_query`, `effective_query`, `context_refs` (index/role/span), `prompt_version` and `fallback_reason`. Direct legacy `record(decision, turn_id=...)` calls still write the original three-field format; old lines are not rewritten.
+## Direct bounded candidates
 
-A valid proposal takes effect only after its audit append returns successfully. Provider/JSON/schema/source/length failures use `recall=true` with the original query and a logged fallback reason. Logging failure likewise restores the original query and allow decision; a single best-effort fallback append records that outcome if the writer becomes available. A proposal line left by a write-then-raise is not proof that the proposal executed; the failure event and any subsequent fallback row must be considered. If both audit writes fail, Chat remains available with original-query fallback and a log-failure event, without a durable decision guarantee.
+Explicit `direct` skips gate construction and execution, including any injected
+pre-read gate. It calls the same public `recall(query, policy)` with the original
+question. The default experiment policy is `top_k=10`, `max_graph_depth=1`,
+`max_nodes=20`, `max_evidence_items=20`, `max_chars=5000`,
+`final_min_score=None`, `include_source_context=True`. Programmatic explicit
+policy injection remains supported. The existing Recall enabled/available guards
+still apply. Direct mode produces no fictitious Mind gate decision or audit.
 
-A missing logger prevents a new query from taking effect. Legacy boolean-only callers without a logger retain their previous behavior. The gate still runs before the Recall enabled/available/policy guards, and those guards still suppress Recall. There is at most one gate call and at most one Recall call per Chat request; failures do not trigger another query-generation call.
+BGE, candidate discovery, Hindsight, provenance projection and whole dependency
+packing remain Memory-owned. Removing the final floor does not bypass source or
+chain checks. Original facts are kept whole; required bridge facts must also fit.
+Source headers and binding annotations consume the same character budget.
+Neither the entire database nor private backend objects are exposed.
 
-## Evidence standard
+With source context enabled, each fact displays its original USER/LUMINA role,
+source speaking time and timezone. Anonymous subject/object labels preserve
+existing stored role bindings across returned facts. They expose no persistent
+EntityRefs and create no identity attributes. Identical labels share a stored
+binding; different labels alone do not prove distinct real-world objects.
+Occupation or other identifying information must be present in original facts.
+Mention proximity or equal name strings cannot invent a role or resolve namesakes.
 
-Deterministic tests establish the plumbing, source checks, original-message preservation and failure behavior. Promotion additionally requires real contextual decisions and supported answers on frozen independent cases. Forced-allow or scripted-query comparisons are mechanism controls, not autonomous gate results. Ambiguous historical names remain outside this change; incomplete or hallucinated answers must remain visible in the local experimental report.
+The source-context Answer guidance uses the original question and visible
+conversation for corrections, referents, direction, history, negation and
+conditions. A timestamp is when the source spoke, not proof of when a fact became
+true. Unverified assistant guesses are not established USER facts. Historical
+memory does not automatically override an explicit current user correction.
+Missing identity or requested facts permit supported partial information or an
+honest clarification; empty evidence does not establish nonexistence.
+
+## Failure and validation
+
+Disabled, unavailable, failed or empty Recall leaves Answer with the original
+background and recent context. Raw errors, paths and credentials are not injected.
+No failure triggers another retrieval or semantic call. Answer and Hot continue
+to use the original question. Recall is read-only; restart does not rewrite facts.
+
+Maintained tests cover original inputs, source rendering, whole-group budgets,
+default compatibility, restart and failure behavior. They establish mechanics,
+not general semantic ability. Real comparisons must separately measure necessary
+facts in candidates and Answer, source-supported task completion and ancillary
+claims, unknown/ambiguous cases, actual new HTTP versus exact replay, input/output
+tokens and local retrieval/BGE cost. More candidates or fewer model calls alone
+do not establish a net benefit. Experimental reports stay local and are not
+required by runtime or CI.

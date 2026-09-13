@@ -324,6 +324,8 @@ class MagmaMemoryAdapter:
                 groups,
                 count=policy.max_evidence_items,
                 max_chars=policy.max_chars,
+                **({"source_context_roles": _source_context_roles(rerankable, projected)}
+                   if policy.include_source_context else {}),
             )
             return MemoryContext(normalized_query, evidence, rendered,
                                  truncated or retrieval_truncated or missing_dependency)
@@ -346,6 +348,30 @@ class MagmaMemoryAdapter:
 
 def _create_bge_reranker():
     return BgeReranker()
+
+
+def _source_context_roles(rerankable, projected):
+    """Keep stored role bindings private, exposing only call-local labels.
+
+    Labels express shared existing bindings, not a new claim that different
+    labels must denote different real-world identities. Ordinary mentions and
+    name surfaces cannot supply subject/object roles here.
+    """
+    labels: dict[str, str] = {}
+    roles: dict[str, tuple[str | None, str | None]] = {}
+    for _, candidate in rerankable:
+        evidence_id = candidate.metadata.get("evidence_id")
+        if evidence_id not in projected or evidence_id in roles:
+            continue
+        values = []
+        for field in ("subject_entity_ref", "object_entity_ref"):
+            ref = candidate.metadata.get(field)
+            label = None
+            if isinstance(ref, str) and ref.strip():
+                label = labels.setdefault(ref, f"I{len(labels) + 1}")
+            values.append(label)
+        roles[evidence_id] = (values[0], values[1])
+    return roles
 
 
 def _association_evidence_ids(candidate, by_id) -> tuple[str, ...] | None:

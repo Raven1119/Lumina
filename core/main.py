@@ -42,7 +42,7 @@ from Execution import ExecutionOrgan, FileContentEquals
 from Mind.constant_gate import ConstantMindGate
 from Mind.decision_log import JsonlDecisionLog
 from Mind.interfaces import MindGate
-from Mind.llm_gate import GATE_MAX_TOKENS, LlmMindGate
+from Mind.llm_gate import LlmMindGate
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
@@ -58,6 +58,11 @@ _CHAT_RECALL_POLICY = RecallPolicy(
     max_evidence_items=3,
     max_chars=5000,
     final_min_score=0.144,
+)
+# Explicit read-first experiment: one Answer call sees whole bounded candidates.
+_DIRECT_RECALL_POLICY = RecallPolicy(
+    top_k=10, max_graph_depth=1, max_nodes=20, max_evidence_items=20,
+    max_chars=5000, final_min_score=None, include_source_context=True,
 )
 _PENDING_STATUS_LIMIT = 100
 _EXECUTION_MAX_DECISIONS = 8
@@ -176,19 +181,16 @@ def _default_mind_gate(chat_model: ModelClient) -> MindGate:
     mode = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
     if mode == "constant":
         return ConstantMindGate()
-    # Contextual query generation requires explicit selection until its real
-    # semantic acceptance is established. Keep the validated boolean default.
-    contextual = mode == "contextual"
     try:
         gate_client = build_model_client_from_env(
-            max_tokens_override=GATE_MAX_TOKENS if contextual else 8,
+            max_tokens_override=8,
             temperature_override=0.0,
         )
     except Exception:
         return ConstantMindGate()
     if getattr(gate_client, "client_kind", None) != "model":
         return ConstantMindGate()
-    return LlmMindGate(gate_client, contextual=contextual)
+    return LlmMindGate(gate_client)
 
 
 def _load_chat_background(path: Path) -> str:
@@ -260,12 +262,13 @@ def create_app(
             os.environ.get("LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED")
         )
     )
+    direct_memory_use = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower() == "direct"
     effective_memory = memory_retriever
     effective_dream_policy = _DREAM_POLICY
     effective_recall_policy = (
         recall_policy
         if recall_policy is not None
-        else _CHAT_RECALL_POLICY
+        else (_DIRECT_RECALL_POLICY if direct_memory_use else _CHAT_RECALL_POLICY)
         if effective_recall_enabled
         else None
     )
@@ -329,12 +332,11 @@ def create_app(
             retain_recent_raw_turns=retain_recent_raw_turns,
             max_raw_turns_before_compression=max_raw_turns_before_compression,
         )
-    # Mind wiring is independent of Recall wiring: the gate runs on every chat
-    # message even when Recall is disabled or unavailable. The default gate is
-    # selected by _default_mind_gate (real config -> promoted LlmMindGate,
-    # mock/constant mode/failure -> ConstantMindGate rollback).
+    # Direct mode has no pre-read semantic call, including with Recall disabled.
+    # All other modes preserve their existing gate selection and fail-open path.
     effective_mind_gate = (
-        mind_gate if mind_gate is not None else _default_mind_gate(effective_model)
+        None if direct_memory_use
+        else mind_gate if mind_gate is not None else _default_mind_gate(effective_model)
     )
     mind_decision_log = JsonlDecisionLog(
         _mind_decision_log_path(mind_decision_log_path)

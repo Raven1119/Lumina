@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+import json
+
 from adapter.models import MemoryEvidence
 
 
@@ -16,8 +19,28 @@ def _speaker_label(item: MemoryEvidence) -> str:
     raise ValueError("unsupported evidence source role")
 
 
-def _render_header(item: MemoryEvidence) -> str:
-    return f"[{_speaker_label(item)}]"
+def _render_header(item: MemoryEvidence, source_context_roles=None) -> str:
+    speaker = _speaker_label(item)
+    if source_context_roles is None:
+        return f"[{speaker}]"
+    # This is the source statement time, not a claim about when its fact held.
+    spoken_at = item.provenance.source_timestamp
+    try:
+        parsed = datetime.fromisoformat(spoken_at)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            spoken_at = "unknown"
+    except (TypeError, ValueError):
+        spoken_at = "unknown"
+    timezone = item.provenance.source_timezone
+    if not isinstance(timezone, str) or not timezone.strip():
+        timezone = "unknown"
+    fields = [speaker, f"spoken_at={json.dumps(spoken_at, ensure_ascii=False)}",
+              f"timezone={json.dumps(timezone, ensure_ascii=False)}"]
+    subject, obj = source_context_roles.get(item.evidence_id, (None, None))
+    for role, label in (("subject", subject), ("object", obj)):
+        if label is not None:
+            fields.append(f"{role}_binding={label}")
+    return "[" + " | ".join(fields) + "]"
 
 
 def bound_evidence(
@@ -34,6 +57,7 @@ def bound_evidence_groups(
     *,
     count: int,
     max_chars: int,
+    source_context_roles: dict[str, tuple[str | None, str | None]] | None = None,
 ) -> tuple[tuple[MemoryEvidence, ...], str, bool]:
     """Render whole source facts and whole dependency bundles, or omit them.
 
@@ -51,7 +75,8 @@ def bound_evidence_groups(
         for item in group:
             if item.evidence_id not in seen:
                 pending.setdefault(item.evidence_id, item)
-        lines = [f"{_render_header(item)}\n{item.text}" for item in pending.values()]
+        lines = [f"{_render_header(item, source_context_roles)}\n{item.text}"
+                 for item in pending.values()]
         extra = sum(map(len, lines)) + max(0, len(lines) - 1) + bool(parts and lines)
         if len(selected) + len(pending) > count or used + extra > max_chars:
             truncated = True

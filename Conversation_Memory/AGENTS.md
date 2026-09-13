@@ -102,6 +102,15 @@ token window; otherwise scoring uses the original single fact. This changes
 scoring input, not stored facts, the model,
 Hindsight or the score floor. Budgets include items, rendered characters, queried
 identities and actual adjacency reads. Recall remains read-only and fail-soft.
+
+`RecallPolicy.include_source_context` defaults to `False`, preserving the plain
+speaker-labelled rendering. The explicit source-context view adds the source
+statement's time and timezone, plus anonymous labels for existing subject/object
+bindings within this result. Missing time is not invented. Labels add no identity
+attributes; different labels alone do not prove different real-world people.
+Ordinary mentions do not supply roles, and occupational distinctions must come
+from complete source facts. All added header characters count before whole-group
+packing. This changes no public persistent refs, facade, stored facts or writes.
 See `docs/COLD_DRAFT_ADAPTER_DESIGN.md` for selection, evidence packing and
 capability limits. Experiment reports and captured provider outputs are local
 artifacts, not runtime dependencies.

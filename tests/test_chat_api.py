@@ -233,7 +233,6 @@ def _wired_app(tmp_path: Path, model, **kwargs):
 @pytest.mark.parametrize("mode,max_tokens,version", [
     (None, 8, "mind-gate-v2"),
     ("llm", 8, "mind-gate-v2"),
-    ("contextual", 1024, "mind-gate-v3"),
 ])
 def test_real_model_selects_mind_protocol_and_budget(
     tmp_path: Path,
@@ -268,7 +267,7 @@ def test_real_model_selects_mind_protocol_and_budget(
     assert gate._model_client is gate_model
 
 
-@pytest.mark.parametrize("mode", [None, "llm", "contextual"])
+@pytest.mark.parametrize("mode", [None, "llm"])
 def test_mock_mode_keeps_constant_mind_gate(
     tmp_path: Path,
     monkeypatch,
@@ -309,7 +308,7 @@ def test_constant_mode_rolls_back_to_stage1_gate(
     assert isinstance(app.state.message_runtime._mind_gate, ConstantMindGate)
 
 
-@pytest.mark.parametrize("mode", ["llm", "contextual"])
+@pytest.mark.parametrize("mode", ["llm"])
 @pytest.mark.parametrize("failure", ["raises", "returns_mock"])
 def test_llm_mode_without_real_gate_client_falls_back_to_constant(
     tmp_path: Path,
@@ -1351,3 +1350,69 @@ def test_unexpected_dream_failure_releases_lock_and_hides_details(tmp_path: Path
     assert client.post("/api/chat", json={"message": "after failure"}).status_code == 200
     app.state.dream_runner = original_runner
     assert client.post("/api/dream/run").status_code == 200
+
+
+@pytest.mark.parametrize("kind", ["model", "mock"])
+def test_direct_mode_skips_pre_read_gate_and_preserves_original_turns(tmp_path, monkeypatch, kind):
+    monkeypatch.setenv("LUMINA_MIND_GATE_MODE", "direct")
+
+    def no_gate_client(*args, **kwargs):
+        raise AssertionError("direct mode must not construct a gate client")
+
+    class ForbiddenGate:
+        def decide(self, *args):
+            raise AssertionError("direct mode must not call even an injected pre-read gate")
+
+    monkeypatch.setattr(main_module, "build_model_client_from_env", no_gate_client)
+    answer = _ContextModel()
+    answer.client_kind = kind
+    text = '[USER | spoken_at="2026-01-02T03:04:05+00:00" | timezone="UTC" | subject_binding=I1]\nThe scale holds 18 GB.'
+    retriever = _RecordingRetriever(MemoryContext("", rendered_text=text))
+    app = _wired_app(tmp_path, answer, recall_enabled=True, memory_retriever=retriever,
+                     mind_gate=ForbiddenGate(), enable_compaction=False,
+                     mind_decision_log_path=tmp_path / "decisions.jsonl")
+    runtime = app.state.message_runtime
+    assert runtime._mind_gate is None
+    policy = runtime._recall_policy
+    assert (policy.top_k, policy.max_graph_depth, policy.max_nodes,
+            policy.max_evidence_items, policy.max_chars, policy.final_min_score) == (10, 1, 20, 20, 5000, None)
+    assert policy.include_source_context is True
+    client = TestClient(app)
+    near = "Review the scale, not the speaker's guess."
+    question = "  If it is cold, what does it hold?  "
+    assert client.post("/api/chat", json={"message": near}).status_code == 200
+    assert client.post("/api/chat", json={"message": question}).status_code == 200
+    assert [q for q, _ in retriever.calls] == [near, question]
+    assert answer.messages == [near, question]
+    assert answer.contexts[-1] == [{"role": "user", "text": near},
+                                    {"role": "assistant", "text": f"answer:{near}"}]
+    assert text in answer.system_prompts[-1]
+    assert "different labels alone do not prove" in answer.system_prompts[-1]
+    assert not (tmp_path / "decisions.jsonl").exists()
+    assert [turn.text for turn in app.state.hot_draft_store.list_all_raw() if turn.role == "user"] == [near, question]
+
+    restarted = _wired_app(tmp_path, answer, recall_enabled=True, memory_retriever=retriever,
+                           enable_compaction=False, mind_decision_log_path=tmp_path / "decisions.jsonl")
+    assert restarted.state.message_runtime._mind_gate is None
+    assert restarted.state.message_runtime._recall_policy == policy
+    assert [turn.text for turn in restarted.state.hot_draft_store.list_all_raw() if turn.role == "user"] == [near, question]
+
+
+@pytest.mark.parametrize("failure", ["disabled", "raises", "safe_error", "empty"])
+def test_direct_mode_memory_failure_uses_original_answer_context(tmp_path, monkeypatch, failure):
+    monkeypatch.setenv("LUMINA_MIND_GATE_MODE", "direct")
+    secret = "private filesystem location and provider credential"
+    context = MemoryContext("", rendered_text="" if failure == "empty" else secret,
+                            safe_error_code="recall_unavailable" if failure == "safe_error" else None)
+    retriever = _RecordingRetriever(context, RuntimeError(secret) if failure == "raises" else None)
+    answer = _ContextModel()
+    app = _wired_app(tmp_path, answer, recall_enabled=failure != "disabled",
+                     memory_retriever=retriever, enable_compaction=False,
+                     mind_decision_log_path=tmp_path / "decisions.jsonl")
+    response = TestClient(app).post("/api/chat", json={"message": "Which one?"})
+    assert response.status_code == 200
+    assert answer.messages == ["Which one?"]
+    assert len(retriever.calls) == (0 if failure == "disabled" else 1)
+    assert answer.system_prompts == [app.state.message_runtime._chat_background]
+    assert secret not in response.text
+    assert not (tmp_path / "decisions.jsonl").exists()

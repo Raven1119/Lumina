@@ -4,26 +4,32 @@ The cognitive core is now `Mind <-> Nervous <-> Execution <-> Environment`.
 Each organ owns its state and continuation; there is no central Session/Host.
 The foreground CLI is `python -m Mind`, using a new `--state` directory.
 Single-goal operation remains the default; `--pursuit` opts into the Stage1
-continuing-Mind implementation described below. Production Chat still runs its separate Recall gate;
+continuing-Mind implementation described below. Production Chat keeps its separate memory read path;
 the manual Execution API is also separate.
 
-## Chat contextual Recall
+## Chat bounded memory use
 
-The existing Chat Mind call can optionally return a standalone retrieval query
-with bounded exact references into the once-loaded recent context. Runtime
-uses the query only for Recall after audit succeeds; Answer and Hot retain the
-original question. Invalid proposals and logging failures restore original-query
-fail-open behavior. Memory writing, retrieval/scoring and Answer prompts stay
-unchanged.
+The default Chat path retains the original v2 boolean gate, eight-token budget
+and existing Recall policy. `LUMINA_MIND_GATE_MODE=direct` explicitly enables a
+read-first experiment: no pre-read gate or query editing, one original-question
+Recall, then Answer with the original recent context and bounded historical
+candidates. It keeps the existing 20-node, depth-one and 5000-character bounds,
+removes the final score floor and allows up to 20 whole evidence items.
 
-The capability is implemented but has not been promoted as the default.
-`LUMINA_MIND_GATE_MODE=contextual` explicitly selects the 1024-token v3 protocol;
-default `llm` retains the original v2 boolean prompt and eight-token budget.
-Mock/constant modes remain available. Literal source validity does not establish
-correct coreference or supported answers. See the maintained
-[Chat Recall contract](../Mind/docs/CHAT_RECALL_GATE.md) for bounds and failure
-semantics. Experimental corpora, outputs and reports remain local and are not
-runtime or CI dependencies.
+The experiment presents source speaking time, USER/LUMINA role and anonymous
+existing subject/object bindings within the same whole-group budget. The labels
+do not create identity attributes or prove that distinct bindings denote distinct
+real-world people. Answer guidance preserves user corrections, history and
+conditions; unverified assistant guesses cannot stand in for established facts.
+Memory discovery, fixed BGE, source validation, persistence and write semantics
+remain with their existing owners.
+
+V3/v4 query-generation experiments remain frozen local evidence; their active
+query editors and dedicated protocol tests are retired. Default `llm` is unchanged,
+with `constant` and mock fallback still supported. The direct mode remains
+explicit-only. See the maintained [Chat Memory read contract](../Mind/docs/CHAT_RECALL_GATE.md)
+for bounds and failure semantics. Experimental corpora, outputs and reports remain
+local and are not runtime or CI dependencies.
 
 ## Conversation Memory entity enhancement
 

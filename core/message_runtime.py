@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from Mind.interfaces import MindDecision, MindDecisionError, validate_mind_decision
+from Mind.interfaces import MindDecision
 
 from core.contracts import (
     AssistantResponse,
@@ -40,6 +40,12 @@ Do not infer or generalize beyond what the evidence explicitly supports.
 {rendered_text}
 <END_EXACT_GROUNDED_SPANS>
 [/Internal historical evidence]
+"""
+_SOURCE_CONTEXT_GUIDANCE = """Interpret historical candidates using the original question and current conversation, including explicit user corrections, relation direction, negation and conditions.
+Spoken-at timestamps describe when a source statement was made, not when its proposition became true. Preserve historical and reported scope.
+USER and LUMINA identify the original speakers; an unverified assistant guess is not an established fact. Historical evidence does not automatically override a current explicit user correction.
+Local entity labels preserve stored subject/object bindings only. The same label connects those roles across facts. Labels do not establish attributes; different labels alone do not prove distinct real-world objects. Unlabelled names alone do not resolve namesakes. Do not expose these internal labels in the answer.
+Use only source-supported claims. When identity, scope or the requested fact is missing, give useful supported partial information or explain the remaining ambiguity. An empty candidate set does not prove an entity or memory does not exist.
 """
 _HOT_SUMMARY_START = "[Hot rolling summary]"
 _HOT_SUMMARY_END = "[/Hot rolling summary]"
@@ -99,7 +105,7 @@ class MessageRuntime:
             turn_id=user_turn.turn_id,
         )
         system_prompt = self._system_prompt_with_memory(
-            decision.query if decision.query is not None else user_message,
+            user_message,
             decision.recall,
         )
         assistant_text, response_type, phase, model_event = self._generate(
@@ -157,46 +163,29 @@ class MessageRuntime:
         *,
         turn_id: str | None,
     ) -> tuple[MindDecision, str | None]:
-        """Apply a sourced query only after its audit append succeeds."""
         fallback = MindDecision(recall=True)
         if self._mind_gate is None:
             return fallback, None
-        candidate_query = None
         fallback_reason = None
         try:
             decision = self._mind_gate.decide(user_message, recent_context)
-            validate_mind_decision(decision, recent_context)
-            candidate_query = decision.query
-        except MindDecisionError as error:
-            candidate_query = error.candidate_query
-            fallback_reason = error.code
-            decision = fallback
+            if type(decision) is not MindDecision or type(decision.recall) is not bool:
+                raise ValueError("invalid mind decision")
         except Exception:
-            fallback_reason = "gate_failed"
             decision = fallback
+            fallback_reason = "gate_failed"
         audit = {
             "prompt_version": getattr(self._mind_gate, "prompt_version", None),
             "original_message": user_message,
-            "candidate_query": candidate_query,
-            "effective_query": (decision.query if decision.query is not None else user_message) if decision.recall else None,
-            "context_refs": [
-                {"index": ref.index, "role": recent_context[ref.index]["role"], "span": ref.span}
-                for ref in decision.context_refs
-            ],
+            "effective_query": user_message if decision.recall else None,
             "fallback_reason": fallback_reason,
         }
-        if self._mind_decision_log is None:
-            # Legacy boolean callers may omit logging. A new query cannot.
-            if decision.query is not None:
-                return fallback, "mind_decision_log_failed"
-        else:
+        if self._mind_decision_log is not None:
             try:
                 self._mind_decision_log.record(decision, turn_id=turn_id, query_audit=audit)
             except Exception:
-                # Even write-then-raise cannot authorize a proposal. Attempt one
-                # explicit fallback append; availability never depends on it.
                 fallback_audit = {**audit, "effective_query": user_message,
-                                  "context_refs": [], "fallback_reason": "decision_log_failed"}
+                                  "fallback_reason": "decision_log_failed"}
                 try:
                     self._mind_decision_log.record(fallback, turn_id=turn_id, query_audit=fallback_audit)
                 except Exception:
@@ -204,9 +193,7 @@ class MessageRuntime:
                 return fallback, "mind_decision_log_failed"
         if fallback_reason is not None:
             return fallback, "mind_gate_failed"
-        if not decision.recall:
-            return decision, "mind_recall_declined"
-        return decision, "mind_recall_decided"
+        return decision, "mind_recall_decided" if decision.recall else "mind_recall_declined"
 
     def _system_prompt_with_memory(
         self,
@@ -232,7 +219,13 @@ class MessageRuntime:
             return self._chat_background
         if not isinstance(rendered_text, str) or not rendered_text.strip():
             return self._chat_background
-        memory_block = _MEMORY_CONTEXT_TEMPLATE.replace(
+        template = _MEMORY_CONTEXT_TEMPLATE
+        if getattr(self._recall_policy, "include_source_context", False):
+            template = template.replace(
+                "<BEGIN_EXACT_GROUNDED_SPANS>",
+                _SOURCE_CONTEXT_GUIDANCE + "<BEGIN_EXACT_GROUNDED_SPANS>",
+            )
+        memory_block = template.replace(
             "{rendered_text}",
             rendered_text,
         )

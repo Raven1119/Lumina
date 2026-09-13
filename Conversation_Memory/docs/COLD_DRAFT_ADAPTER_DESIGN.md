@@ -122,8 +122,9 @@ Current fields:
 | `max_evidence_items` | 5 | maximum public anchors + expansions |
 | `max_graph_depth` | 5 | graph depth; `0` is valid anchor-only |
 | `max_nodes` | 100 | bounds returned retrieval candidates, projected nodes and actual graph adjacency reads; not historical vector membership |
-| `final_min_score` | `None` | optional inclusive composed-score floor; Chat uses `0.144` |
+| `final_min_score` | `None` | optional inclusive composed-score floor; default Chat uses `0.144` |
 | `relation_surfaces` | `None` | explicit caller-supplied relation surfaces |
+| `include_source_context` | `False` | strict boolean; opt-in source time and anonymous existing role bindings in rendering |
 
 ## Anchor identification
 
@@ -201,8 +202,10 @@ timestamp
 SourceProvenance
 ```
 
-No graph path, relation metadata, score, embedding, MAGMA UUID, local path, or
-narrative context is returned.
+These DTO fields expose no graph path, relation metadata, score, embedding,
+MAGMA UUID, local path, or narrative context. The optional source-context
+rendering below uses private candidate role bindings without adding persistent
+EntityRefs to the public DTO or creating another Recall facade.
 
 ## Controlled relation compatibility
 
@@ -224,12 +227,33 @@ Recency weights, the source-snapshot reference time and the inclusive final
 floor remain unchanged; a newer source in a different candidate snapshot can
 still change the recency contribution.
 
-- Preserve retrieval order and render plain role-labelled evidence text.
+- Preserve selected score order and, by default, render plain role-labelled evidence text.
 - Rendering obeys `max_chars`; facts are kept whole or omitted with honest
   `truncated=true`. A selected relationship endpoint requires its original
   bridge fact; the complete group must fit item and rendered-character limits.
   BGE scores the combined pair only if the complete marked query and both facts
   fit its fixed token window; otherwise it uses the original single fact.
+
+With `include_source_context=True`, headers add `spoken_at` and `timezone` from
+source provenance. This is the time of the source statement, not the time its
+proposition became true; historical dates, conditions and exact wording stay in
+the fact body. Missing or unusable time is labelled `unknown`, never replaced by
+wall time. The header describes the canonical source turn, not every supporting
+turn of a fact with multiple source refs.
+
+The adapter assigns anonymous, result-local `subject_binding` and
+`object_binding` labels from existing source-valid candidates' role refs. A
+shared label preserves an existing binding across facts; labels do not establish
+attributes or prove that different labels denote different real-world objects.
+Missing or unresolved roles stay unlabelled. Ordinary mention refs and name
+surfaces cannot supply roles or occupations. Any occupational distinction must
+remain a complete original fact connected by the existing binding. Persistent
+refs and backend objects stay private, and ingestion is unchanged.
+
+All source-context header characters enter the same item/group packing budget
+before selection. A larger header can cause a whole fact or chain to be omitted;
+no header is appended after `max_chars` has been enforced. The default `False`
+branch keeps the prior speaker-only headers unchanged.
 
 ## Chat injection boundary
 
@@ -249,9 +273,10 @@ Empty or failed Recall falls back to ordinary Chat.
 
 ## Current capability boundaries
 
-- Production uses the fixed BGE reranker and inclusive
+- Default Chat uses the fixed BGE reranker and inclusive
   `final_min_score=0.144`; neither constitutes a reliable semantic no-answer
-  contract.
+  contract. Explicit callers can remove the floor through the existing policy;
+  source-context rendering does not change BGE, Hindsight or candidate retrieval.
 - No automatic intent/query classification, free-text query relation parser,
   general cross-conversation identity resolution, or Recall scheduler.
 - No Evidence Organizer/Ledger, conflict/current-state resolver, fact
