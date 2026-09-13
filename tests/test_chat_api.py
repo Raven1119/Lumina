@@ -20,6 +20,12 @@ from Mind.constant_gate import ConstantMindGate
 from Mind.llm_gate import LlmMindGate
 
 
+@pytest.fixture(autouse=True)
+def _isolate_mind_decision_log(tmp_path, monkeypatch):
+    # App tests must never append decisions to the developer runtime log.
+    monkeypatch.setenv("LUMINA_MIND_DECISION_LOG_PATH", str(tmp_path / "mind-decisions.jsonl"))
+
+
 class _ContextModel:
     client_kind = "model"
 
