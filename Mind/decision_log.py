@@ -25,7 +25,10 @@ class JsonlDecisionLog:
         self._path = Path(path)
         self._clock = clock or (lambda: datetime.now(UTC))
 
-    def record(self, decision: MindDecision, *, turn_id: str | None = None) -> None:
+    def record(
+        self, decision: MindDecision, *, turn_id: str | None = None,
+        query_audit: dict | None = None,
+    ) -> None:
         decided_at = (
             self._clock()
             .astimezone(UTC)
@@ -37,6 +40,9 @@ class JsonlDecisionLog:
             "recall": decision.recall,
             "decided_at": decided_at,
         }
+        # Optional additions preserve direct legacy callers and existing lines.
+        if query_audit is not None:
+            record.update(query_audit)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("a", encoding="utf-8") as file:
             file.write(

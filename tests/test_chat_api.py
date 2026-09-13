@@ -230,17 +230,28 @@ def _wired_app(tmp_path: Path, model, **kwargs):
     )
 
 
-def test_real_model_defaults_to_llm_mind_gate(
+@pytest.mark.parametrize("mode,max_tokens,version", [
+    (None, 8, "mind-gate-v2"),
+    ("llm", 8, "mind-gate-v2"),
+    ("contextual", 1024, "mind-gate-v3"),
+])
+def test_real_model_selects_mind_protocol_and_budget(
     tmp_path: Path,
     monkeypatch,
+    mode,
+    max_tokens,
+    version,
 ) -> None:
-    monkeypatch.delenv("LUMINA_MIND_GATE_MODE", raising=False)
+    if mode is None:
+        monkeypatch.delenv("LUMINA_MIND_GATE_MODE", raising=False)
+    else:
+        monkeypatch.setenv("LUMINA_MIND_GATE_MODE", mode)
     gate_model = _ContextModel()
 
     def build_gate_client(*args, **kwargs):
         assert not args
         assert kwargs == {
-            "max_tokens_override": 8,
+            "max_tokens_override": max_tokens,
             "temperature_override": 0.0,
         }
         return gate_model
@@ -253,11 +264,11 @@ def test_real_model_defaults_to_llm_mind_gate(
 
     gate = app.state.message_runtime._mind_gate
     assert isinstance(gate, LlmMindGate)
-    assert gate.prompt_version == "mind-gate-v2"
+    assert gate.prompt_version == version
     assert gate._model_client is gate_model
 
 
-@pytest.mark.parametrize("mode", [None, "llm"])
+@pytest.mark.parametrize("mode", [None, "llm", "contextual"])
 def test_mock_mode_keeps_constant_mind_gate(
     tmp_path: Path,
     monkeypatch,
@@ -298,13 +309,15 @@ def test_constant_mode_rolls_back_to_stage1_gate(
     assert isinstance(app.state.message_runtime._mind_gate, ConstantMindGate)
 
 
+@pytest.mark.parametrize("mode", ["llm", "contextual"])
 @pytest.mark.parametrize("failure", ["raises", "returns_mock"])
 def test_llm_mode_without_real_gate_client_falls_back_to_constant(
     tmp_path: Path,
     monkeypatch,
     failure: str,
+    mode: str,
 ) -> None:
-    monkeypatch.setenv("LUMINA_MIND_GATE_MODE", "llm")
+    monkeypatch.setenv("LUMINA_MIND_GATE_MODE", mode)
     if failure == "raises":
 
         def broken_builder(*args, **kwargs):

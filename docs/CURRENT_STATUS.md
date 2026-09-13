@@ -7,6 +7,24 @@ Single-goal operation remains the default; `--pursuit` opts into the Stage1
 continuing-Mind implementation described below. Production Chat still runs its separate Recall gate;
 the manual Execution API is also separate.
 
+## Chat contextual Recall
+
+The existing Chat Mind call can optionally return a standalone retrieval query
+with bounded exact references into the once-loaded recent context. Runtime
+uses the query only for Recall after audit succeeds; Answer and Hot retain the
+original question. Invalid proposals and logging failures restore original-query
+fail-open behavior. Memory writing, retrieval/scoring and Answer prompts stay
+unchanged.
+
+The capability is implemented but has not been promoted as the default.
+`LUMINA_MIND_GATE_MODE=contextual` explicitly selects the 1024-token v3 protocol;
+default `llm` retains the original v2 boolean prompt and eight-token budget.
+Mock/constant modes remain available. Literal source validity does not establish
+correct coreference or supported answers. See the maintained
+[Chat Recall contract](../Mind/docs/CHAT_RECALL_GATE.md) for bounds and failure
+semantics. Experimental corpora, outputs and reports remain local and are not
+runtime or CI dependencies.
+
 ## Conversation Memory entity enhancement
 
 Configured manual Dream now uses source-grounded `grounded-formation-v2` fact

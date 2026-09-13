@@ -42,7 +42,7 @@ from Execution import ExecutionOrgan, FileContentEquals
 from Mind.constant_gate import ConstantMindGate
 from Mind.decision_log import JsonlDecisionLog
 from Mind.interfaces import MindGate
-from Mind.llm_gate import LlmMindGate
+from Mind.llm_gate import GATE_MAX_TOKENS, LlmMindGate
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
@@ -176,20 +176,19 @@ def _default_mind_gate(chat_model: ModelClient) -> MindGate:
     mode = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
     if mode == "constant":
         return ConstantMindGate()
-    # Default: promoted stage-2 gate, exactly as validated in
-    # docs/MEMORY_EXPERIMENT_HISTORY.md (mind-gate-v2, non-thinking,
-    # 8 output tokens, temperature 0). Gate-client construction failure
-    # falls back to the constant gate so chat stays available.
+    # Contextual query generation requires explicit selection until its real
+    # semantic acceptance is established. Keep the validated boolean default.
+    contextual = mode == "contextual"
     try:
         gate_client = build_model_client_from_env(
-            max_tokens_override=8,
+            max_tokens_override=GATE_MAX_TOKENS if contextual else 8,
             temperature_override=0.0,
         )
     except Exception:
         return ConstantMindGate()
     if getattr(gate_client, "client_kind", None) != "model":
         return ConstantMindGate()
-    return LlmMindGate(gate_client)
+    return LlmMindGate(gate_client, contextual=contextual)
 
 
 def _load_chat_background(path: Path) -> str:

@@ -2,6 +2,8 @@
 
 from typing import TYPE_CHECKING
 
+from Mind.interfaces import MindDecision, MindDecisionError, validate_mind_decision
+
 from core.contracts import (
     AssistantResponse,
     ChatCompactionResponse,
@@ -91,14 +93,14 @@ class MessageRuntime:
             timezone_source=timezone_source,
         )
         recent_context, context_event = self._load_context()
-        recall_allowed, mind_event = self._decide_recall(
+        decision, mind_event = self._decide_recall(
             user_message,
             recent_context,
             turn_id=user_turn.turn_id,
         )
         system_prompt = self._system_prompt_with_memory(
-            user_message,
-            recall_allowed,
+            decision.query if decision.query is not None else user_message,
+            decision.recall,
         )
         assistant_text, response_type, phase, model_event = self._generate(
             recent_context,
@@ -154,28 +156,61 @@ class MessageRuntime:
         recent_context: list[dict[str, str]],
         *,
         turn_id: str | None,
-    ) -> tuple[bool, str | None]:
-        """Mind gate: runs before the Recall guard, fail-open on any failure."""
+    ) -> tuple[MindDecision, str | None]:
+        """Apply a sourced query only after its audit append succeeds."""
+        fallback = MindDecision(recall=True)
         if self._mind_gate is None:
-            return True, None
+            return fallback, None
+        candidate_query = None
+        fallback_reason = None
         try:
             decision = self._mind_gate.decide(user_message, recent_context)
-            recall = bool(decision.recall)
+            validate_mind_decision(decision, recent_context)
+            candidate_query = decision.query
+        except MindDecisionError as error:
+            candidate_query = error.candidate_query
+            fallback_reason = error.code
+            decision = fallback
         except Exception:
-            return True, "mind_gate_failed"
-        if self._mind_decision_log is not None:
+            fallback_reason = "gate_failed"
+            decision = fallback
+        audit = {
+            "prompt_version": getattr(self._mind_gate, "prompt_version", None),
+            "original_message": user_message,
+            "candidate_query": candidate_query,
+            "effective_query": (decision.query if decision.query is not None else user_message) if decision.recall else None,
+            "context_refs": [
+                {"index": ref.index, "role": recent_context[ref.index]["role"], "span": ref.span}
+                for ref in decision.context_refs
+            ],
+            "fallback_reason": fallback_reason,
+        }
+        if self._mind_decision_log is None:
+            # Legacy boolean callers may omit logging. A new query cannot.
+            if decision.query is not None:
+                return fallback, "mind_decision_log_failed"
+        else:
             try:
-                self._mind_decision_log.record(decision, turn_id=turn_id)
+                self._mind_decision_log.record(decision, turn_id=turn_id, query_audit=audit)
             except Exception:
-                # An unauditable rejection must never take effect silently.
-                return True, "mind_decision_log_failed"
-        if not recall:
-            return False, "mind_recall_declined"
-        return True, "mind_recall_decided"
+                # Even write-then-raise cannot authorize a proposal. Attempt one
+                # explicit fallback append; availability never depends on it.
+                fallback_audit = {**audit, "effective_query": user_message,
+                                  "context_refs": [], "fallback_reason": "decision_log_failed"}
+                try:
+                    self._mind_decision_log.record(fallback, turn_id=turn_id, query_audit=fallback_audit)
+                except Exception:
+                    pass
+                return fallback, "mind_decision_log_failed"
+        if fallback_reason is not None:
+            return fallback, "mind_gate_failed"
+        if not decision.recall:
+            return decision, "mind_recall_declined"
+        return decision, "mind_recall_decided"
 
     def _system_prompt_with_memory(
         self,
-        user_message: str,
+        query: str,
         recall_allowed: bool = True,
     ) -> str:
         if (
@@ -187,7 +222,7 @@ class MessageRuntime:
             return self._chat_background
         try:
             memory_context = self._memory_retriever.recall(
-                user_message,
+                query,
                 self._recall_policy,
             )
             if getattr(memory_context, "safe_error_code", None):

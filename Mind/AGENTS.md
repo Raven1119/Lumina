@@ -36,8 +36,10 @@ History conclusions live in [EXPERIMENT_HISTORY](docs/EXPERIMENT_HISTORY.md);
 upstream provenance/licenses live in [REFERENCES](docs/REFERENCES.md).
 
 The Recall gates (`constant_gate.py`, `llm_gate.py`) remain production Chat
-components and do not run this cognitive loop. Do not change that caller
-boundary without authorization.
+components and do not run this cognitive loop. The
+[Chat Recall contract](docs/CHAT_RECALL_GATE.md) specifies bounded query cues,
+local source references and audit fallback.
+Do not change that caller boundary without authorization.
 
 Use focused current-invariant tests, then the affected Mind/Nervous/Execution
 suite. Test mechanics with injected responses; use real-model calls when the

@@ -1,8 +1,7 @@
 """Stage-1 placeholder Mind gate: always allows Recall.
 
-This gate exists to put the seam, audit logging, and fail-soft behavior in
-place with zero behavior change. A real LLM-backed gate is stage 2 and must
-not alter the MindGate interface.
+This gate keeps the original-query behavior with no model call. Optional
+contextual query fields keep defaults compatible with this boolean decision.
 """
 
 from __future__ import annotations
