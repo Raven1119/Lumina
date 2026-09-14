@@ -6,11 +6,12 @@ Algorithm source:
 - ``upstream/MAGMA/memory/query_engine.py::QueryEngine._rrf_fusion``
 - ``upstream/MAGMA/memory/memory_builder.py::MemoryBuilder._index_text_basic``
 
-This module preserves the upstream lowercase/split tokenization, stop-word
+Default fact scoring preserves the upstream lowercase/split tokenization, stop-word
 list, exact and length-four partial matching, bigrams, lexical weights
 ``+5/+1/+3``, top-40 lexical cutoff, and rank-one RRF with ``k=60``. It
 replaces the upstream persistent keyword index with a deterministic,
 ``max_nodes``-bounded graph scan because Lumina does not build that index.
+Explicit source ranking instead counts distinct shared posting features.
 Dataset/session routing, full-scan fallback, query classification, reranking,
 answer formatting, debug output, and narrative generation are excluded.
 
@@ -103,7 +104,12 @@ class LexicalEventIndex:
             self.postings.setdefault(feature, {})[node_id] = None
 
     def rank(self, *, graph_db, query, max_nodes, event_node_type, node_type,
-             entity_surfaces=()):
+             entity_surfaces=(), score_posting_overlap=False):
+        """Rank bounded postings; source callers can score their exact features.
+
+        The opt-in counts distinct shared index features, including CJK bigrams
+        and English fragments. Default fact callers retain the legacy scorer.
+        """
         features = _query_features(query)
         postings = [(feature, self.postings[feature]) for feature in features
                     if self.postings.get(feature)]
@@ -122,10 +128,13 @@ class LexicalEventIndex:
             if not _is_projectable_event(node, event_node_type=event_node_type,
                                          node_type=node_type):
                 continue
-            score = _lexical_score(query, node.content_narrative)
+            if score_posting_overlap:
+                score = len(set(features).intersection(self.node_features[node_id])) or None
+            else:
+                score = _lexical_score(query, node.content_narrative)
             # A persisted entity surface is a source-grounded lexical token in
-            # unsegmented Chinese. Arbitrary CJK bigram overlap is deliberately
-            # not a ranking signal: it promoted repeated question quotations
+            # unsegmented Chinese. Default fact scoring deliberately excludes
+            # arbitrary CJK overlap: it promoted repeated question quotations
             # over identity facts in the crowded real-MAGMA regression.
             if score is None and entity_surfaces:
                 matches = sum(surface in node.content_narrative for surface in entity_surfaces)

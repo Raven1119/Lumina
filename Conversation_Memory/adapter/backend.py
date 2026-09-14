@@ -768,6 +768,14 @@ class RealMagmaBackend:
         from ._source_backend import parent
         return parent(self, candidate, limit=limit, known_candidates=known_candidates, max_nodes=max_nodes)
 
+    def source_read_range(self, segment_id: str, start_turn: int, end_turn: int, *,
+                          start_char: int = 0, end_char: int | None = None,
+                          limit: int, max_chars: int, known_candidates=None) -> list[BackendCandidate]:
+        from ._source_backend import read_range
+        return read_range(self, segment_id, start_turn, end_turn, start_char=start_char,
+                          end_char=end_char, limit=limit, max_chars=max_chars,
+                          known_candidates=known_candidates)
+
     def resolve_target_entity_ref(self, query: str) -> str | None:
         """Deterministic exact-surface lookup over persisted EntityNodes.
 

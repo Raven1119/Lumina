@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
@@ -156,6 +157,48 @@ class DeepSeekAnthropicModelClient:
         return self._request(body)
 
     def _request(self, body: dict[str, Any]) -> str:
+        payload = self._request_payload(body)
+        text = self._extract_text(payload)
+        if not text.strip():
+            raise ModelClientError("Provider response was invalid.")
+        return text
+
+    def exchange(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """One native text/tool round; the caller owns tools and continuation.
+
+        This uses the same configured provider and transport as ordinary Answer.
+        It never dispatches a tool, retries a request or imports an organ.
+        """
+        payload = self._request_payload(self.exchange_request(
+            messages, system_prompt=system_prompt, tools=tools))
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+            raise ModelClientError("Provider response was invalid.")
+        return payload
+
+    def exchange_request(
+        self, messages: list[dict[str, Any]], *, system_prompt: str,
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Preview the exact native body for a caller's whole-request budget."""
+        body: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "thinking": {"type": "disabled"},
+            "system": system_prompt,
+            "messages": deepcopy(messages),
+            "tools": deepcopy(tools),
+        }
+        if self._temperature is not None:
+            body["temperature"] = self._temperature
+        return body
+
+    def _request_payload(self, body: dict[str, Any]) -> Any:
         headers = {
             "X-Api-Key": self._api_key,
             "Content-Type": "application/json",
@@ -178,10 +221,7 @@ class DeepSeekAnthropicModelClient:
         except Exception:
             raise ModelClientError("Provider response was invalid.") from None
 
-        text = self._extract_text(payload)
-        if not text.strip():
-            raise ModelClientError("Provider response was invalid.")
-        return text
+        return payload
 
     @staticmethod
     def _project_context(

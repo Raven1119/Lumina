@@ -20,6 +20,10 @@ SOURCE_KIND = "source-window-v1"
 SOURCE_BGE_TOKEN_LIMIT = 256
 
 
+class SourceRangePreflightError(ValueError):
+    """The range was rejected before any graph projection was attempted."""
+
+
 def _record(backend, **values):
     if not hasattr(backend, "source_stats"):
         backend.source_stats = {}
@@ -386,11 +390,17 @@ def candidates(backend, query, policy):
     lexical_at = perf_counter()
     lexical = backend._source_lexical.rank(graph_db=CountedGraph(), query=query,
         max_nodes=policy.max_nodes, event_node_type=backend._event_node_type,
-        node_type=SimpleNamespace(EVENT=_source_type(backend)))
+        node_type=SimpleNamespace(EVENT=_source_type(backend)), score_posting_overlap=True)
     stats["lexical_ms"] = (perf_counter() - lexical_at) * 1000
     fused = _rrf_fuse((dense, lexical), limit=limit)
     stats.update(dense_candidates=len(dense), lexical_candidates=len(lexical),
         candidates_returned=len(fused), operation_ms=(perf_counter() - started) * 1000)
+    stats["segment_turn_counts"] = {
+        node.attributes["segment_id"]: (
+            max(backend._source_segments[node.attributes["segment_id"]]["turns"]) + 1
+            if len(backend._source_segments[node.attributes["segment_id"]]["ids"])
+               == backend._source_segments[node.attributes["segment_id"]]["count"] else None)
+        for node, _score in fused}
     _record(backend, source_candidate_calls=1, query_embedding_calls=stats["embedding_calls"],
             query_embedding_ms=stats.get("embedding_ms", 0),
             query_embedding_truncations=int(stats.get("query_embedding_truncated", False)),
@@ -618,3 +628,93 @@ def parent(backend, candidate, *, limit, known_candidates=None, max_nodes=None):
                 source_parent_node_reads=stats["new_node_reads"],
                 source_parent_truncations=int(stats["truncated"]),
                 source_parent_incomplete=int(stats["reason"] == "source_parent_incomplete"))
+
+
+def read_range(backend, segment_id, start_turn, end_turn, *, start_char=0,
+               end_char=None, limit, max_chars, known_candidates=None):
+    """Read a bounded literal range; incomplete results retain an exact cursor.
+
+    Turn numbers are original positions inside one Cold segment, not a topic or
+    inferred identity. This path never requires a whole conversation parent.
+    ``limit`` bounds additional graph projections; ``max_chars`` bounds source
+    body characters before the facade applies its rendered evidence allowance.
+    """
+    _check(backend)
+    if (not isinstance(segment_id, str) or not segment_id
+            or any(type(v) is not int for v in (start_turn, end_turn, start_char, limit, max_chars))
+            or not 0 <= start_turn <= end_turn or start_char < 0 or limit < 0 or max_chars < 1
+            or (end_char is not None and (type(end_char) is not int or end_char < 1))):
+        raise SourceRangePreflightError("source_range_invalid")
+    known = {} if known_candidates is None else known_candidates
+    if not isinstance(known, dict):
+        raise SourceRangePreflightError("source_known_candidates_invalid")
+    slot = backend._source_segments.get(segment_id)
+    if slot is None or not slot["turns"]:
+        raise SourceRangePreflightError("source_range_missing")
+    final_turn = max(slot["turns"])
+    if end_turn > final_turn:
+        raise SourceRangePreflightError("source_range_invalid")
+    stats = {"segment_id": segment_id, "requested_start_turn": start_turn,
+             "requested_end_turn": end_turn,
+             "segment_turn_count": final_turn + 1 if len(slot["ids"]) == slot["count"] else None,
+             "indexed_turn_count": len(slot["turns"]), "indexed_turn_extent": final_turn + 1,
+             "new_node_reads": 0, "position_reads": 0, "source_chars": 0,
+             "requested_complete": False, "next_range": None, "reason": None}
+    backend.last_source_stats["last_range"] = stats
+    result = []
+    try:
+        from .source_memory import _hash
+        for index in range(start_turn, end_turn + 1):
+            turn_id = slot["turns"].get(index)
+            turn = backend._source_turns.get((segment_id, turn_id))
+            # The first turn's validation precedes every possible projection.
+            range_error = SourceRangePreflightError if index == start_turn else ValueError
+            if turn is None:
+                raise range_error("source_range_missing")
+            first = start_char if index == start_turn else 0
+            stop = end_char if index == end_turn and end_char is not None else turn["length"]
+            if not 0 <= first < stop <= turn["length"]:
+                raise range_error("source_range_invalid")
+            starts = turn["starts"]
+            position = max(0, bisect_right(starts, first) - 1)
+            cursor = first
+            while cursor < stop:
+                stats["next_range"] = {"segment_id": segment_id, "start_turn": index,
+                                       "end_turn": end_turn, "start_char": cursor,
+                                       "end_char": end_char}
+                if position >= len(starts):
+                    raise ValueError("source_range_missing")
+                begin = starts[position]
+                node_id = turn["ids"][begin]
+                stats["position_reads"] += 1
+                if begin > cursor or turn["ends"][begin] <= cursor:
+                    raise ValueError("source_range_missing")
+                if node_id not in known and stats["new_node_reads"] >= limit:
+                    stats["reason"] = "source_range_node_budget"
+                    return result
+                room = max_chars - stats["source_chars"]
+                if room <= 0:
+                    stats["reason"] = "source_range_character_budget"
+                    return result
+                item = _project_source(backend, node_id, known, stats)
+                until = min(stop, turn["ends"][begin], cursor + room)
+                text = item.text[cursor - begin:until - begin]
+                if len(text) != until - cursor:
+                    raise ValueError("source_range_missing")
+                meta = deepcopy(item.metadata)
+                meta.update(source_start=cursor, source_end=until,
+                            evidence_id=_hash([SOURCE_KIND, segment_id, turn_id, cursor, until]))
+                result.append(BackendCandidate(text, item.timestamp, None, meta))
+                stats["source_chars"] += len(text)
+                cursor = until
+                if cursor >= turn["ends"][begin]:
+                    position += 1
+        stats.update(requested_complete=True, next_range=None)
+        return result
+    finally:
+        stats["ranges_returned"] = len(result)
+        _record(backend, source_range_calls=1,
+                source_range_position_reads=stats["position_reads"],
+                source_range_node_reads=stats["new_node_reads"],
+                source_range_chars=stats["source_chars"],
+                source_range_incomplete=int(not stats["requested_complete"]))

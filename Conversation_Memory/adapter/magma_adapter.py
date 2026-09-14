@@ -207,6 +207,11 @@ class MagmaMemoryAdapter:
         from .source_context import recall_source_context
         return recall_source_context(self, query, policy, fact_memory=fact_memory)
 
+    def open_source_reader(self, question: str, limits):
+        """Explicit transient search/range reader; no production Recall change."""
+        from .source_reader import SourceReader
+        return SourceReader(self, question, limits)
+
     def prepare_recall(self, query: str, policy: RecallPolicy) -> PreparedRecall:
         """Perform the same single read and retain its exact subset view."""
         metadata = {}

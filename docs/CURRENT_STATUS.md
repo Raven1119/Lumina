@@ -46,6 +46,10 @@ Memory also exposes opt-in source indexing and complete source-context reads in
 Raw dialogue remains independently retrievable in a separate MAGMA namespace;
 existing facts and entity occurrences can optionally locate exact source ranges.
 The read returns original role/time-preserving dialogue within one context budget.
+An additional explicit reader can search and read original turn/character ranges
+with bounded native model continuation. Source lexical search uses its posting
+features consistently; default fact Recall scoring is unchanged. The reader
+retains exact source ranges, with no automatic production adoption.
 It has no default Chat wiring, new Formation policy or automatic Cold backfill.
 Local paired experiment outputs remain separate from maintained source.
 

@@ -291,3 +291,49 @@ def test_builder_temperature_override_passes_through(monkeypatch) -> None:
         temperature_override=0.0,
     )
     assert captured["temperature"] == 0.0
+
+
+def test_native_exchange_retains_tool_round_without_dispatching_or_retrying():
+    captured = []
+    native = {
+        "content": [{"type": "text", "text": "Search the original history."},
+                    {"type": "tool_use", "id": "call-1", "name": "search_sources",
+                     "input": {"query": "lamp wiring"}}],
+        "stop_reason": "tool_use", "usage": {"input_tokens": 42, "output_tokens": 9},
+    }
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json=native)
+    client = DeepSeekAnthropicModelClient(
+        "test-value", "https://provider.invalid/anthropic", "test-model",
+        max_tokens=8192, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    messages = [{"role": "user", "content": "What changed?"},
+                {"role": "assistant", "content": native["content"]},
+                {"role": "user", "content": [{"type": "tool_result",
+                 "tool_use_id": "call-1", "content": "[USER range 0:21] Original source text."}]}]
+    tools = [{"name": "search_sources", "description": "Read-only source search",
+              "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}}]
+    assert client.exchange(messages, system_prompt="full background", tools=tools) == native
+    assert len(captured) == 1
+    assert captured[0]["messages"] == messages and captured[0]["tools"] == tools
+    assert captured[0]["system"] == "full background"
+    assert captured[0]["max_tokens"] == 8192
+    assert captured[0]["thinking"] == {"type": "disabled"}
+    assert "temperature" not in captured[0]
+
+
+@pytest.mark.parametrize("status,payload", [(503, {"secret": "private failure"}),
+                                            (200, {"secret": "private response"})])
+def test_native_exchange_failure_is_safe_and_never_retried(status, payload):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status, json=payload)
+    client = DeepSeekAnthropicModelClient(
+        "test-value", "https://provider.invalid/anthropic", "test-model",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ModelClientError) as error:
+        client.exchange([{"role": "user", "content": "Question"}],
+                        system_prompt="background", tools=[])
+    assert "private" not in str(error.value)
+    assert len(calls) == 1
