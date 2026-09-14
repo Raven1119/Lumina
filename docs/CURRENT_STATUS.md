@@ -51,6 +51,10 @@ with bounded native model continuation. Source lexical search uses its posting
 features consistently; default fact Recall scoring is unchanged. The reader
 retains exact source ranges, with no automatic production adoption.
 It has no default Chat wiring, new Formation policy or automatic Cold backfill.
+Memory also exposes explicit `recall_experiences(cue, policy)`: bounded original
+dialogue views over the unchanged source selection, plus existing range expansion
+references.
+It adds no generated read calls, derived index or consumer wiring.
 Local paired experiment outputs remain separate from maintained source.
 
 ## Conversation Memory entity enhancement

@@ -47,6 +47,7 @@ from .models import (
     RecallPolicy,
     SourceProvenance,
     SourceMemoryContext,
+    ExperienceContext,
     EntityMention,
     EntityMentionContext,
 )
@@ -211,6 +212,11 @@ class MagmaMemoryAdapter:
         """Explicit transient search/range reader; no production Recall change."""
         from .source_reader import SourceReader
         return SourceReader(self, question, limits)
+
+    def recall_experiences(self, cue: str, policy: RecallPolicy) -> ExperienceContext:
+        """Explicit zero-generation dialogue views over independently indexed sources."""
+        from .source_experiences import recall_experiences
+        return recall_experiences(self, cue, policy)
 
     def prepare_recall(self, query: str, policy: RecallPolicy) -> PreparedRecall:
         """Perform the same single read and retain its exact subset view."""

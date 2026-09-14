@@ -264,3 +264,37 @@ class SourceMemoryContext:
     rendered_text: str = ""
     truncated: bool = False
     safe_error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class SourceRangeReference:
+    """Original coordinates accepted by SourceReader.read, not an episode ID."""
+
+    segment_id: str
+    start_turn: int
+    end_turn: int
+    start_char: int = 0
+    end_char: int | None = None
+
+
+@dataclass(frozen=True)
+class SourceExperience:
+    """A positional dialogue view; association and world truth remain judgments."""
+
+    reference: SourceRangeReference
+    evidence: tuple[SourceExcerpt, ...]
+    rendered_text: str
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class ExperienceContext:
+    query: str
+    experiences: tuple[SourceExperience, ...] = ()
+    rendered_text: str = ""
+    truncated: bool = False
+    safe_error_code: str | None = None
+
+    @property
+    def evidence(self) -> tuple[SourceExcerpt, ...]:
+        return tuple(item for view in self.experiences for item in view.evidence)

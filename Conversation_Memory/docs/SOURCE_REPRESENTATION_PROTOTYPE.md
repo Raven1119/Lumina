@@ -152,6 +152,60 @@ context does not imply that total model input was 5000 characters. Full traces
 are local diagnostics and can contain source text; do not expose them as public
 runtime responses or include them in source-only deliveries.
 
+## Explicit cue-directed experience views
+
+`recall_experiences(cue, policy) -> ExperienceContext` organizes the exact evidence
+selected by `recall_sources`. It reuses that method's source search, fixed BGE,
+Hindsight composition, caller floor and packing without changing any of them.
+It adds no search, graph projection, tokenizer check or model call. Ordinary fact
+Recall and all existing defaults are unchanged. There is no generated description,
+query rewrite, fact navigation, new index, persistent state or consumer wiring.
+
+The view merges overlapping or adjacent literal character ranges only when their
+provenance and overlap agree, and restores original order within each segment.
+Different segments, missing turns and unread character gaps keep separate views.
+Names never join identities or sessions. Original role, time, source labels and
+range headers remain visible through the existing source renderer. All original
+selected characters are retained; merging repeated headers can reduce rendered
+size, which is checked against both the original selection and max_chars. The
+source policy still bounds the original selected blocks, before ranges merge.
+This is presentation of observed dialogue, not an inferred episode summary.
+
+Every `SourceExperience` contains literal `SourceExcerpt` evidence, its rendered
+dialogue, and a `SourceRangeReference`. A reference identifies the full indexed
+Cold segment bounds when known, otherwise only the observed turn/character range.
+It does not identify a complete natural conversation. `truncated` on a view means
+that the view is not a complete known original segment; the context also retains
+the original read's truncation state. Source errors propagate; a view-organization
+failure reports `experience_view_unavailable`. Neither removes original sources
+from independent search or range access.
+
+Expand a returned reference through the existing bounded source reader:
+
+```python
+from dataclasses import asdict
+from adapter.models import RecallPolicy
+from adapter.source_reader import SourceReadLimits
+
+context = memory.recall_experiences(cue, RecallPolicy(max_chars=5000))
+if context.experiences:
+    reader = memory.open_source_reader(cue, SourceReadLimits())
+    page = reader.read(**asdict(context.experiences[0].reference))
+    # A non-null page["next_range"] is an exact continuation position.
+    # Continue explicitly within reader.remaining(); no model is called here.
+```
+
+Expansion is an additional read with its own cumulative budget. The caller must
+budget the initial view and any expansion it presents to a consumer. No hidden
+expansion or complete-parent requirement is introduced. A valid reference proves
+where the text comes from, not relevance, acceptance, correct identity or whether
+an old permission still applies. Understanding remains the caller's responsibility.
+
+The last-read diagnostic records the reused source read and final source/rendered
+character counts. Source search, neighbor projection, local embedding/BGE and
+index construction/restart still cost work. Zero generation is not zero cost.
+These private diagnostics may contain source text and are not public API bodies.
+
 ## Validation and diagnostics
 
 Focused mechanism tests live in `tests/test_source_memory.py`,
@@ -159,6 +213,8 @@ Focused mechanism tests live in `tests/test_source_memory.py`,
 The last file exercises the real FAISS selector in the Memory environment.
 `test_source_lexical.py`, `test_source_range_backend.py` and
 `test_source_reader.py` cover the common lexical fix and bounded range interface.
+`test_source_experiences.py` covers cue views, positional gaps, exact budgets
+and expansion references without generated calls.
 Root `tests/test_evidence_acquisition.py` and `tests/test_model_client.py` cover
 native protocol, failure, budget and source isolation boundaries.
 Existing isolated real-MAGMA Recall acceptance remains required.
