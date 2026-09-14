@@ -39,6 +39,16 @@ explicit-only; independent semantic acceptance is separate from the mechanism. S
 for bounds and failure semantics. Experimental corpora, outputs and reports remain
 local and are not runtime or CI dependencies.
 
+## Explicit source-context prototype
+
+Memory also exposes opt-in source indexing and complete source-context reads in
+[the source prototype contract](../Conversation_Memory/docs/SOURCE_REPRESENTATION_PROTOTYPE.md).
+Raw dialogue remains independently retrievable in a separate MAGMA namespace;
+existing facts and entity occurrences can optionally locate exact source ranges.
+The read returns original role/time-preserving dialogue within one context budget.
+It has no default Chat wiring, new Formation policy or automatic Cold backfill.
+Local paired experiment outputs remain separate from maintained source.
+
 ## Conversation Memory entity enhancement
 
 Configured manual Dream now uses source-grounded `grounded-formation-v2` fact

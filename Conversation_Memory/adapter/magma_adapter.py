@@ -46,6 +46,7 @@ from .models import (
     MemoryEvidence,
     RecallPolicy,
     SourceProvenance,
+    SourceMemoryContext,
     EntityMention,
     EntityMentionContext,
 )
@@ -188,6 +189,23 @@ class MagmaMemoryAdapter:
 
     def recall(self, query: str, policy: RecallPolicy) -> MemoryContext:
         return self._recall(query, policy)
+
+
+    def ingest_sources(self, segment: ColdDraftSegment) -> IngestionResult:
+        """Explicit source index; never completes Formation or consumes Cold."""
+        from .source_memory import ingest_sources
+        return ingest_sources(self, segment)
+
+    def recall_sources(self, query: str, policy: RecallPolicy) -> SourceMemoryContext:
+        """Read typed raw source ranges from an isolated source index."""
+        from .source_memory import recall_sources
+        return recall_sources(self, query, policy)
+
+    def recall_source_context(self, query: str, policy: RecallPolicy, *,
+                              fact_memory=None) -> SourceMemoryContext:
+        """Explicit complete-source read with optional fact/mention navigation."""
+        from .source_context import recall_source_context
+        return recall_source_context(self, query, policy, fact_memory=fact_memory)
 
     def prepare_recall(self, query: str, policy: RecallPolicy) -> PreparedRecall:
         """Perform the same single read and retain its exact subset view."""

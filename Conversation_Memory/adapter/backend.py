@@ -220,6 +220,8 @@ class RealMagmaBackend:
         if graph_path.exists():
             self.trg.graph_db.load(str(graph_path))
         self._rebuild_indexes()
+        from ._source_backend import rebuild as rebuild_sources
+        rebuild_sources(self)
 
     def _rebuild_indexes(self, *, rebuild_entity_membership: bool = True) -> None:
         """Derived views only: graph.json remains the single durable authority."""
@@ -506,6 +508,8 @@ class RealMagmaBackend:
         self._refresh_entity_membership(memory_id)
 
     def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any]) -> str:
+        if getattr(self, "_source_present", False):
+            raise ValueError("source_store_fact_write_forbidden")
         self._ensure_indexes()
         self._prepare_entity_membership_write()
         memory_id = self.trg.add_event(text, timestamp=timestamp, metadata=metadata)
@@ -730,6 +734,40 @@ class RealMagmaBackend:
         self.trg.graph_db.save(str(self.persist_dir / "graph.json"))
         self.trg.vector_db.save(str(self.persist_dir / "vectors"))
 
+    def source_text_fits(self, text: str) -> bool:
+        from ._source_backend import text_fits
+        return text_fits(self, text)
+
+    def add_source(self, text: str, timestamp: Any, metadata: dict[str, Any]) -> str:
+        from ._source_backend import add
+        return add(self, text, timestamp, metadata)
+
+    def ensure_source_persisted(self, memory_id: str) -> None:
+        from ._source_backend import ensure_persisted
+        ensure_persisted(self, memory_id)
+
+    def source_candidates(self, query: str, policy: RecallPolicy) -> list[BackendCandidate]:
+        from ._source_backend import candidates
+        return candidates(self, query, policy)
+
+    def source_neighbors(self, candidate: BackendCandidate, *, before: int = 2,
+                         after: int = 2, limit: int = 5, known_candidates=None,
+                         max_nodes: int | None = None) -> list[BackendCandidate]:
+        from ._source_backend import neighbors
+        return neighbors(self, candidate, before=before, after=after, limit=limit,
+                         known_candidates=known_candidates, max_nodes=max_nodes)
+
+    def source_locate(self, refs, *, limit: int, known_candidates=None,
+                      max_nodes: int | None = None, max_refs: int | None = None) -> list[BackendCandidate]:
+        from ._source_backend import locate
+        return locate(self, refs, limit=limit, known_candidates=known_candidates,
+                      max_nodes=max_nodes, max_refs=max_refs)
+
+    def source_parent(self, candidate: BackendCandidate, *, limit: int,
+                      known_candidates=None, max_nodes: int | None = None) -> list[BackendCandidate]:
+        from ._source_backend import parent
+        return parent(self, candidate, limit=limit, known_candidates=known_candidates, max_nodes=max_nodes)
+
     def resolve_target_entity_ref(self, query: str) -> str | None:
         """Deterministic exact-surface lookup over persisted EntityNodes.
 
@@ -751,6 +789,8 @@ class RealMagmaBackend:
         target_entity_ref: str | None = None,
         target_entity_refs: tuple[str, ...] = (),
     ) -> list[BackendCandidate]:
+        if getattr(self, "_source_present", False):
+            raise RuntimeError("source_store_requires_source_recall")
         self._ensure_indexes()
         context = _execute_fixed_recall(
             trg=self.trg,

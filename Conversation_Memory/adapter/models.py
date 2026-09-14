@@ -240,3 +240,27 @@ class BackendCandidate:
     timestamp: str | None
     score: float | None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SourceExcerpt:
+    """An exact source range, not an extracted or verified world fact."""
+
+    evidence_id: str
+    text: str
+    provenance: SourceProvenance
+    turn_index: int
+    source_start: int
+    source_end: int
+    turn_length: int
+
+
+@dataclass(frozen=True)
+class SourceMemoryContext:
+    """Explicit raw dialogue view, distinct from ordinary fact evidence."""
+
+    query: str
+    evidence: tuple[SourceExcerpt, ...] = ()
+    rendered_text: str = ""
+    truncated: bool = False
+    safe_error_code: str | None = None
