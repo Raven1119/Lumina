@@ -8,6 +8,7 @@ from copy import deepcopy
 import json
 from recall.hindsight_scoring import score_hindsight_post_rerank
 from .models import SourceMemoryContext
+from ._source_backend import SOURCE_DENSE_UNAVAILABLE
 from .source_memory import _excerpt, render_source
 
 NAVIGATION_LIMIT = 20
@@ -127,6 +128,9 @@ def recall_source_context(adapter, query, policy, *, fact_memory=None):
     try:
         search_policy = replace(policy, max_nodes=min(policy.max_nodes, NAVIGATION_LIMIT))
         independent = tuple(adapter.backend.source_candidates(query, search_policy))
+        dense_error = (SOURCE_DENSE_UNAVAILABLE if
+            getattr(adapter.backend, "last_source_stats", {}).get("dense_error_code")
+            == SOURCE_DENSE_UNAVAILABLE else None)
         known = {item.metadata["evidence_id"]: item for item in independent}
         located = ()
         if fact_memory is not None:
@@ -143,7 +147,7 @@ def recall_source_context(adapter, query, policy, *, fact_memory=None):
         trace.update(independent_anchors=independent, navigation_anchors=located, anchors=anchors)
         if not anchors:
             adapter.last_source_context_read = trace
-            return SourceMemoryContext(query)
+            return SourceMemoryContext(query, truncated=bool(dense_error), safe_error_code=dense_error)
         scorer = adapter._get_bge_reranker()
         if scorer is None:
             raise ValueError("source_reranker_unavailable")
@@ -158,7 +162,7 @@ def recall_source_context(adapter, query, policy, *, fact_memory=None):
                 item.metadata["provenance"]["source_timestamp"] for item in known.values())))
         ranked = sorted(range(len(anchors)), key=lambda i: (-scores[i].final_score, i))
         seen_sessions, selected, groups, parts = set(), [], [], []
-        omitted, truncated = [], False
+        omitted, truncated = [], bool(dense_error)
         parent_reads = []
         for index in ranked:
             anchor = anchors[index]
@@ -192,7 +196,7 @@ def recall_source_context(adapter, query, policy, *, fact_memory=None):
             omitted_parents=tuple(omitted), selected_source_chars=sum(len(item.text) for item in selected),
             rendered_chars=len("\n".join(parts)), bge_silent_truncations=0)
         adapter.last_source_context_read = trace
-        return SourceMemoryContext(query, tuple(selected), "\n".join(parts), truncated)
+        return SourceMemoryContext(query, tuple(selected), "\n".join(parts), truncated, dense_error)
     except Exception:
         trace["error"] = "source_context_unavailable"
         adapter.last_source_context_read = trace

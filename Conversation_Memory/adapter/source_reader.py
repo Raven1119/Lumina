@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 import json
 from .models import RecallPolicy, SourceExcerpt, SourceMemoryContext
-from ._source_backend import SourceRangePreflightError
+from ._source_backend import SOURCE_DENSE_UNAVAILABLE, SourceRangePreflightError
 from .source_memory import _excerpt, _hash, render_source
 
 
@@ -195,7 +195,9 @@ class SourceReader:
                 admitted = self._admit(item)
                 if admitted is not None:
                     shown.append(admitted)
-            result = self._result("search", shown, details={"query": query,
+            dense_error = (SOURCE_DENSE_UNAVAILABLE if
+                stats.get("dense_error_code") == SOURCE_DENSE_UNAVAILABLE else None)
+            result = self._result("search", shown, error=dense_error, details={"query": query,
                                   "candidates_available": len(candidates), "cached": False,
                                   "segment_turn_counts": stats.get("segment_turn_counts", {})})
             self._search_cache[query] = deepcopy(result)

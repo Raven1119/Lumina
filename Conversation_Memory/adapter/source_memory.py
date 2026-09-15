@@ -7,6 +7,7 @@ import json
 
 from recall.hindsight_scoring import score_hindsight_post_rerank
 from .models import IngestionResult, SourceExcerpt, SourceMemoryContext, SourceProvenance
+from ._source_backend import SOURCE_DENSE_UNAVAILABLE
 
 SOURCE_VERSION = "source-window-v1"
 SOURCE_NEIGHBORS = 2
@@ -125,10 +126,13 @@ def recall_sources(adapter, query, policy):
     query = query.strip()
     try:
         anchors = tuple(adapter.backend.source_candidates(query, policy))
+        dense_error = (SOURCE_DENSE_UNAVAILABLE if
+            getattr(adapter.backend, "last_source_stats", {}).get("dense_error_code")
+            == SOURCE_DENSE_UNAVAILABLE else None)
         if not anchors:
-            return SourceMemoryContext(query)
+            return SourceMemoryContext(query, truncated=bool(dense_error), safe_error_code=dense_error)
         available = {c.metadata["evidence_id"]: c for c in anchors}
-        groups, truncated = [], False
+        groups, truncated = [], bool(dense_error)
         for anchor in anchors:
             neighbors = adapter.backend.source_neighbors(anchor, before=SOURCE_NEIGHBORS,
                 after=SOURCE_NEIGHBORS, limit=2 * SOURCE_NEIGHBORS + 1,
@@ -183,6 +187,6 @@ def recall_sources(adapter, query, policy):
             "bge_context_omitted": omitted_context, "bge_silent_truncations": 0,
             "selected_source_chars": sum(len(e.text) for e in selected),
             "rendered_chars": len("\n".join(parts))}
-        return SourceMemoryContext(query, tuple(selected), "\n".join(parts), truncated)
+        return SourceMemoryContext(query, tuple(selected), "\n".join(parts), truncated, dense_error)
     except Exception:
         return SourceMemoryContext(query, safe_error_code="source_recall_unavailable")

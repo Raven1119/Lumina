@@ -17,6 +17,7 @@ from ._anchor_fusion import LexicalEventIndex, _rrf_fuse
 from .models import BackendCandidate, SourceProvenance
 
 SOURCE_KIND = "source-window-v1"
+SOURCE_DENSE_UNAVAILABLE = "source_dense_unavailable"
 SOURCE_BGE_TOKEN_LIMIT = 256
 
 
@@ -364,25 +365,36 @@ def candidates(backend, query, policy):
     dense = []
     limit = min(policy.top_k, policy.max_nodes)
     if backend._source_vector_selector is not None:
-        enriched = backend.trg.keyword_enricher.enrich_query(query)
-        count, maximum = _token_count(backend, enriched)
-        encoded_at = perf_counter()
-        vector = np.asarray(backend.trg.encoder.encode(enriched), dtype=np.float32).reshape(1, -1)
-        stats.update(embedding_calls=1, embedding_ms=(perf_counter() - encoded_at) * 1000,
-            query_embedding_tokens=count, query_embedding_truncated=count > maximum)
-        search_at = perf_counter()
-        _distances, positions = backend.trg.vector_db.index.search(vector,
-            min(limit, len(backend._source_vector_positions)),
-            params=faiss.SearchParameters(sel=backend._source_vector_selector))
-        stats["dense_search_ms"] = (perf_counter() - search_at) * 1000
-        for position in positions[0]:
-            if position < 0:
-                continue
-            node_id = backend.trg.vector_db.index_to_id.get(int(position))
-            node = backend._source_nodes.get(node_id)
-            stats["dense_node_reads"] += 1
-            if node is not None:
-                dense.append(node)
+        try:
+            enriched = backend.trg.keyword_enricher.enrich_query(query)
+            count, maximum = _token_count(backend, enriched)
+            stats.update(query_embedding_tokens=count, query_embedding_truncated=count > maximum)
+            encoded_at = perf_counter()
+            stats["embedding_calls"] = 1  # Count an attempted encode even when it raises.
+            try:
+                vector = np.asarray(backend.trg.encoder.encode(enriched), dtype=np.float32).reshape(1, -1)
+            finally:
+                stats["embedding_ms"] = (perf_counter() - encoded_at) * 1000
+            search_at = perf_counter()
+            try:
+                _distances, positions = backend.trg.vector_db.index.search(vector,
+                    min(limit, len(backend._source_vector_positions)),
+                    params=faiss.SearchParameters(sel=backend._source_vector_selector))
+            finally:
+                stats["dense_search_ms"] = (perf_counter() - search_at) * 1000
+            for position in positions[0]:
+                if position < 0:
+                    continue
+                node_id = backend.trg.vector_db.index_to_id.get(int(position))
+                node = backend._source_nodes.get(node_id)
+                stats["dense_node_reads"] += 1
+                if node is not None:
+                    dense.append(node)
+        except Exception:
+            # Query-time dense failure does not invalidate the checked source view.
+            # Never repair an index or disclose the exception body during a read.
+            dense = []
+            stats["dense_error_code"] = SOURCE_DENSE_UNAVAILABLE
     class CountedGraph:
         def get_node(self, node_id):
             stats["lexical_node_reads"] += 1
@@ -401,7 +413,9 @@ def candidates(backend, query, policy):
             if len(backend._source_segments[node.attributes["segment_id"]]["ids"])
                == backend._source_segments[node.attributes["segment_id"]]["count"] else None)
         for node, _score in fused}
-    _record(backend, source_candidate_calls=1, query_embedding_calls=stats["embedding_calls"],
+    _record(backend, source_candidate_calls=1,
+            source_dense_failures=int("dense_error_code" in stats),
+            query_embedding_calls=stats["embedding_calls"],
             query_embedding_ms=stats.get("embedding_ms", 0),
             query_embedding_truncations=int(stats.get("query_embedding_truncated", False)),
             dense_search_ms=stats.get("dense_search_ms", 0), lexical_ms=stats["lexical_ms"],

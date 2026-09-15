@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from .models import ExperienceContext, SourceExperience, SourceRangeReference
 from .source_memory import render_source
+from ._source_backend import SOURCE_DENSE_UNAVAILABLE
 from .source_reader import merge_ranges
 
 
@@ -47,7 +48,8 @@ def recall_experiences(adapter, cue, policy):
     """
     adapter.last_experience_read = {}
     source = adapter.recall_sources(cue, policy)
-    if source.safe_error_code or not source.evidence:
+    if (not source.evidence or
+            source.safe_error_code not in (None, SOURCE_DENSE_UNAVAILABLE)):
         return ExperienceContext(source.query, truncated=source.truncated,
                                  safe_error_code=source.safe_error_code)
     try:
@@ -62,6 +64,7 @@ def recall_experiences(adapter, cue, policy):
             "selected_source_chars": sum(len(e.text) for v in views for e in v.evidence),
             "rendered_chars": len(text)}
         return ExperienceContext(source.query, views, text,
-                                 source.truncated or any(v.truncated for v in views))
+                                 source.truncated or any(v.truncated for v in views),
+                                 source.safe_error_code)
     except Exception:
         return ExperienceContext(source.query, safe_error_code="experience_view_unavailable")

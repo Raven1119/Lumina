@@ -152,6 +152,32 @@ context does not imply that total model input was 5000 characters. Full traces
 are local diagnostics and can contain source text; do not expose them as public
 runtime responses or include them in source-only deliveries.
 
+## Query-time dense failures
+
+Once the source view passes its existing integrity checks, a failure in query
+enrichment, tokenization, encoding or vector search leaves healthy lexical
+source retrieval available. The source read, complete-context read and experience
+view retain the bounded literal evidence with `source_dense_unavailable` and
+`truncated=True`. An empty lexical result carries the same status; it is not proof
+that no relevant history exists. Only this specific partial status is permitted
+through the experience view's error boundary.
+
+`SourceReader.search` returns the same sanitized code in its existing `error`
+field alongside any selected `sources`. Exact cache replay retains both fields
+without retrying the failed model operation. The reader's accumulated context
+continues to contain the literal ranges it has observed; operation status stays
+in the search response and trace. Callers must consider both sources and status.
+An explicit range expansion can still read the checked original source without
+embedding or reranking.
+
+This recovery does not relax source/index integrity checks, repair vectors,
+retry unknown model outcomes, or change successful ranking and packing. Stale or
+invalid global views and later reranker failures still fail through their
+existing boundaries. It does not guarantee retrieval without a healthy source
+view, nor that a consumer interprets partial evidence correctly. Private counters
+record attempted encodes even if they raise, query-stage timings and dense
+failures; exception text is never copied to public status.
+
 ## Explicit cue-directed experience views
 
 `recall_experiences(cue, policy) -> ExperienceContext` organizes the exact evidence
