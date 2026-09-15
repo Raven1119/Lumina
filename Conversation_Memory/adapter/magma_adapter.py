@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from dataclasses import asdict, is_dataclass
 from math import isfinite
 from numbers import Real
 from pathlib import Path
 from threading import Lock
-from typing import Any, Iterable
+from typing import Any, Iterable, TYPE_CHECKING
 
 from ingestion.entities import extract_entities
 from ingestion.state_store import IngestionStateStore
@@ -38,6 +39,7 @@ from .grounded_formation import (
     validate_persisted_grounded_memory_units,
 )
 from .models import (
+    AssociativeMemoryContext,
     ColdDraftSegment,
     ColdDraftTurn,
     IngestionResult,
@@ -58,6 +60,11 @@ from .user_self import (
     classify_target_entity_ref,
     entity_marked_text,
 )
+
+
+if TYPE_CHECKING:
+    from .first_hit import FirstHitPolicy
+    from core.cold_draft_store import ColdDraftStore
 
 
 _GROUNDED_SPAN_INGESTION_VERSION = "grounded-span-v2"
@@ -82,6 +89,8 @@ class MagmaMemoryAdapter:
         ingestion_version: str = _GROUNDED_SPAN_INGESTION_VERSION,
         configured_entities: tuple[str, ...] = (),
         formation_model: FormationModel | None = None,
+        first_hit: FirstHitPolicy | None = None,
+        cold_store: ColdDraftStore | None = None,
     ):
         if (
             formation_model is not None
@@ -93,6 +102,22 @@ class MagmaMemoryAdapter:
         self.ingestion_version = ingestion_version
         self.configured_entities = configured_entities
         self.formation_model = formation_model
+        if first_hit is not None:
+            from .first_hit import FirstHitPolicy
+            if not isinstance(first_hit, FirstHitPolicy):
+                # Existing callers use both package spellings. Revalidate an
+                # equivalent policy through this module's canonical constructor.
+                if (not is_dataclass(first_hit) or isinstance(first_hit, type)
+                        or type(first_hit).__name__ != "FirstHitPolicy"):
+                    raise ValueError("invalid_first_hit_policy")
+                try:
+                    first_hit = FirstHitPolicy(**asdict(first_hit))
+                except (TypeError, ValueError):
+                    raise ValueError("invalid_first_hit_policy") from None
+            if ingestion_version != "grounded-formation-v2":
+                raise ValueError("first_hit_requires_formation_v2")
+        self.first_hit = first_hit
+        self.cold_store = cold_store
         self._bge_reranker = None
         self._bge_reranker_load_attempted = False
         self._bge_reranker_lock = Lock()
@@ -191,6 +216,36 @@ class MagmaMemoryAdapter:
     def recall(self, query: str, policy: RecallPolicy) -> MemoryContext:
         return self._recall(query, policy)
 
+
+    def _activate_first_hit(self, cue: str, *, target_entity_refs=None,
+                            exclude_evidence_ids=()):
+        from ._associative_recall import activate
+        return activate(self, cue, target_entity_refs=target_entity_refs,
+                        exclude_evidence_ids=exclude_evidence_ids)
+
+    def recall_associative(self, cue: str, output_policy: RecallPolicy | None = None,
+                           *, include_sources: bool = False,
+                           source_context_turns: int = 0) -> AssociativeMemoryContext:
+        """Explicit first-hit facts and bounded owner source expansion."""
+        from ._associative_recall import recall_associative
+        return recall_associative(self, cue, output_policy or RecallPolicy(),
+                                  include_sources=include_sources,
+                                  source_context_turns=source_context_turns)
+
+    def recall_recent_sources(self, cue: str, policy: RecallPolicy | None = None) -> SourceMemoryContext:
+        """Explicit recent raw dialogue, including windows without formed facts."""
+        policy = policy or RecallPolicy()
+        if self.first_hit is None:
+            return SourceMemoryContext(cue, safe_error_code="first_hit_not_configured")
+        if self.cold_store is None:
+            return SourceMemoryContext(cue, safe_error_code="cold_source_unavailable")
+        try:
+            return self.cold_store.search_recent_sources(
+                cue, limit=policy.top_k, max_chars=policy.max_chars,
+                max_items=policy.max_evidence_items,
+            )
+        except Exception:
+            return SourceMemoryContext(cue, safe_error_code="cold_source_unavailable")
 
     def ingest_sources(self, segment: ColdDraftSegment) -> IngestionResult:
         """Explicit source index; never completes Formation or consumes Cold."""

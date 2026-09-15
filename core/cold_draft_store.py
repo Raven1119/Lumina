@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import uuid
 from collections import OrderedDict
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -61,8 +65,32 @@ class _PendingCountGroup:
 
 
 class ColdDraftStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self, path: str | Path, *, source_window_segments: int = 0,
+        source_window_bytes: int = 1_048_576,
+    ) -> None:
         self._path = Path(path)
+        if (type(source_window_segments) is not int or source_window_segments < 0
+                or type(source_window_bytes) is not int or source_window_bytes < 1):
+            raise ValueError("cold_source_window_limits_invalid")
+        self._source_window_segments = source_window_segments
+        self._source_window_bytes = source_window_bytes
+        self._source_window: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._source_window_size = 0
+        self._source_postings: dict[str, dict[tuple[str, int], None]] = {}
+        self._source_turn_ids: dict[tuple[str, str], int] = {}
+        self._source_stamp = None
+        self._source_window_error = "cold_source_window_disabled"
+        if source_window_segments:
+            try:
+                before = self._source_file_stamp()
+                segments, _ = self._reconstruct_segments(
+                    self._physical_lines(self._read_bytes()))
+                if before != self._source_file_stamp():
+                    raise OSError("cold_source_window_changed")
+                self._refresh_source_window(segments, expected_stamp=before)
+            except OSError:
+                self._source_window_error = "cold_source_window_unavailable"
 
     def append_segment(
         self,
@@ -83,6 +111,7 @@ class ColdDraftStore:
                 existing.aggregate["turns"] == safe_turns
                 and existing.aggregate["source"] == safe_source
             ):
+                self._refresh_source_window(segments)
                 return deepcopy(existing.aggregate)
             raise ValueError("cold draft segment conflict")
 
@@ -113,6 +142,8 @@ class ColdDraftStore:
         appended = b"".join(self._encode_record(record) for record in physical_records)
         separator = b"\n" if old_bytes and not old_bytes.endswith((b"\n", b"\r")) else b""
         self._replace_bytes(old_bytes + separator + appended)
+        segments[safe_segment_id] = _Segment(aggregate, ())
+        self._refresh_source_window(segments)
         return deepcopy(aggregate)
 
     def list_pending(self, limit: int | None = None) -> list[dict[str, Any]]:
@@ -166,6 +197,7 @@ class ColdDraftStore:
             if segment_id not in segments:
                 return False
             if previous == segment_id and cursor_position == len(lines) - 1:
+                self._refresh_source_window(segments)
                 return True
             preserved = b"".join(
                 line.raw for position, line in enumerate(lines)
@@ -178,6 +210,7 @@ class ColdDraftStore:
                 "after_segment_id": segment_id,
             })
             self._replace_bytes(preserved + separator + cursor)
+            self._refresh_source_window(segments)
         except (OSError, ValueError):
             return False
         return True
@@ -301,6 +334,7 @@ class ColdDraftStore:
         if segment is None:
             return False
         if segment.aggregate["state"] == _CONSUMED:
+            self._refresh_source_window(segments)
             return True
 
         consumed_at = self._utc_now()
@@ -324,7 +358,301 @@ class ColdDraftStore:
             self._replace_bytes(new_bytes)
         except OSError:
             return False
+        self._refresh_source_window(segments)
         return True
+
+
+    @staticmethod
+    def _source_types():
+        # DTO-only imports keep default Cold independent of Memory/model loading.
+        try:
+            from adapter.models import SourceExcerpt, SourceMemoryContext, SourceProvenance
+        except ModuleNotFoundError as exc:
+            if exc.name not in {"adapter", "adapter.models"}:
+                raise
+            from Conversation_Memory.adapter.models import (
+                SourceExcerpt, SourceMemoryContext, SourceProvenance,
+            )
+        return SourceExcerpt, SourceMemoryContext, SourceProvenance
+
+    @staticmethod
+    def _source_features(text):
+        from Conversation_Memory.adapter._anchor_fusion import _query_features
+        return _query_features(text)
+
+    def _source_file_stamp(self):
+        try:
+            stat = self._path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    def _refresh_source_window(self, segments, *, expected_stamp=...) -> None:
+        """Build from a snapshot already read for initialization/owner writes.
+
+        The retained suffix is bounded by immutable UTF-8 JSON bytes and count.
+        State/cursor writes cannot alter source age or its byte charge. Existing
+        atomic owner operations still have full-file costs.
+        """
+        if not self._source_window_segments:
+            return
+        if expected_stamp is ...:
+            try:
+                expected_stamp = self._source_file_stamp()
+            except OSError:
+                self._invalidate_source_window("cold_source_window_unavailable")
+                return
+        window, sizes, size = OrderedDict(), {}, 0
+        for segment_id, segment in segments.items():
+            aggregate = {key: value for key, value in segment.aggregate.items()
+                         if key not in {"state", "consumed_at"}}
+            charge = len(self._encode_record(aggregate)) - 1
+            window[segment_id], sizes[segment_id] = aggregate, charge
+            size += charge
+            while (len(window) > self._source_window_segments
+                   or size > self._source_window_bytes):
+                oldest, _ = window.popitem(last=False)
+                size -= sizes.pop(oldest)
+        # Only retain/index source bodies that survived both bounds.
+        self._source_window = deepcopy(window)
+        self._source_window_size = size
+        self._source_postings, self._source_turn_ids = {}, {}
+        for segment_id, aggregate in self._source_window.items():
+            for index, turn in enumerate(aggregate["turns"]):
+                turn_id = turn.get("turn_id", f"{segment_id}:turn:{index:04d}")
+                key = (segment_id, turn_id)
+                # A duplicate native ID is not an unambiguous source location.
+                self._source_turn_ids[key] = (
+                    -1 if key in self._source_turn_ids else index)
+                for feature in self._source_features(turn["text"]):
+                    self._source_postings.setdefault(feature, {})[(segment_id, index)] = None
+        try:
+            if expected_stamp != self._source_file_stamp():
+                self._invalidate_source_window("cold_source_window_stale")
+                return
+            self._source_stamp = expected_stamp
+            self._source_window_error = None
+        except OSError:
+            self._invalidate_source_window("cold_source_window_unavailable")
+
+    def _invalidate_source_window(self, error):
+        self._source_window.clear()
+        self._source_postings.clear()
+        self._source_turn_ids.clear()
+        self._source_window_size = 0
+        self._source_window_error = error
+
+    def _source_status(self):
+        if self._source_window_error is None:
+            try:
+                if self._source_stamp != self._source_file_stamp():
+                    self._invalidate_source_window("cold_source_window_stale")
+            except OSError:
+                self._invalidate_source_window("cold_source_window_unavailable")
+        return self._source_window_error
+
+    @property
+    def source_window_status(self) -> dict[str, Any]:
+        error = self._source_status()
+        return {"segments": len(self._source_window), "bytes": self._source_window_size,
+                "max_segments": self._source_window_segments,
+                "max_bytes": self._source_window_bytes, "safe_error_code": error}
+
+    def _source_excerpt(self, segment_id, index, start, end, ingestion_version):
+        SourceExcerpt, _, SourceProvenance = self._source_types()
+        aggregate = self._source_window[segment_id]
+        turn = aggregate["turns"][index]
+        native = "turn_id" in turn
+        timestamp = datetime.fromisoformat(
+            turn["created_at"] if native else aggregate["created_at"])
+        # Same deterministic v1 projection as ColdDraftSegmentConverter, without
+        # invoking its pending-only conversion or changing a consumed record.
+        offset = timestamp.utcoffset()
+        minutes = int(offset.total_seconds() // 60)
+        timezone = ("UTC" if minutes == 0 else
+                    f"{'+' if minutes >= 0 else '-'}{abs(minutes)//60:02d}:{abs(minutes)%60:02d}")
+        provenance = SourceProvenance(
+            segment_id=segment_id, conversation_id=f"cold-draft:{segment_id}",
+            turn_id=turn.get("turn_id", f"{segment_id}:turn:{index:04d}"),
+            source_role=turn["role"], source_timestamp=timestamp.isoformat(),
+            source_timezone=turn["source_timezone"] if native else timezone,
+            ingestion_version=ingestion_version,
+            timezone_source=turn["timezone_source"] if native else "legacy_segment_fallback",
+        )
+        evidence_id = sha256(self._encode_record({
+            "segment": segment_id, "turn": provenance.turn_id,
+            "start": start, "end": end,
+        })).hexdigest()
+        return SourceExcerpt(evidence_id, turn["text"][start:end], provenance,
+                             index, start, end, len(turn["text"]))
+
+    @staticmethod
+    def _render_source_ranges(items):
+        parts, segment = [], None
+        compact = lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        for item in items:
+            p = item.provenance
+            if p.segment_id != segment:
+                segment = p.segment_id
+                parts.append("[SOURCE " + compact({"segment": segment, "session": p.conversation_id}) + "]")
+            role = "USER" if p.source_role == "user" else "LUMINA"
+            parts.append("[" + role + " " + compact({
+                "turn": item.turn_index, "turn_id": p.turn_id,
+                "spoken_at": p.source_timestamp, "timezone": p.source_timezone,
+                "timezone_source": p.timezone_source,
+                "range": [item.source_start, item.source_end, item.turn_length],
+            }) + "]\n" + item.text)
+        return "\n".join(parts)
+
+    def read_source_refs(
+        self, refs, *, query: str = "", before: int = 0, after: int = 0,
+        max_refs: int = 64, max_chars: int = 8000, max_bytes: int = 32768,
+        max_items: int = 32,
+    ):
+        """Read exact citations and optional same-segment adjacent turns.
+
+        No archive read, ingestion, model call, or consumption is permitted here.
+        Whole exact ranges are packed or omitted. Overlap/adjacency merges only
+        within a turn; unread character gaps remain separate labelled ranges.
+        """
+        _, SourceMemoryContext, _ = self._source_types()
+        if (not isinstance(query, str)
+                or any(type(value) is not int or value < 0 for value in
+                       (before, after, max_refs, max_chars, max_bytes, max_items))
+                or before > 32 or after > 32 or max_refs > 256 or max_items > 256):
+            return SourceMemoryContext(query if isinstance(query, str) else "",
+                                       safe_error_code="cold_source_limits_invalid")
+        error = self._source_status()
+        if error:
+            return SourceMemoryContext(query, truncated=True, safe_error_code=error)
+        try:
+            references = tuple(islice(iter(refs), max_refs + 1))
+        except TypeError:
+            return SourceMemoryContext(query, safe_error_code="cold_source_refs_invalid")
+        incomplete = len(references) > max_refs
+        ranges, anchor_ranges, versions = {}, {}, {}
+        for ref in references[:max_refs]:
+            if not isinstance(ref, Mapping):
+                incomplete = True
+                continue
+            segment_id, turn_id = ref.get("segment_id"), ref.get("turn_id")
+            if not isinstance(segment_id, str) or not isinstance(turn_id, str):
+                incomplete = True
+                continue
+            index = self._source_turn_ids.get((segment_id, turn_id), -1)
+            start, end = ref.get("source_start"), ref.get("source_end")
+            if (index < 0 or type(start) is not int or type(end) is not int):
+                incomplete = True
+                continue
+            text = self._source_window[segment_id]["turns"][index]["text"]
+            if not 0 <= start < end <= len(text):
+                incomplete = True
+                continue
+            version = ref.get("ingestion_version", "cold-source-window-v1")
+            if not isinstance(version, str) or not version.strip():
+                incomplete = True
+                continue
+            item = self._source_excerpt(segment_id, index, start, end, version)
+            p = item.provenance
+            if (any(key in ref and ref[key] != getattr(p, key) for key in (
+                    "conversation_id", "source_role", "source_timestamp",
+                    "source_timezone", "timezone_source"))
+                    or ("supporting_span" in ref and ref["supporting_span"] != item.text)):
+                incomplete = True
+                continue
+            key = (segment_id, index)
+            ranges.setdefault(key, []).append((start, end))
+            anchor_ranges.setdefault(key, []).append((start, end))
+            versions.setdefault(key, version)
+            turns = self._source_window[segment_id]["turns"]
+            for adjacent in range(max(0, index-before), min(len(turns), index+after+1)):
+                if adjacent != index:
+                    key = (segment_id, adjacent)
+                    ranges.setdefault(key, []).append((0, len(turns[adjacent]["text"])))
+                    versions.setdefault(key, version)
+        order = {segment: index for index, segment in enumerate(self._source_window)}
+        def merge(items):
+            groups = {}
+            for item in items:
+                groups.setdefault((item.provenance.segment_id, item.turn_index), []).append(
+                    (item.source_start, item.source_end))
+            merged_items = []
+            for key in sorted(groups, key=lambda key: (order[key[0]], key[1])):
+                merged = []
+                for start, end in sorted(groups[key]):
+                    if merged and start <= merged[-1][1]:
+                        merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+                    else:
+                        merged.append((start, end))
+                merged_items.extend(self._source_excerpt(*key, start, end, versions[key])
+                                    for start, end in merged)
+            return merged_items
+
+        selected = []
+        # Support spans receive budget before optional context. A full neighboring
+        # turn that cannot fit cannot displace an already packed exact citation.
+        for group in (anchor_ranges, ranges):
+            candidates = merge(self._source_excerpt(*key, start, end, versions[key])
+                               for key, spans in group.items() for start, end in spans)
+            for item in candidates:
+                proposed = merge((*selected, item))
+                rendered = self._render_source_ranges(proposed)
+                if (len(proposed) > max_items or len(rendered) > max_chars
+                        or len(rendered.encode("utf-8")) > max_bytes):
+                    incomplete = True
+                    continue
+                selected = proposed
+        error = self._source_status()
+        if error:
+            return SourceMemoryContext(query, truncated=True, safe_error_code=error)
+        error = ("cold_source_partial" if selected else "cold_source_unavailable") if incomplete else None
+        return SourceMemoryContext(query, tuple(selected), self._render_source_ranges(selected),
+                                   incomplete, error)
+
+    def search_recent_sources(
+        self, query: str, *, limit: int = 8, max_refs: int = 64,
+        snippet_chars: int = 400, before: int = 0, after: int = 0,
+        max_chars: int = 8000, max_bytes: int = 32768, max_items: int = 32,
+    ):
+        """Independent lexical access to recent dialogue, including no-Fact turns."""
+        _, SourceMemoryContext, _ = self._source_types()
+        if (not isinstance(query, str) or not query.strip() or len(query) > 2000
+                or any(type(value) is not int or value < 1 for value in
+                       (limit, max_refs, snippet_chars)) or max_refs > 256
+                or limit > max_refs or snippet_chars > 8000):
+            return SourceMemoryContext(query if isinstance(query, str) else "",
+                                       safe_error_code="cold_source_query_invalid")
+        error = self._source_status()
+        if error:
+            return SourceMemoryContext(query, truncated=True, safe_error_code=error)
+        features = self._source_features(query)
+        postings = sorted((self._source_postings[feature] for feature in features
+                           if feature in self._source_postings), key=len)
+        candidates = {}
+        for posting in postings:
+            for key in posting:
+                candidates.setdefault(key, None)
+                if len(candidates) >= max_refs:
+                    break
+            if len(candidates) >= max_refs:
+                break
+        ranked = sorted(candidates, key=lambda key: -sum(
+            key in self._source_postings.get(feature, {}) for feature in features))
+        refs = []
+        for segment_id, index in ranked[:limit]:
+            turn = self._source_window[segment_id]["turns"][index]
+            text = turn["text"]
+            # Snippets retain original offsets even when a match is in a long tail.
+            matches = [re.search(re.escape(feature.split(":", 1)[-1]), text, re.IGNORECASE)
+                       for feature in features]
+            position = min((match.start() for match in matches if match), default=0)
+            start = max(0, position - snippet_chars//4)
+            end = min(len(text), start + snippet_chars)
+            refs.append({"segment_id": segment_id,
+                         "turn_id": turn.get("turn_id", f"{segment_id}:turn:{index:04d}"),
+                         "source_start": start, "source_end": end})
+        return self.read_source_refs(refs, query=query, before=before, after=after,
+            max_refs=max_refs, max_chars=max_chars, max_bytes=max_bytes, max_items=max_items)
 
     def _read_bytes(self) -> bytes:
         if not self._path.exists():

@@ -342,3 +342,89 @@ def _bounded_projection(*, graph_db, anchors, constraints, target_refs,
             "stats": {"adjacency_links_read": reads, "nodes_projected": len(seen_nodes),
                       "association_chains": len(association_metadata),
                       "budget_exhausted": exhausted or bool(queue and reads >= budget)}}
+
+
+def find_recall_seeds(backend, query, policy, *, target_entity_refs=(),
+                      excluded_node_ids=()):
+    """Seed-only RRF over existing indexes; no graph traversal or generation.
+
+    Native FAISS distances order dense candidates; they are never excitation
+    weights. Avoid vector_db.search(), which mutates access counters on reads.
+    Each channel is bounded independently before stable RRF fusion.
+    """
+    import numpy as np
+    from time import perf_counter
+    from ._anchor_fusion import _is_projectable_event
+
+    started = perf_counter()
+    excluded = frozenset(excluded_node_ids)
+    trg = backend.trg
+    if getattr(backend, "_source_present", False):
+        raise ValueError("source_store_requires_source_recall")
+    capacity = min(policy.max_nodes, policy.max_seeds + len(excluded))
+    channels, stats = [], {}
+
+    def eligible(nodes):
+        return [node for node in nodes if node is not None
+                and node.node_id not in excluded
+                and _is_projectable_event(node, event_node_type=backend._event_node_type,
+                                          node_type=backend._node_type)]
+
+    try:
+        dense = []
+        db = trg.vector_db
+        if db.index.ntotal:
+            encoded = np.asarray(trg.encoder.encode(
+                trg.keyword_enricher.enrich_query(query)), dtype=np.float32).reshape(1, -1)
+            if not np.isfinite(encoded).all():
+                raise ValueError("invalid_query_vector")
+            distances, indices = db.index.search(encoded, min(capacity, db.index.ntotal))
+            rows = []
+            for distance, position in zip(distances[0], indices[0]):
+                if position < 0 or not np.isfinite(distance) or distance < -1e-6:
+                    continue
+                node = trg.graph_db.get_node(db.index_to_id.get(int(position)))
+                if eligible([node]):
+                    rows.append((float(distance), str(node.attributes["evidence_id"]), node))
+            rows.sort(key=lambda row: row[:2])
+            dense = [row[2] for row in rows[:policy.max_seeds]]
+        channels.append(dense)
+        stats["dense_candidates"] = len(dense)
+    except Exception:
+        stats["dense_unavailable"] = True
+    try:
+        lexical = backend._lexical_index.rank(
+            graph_db=trg.graph_db, query=query, max_nodes=policy.max_nodes,
+            event_node_type=backend._event_node_type, node_type=backend._node_type,
+            entity_surfaces=tuple(backend._matching_surfaces(query)),
+        )
+        lexical = eligible(lexical)[:policy.max_seeds]
+        channels.append(lexical)
+        stats["lexical_candidates"] = len(lexical)
+    except Exception:
+        stats["lexical_unavailable"] = True
+    try:
+        if target_entity_refs:
+            channel_policy = RecallPolicy(top_k=capacity, max_nodes=policy.max_nodes,
+                                          max_graph_depth=0)
+            entity = _entity_subset_events(
+                trg, query=query, target_entity_ref=None,
+                target_entity_refs=target_entity_refs, policy=channel_policy,
+                event_node_type=backend._event_node_type, node_type=backend._node_type,
+                entity_membership=backend._entity_membership_for_recall(),
+                scan_stats=stats,
+            )
+            channels.append(eligible(entity)[:policy.max_seeds])
+            # Verified existing refs can also enter their actual ENTITY hubs.
+            hubs = [trg.graph_db.get_node(f"entity:{ref.casefold()}")
+                    for ref in target_entity_refs]
+            channels.append([node for node in hubs if node is not None
+                             and node.node_id not in excluded][:policy.max_seeds])
+    except Exception:
+        stats["entity_unavailable"] = True
+    if not channels:
+        raise ValueError("first_hit_seeds_unavailable")
+    seeds = _rrf_fuse(channels, limit=policy.max_seeds)
+    stats["seed_search_seconds"] = perf_counter() - started
+    stats["seeds_returned"] = len(seeds)
+    return tuple((node.node_id, score) for node, score in seeds), stats

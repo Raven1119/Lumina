@@ -200,3 +200,17 @@ That transition uses the existing Cold Draft owner and preserves Cold-first
 semantics. Dream reuses this state as the sole idempotency source: if memory is
 completed but the consumed transition fails, the next manual run receives
 `already_ingested=true` and retries the owner transition without adding events.
+
+
+## Explicit first-hit completion responsibility
+
+An explicitly configured new Formation v2 window first reserves
+`segment_id:first-hit-v1` in this same store. Its profile, source fingerprint,
+ordered evidence manifest and semantic link plan are frozen before graph writes.
+New events skip legacy automatic semantic linking; the frozen local plan must
+be durable and completed before Formation completes and Dream consumes Cold.
+Retries reuse plans. Existing v2 checkpoints with no reservation keep their old
+responsibilities; there is no automatic migration or consumed-window backfill.
+An existing first-hit stage requires its original configuration on resume.
+See [first-hit contract](FIRST_HIT_MEMORY.md) for ordering, failure, repair
+extension and exact read/source boundaries.

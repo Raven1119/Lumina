@@ -6,8 +6,10 @@ This is the active authority for Lumina's Hot Draft / Cold Draft boundary.
 
 Hot Draft may be semantically compressed only after every raw turn leaving the
 live window has been durably preserved in Cold Draft. Hot Draft is live rolling
-context. Cold Draft is immutable source evidence for Dream; it is not MAGMA and
-is not queried by Recall.
+context. Cold Draft is immutable source evidence for Dream; it is not MAGMA.
+Existing Recall does not query Cold. The explicit first-hit Memory entry may
+expand source citations through the Cold owner's bounded read-only window below;
+it cannot parse the archive directly or change consumption state.
 
 ## Hot Draft
 
@@ -97,6 +99,73 @@ The original read-only `list_pending` prefix contract is unchanged.
 These operations still reconstruct the full Cold file. Page output and Dream
 attempts are bounded, not total file-read complexity. Each attempted default
 Dream segment also incurs at most one full-file atomic cursor update.
+
+## Explicit bounded source reads
+
+`ColdDraftStore(path, source_window_segments=32,
+source_window_bytes=1_048_576)` enables a disposable recent-source cache. The
+constructor defaults to zero segments (disabled), preserving existing callers.
+Initialization reconstructs the existing archive once. Successful owner append,
+consume and cursor operations refresh the derived view from the snapshot they
+already read; these operations retain their existing full-file costs.
+
+The cache retains the latest complete segment suffix under both limits. Byte
+charge is each immutable aggregate's compact UTF-8 JSON: source text, IDs, roles,
+timestamps and source metadata, excluding `state` and `consumed_at`. It includes
+metadata rather than counting characters as bytes. An oversized newest segment
+leaves the cache empty; later complete segments can enter normally. Consumption,
+identical append retries and cursor progress never refresh source age. Expiry
+removes only read eligibility and its derived lexical postings; the archive,
+Facts and their stored support citations remain intact.
+
+`read_source_refs(refs, query="", before=0, after=0, max_refs=64,
+max_chars=8000, max_bytes=32768, max_items=32)` returns existing
+`SourceMemoryContext` / `SourceExcerpt` DTOs. Each flattened reference identifies
+`segment_id`, `turn_id`, `source_start` and `source_end`; the Memory facade adds
+the segment ID from the Fact's provenance. If supplied, support text, role,
+timestamp, timezone, timezone source and conversation ID must match Cold exactly.
+Native turn provenance is preserved. Legacy turns use the existing
+`{segment_id}:turn:{index:04d}` projection, segment timestamp and offset-derived
+timezone with `legacy_segment_fallback`; consumed segments are read directly,
+without invoking the pending-only Dream converter or inventing pending state.
+
+Only explicit support ranges and requested same-segment adjacent turns are
+eligible. Exact support receives packing budget before optional context. Output
+preserves append/turn order and exact offsets. Overlapping or touching ranges
+merge within one turn; unread gaps remain separate labelled ranges. Whole
+ranges fit or are omitted. Character, UTF-8 byte and item budgets include the
+rendered headers, and the first-hit facade deducts the selected Fact text from
+the shared final character budget before requesting source expansion.
+
+A complete requested read has no error code. Missing, rejected or budget-omitted
+ranges report `truncated=true`, with `cold_source_partial` when some source is
+available or `cold_source_unavailable` when none is available. Facts remain
+usable when the underlying source is outside this window. Empty reference lists
+produce empty successful reads on a valid enabled window.
+
+`search_recent_sources(query, limit=8, max_refs=64, snippet_chars=400, ...)`
+is a separate optional lexical entry for window dialogue that never formed a
+Fact. It reuses Memory's word/fragment/CJK features over bounded in-memory
+postings, limits candidate inspection and exact snippets, and uses the same
+source/output budgets. It performs no generation, embedding or Fact writes and
+is not forced ahead of graph Recall.
+
+Ordinary source reads check the archive's file identity, size and
+filesystem-reported timestamps, then use only the cache. They never reopen/read
+the archive or call `list_all_turns()`. An external rewrite, append or removal
+that changes this signature makes the view `cold_source_window_stale` and clears
+its cached bodies/postings; read failure reports `cold_source_window_unavailable`.
+The signature is checked before and after window construction and source reads.
+It is a metadata change detector, not a content fingerprint: same-length in-place
+writes can remain invisible if the filesystem reports unchanged timestamps
+(including rapid Windows writes), or if metadata is deliberately preserved.
+External concurrent writers are unsupported; after out-of-band edits restart
+the owner to rebuild the snapshot. Queries never scan the archive to compensate
+for this limitation. Restart or a successful owner operation rebuilds from a
+known snapshot. The existing single-process, single-writer boundary still
+applies; this cache is neither a second source authority nor a cross-process
+synchronization mechanism. `source_window_status` reports count/byte limits and
+availability without source bodies or filesystem paths.
 
 ## Cold-first compaction
 

@@ -18,6 +18,12 @@ from .grounded_formation import (
 )
 from .models import IngestionResult, SourceProvenance
 from .user_self import CURRENT_USER_ENTITY_REF
+from ._first_hit_ingestion import (
+    FirstHitIngestionError,
+    complete_first_hit_stage,
+    load_first_hit_stage,
+    prepare_first_hit_stage,
+)
 
 
 def _source_digest(segment) -> str:
@@ -211,6 +217,13 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
         return IngestionResult(segment.segment_id, version, "failed",
                                retryable=retryable,
                                safe_error_code="state_read_failed" if retryable else "state_corrupt")
+    try:
+        association = load_first_hit_stage(
+            adapter, segment, digest, new_formation=new_state,
+        )
+    except FirstHitIngestionError as error:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               retryable=error.retryable, safe_error_code=error.code)
     if new_state:
         try:
             store.put(key, state)
@@ -268,6 +281,13 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
             if any(backend.find_memory_id(unit.id) != memory_id
                    for unit, memory_id in zip(batch.units, state["memory_ids"])):
                 raise ValueError("state_corrupt")
+            if association is not None and (
+                association["status"] != "completed"
+                or association["evidence_ids"] != [unit.id for unit in batch.units]
+            ):
+                # The association checkpoint precedes either terminal v2
+                # state. An inconsistent pair is not a resumable planning gap.
+                raise FirstHitIngestionError("first_hit_checkpoint_invalid")
             if pending_issues and "repair_verified" in state:
                 return IngestionResult(segment.segment_id, version, "failed",
                                        tuple(state["memory_ids"]), retryable=False,
@@ -275,6 +295,10 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
             if not pending_issues:
                 return IngestionResult(segment.segment_id, version, "completed",
                                        tuple(state["memory_ids"]), already_ingested=True)
+    except FirstHitIngestionError as error:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               tuple(state["memory_ids"]), retryable=error.retryable,
+                               safe_error_code=error.code)
     except ValueError as error:
         return IngestionResult(segment.segment_id, version, "failed",
                                retryable=isinstance(error.__cause__, OSError),
@@ -307,6 +331,8 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
 
     memory_ids = []
     try:
+        if association is not None:
+            prepare_first_hit_stage(adapter, association, batch, state["mentions"])
         state["status"] = "in_progress"
         store.put(key, state)
         backend.upsert_entity_mentions(state["mentions"])
@@ -345,13 +371,19 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 metadata["mention_ids"] = list(role.mentions)
                 memory_id = backend.add_event(
                     unit.text, _formed_source_turn(segment, unit).timestamp, metadata,
+                    **({"automatic_semantic": False} if association is not None else {}),
                 )
                 backend.persist()
             memory_ids.append(memory_id)
             state["memory_ids"] = list(memory_ids)
             store.put(key, state)
-        backend.create_relationships(memory_ids)
+        backend.create_relationships(
+            memory_ids,
+            **({"automatic_entity_links": False} if association is not None else {}),
+        )
         backend.persist()
+        if association is not None:
+            complete_first_hit_stage(adapter, association)
         state["status"] = "partial" if pending_issues else "completed"
         store.put(key, state)
         if pending_issues:
@@ -360,6 +392,9 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                                        segment, extracted_checkpoint=state["extracted"], batch=batch,
                                    ), safe_error_code="formation_processing_incomplete")
         return IngestionResult(segment.segment_id, version, "completed", tuple(memory_ids))
+    except FirstHitIngestionError as error:
+        return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
+                               retryable=error.retryable, safe_error_code=error.code)
     except Exception:
         return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
                                retryable=True, safe_error_code="memory_write_failed")

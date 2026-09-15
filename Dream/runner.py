@@ -36,10 +36,13 @@ class RealMemoryIngestorProvider:
         persist_dir: Path,
         state_path: Path,
         formation_model: ModelClient | None = None,
+        *, first_hit=None, cold_store=None,
     ) -> None:
         self._persist_dir = persist_dir
         self._state_store = IngestionStateStore(state_path)
         self._formation_model = formation_model
+        self._first_hit = first_hit
+        self._cold_store = cold_store
         self._cache: dict[str, MemoryIngestor] = {}
 
     def get(self, ingestion_version: str) -> MemoryIngestor:
@@ -55,6 +58,8 @@ class RealMemoryIngestorProvider:
                 self._persist_dir,
                 self._state_store,
                 ingestion_version=ingestion_version,
+                first_hit=self._first_hit,
+                cold_store=self._cold_store,
                 formation_model=(
                     self._formation_model
                     if ingestion_version == FORMATION_VERSION
@@ -128,6 +133,7 @@ def build_formation_model_client() -> ModelClient:
 
 def build_default_runner(
     model_client: ModelClient | None = None,
+    *, first_hit=None,
 ) -> DreamRunner:
     cold_path = Path(
         os.environ.get(
@@ -147,7 +153,9 @@ def build_default_runner(
             str(_ROOT / "data" / "conversation_memory" / "magma"),
         )
     )
-    owner = ColdDraftStore(cold_path)
+    owner = ColdDraftStore(
+        cold_path, **({"source_window_segments": 32} if first_hit is not None else {}),
+    )
     effective_model = model_client or build_formation_model_client()
     provider = RealMemoryIngestorProvider(
         persist_dir,
@@ -155,6 +163,7 @@ def build_default_runner(
         effective_model
         if getattr(effective_model, "client_kind", None) == "model"
         else None,
+        first_hit=first_hit, cold_store=owner,
     )
     task = ColdDraftDigestionTask(owner, provider)
     return DreamRunner(owner, task)
@@ -165,6 +174,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-segments", type=int, default=10)
     parser.add_argument("--stop-on-error", action="store_true")
     parser.add_argument("--ingestion-version", default=None)
+    parser.add_argument("--first-hit", action="store_true",
+                        help="Explicit first-hit-v1 local links for new Formation v2 windows")
     return parser
 
 
@@ -182,7 +193,14 @@ def main(argv: list[str] | None = None) -> int:
             stop_on_error=args.stop_on_error,
             ingestion_version=ingestion_version,
         )
-        report = build_default_runner(effective_model).run_once(policy)
+        if args.first_hit:
+            from adapter.first_hit import FirstHitPolicy
+            if ingestion_version != FORMATION_VERSION:
+                raise ValueError("first_hit_requires_formation_v2")
+            runner = build_default_runner(effective_model, first_hit=FirstHitPolicy())
+        else:
+            runner = build_default_runner(effective_model)
+        report = runner.run_once(policy)
     except Exception:
         report = DreamRunReport.from_results((
             SegmentDigestResult(

@@ -267,6 +267,20 @@ class SourceMemoryContext:
 
 
 @dataclass(frozen=True)
+class AssociativeMemoryContext:
+    """Fact activation and optional Cold excerpts share one character budget.
+
+    Activation scores, graph handles and paths remain private to the adapter.
+    """
+
+    facts: MemoryContext
+    sources: SourceMemoryContext
+    rendered_text: str = ""
+    truncated: bool = False
+    safe_error_code: str | None = None
+
+
+@dataclass(frozen=True)
 class SourceRangeReference:
     """Original coordinates accepted by SourceReader.read, not an episode ID."""
 

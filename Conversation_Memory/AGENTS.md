@@ -122,6 +122,17 @@ See `docs/COLD_DRAFT_ADAPTER_DESIGN.md` for selection, evidence packing and
 capability limits. Experiment reports and captured provider outputs are local
 artifacts, not runtime dependencies.
 
+## Explicit first-hit path
+
+`first_hit=FirstHitPolicy()` is an opt-in, maintained read/write profile for new
+Formation v2 windows. Read [its contract](docs/FIRST_HIT_MEMORY.md) before changing
+local activation, frozen semantic plans or owner-bounded Cold expansion.
+`recall_associative` bypasses old BGE/Hindsight/floor scoring, while `recall`
+retains that scoring contract. The original Cold source may be expanded only
+through its bounded owner interface. The same store owns the separate
+`first-hit-v1` completion key; old v2 checkpoints do not migrate automatically.
+Default configuration, manual Dream, consumer boundaries and pinned MAGMA stay.
+
 ## Preserved boundaries
 
 - Immutable Cold source text, turn/segment IDs, order, roles, times and timezone.

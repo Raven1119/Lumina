@@ -41,6 +41,23 @@ Because it constructs an independent Cold/memory owner, use the CLI only while
 the application service is stopped. Do not run it concurrently with the
 browser service.
 
+### Explicit first-hit configuration
+
+`python -m Dream.runner --first-hit` opts newly started Formation v2 windows
+into local first-hit semantic linking. Python assembly may instead pass
+`first_hit=FirstHitPolicy(), cold_store=owner` to the existing
+`RealMemoryIngestorProvider`. The same adapter then exposes associative Recall
+and optional bounded source expansion through that Cold owner. The CLI enables
+a 32-segment/1 MiB recent source window; its existing path settings still apply.
+Default v2, original Recall, manual trigger and HTTP policy remain unchanged.
+
+The existing ingestion store freezes the new profile and link plan before graph
+writes; new combined ingestion completes only after those edges are durable.
+Failures leave Cold pending. Old v2 checkpoints without the new reservation
+retain their original obligations. No new scheduler, backend, model call or
+consumer flow is introduced. See the
+[first-hit contract](../../Conversation_Memory/docs/FIRST_HIT_MEMORY.md).
+
 ## Application wiring
 
 `create_app()` constructs one in-app Dream runner using:

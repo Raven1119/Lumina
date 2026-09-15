@@ -39,6 +39,19 @@ explicit-only; independent semantic acceptance is separate from the mechanism. S
 for bounds and failure semantics. Experimental corpora, outputs and reports remain
 local and are not runtime or CI dependencies.
 
+## Explicit first-hit Memory
+
+`first_hit=FirstHitPolicy()` adds local first-hit propagation and final sparse
+fact competition through `recall_associative`. The same core plans at most three
+semantic connections per newly verified Formation v2 fact, with a frozen stage
+in the existing ingestion store. The injected Cold owner supplies a recent
+segment/byte-bounded original-source view, including explicit raw-only lookup.
+Default v2, legacy Recall, manual Dream and existing source interfaces remain.
+No Chat event integration, new generated read calls or upstream change is made.
+See the [maintained contract and usage](../Conversation_Memory/docs/FIRST_HIT_MEMORY.md).
+Implementation correctness and recovery are distinct from semantic usefulness;
+this configuration remains explicit and its semantic effects await evaluation.
+
 ## Explicit source-context prototype
 
 Memory also exposes opt-in source indexing and complete source-context reads in

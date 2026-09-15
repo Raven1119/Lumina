@@ -9,6 +9,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Protocol
 from copy import deepcopy
+from hashlib import sha256
 
 from ._recall_execution import _execute_fixed_recall
 from ._anchor_fusion import LexicalEventIndex
@@ -55,8 +56,14 @@ def _is_persistent_name_surface(surface: str) -> bool:
 
 class MemoryBackend(Protocol):
     def find_memory_id(self, evidence_id: str) -> str | None: ...
-    def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any]) -> str: ...
-    def create_relationships(self, memory_ids: list[str]) -> None: ...
+    def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any], *,
+                  automatic_semantic: bool = True) -> str: ...
+    def create_relationships(self, memory_ids: list[str], *,
+                             automatic_entity_links: bool = True) -> None: ...
+    def first_hit_view(self) -> Any: ...
+    def first_hit_candidate(self, node_id: str) -> BackendCandidate | None: ...
+    def endpoint_similarities(self, text: str, memory_ids) -> dict[str, float]: ...
+    def apply_first_hit_links(self, plan: list[dict]) -> None: ...
     def list_entity_candidates(
         self, *, limit: int,
     ) -> tuple[EntityCandidate, ...]: ...
@@ -166,6 +173,11 @@ class RealMagmaBackend:
                 extraction.content_narrative = content
                 return extraction
 
+            def _create_semantic_links(self, event_node, top_k=3):
+                # Instance-local single-write scope; pinned upstream is intact.
+                if getattr(self, "_lumina_automatic_semantic", True):
+                    return super()._create_semantic_links(event_node, top_k)
+
             def _create_temporal_links(self, event_node):
                 # Imported lazily so controlled test doubles that stub
                 # ``memory.graph_db`` with event-only symbols stay valid.
@@ -222,6 +234,141 @@ class RealMagmaBackend:
         self._rebuild_indexes()
         from ._source_backend import rebuild as rebuild_sources
         rebuild_sources(self)
+        self._rebuild_first_hit_view()
+
+    def _rebuild_first_hit_view(self) -> None:
+        from .first_hit import DerivedFirstHitGraph
+        # Existing controlled/legacy read backends need not expose adjacency.
+        # Absence is an unavailable first-hit capability, never an empty graph.
+        if not hasattr(self.trg.graph_db, "links"):
+            self._first_hit_graph = None
+            self._first_hit_evidence_ids = {}
+            return
+        self._first_hit_graph = DerivedFirstHitGraph(self.trg.graph_db)
+        self._first_hit_evidence_ids = {
+            node.attributes["evidence_id"]: node_id
+            for node_id, node in self.trg.graph_db.nodes.items()
+            if isinstance(getattr(node, "attributes", None), dict)
+            and isinstance(node.attributes.get("evidence_id"), str)
+        }
+
+    def _prepare_first_hit_write(self) -> None:
+        """Only load/owner writes may repair a derived graph view."""
+        from .first_hit import FirstHitUnavailable
+        view = getattr(self, "_first_hit_graph", None)
+        try:
+            if view is None or view.graph is not self.trg.graph_db:
+                raise FirstHitUnavailable("first_hit_snapshot_unavailable")
+            view.check()
+        except FirstHitUnavailable:
+            self._rebuild_first_hit_view()
+
+    def _first_hit_add_node(self, node) -> None:
+        self._first_hit_graph.add_node(node)
+        attributes = getattr(node, "attributes", {})
+        evidence_id = attributes.get("evidence_id")
+        if isinstance(evidence_id, str):
+            self._first_hit_evidence_ids[evidence_id] = node.node_id
+
+    def first_hit_view(self):
+        from .first_hit import FirstHitUnavailable
+        view = getattr(self, "_first_hit_graph", None)
+        if (view is None or view.graph is not self.trg.graph_db
+                or getattr(self, "_source_present", False)):
+            raise FirstHitUnavailable("first_hit_snapshot_unavailable")
+        view.check()
+        return view
+
+    def first_hit_candidate(self, node_id: str) -> BackendCandidate | None:
+        # Seed fallback remains projectable when only the graph view is stale.
+        from .first_hit import _node_kind
+        node = self.trg.graph_db.get_node(node_id)
+        if getattr(self, "_source_present", False) or _node_kind(node) != "fact":
+            return None
+        return BackendCandidate(text=node.content_narrative, timestamp=node.timestamp.isoformat(),
+                                score=None, metadata=deepcopy(node.attributes))
+
+    def endpoint_similarity(self, text: str, memory_id: str) -> float:
+        return self.endpoint_similarities(text, (memory_id,))[memory_id]
+
+    def endpoint_similarities(self, text: str, memory_ids) -> dict[str, float]:
+        """Encode a new endpoint once; compare existing full stored vectors."""
+        import numpy as np
+        from .first_hit import FirstHitUnavailable
+        view = self.first_hit_view()
+        version = view.version
+        ids = tuple(dict.fromkeys(memory_ids))
+        if not ids:
+            return {}
+        first = np.asarray(self.trg.encoder.encode(text), dtype=np.float64).reshape(-1)
+        if not first.size or not np.isfinite(first).all():
+            raise FirstHitUnavailable("first_hit_endpoint_embedding_invalid")
+        first_norm = float(np.linalg.norm(first))
+        values = {}
+        for memory_id in ids:
+            node = self.trg.graph_db.get_node(memory_id)
+            if node is None or not view.is_fact(memory_id):
+                raise FirstHitUnavailable("first_hit_endpoint_unavailable")
+            second = np.asarray(node.embedding_vector, dtype=np.float64)
+            if (second.ndim != 1 or first.shape != second.shape or not np.isfinite(second).all()):
+                raise FirstHitUnavailable("first_hit_endpoint_embedding_invalid")
+            denominator = float(first_norm * np.linalg.norm(second))
+            if denominator == 0:
+                values[memory_id] = 0.0
+                continue
+            cosine = float(first @ second / denominator)
+            if not np.isfinite(cosine) or abs(cosine) > 1 + 1e-12:
+                raise FirstHitUnavailable("first_hit_endpoint_embedding_invalid")
+            values[memory_id] = min(1.0, max(0.0, cosine))
+        view.check(version)
+        return values
+
+    def apply_first_hit_links(self, plan: list[dict]) -> None:
+        """Apply an already checkpointed plan using stable evidence endpoints."""
+        import math
+        from memory.graph_db import Link, LinkSubType, LinkType
+        self._prepare_first_hit_write()
+        self._prepare_entity_membership_write()
+        graph = self.trg.graph_db
+        for item in plan:
+            source_evidence = item.get("source_evidence_id")
+            target_evidence = item.get("target_evidence_id")
+            weight = item.get("weight")
+            if (item.get("algorithm") != "first-hit-v1"
+                    or not isinstance(source_evidence, str) or not source_evidence
+                    or not isinstance(target_evidence, str) or not target_evidence
+                    or source_evidence == target_evidence or isinstance(weight, bool)
+                    or not isinstance(weight, (int, float)) or not math.isfinite(weight)
+                    or not 0 < weight <= 1):
+                raise ValueError("first_hit_link_plan_invalid")
+            source = self._first_hit_evidence_ids.get(source_evidence)
+            target = self._first_hit_evidence_ids.get(target_evidence)
+            if (not self._first_hit_graph.is_fact(source)
+                    or not self._first_hit_graph.is_fact(target)):
+                raise ValueError("first_hit_link_endpoint_missing")
+            for start, end, start_evidence, end_evidence in (
+                (source, target, source_evidence, target_evidence),
+                (target, source, target_evidence, source_evidence),
+            ):
+                digest = sha256(("first-hit-v1\0" + start_evidence + "\0" + end_evidence).encode()).hexdigest()
+                link_id = "first-hit:" + digest
+                properties = {"sub_type": LinkSubType.RELATED_TO.value,
+                              "similarity_score": float(weight), "algorithm": "first-hit-v1",
+                              "weight_source": "nonnegative_endpoint_cosine",
+                              "source_evidence_id": start_evidence,
+                              "target_evidence_id": end_evidence}
+                existing = graph.links.get(link_id)
+                if existing is not None:
+                    if (existing.source_node_id != start or existing.target_node_id != end
+                            or existing.link_type != LinkType.SEMANTIC or existing.properties != properties):
+                        raise ValueError("first_hit_link_plan_conflict")
+                    continue
+                link = Link(link_id=link_id, source_node_id=start, target_node_id=end,
+                            link_type=LinkType.SEMANTIC, properties=properties)
+                graph.add_link(link)
+                self._first_hit_graph.add_link(link)
+                # Semantic edges change the source signature, not membership.
+                self._refresh_entity_membership()
 
     def _rebuild_indexes(self, *, rebuild_entity_membership: bool = True) -> None:
         """Derived views only: graph.json remains the single durable authority."""
@@ -441,6 +588,7 @@ class RealMagmaBackend:
         from memory.graph_db import EventNode, NodeType
         self._ensure_indexes()
         self._prepare_entity_membership_write()
+        self._prepare_first_hit_write()
         for raw in records:
             record = deepcopy(raw)
             mention_id, surface, ref = record.get("mention_id"), record.get("surface"), record.get("entity_ref")
@@ -465,6 +613,7 @@ class RealMagmaBackend:
             elif existing != record:
                 raise ValueError("entity_mention_provenance_conflict")
             self._index_node(node)
+            self._first_hit_add_node(node)
         self._indexed_node_count = len(self.trg.graph_db.nodes)
         self._refresh_entity_membership()
 
@@ -481,6 +630,9 @@ class RealMagmaBackend:
         return tuple(records.values())
 
     def find_memory_id(self, evidence_id: str) -> str | None:
+        view = getattr(self, "_first_hit_graph", None)
+        if view is not None and view._source == view._signature():
+            return self._first_hit_evidence_ids.get(evidence_id)
         for node_id, node in self.trg.graph_db.nodes.items():
             if getattr(node, "attributes", {}).get("evidence_id") == evidence_id:
                 return node_id
@@ -489,6 +641,7 @@ class RealMagmaBackend:
     def ensure_event_persisted(self, memory_id: str) -> None:
         """Repair upstream's graph-before-vector failure using stored embedding."""
         self._prepare_entity_membership_write()
+        self._prepare_first_hit_write()
         node = self.trg.graph_db.get_node(memory_id)
         if node is None or getattr(node, "node_type", None) != self._node_type.EVENT:
             raise ValueError("memory_event_missing")
@@ -507,35 +660,115 @@ class RealMagmaBackend:
                                         "entities": metadata.get("entities", [])})
         self._refresh_entity_membership(memory_id)
 
-    def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any]) -> str:
+    def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any], *,
+                  automatic_semantic: bool = True) -> str:
         if getattr(self, "_source_present", False):
             raise ValueError("source_store_fact_write_forbidden")
+        if type(automatic_semantic) is not bool:
+            raise ValueError("automatic_semantic_must_be_bool")
         self._ensure_indexes()
         self._prepare_entity_membership_write()
-        memory_id = self.trg.add_event(text, timestamp=timestamp, metadata=metadata)
-        self._index_node(self.trg.graph_db.get_node(memory_id))
-        self._indexed_node_count = len(self.trg.graph_db.nodes)
+        self._prepare_first_hit_write()
+        previous = getattr(self.trg, "_lumina_automatic_semantic", True)
+        self.trg._lumina_automatic_semantic = automatic_semantic
+        try:
+            memory_id = self.trg.add_event(text, timestamp=timestamp, metadata=metadata)
+        finally:
+            self.trg._lumina_automatic_semantic = previous
+        node = self.trg.graph_db.get_node(memory_id)
+        self._index_node(node)
+        self._first_hit_add_node(node)
+        graph = self.trg.graph_db
+        incident = getattr(graph, "node_to_links", {}).get(memory_id)
+        links = (graph.links[key] for key in incident) if incident is not None else (
+            link for link in graph.links.values()
+            if memory_id in (link.source_node_id, link.target_node_id))
+        for link in links:
+            self._first_hit_graph.add_link(link)
+        self._indexed_node_count = len(graph.nodes)
         self._refresh_entity_membership(memory_id)
         return memory_id
 
-    def create_relationships(self, memory_ids: list[str]) -> None:
-        existing = {
-            (link.source_node_id, link.target_node_id, link.link_type.value, link.properties.get("entity"))
-            for link in self.trg.graph_db.links.values()
-        }
-        for memory_id in memory_ids:
-            node = self.trg.graph_db.get_node(memory_id)
-            if node is None:
-                continue
-            for link in self.trg._create_entity_edges(node):
-                identity = (link.source_node_id, link.target_node_id, link.link_type.value, link.properties.get("entity"))
-                if identity not in existing:
-                    self.trg.graph_db.add_link(link)
-                    existing.add(identity)
+    def create_relationships(self, memory_ids: list[str], *,
+                             automatic_entity_links: bool = True) -> None:
+        self._prepare_first_hit_write()
+        if automatic_entity_links:
+            existing = {
+                (link.source_node_id, link.target_node_id, link.link_type.value, link.properties.get("entity"))
+                for link in self.trg.graph_db.links.values()
+            }
+            for memory_id in memory_ids:
+                node = self.trg.graph_db.get_node(memory_id)
+                if node is None:
+                    continue
+                for link in self.trg._create_entity_edges(node):
+                    identity = (link.source_node_id, link.target_node_id, link.link_type.value,
+                                link.properties.get("entity"))
+                    if identity not in existing:
+                        self.trg.graph_db.add_link(link)
+                        self._first_hit_graph.add_link(link)
+                        existing.add(identity)
+        if not automatic_entity_links:
+            self._repair_first_hit_temporal_links(memory_ids)
         self._create_subject_entity_ref_links(memory_ids)
         self._create_object_entity_ref_links(memory_ids)
         self._create_mention_entity_ref_links(memory_ids)
         self._prepare_entity_membership_write()
+
+    def _repair_first_hit_temporal_links(self, memory_ids: list[str]) -> None:
+        """Recover graph-before-vector interruptions in the explicit new writer.
+
+        Graph JSON preserves node insertion order. Only EVENTs preceding this
+        insertion were present when upstream chose its timestamp predecessor;
+        later arrivals must not change the original write obligation.
+        """
+        from memory.graph_db import Link, LinkType, LinkSubType
+        self._prepare_entity_membership_write()
+        graph = self.trg.graph_db
+        targets = set(memory_ids)
+        # Ordinary successful writes already hold both directions; avoid the
+        # history scan unless an actual incomplete temporal pair needs repair.
+        for memory_id in tuple(targets):
+            incident = getattr(graph, "node_to_links", {}).get(memory_id)
+            links = (graph.links[key] for key in incident) if incident is not None else graph.links.values()
+            temporal = {(edge.source_node_id, edge.target_node_id, edge.properties.get("sub_type"))
+                        for edge in links if edge.link_type == LinkType.TEMPORAL}
+            if any(start == memory_id and subtype == LinkSubType.SUCCEEDS.value
+                   and (end, start, LinkSubType.PRECEDES.value) in temporal
+                   for start, end, subtype in temporal):
+                targets.remove(memory_id)
+        if not targets:
+            return
+        earlier = []
+        for node in graph.nodes.values():
+            if node.node_type != self._node_type.EVENT:
+                continue
+            if node.node_id in targets:
+                eligible = (old for old in earlier if old.timestamp <= node.timestamp)
+                previous = max(eligible, key=lambda old: old.timestamp, default=None)
+                # Equal timestamps follow graph insertion order (stable sort).
+                if previous is not None:
+                    previous = next(old for old in reversed(earlier)
+                                    if old.timestamp == previous.timestamp)
+                    delta = (node.timestamp - previous.timestamp).total_seconds()
+                    incident = getattr(graph, "node_to_links", {}).get(node.node_id)
+                    links = (graph.links[key] for key in incident) if incident is not None else graph.links.values()
+                    existing = {(edge.source_node_id, edge.target_node_id, edge.properties.get("sub_type"))
+                                for edge in links if edge.link_type == LinkType.TEMPORAL}
+                    for start, end, subtype in (
+                        (previous.node_id, node.node_id, LinkSubType.PRECEDES.value),
+                        (node.node_id, previous.node_id, LinkSubType.SUCCEEDS.value),
+                    ):
+                        if (start, end, subtype) in existing:
+                            continue
+                        key = sha256((start + "\0" + end + "\0" + subtype).encode()).hexdigest()
+                        edge = Link(link_id="first-hit-temporal:" + key, source_node_id=start,
+                                    target_node_id=end, link_type=LinkType.TEMPORAL,
+                                    properties={"sub_type": subtype, "time_delta": delta})
+                        graph.add_link(edge)
+                        self._first_hit_graph.add_link(edge)
+                        self._refresh_entity_membership()
+            earlier.append(node)
 
     def _create_object_entity_ref_links(self, memory_ids: list[str]) -> None:
         for memory_id in memory_ids:
@@ -609,6 +842,7 @@ class RealMagmaBackend:
 
         entity_node_id = f"entity:{ref.casefold()}"
         self._prepare_entity_membership_write()
+        self._prepare_first_hit_write()
         if self.trg.graph_db.get_node(entity_node_id) is None:
             self.trg.graph_db.add_node(EventNode(
                 node_id=entity_node_id,
@@ -620,24 +854,30 @@ class RealMagmaBackend:
                 },
                 embedding_vector=None,
             ))
+        self._first_hit_add_node(self.trg.graph_db.get_node(entity_node_id))
         properties = {"sub_type": LinkSubType.REFERS_TO.value}
         if role is not None:
             properties["role"] = role
+        graph = self.trg.graph_db
+        incident = getattr(graph, "node_to_links", {}).get(memory_id)
+        candidates = (graph.links[key] for key in incident) if incident is not None else graph.links.values()
         already_linked = any(
             link.source_node_id == memory_id
             and link.target_node_id == entity_node_id
             and link.link_type == LinkType.ENTITY
             and link.properties.get("sub_type") == LinkSubType.REFERS_TO.value
             and link.properties.get("role") == role
-            for link in self.trg.graph_db.links.values()
+            for link in candidates
         )
         if not already_linked:
-            self.trg.graph_db.add_link(Link(
+            link = Link(
                 source_node_id=memory_id,
                 target_node_id=entity_node_id,
                 link_type=LinkType.ENTITY,
                 properties=properties,
-            ))
+            )
+            self.trg.graph_db.add_link(link)
+            self._first_hit_graph.add_link(link)
         if hasattr(self, "_surface_refs"):
             self._index_node(self.trg.graph_db.get_node(entity_node_id))
             self._indexed_node_count = len(self.trg.graph_db.nodes)
