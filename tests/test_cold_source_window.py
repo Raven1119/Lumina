@@ -314,3 +314,63 @@ def test_unchanged_metadata_signature_needs_restart_after_out_of_band_edit(tmp_p
     restarted = _store(path).read_source_refs([ref])
     assert restarted.safe_error_code is None
     assert restarted.evidence[0].text == "modified"
+
+
+def test_whole_turn_expansion_preserves_provenance_after_consume_and_restart(tmp_path, monkeypatch):
+    path = tmp_path / "cold.jsonl"
+    owner = _store(path)
+    text = "prefix \u4e2d\u6587 tail; this visit only"
+    turn = _native(text, role="assistant")
+    owner.append_segment([turn], segment_id="whole")
+    assert owner.mark_consumed("whole")
+    ref = dict(segment_id="whole", turn_id="native-turn", source_start=7,
+               source_end=9, supporting_span="\u4e2d\u6587", source_role="assistant",
+               source_timestamp=turn["created_at"], source_timezone="Asia/Shanghai",
+               timezone_source="client", ingestion_version="first-hit-v1")
+    original = path.read_bytes()
+    assert owner.read_source_refs([ref]).evidence[0].text == "\u4e2d\u6587"
+    full = owner.read_source_refs([ref, ref], whole_turns=True)
+    restarted = _store(path)
+    monkeypatch.setattr(restarted, "_read_bytes", lambda: pytest.fail("query read archive"))
+    assert restarted.read_source_refs([ref], whole_turns=True) == full
+    assert len(full.evidence) == 1
+    item = full.evidence[0]
+    assert item.text == text and (item.source_start, item.source_end) == (0, len(text))
+    assert item.provenance.source_role == "assistant"
+    assert item.provenance.turn_id == "native-turn"
+    assert item.provenance.source_timestamp == turn["created_at"]
+    assert item.provenance.source_timezone == "Asia/Shanghai"
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("invalid", [
+    {"supporting_span": "wrong"}, {"source_end": 999},
+    {"source_role": "assistant"}, {"turn_id": "other"},
+    {"source_timestamp": "2020-01-01T00:00:00+00:00"},
+])
+def test_whole_turn_expansion_requires_valid_exact_reference(tmp_path, invalid):
+    owner = _store(tmp_path / "cold.jsonl")
+    owner.append_segment([_native("prefix exact tail")], segment_id="s")
+    ref = dict(segment_id="s", turn_id="native-turn", source_start=7,
+               source_end=12, supporting_span="exact")
+    result = owner.read_source_refs([dict(ref, **invalid)], whole_turns=True)
+    assert not result.evidence
+    assert result.safe_error_code == "cold_source_unavailable"
+
+
+def test_whole_turn_expansion_obeys_rendered_limits_and_window_expiry(tmp_path):
+    owner = _store(tmp_path / "cold.jsonl", segments=1)
+    owner.append_segment([_native("prefix \u4e2d\u6587 tail")], segment_id="s")
+    ref = dict(segment_id="s", turn_id="native-turn", source_start=7,
+               source_end=9, supporting_span="\u4e2d\u6587")
+    full = owner.read_source_refs([ref], whole_turns=True)
+    chars, size = len(full.rendered_text), len(full.rendered_text.encode("utf-8"))
+    assert owner.read_source_refs([ref], whole_turns=True, max_chars=chars, max_bytes=size) == full
+    for bound in ({"max_chars": chars - 1}, {"max_bytes": size - 1},
+                  {"max_items": 0}, {"max_refs": 0}):
+        result = owner.read_source_refs([ref], whole_turns=True, **bound)
+        assert not result.evidence and result.truncated
+    assert owner.read_source_refs([ref], whole_turns=1).safe_error_code == "cold_source_limits_invalid"
+    owner.append_segment([_native("newest", turn_id="new")], segment_id="new")
+    expired = owner.read_source_refs([ref], whole_turns=True)
+    assert not expired.evidence and expired.safe_error_code == "cold_source_unavailable"

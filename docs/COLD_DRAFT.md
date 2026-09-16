@@ -167,6 +167,26 @@ applies; this cache is neither a second source authority nor a cross-process
 synchronization mechanism. `source_window_status` reports count/byte limits and
 availability without source bodies or filesystem paths.
 
+### Opt-in whole-turn expansion
+
+`ColdDraftStore.read_source_refs(refs, whole_turns=True)` expands each valid
+citation to its complete source turn. The default remains exact span reads.
+The owner validates the supplied turn identity, range, supporting text and
+provided provenance fields before expansion; an invalid citation cannot gain
+access to a turn through this option. Adjacent turns still require explicit
+`before` / `after` limits and remain within the same segment.
+
+Expansion uses only the existing bounded source window, preserves original
+roles, IDs, timestamps and text, and deduplicates overlapping anchors. The
+existing `max_refs` and `max_items` caps still apply; `max_chars` and UTF-8
+`max_bytes` include rendering overhead. A turn that does not fit is omitted with the existing
+partial/unavailable status; it is not clipped or fetched from an expired
+segment. Consumption and restart retain the existing source-window behavior.
+
+This is an owner-level read option. It does not change the default v2 Recall,
+first-hit selection, Fact packing, Formation, graph writes or automatic source
+expansion. Callers remain responsible for their combined output budget.
+
 ## Cold-first compaction
 
 After a response pair is persisted:

@@ -507,16 +507,18 @@ class ColdDraftStore:
     def read_source_refs(
         self, refs, *, query: str = "", before: int = 0, after: int = 0,
         max_refs: int = 64, max_chars: int = 8000, max_bytes: int = 32768,
-        max_items: int = 32,
+        max_items: int = 32, whole_turns: bool = False,
     ):
         """Read exact citations and optional same-segment adjacent turns.
 
         No archive read, ingestion, model call, or consumption is permitted here.
         Whole exact ranges are packed or omitted. Overlap/adjacency merges only
         within a turn; unread character gaps remain separate labelled ranges.
+        With whole_turns=True, validate each exact citation first, then expand
+        its anchor to the complete cached turn within the same output limits.
         """
         _, SourceMemoryContext, _ = self._source_types()
-        if (not isinstance(query, str)
+        if (not isinstance(query, str) or type(whole_turns) is not bool
                 or any(type(value) is not int or value < 0 for value in
                        (before, after, max_refs, max_chars, max_bytes, max_items))
                 or before > 32 or after > 32 or max_refs > 256 or max_items > 256):
@@ -561,6 +563,9 @@ class ColdDraftStore:
                 incomplete = True
                 continue
             key = (segment_id, index)
+            # Exact citation validation precedes any bounded same-turn expansion.
+            if whole_turns:
+                start, end = 0, len(text)
             ranges.setdefault(key, []).append((start, end))
             anchor_ranges.setdefault(key, []).append((start, end))
             versions.setdefault(key, version)
