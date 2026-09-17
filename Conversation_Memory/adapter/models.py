@@ -135,7 +135,14 @@ class MemoryEvidence:
 
 @dataclass(frozen=True)
 class MemoryContext:
-    """Bounded Recall result; successful evidence cardinality is zero to K."""
+    """Bounded Recall result; successful evidence cardinality is zero to K.
+
+    Consumability invariant: ``rendered_text`` contains only authorized,
+    safe content, so a non-empty ``rendered_text`` is always consumable.
+    ``safe_error_code`` reports a degraded optional channel (for example a
+    Cold source supplement); it never marks otherwise rendered content as
+    unusable. A failed read returns an empty ``rendered_text`` with a code.
+    """
 
     query: str
     evidence: tuple[MemoryEvidence, ...] = ()
@@ -290,6 +297,9 @@ class AssociativeMemoryContext:
     """Fact activation and optional Cold excerpts share one character budget.
 
     Activation scores, graph handles and paths remain private to the adapter.
+    The same consumability invariant as ``MemoryContext`` applies: a
+    non-empty ``rendered_text`` is consumable even when ``safe_error_code``
+    reports a degraded optional source channel.
     """
 
     facts: MemoryContext

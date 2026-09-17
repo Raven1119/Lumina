@@ -1,27 +1,39 @@
-# Explicit reliable Memory profile
+# Reliable Memory profile
 
-The default Formation version remains `grounded-formation-v2`. The explicit
-reliable pair is the `grounded-formation-v5` writer with the `reliable-v2`
-associative presentation; the historical `grounded-formation-v4` writer and
-`reliable-v1` presentation remain explicitly selectable. Both reuse EVENT,
+The `grounded-formation-v6` writer with the `reliable-v2` associative
+presentation is the production Memory pair: a real-model app wires Chat Recall
+and app Dream to one shared v6/FirstHit/reliable-v2 adapter, and the Dream CLI
+defaults to it for a configured real model. The historical
+`grounded-formation-v2`, `grounded-formation-v5` and `grounded-formation-v4`
+writers and the `first-hit-v1`/`reliable-v1` presentations remain
+explicitly selectable. Both reuse EVENT,
 ENTITY, the Memory backend, IngestionStateStore, Cold and FirstHit.
 They do not migrate or reinterpret historical checkpoints.
 
 ## Entry points
 
+Production Chat and app Dream need no flag: `core/main.py` constructs the
+shared adapter with `first_hit=FirstHitPolicy()`, the app-owned Cold store and
+`associative_read_profile="reliable-v2"` whenever a real formation model is
+configured, and the adapter serves the ordinary `recall()` boundary through
+this reliable read. Mock/legacy construction keeps `grounded-span-v2`.
+
 Run manual Dream with the service's writer stopped when using the separate CLI:
 
 ```powershell
-Conversation_Memory/.venv/Scripts/python.exe -m Dream --reliable-memory --max-segments 1
+Conversation_Memory/.venv/Scripts/python.exe -m Dream --max-segments 1
 ```
 
-`--reliable-memory` selects the v5 writer. `--ingestion-version
-grounded-formation-v4` remains an explicit historical selection.
+Without an explicit `--ingestion-version`, a configured real model defaults to
+the v6 writer with FirstHit and reliable-v2 reading; `--reliable-memory` is a
+deprecated alias for that default. `--ingestion-version
+grounded-formation-v5`, `grounded-formation-v4` or `grounded-formation-v2`
+remains an explicit historical selection (FirstHit only with `--first-hit`).
 
 The existing `LUMINA_DREAM_COLD_DRAFT_PATH`, `LUMINA_DREAM_INGESTION_STATE_PATH`
 and `LUMINA_DREAM_MAGMA_PERSIST_DIR` select the same owners as ordinary Dream.
-Use isolated paths for evaluation. This flag does not schedule Dream or switch
-Chat to a new reader. A caller can explicitly construct the corresponding reader:
+Use isolated paths for evaluation. The CLI does not schedule Dream. A caller
+can also explicitly construct the corresponding reader:
 
 ```python
 from adapter.first_hit import FirstHitPolicy
@@ -34,7 +46,7 @@ cold = ColdDraftStore(cold_path, source_window_segments=32,
                       source_window_bytes=1048576)
 memory = MagmaMemoryAdapter.create_real(
     magma_path, IngestionStateStore(state_path), fail_if_unavailable=True,
-    ingestion_version="grounded-formation-v5", formation_model=model,
+    ingestion_version="grounded-formation-v6", formation_model=model,
     first_hit=FirstHitPolicy(), cold_store=cold,
     associative_read_profile="reliable-v2",
 )
@@ -104,7 +116,9 @@ automatic repair or resampling loop for v4.
 Bindings and the unchanged FirstHit link plan are checkpointed before graph
 mutation. v4 uses a separate `first-hit-v1:grounded-formation-v4` checkpoint key;
 v2 keeps its historical key. Existing EVENT IDs and embeddings repair a missing
-vector on restart, including a completed v4 checkpoint. Cold is consumed only
+vector on restart, including a completed v4 checkpoint and every v5/v6 body
+path (body loop, `bodies_persisted` boundary and bodies recovery branch).
+Cold is consumed only
 after all required work, graph/vector persistence and local links complete.
 
 ## Formation v5
@@ -145,13 +159,55 @@ following, v5-only:
   phase's F1/F2 entries to the full four-stage set (existing entries must be
   preserved exactly), creates role/mention links and completes. Restart finds
   existing bodies by evidence id, replays saved stage responses without new
-  provider calls, and adds only the missing structure.
+  provider calls, and adds only the missing structure. The full body durability
+  invariant is enforced at three points: an evidence-id hit in the body loop,
+  the `bodies_persisted` boundary, and the bodies recovery branch each verify
+  through `ensure_event_persisted` that the EVENT's vector exists and belongs
+  to it (bidirectional `id_to_index`/`index_to_id` consistency, confirmed
+  vector write); a missing vector is rebuilt from the persisted embedding and
+  persisted before advancing, and a failed repair keeps the window
+  failed/retryable without writing `bodies_persisted` or `completed`. EVENT
+  ids, evidence ids and `memory_ids` stay stable and no duplicate EVENT or
+  vector is created.
 - FirstHit timing. Planning happens once, at structure completion, with
   complete bindings; bodies without structure are direct seeds without
   first-hit links. The algorithm, budgets and old frozen plans are untouched.
 
 The v5 reader pair is the `reliable-v2` presentation (canonical body always
 visible, bounded source supplement), described below.
+
+## Formation v6
+
+`grounded-formation-v6` (progress schema `reliable-formation-progress-v3`,
+stage binding schema unchanged, FirstHit key `first-hit-v1:grounded-formation-v6`,
+unit id prefix `grounded_memory_v6:`, mention id prefix `mention_v6:`) keeps
+every v5 authorization, recovery and persistence rule — the unified identity
+evidence contract, the self-reference backstop, relation/role manifest
+consistency and body/structure decoupling — and changes the following,
+v6-only:
+
+- No keyword attribution screen. The v5 F1 prompt ordered the body to never
+  name the other dialogue party and a deterministic manifest screen rejected
+  any body whose leading words matched the opposite party's keywords
+  (`reliable_fact_attribution_conflict`). That abstraction confused the source
+  speaker with the person talked about inside the proposition: a user turn
+  relaying Lumina's suggestion or an assistant turn reporting the user's words
+  was falsely rejected. v6 removes the order and the screen entirely; the
+  issue code never occurs under v6. Attribution is established only by the
+  canonical prefix, which the program still derives from the actual origin
+  turn role (`User stated:` / `Lumina stated:`), and by F2, which verifies
+  that the actual origin speaker really expressed the complete proposition.
+  A cross-reference inside the body describes the statement's content, not a
+  different speaker; an assistant claim about the user still persists only as
+  `Lumina stated:` and never upgrades to user confirmation or external fact.
+
+The G1/G2 stage prompts and parsers are shared with v5; versioned checkpoints
+bind each replay to its own request digests, so a v6 run never reinterprets a
+frozen v5 or v4 checkpoint. The reader pair remains the `reliable-v2`
+presentation; its EVENT metadata shape is unchanged.
+
+`grounded-formation-v5` remains an explicit historical selection for replay of
+its own checkpoints; it is byte-compatible and unchanged.
 
 ## Bounded associative presentation
 
@@ -207,6 +263,28 @@ history. These contracts establish bounded permission and recovery behavior;
 semantic usefulness requires separate source-level evaluation.
 
 ## Known limitations
+
+Resolved in the shared v5/v6 writer (existing checkpoints are never
+reinterpreted):
+
+- A body-phase restart between graph and vector persistence left the EVENT
+  findable by evidence id while its vector was missing, and the body loop
+  skipped the existing EVENT without a vector check: the window could advance
+  to `bodies_persisted`/`completed` with a permanently unreadable EVENT. The
+  body loop, the `bodies_persisted` boundary and the bodies recovery branch
+  now re-verify every body EVENT and repair a missing vector from the
+  persisted embedding before advancing; a failed repair keeps the window
+  failed/retryable and never writes `bodies_persisted` or `completed`.
+
+Resolved in v6 (it remains v5/v4 behavior; frozen v5/v4 parses are never
+reinterpreted):
+
+- The v5 keyword attribution screen conflated the source speaker with the
+  person mentioned inside the proposition: legitimate bodies such as a user
+  relaying Lumina's suggestion ("Lumina 建议我先做小样") or an assistant
+  reporting the user's words ("用户刚才说他明天回来") were rejected as
+  `reliable_fact_attribution_conflict`. v6 removes the screen; attribution
+  rests on the true-role canonical prefix plus F2 verification.
 
 Resolved in v5 (they remain v4 limitations; frozen v4 parses are never
 reinterpreted):

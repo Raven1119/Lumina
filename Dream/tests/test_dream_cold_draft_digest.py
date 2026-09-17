@@ -747,7 +747,7 @@ def test_manual_dream_cli_requests_formation_output_budget(monkeypatch, capsys):
     monkeypatch.setattr(
         runner_module,
         "build_default_runner",
-        lambda injected: SimpleNamespace(run_once=lambda _policy: report),
+        lambda injected, **kwargs: SimpleNamespace(run_once=lambda _policy: report),
     )
 
     assert main([]) == 0

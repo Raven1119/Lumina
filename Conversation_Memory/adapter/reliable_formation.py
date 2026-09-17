@@ -14,8 +14,10 @@ from . import grounded_formation as gf
 
 FORMATION_RELIABLE_VERSION = "grounded-formation-v4"
 FORMATION_RELIABLE_VERSION_V5 = "grounded-formation-v5"
+FORMATION_RELIABLE_VERSION_V6 = "grounded-formation-v6"
 PROGRESS_VERSION = "reliable-formation-progress-v1"
 PROGRESS_VERSION_V5 = "reliable-formation-progress-v2"
+PROGRESS_VERSION_V6 = "reliable-formation-progress-v3"
 STAGE_VERSION = "reliable-formation-stage-v1"
 _STAGES = ("F1", "F2", "G1", "G2")
 
@@ -33,6 +35,18 @@ F1_PROMPT_V5 = F1_PROMPT.replace(
     "The program owns the speaker prefix; the body text must NOT re-attribute the statement "
     "to the other dialogue party: text for an assistant-origin turn must not say the user "
     "asked or said it, and text for a user-origin turn must not say the assistant asked or said it.")
+
+F1_PROMPT_V6 = F1_PROMPT_V5.replace(
+    "The program owns the speaker prefix; the body text must NOT re-attribute the statement "
+    "to the other dialogue party: text for an assistant-origin turn must not say the user "
+    "asked or said it, and text for a user-origin turn must not say the assistant asked or said it.",
+    "The program owns the speaker prefix: it prefixes each text with User stated: or "
+    "Lumina stated: based on the actual origin turn role, recording who made the statement; "
+    "never write that prefix into the text itself. The body may legitimately mention or "
+    "quote the other dialogue party: a user turn may relay Lumina's suggestion, and an "
+    "assistant turn may report what the user said. Such cross-references describe the "
+    "statement's content, not a different speaker. F2 independently verifies that the "
+    "actual origin speaker really expressed the complete proposition.")
 
 # Deterministic manifest screen on two fields the code itself produces: the
 # machine-owned speaker prefix and the body's leading re-attribution.
@@ -167,13 +181,15 @@ def _parse_f2(raw, candidates):
 
 
 def _progress_version(version):
+    if version == FORMATION_RELIABLE_VERSION_V6:
+        return PROGRESS_VERSION_V6
     return PROGRESS_VERSION_V5 if version == FORMATION_RELIABLE_VERSION_V5 else PROGRESS_VERSION
 
 
 def _prepare_progress(progress, version):
     progress = deepcopy(progress) if progress is not None else {"schema_version": _progress_version(version), "stages": {}}
     allowed = {"schema_version", "stages", "identity_candidates"}
-    if version == FORMATION_RELIABLE_VERSION_V5:
+    if version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
         # The owner may additionally mark its persisted body phase.
         allowed.add("bodies")
     if (not isinstance(progress, dict) or set(progress) - allowed
@@ -191,7 +207,8 @@ def form_reliable_bodies(segment, model, *, progress=None, checkpoint, version=F
     progress = _prepare_progress(progress, version)
     gf._check_entity_window(segment)
     sources = _sources(segment)
-    f1_prompt = F1_PROMPT_V5 if version == FORMATION_RELIABLE_VERSION_V5 else F1_PROMPT
+    f1_prompt = {FORMATION_RELIABLE_VERSION_V5: F1_PROMPT_V5,
+                 FORMATION_RELIABLE_VERSION_V6: F1_PROMPT_V6}.get(version, F1_PROMPT)
     f1 = _stage("F1", f1_prompt, {"turns": list(sources.values())}, model, segment, progress, checkpoint,
                 lambda raw: _parse_f1(raw, segment, version=version))
     visible = set(t for f in f1["facts"] for t in f["allowed_source_ids"])
@@ -210,7 +227,7 @@ def form_reliable_structure(segment, model, *, progress, checkpoint, identity_ca
         parse_g1, parse_g2, authorized_batch,
     )
     progress = _prepare_progress(progress, version)
-    v5 = version == FORMATION_RELIABLE_VERSION_V5
+    v5 = version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
     sources = _sources(segment)
     if "identity_candidates" not in progress:
         if callable(identity_candidates):
@@ -246,7 +263,7 @@ def form_reliable_structure(segment, model, *, progress, checkpoint, identity_ca
 
 def form_reliable_batch(segment, model, *, progress=None, checkpoint, identity_candidates=(),
                         version=FORMATION_RELIABLE_VERSION):
-    if version == FORMATION_RELIABLE_VERSION_V5:
+    if version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
         accepted, f1, f2, progress = form_reliable_bodies(
             segment, model, progress=progress, checkpoint=checkpoint, version=version)
         return form_reliable_structure(

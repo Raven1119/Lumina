@@ -75,7 +75,7 @@ app uses the shared adapter's Formation version:
 ```text
 max_segments = 10
 stop_on_error = false
-ingestion_version = grounded-formation-v2
+ingestion_version = grounded-formation-v6
 ```
 
 Mock/legacy injected adapters retain `grounded-span-v2`. Execution is serial

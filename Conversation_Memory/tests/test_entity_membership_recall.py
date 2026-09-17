@@ -55,6 +55,7 @@ class Vectors:
         self.index_to_id[position] = vector_id
         self.rows.append((vector_id, vector.tolist()))
         self.index.add(np.asarray(vector, dtype=np.float32).reshape(1, -1))
+        return True
 
     def save(self, directory):
         path = Path(directory) / "controlled_vectors.json"

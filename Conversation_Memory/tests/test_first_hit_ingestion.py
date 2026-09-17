@@ -65,9 +65,11 @@ class DurableBackend(Backend):
         return mid
 
     def ensure_event_persisted(self, mid):
-        if mid not in self.vectors:
-            self.vectors.add(mid)
-            self.repaired.append(mid)
+        if mid in self.vectors:
+            return False
+        self.vectors.add(mid)
+        self.repaired.append(mid)
+        return True
 
     def create_relationships(self, ids, *, automatic_entity_links=True):
         self.entity_flags.append(automatic_entity_links)

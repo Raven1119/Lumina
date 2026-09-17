@@ -1088,3 +1088,135 @@ def test_v5_progress_schema_is_never_reinterpreted_as_v4():
     assert store4.latest["schema_version"] == rf.PROGRESS_VERSION
     with pytest.raises(gf.FormationError, match="reliable_stage_checkpoint_invalid"):
         run_v5(seg4, NoCalls(), progress=store4.latest)
+
+
+PROMPTS_V6 = {"F1": rf.F1_PROMPT_V6, "F2": rf.F2_PROMPT,
+              "G1": rp.G1_PROMPT_V5, "G2": rp.G2_PROMPT_V5}
+
+
+def run_v6(seg, model, *, progress=None, store=None, prior=()):
+    store = store if store is not None else ReceiptStore()
+    batch, context = rf.form_reliable_batch(
+        seg, model, progress=progress, checkpoint=store, identity_candidates=prior,
+        version=rf.FORMATION_RELIABLE_VERSION_V6,
+    )
+    return batch, context, store
+
+
+def borrowing_v6(**kwargs):
+    seg, model = borrowing(**kwargs)
+    model.prompts = PROMPTS_V6
+    return seg, model
+
+
+@pytest.mark.parametrize("origin,text,prefix", [
+    ("t0", "Lumina 建议我先做小样。", "User stated: "),
+    ("t1", "用户刚才说他明天会回来。", "Lumina stated: "),
+    ("t0", "你刚才建议我先测试 A。", "User stated: "),
+    ("t1", "The user said the plan already works.", "Lumina stated: "),
+    ("t0", "The assistant asked me to wait for the result.", "User stated: "),
+])
+def test_v6_cross_reference_bodies_are_accepted_with_true_role_prefix(origin, text, prefix):
+    seg = segment(("user", "先做哪个?"), ("assistant", "我建议先做小样。"))
+    model = StagedModel([fact(text, origin)], prompts=PROMPTS_V6)
+    batch, _, store = run_v6(seg, model)
+    assert [unit.text for unit in batch.units] == [prefix + text]
+    assert not any(issue.code == "reliable_fact_attribution_conflict" for issue in batch.issues)
+    assert all(stage["status"] == "parsed" for stage in store.latest["stages"].values())
+
+
+def test_v6_prefix_follows_real_role_and_f2_receives_canonical_candidates():
+    seg = segment(("assistant", "用户刚才说他明天会回来。"),
+                  ("user", "Lumina 建议我先做小样。"))
+    model = StagedModel([fact("用户刚才说他明天会回来。", "t0"),
+                         fact("Lumina 建议我先做小样。", "t1")], prompts=PROMPTS_V6)
+    batch, context, _ = run_v6(seg, model)
+    candidates = dict(model.calls)["F2"]["candidates"]
+    assert [c["text"] for c in candidates] == [
+        "Lumina stated: 用户刚才说他明天会回来。",
+        "User stated: Lumina 建议我先做小样。"]
+    assert [c["allowed_source_ids"] for c in candidates] == [["t0"], ["t0", "t1"]]
+    assert [context["origins"][unit.id] for unit in batch.units] == ["t0", "t1"]
+    assert [unit.formation_version for unit in batch.units] == [rf.FORMATION_RELIABLE_VERSION_V6] * 2
+
+
+def test_v6_completed_receipts_replay_byte_identical_without_provider():
+    seg, model = borrowing_v6()
+    batch, context, store = run_v6(seg, model)
+    assert store.latest["schema_version"] == rf.PROGRESS_VERSION_V6
+    assert batch.units[0].id.startswith("grounded_memory_v6:")
+    assert all(m.id.startswith("mention_v6:") for m in batch.mentions)
+    replayed, replay_context, _ = run_v6(seg, NoCalls(), progress=store.latest)
+    # Replayed parsed receipts must byte-match the saved ones or _stage fails
+    # closed; identical batch/context confirms the same authorized result.
+    assert replayed == batch and replay_context == context
+    with pytest.raises(gf.FormationError, match="reliable_stage_checkpoint_invalid"):
+        run_v5(seg, NoCalls(), progress=store.latest)
+    with pytest.raises(gf.FormationError, match="reliable_stage_checkpoint_invalid"):
+        run(seg, NoCalls(), progress=store.latest)
+
+
+def test_v5_progress_is_never_reinterpreted_as_v6():
+    seg, model = borrowing_v5()
+    _, _, store = run_v5(seg, model)
+    assert store.latest["schema_version"] == rf.PROGRESS_VERSION_V5
+    with pytest.raises(gf.FormationError, match="reliable_stage_checkpoint_invalid"):
+        run_v6(seg, NoCalls(), progress=store.latest)
+
+
+@pytest.mark.parametrize("surface", ["I", "my", "我们", "咱"])
+def test_v6_first_person_on_assistant_turn_cannot_be_current_user(surface):
+    content = (surface + " suggested asking Ada.") if surface.isascii() else (surface + "建议询问 Ada。")
+    seg = segment(("assistant", content))
+    g1 = {"mentions": [mention("speaker", surface, identity="current_user")],
+          "projections": [projection(mentions=["speaker"])]}
+    batch, _, _ = run_v6(seg, StagedModel([fact("Lumina suggested asking Ada.")], g1=g1,
+                                          prompts=PROMPTS_V6))
+    assert batch.mentions[0].identity == "unresolved"
+    assert batch.unit_mentions[0].mentions == ()
+    assert any(i.code == "reliable_identity_self_reference_role_conflict" for i in batch.issues)
+    assert not any(i.code == "reliable_identity_evidence_deferred_to_g2" for i in batch.issues)
+
+
+def test_v6_dangling_identity_evidence_is_invalid_despite_g2_approval():
+    seg, model = borrowing_v6()
+    model.responses["G1"]["mentions"][0]["identity_source_ids"] = ["t9"]
+    batch, _, _ = run_v6(seg, model)
+    actor = next(m for m in batch.mentions if m.surface == "Ada")
+    assert actor.identity == "unresolved"
+    assert batch.unit_mentions[0].subject is None
+    assert not any(i.code == "reliable_identity_evidence_deferred_to_g2" for i in batch.issues)
+
+
+def test_v6_missing_identity_evidence_is_valid_for_new_and_current_user():
+    seg, model = borrowing_v6()
+    model.responses["G1"]["mentions"][0]["identity_source_ids"] = []
+    model.responses["G1"]["mentions"][1]["identity_source_ids"] = []
+    batch, _, _ = run_v6(seg, model)
+    actor = next(m for m in batch.mentions if m.surface == "Ada")
+    owner = next(m for m in batch.mentions if m.surface == "my")
+    assert actor.identity == "new" and owner.identity == "current_user"
+    assert batch.unit_mentions[0].subject == actor.id
+    assert owner.id in batch.unit_mentions[0].mentions
+    assert not any(i.code == "reliable_identity_evidence_deferred_to_g2" for i in batch.issues)
+
+
+def test_v6_rejected_relation_voids_its_role_votes():
+    seg, model = borrowing_v6()
+
+    def g2(payload):
+        result = approve_projections(payload)
+        result["projections"][0].update(relation_supported=False,
+                                        subject_role_supported=True,
+                                        object_role_supported=True)
+        return result
+
+    model.responses["G2"] = g2
+    batch, _, _ = run_v6(seg, model)
+    unit, roles = batch.units[0], batch.unit_mentions[0]
+    assert unit.subject is unit.relation is unit.value is None
+    assert roles.subject is roles.object is None
+    assert len(roles.mentions) == 2
+    assert unit.formation_version == rf.FORMATION_RELIABLE_VERSION_V6
+    assert unit.id.startswith("grounded_memory_v6:")
+    assert all(m.id.startswith("mention_v6:") for m in batch.mentions)

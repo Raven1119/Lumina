@@ -22,7 +22,9 @@ private. No UI or automatic ingestion is introduced.
 
 ## Current write path
 
-Configured DeepSeek-V4-Pro manual Dream uses `grounded-formation-v2`.
+Configured DeepSeek-V4-Pro Dream (the in-app runner and the default manual
+CLI) writes `grounded-formation-v6`; `grounded-formation-v2`/v4/v5 remain
+explicit historical selections.
 `grounded-span-v2` remains the deterministic mock/legacy path. Formation v1
 functions/checkpoints remain for explicit historical compatibility; default
 Dream never selects them and never automatically reprocesses consumed Cold.
@@ -135,18 +137,30 @@ Default configuration, manual Dream, consumer boundaries and pinned MAGMA stay.
 
 ## Explicit reliable path
 
-`--reliable-memory` (Dream CLI) or explicit adapter construction selects the
-maintained `grounded-formation-v5` writer; its reader pair is the `reliable-v2`
-associative presentation. `grounded-formation-v4` with `reliable-v1` remains an
-explicit historical selection. Read [its contract](docs/RELIABLE_MEMORY.md)
+The maintained `grounded-formation-v6` writer and its `reliable-v2`
+associative reader pair are the normal production path: a real-model app
+shares one v6/FirstHit/reliable-v2 adapter between Chat Recall and app Dream,
+and the Dream CLI defaults to the same pair for a configured real model.
+`--reliable-memory` remains accepted as a deprecated alias for that default.
+A reliable-profile adapter also serves the ordinary `recall()` and
+`prepare_recall()` boundary through the same associative read (bounded source
+supplement included, BGE/Hindsight floor rejected as an explicit policy
+conflict); legacy profiles keep the original BGE/Hindsight `recall()`.
+`grounded-formation-v5` and `grounded-formation-v4`
+with `reliable-v1` remain explicit historical selections. Read [its contract](docs/RELIABLE_MEMORY.md)
 before changing them. Four bounded batch stages (F1/F2/G1/G2) authorize
 canonical attributed text before optional graph structure; only F2-supported
 text becomes EVENT and only G2-authorized structure becomes role/identity
-edges. v5 additionally persists F2-accepted bodies as projection-free EVENTs
+edges. v6 removes the v5 keyword attribution screen: speaker attribution rests
+on the true-origin-role canonical prefix plus F2 verification, so bodies may
+legitimately mention the other dialogue party. v5/v6 additionally persist
+F2-accepted bodies as projection-free EVENTs
 before the G stages (`bodies_persisted`), so a G-stage failure no longer
-strands them. The direct recall subset is protected at a fixed 0.6 share
-inside the unchanged FirstHit activation. Default Dream and Chat stay on
-v2/`first-hit-v1`; each reliable version uses its own
+strands them. Every body EVENT's vector is verified and repaired from the
+persisted embedding before `bodies_persisted` and again on recovery; a failed
+repair stays failed/retryable and never advances the checkpoint. The direct recall subset is protected at a fixed 0.6 share
+inside the unchanged FirstHit activation. Mock/legacy construction stays on
+`grounded-span-v2`/`first-hit-v1`; each reliable version uses its own
 `first-hit-v1:<version>` checkpoint key and never migrates or reinterprets
 v2 or cross-version checkpoints. Known limitations are listed in the
 contract.

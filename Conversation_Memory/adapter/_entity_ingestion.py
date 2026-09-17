@@ -24,6 +24,7 @@ from .models import IngestionResult, SourceProvenance
 from .reliable_formation import (
     FORMATION_RELIABLE_VERSION,
     FORMATION_RELIABLE_VERSION_V5,
+    FORMATION_RELIABLE_VERSION_V6,
     digest as _reliable_digest,
     form_reliable_batch,
     form_reliable_bodies,
@@ -48,7 +49,8 @@ def _bind_mentions(batch, segment, backend, *, version=FORMATION_ENTITY_VERSION,
                    explicit_identity_refs=None) -> list[dict[str, Any]]:
     """Resolve all roles against one source-ordered view, retaining ambiguity."""
     explicit_identity_refs = explicit_identity_refs or {}
-    reliable = version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
+    reliable = version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
+                           FORMATION_RELIABLE_VERSION_V6}
     turns = {turn.turn_id: turn for turn in segment.turns}
     records: dict[str, dict[str, Any]] = {}
     overlay: dict[str, dict[str, str]] = {}
@@ -175,7 +177,8 @@ def _validate_records(raw, batch, segment, *, version=FORMATION_ENTITY_VERSION,
             return False
         if mention.identity == "unresolved" and ref is not None:
             return False
-        if (version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
+        if (version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
+                        FORMATION_RELIABLE_VERSION_V6}
                 and mention.identity == "named"
                 and not mention.same_as and ref != (explicit_identity_refs or {}).get(mention.id)):
             return False
@@ -229,8 +232,9 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
     from .magma_adapter import _formed_event_metadata, _formed_source_turn
 
     version = adapter.ingestion_version
-    reliable = version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
-    reliable_v5 = version == FORMATION_RELIABLE_VERSION_V5
+    reliable = version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
+                           FORMATION_RELIABLE_VERSION_V6}
+    reliable_v5 = version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
     invalid = adapter._validate(segment)
     if invalid:
         return IngestionResult(segment.segment_id, version, "failed",
@@ -515,8 +519,22 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                                retryable=True, safe_error_code="memory_write_failed")
 
 
+def _ensure_body_vector_durable(backend, memory_id) -> bool:
+    """v5/v6 body durability gate: an existing body EVENT must hold its vector.
+
+    A restart between graph and vector persistence leaves the EVENT findable
+    by evidence id while its vector is missing. Repair reuses the persisted
+    embedding; a backend without the repair capability fails closed instead
+    of advancing a body that recall can never reach.
+    """
+    ensure = getattr(backend, "ensure_event_persisted", None)
+    if not callable(ensure):
+        raise ValueError("memory_repair_unavailable")
+    return bool(ensure(memory_id))
+
+
 def _ingest_reliable_v5(adapter, segment, state, store, key, association) -> IngestionResult:
-    """v5 body/structure decoupling: F2-accepted bodies persist before G stages.
+    """v5/v6 body/structure decoupling: F2-accepted bodies persist before G stages.
 
     A G-stage failure leaves durable projection-free EVENTs and a
     ``bodies_persisted`` checkpoint; recovery adds only the missing structure.
@@ -565,6 +583,17 @@ def _ingest_reliable_v5(adapter, segment, state, store, key, association) -> Ing
                        for unit, memory_id in zip(body_units, saved["memory_ids"]))):
             return IngestionResult(segment.segment_id, version, "failed",
                                    tuple(state["memory_ids"]), safe_error_code="state_corrupt")
+        # The manifest proves the EVENTs; durability also requires each vector.
+        try:
+            repaired = False
+            for memory_id in saved["memory_ids"]:
+                repaired = _ensure_body_vector_durable(backend, memory_id) or repaired
+            if repaired:
+                backend.persist()
+        except Exception:
+            return IngestionResult(segment.segment_id, version, "failed",
+                                   tuple(state["memory_ids"]), retryable=True,
+                                   safe_error_code="memory_write_failed")
     else:
         receipts = {stage: {field: progress["stages"][stage][field]
                             for field in ("request_digest", "response_digest", "parsed_digest", "execution")}
@@ -576,6 +605,8 @@ def _ingest_reliable_v5(adapter, segment, state, store, key, association) -> Ing
             store.put(key, state)
             for unit, fact in zip(body_units, accepted):
                 memory_id = backend.find_memory_id(unit.id)
+                if memory_id is not None and _ensure_body_vector_durable(backend, memory_id):
+                    backend.persist()
                 if memory_id is None:
                     origin = turns[fact["origin_turn_id"]]
                     metadata = _formed_event_metadata(
@@ -596,6 +627,12 @@ def _ingest_reliable_v5(adapter, segment, state, store, key, association) -> Ing
                 store.put(key, state)
             backend.create_relationships(memory_ids, automatic_entity_links=False)
             backend.persist()
+            # No body enters bodies_persisted without its durable vector.
+            repaired = False
+            for memory_id in memory_ids:
+                repaired = _ensure_body_vector_durable(backend, memory_id) or repaired
+            if repaired:
+                backend.persist()
             state["bodies"] = {"memory_ids": list(memory_ids), "manifest": manifest}
             state["memory_ids"] = list(memory_ids)
             state["status"] = "bodies_persisted"

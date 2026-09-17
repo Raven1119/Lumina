@@ -5,7 +5,8 @@
 `first_hit=FirstHitPolicy()` enables a maintained, zero-generation association
 path over existing EVENT facts and verified ENTITY identities. New Formation v2
 windows use that same activation to plan local semantic links. Original source
-expansion goes through the injected Cold owner. Default Formation v2, `recall`,
+expansion goes through the injected Cold owner. Historical Formation v2,
+legacy `recall`,
 prepared Recall and the separate source-index interfaces retain their contracts.
 This is an implementation and correctness delivery; semantic quality is for
 later evaluation. It is not a default promotion or an A/B result.

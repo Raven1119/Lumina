@@ -154,12 +154,24 @@ def test_dream_provider_uses_explicit_v4_and_cached_single_adapter(tmp_path,monk
     assert first.ingestion_version=="grounded-formation-v4"
 
 
-@pytest.mark.parametrize("args,version,read", [([],"grounded-formation-v2",None),
-                         (["--first-hit"],"grounded-formation-v2",None),
-                         (["--reliable-memory"],"grounded-formation-v5","reliable-v2"),
+@pytest.mark.parametrize("args,version,read,first_hit", [
+                         # Promoted default: real model without an explicit
+                         # historical version is v6 + FirstHit + reliable-v2.
+                         ([],"grounded-formation-v6","reliable-v2",True),
+                         (["--first-hit"],"grounded-formation-v6","reliable-v2",True),
+                         (["--reliable-memory"],"grounded-formation-v6","reliable-v2",True),
+                         # Explicit historical versions keep their old defaults.
+                         (["--ingestion-version","grounded-formation-v2"],
+                          "grounded-formation-v2",None,False),
+                         (["--ingestion-version","grounded-formation-v2","--first-hit"],
+                          "grounded-formation-v2",None,True),
+                         (["--ingestion-version","grounded-formation-v5"],
+                          "grounded-formation-v5",None,False),
+                         (["--reliable-memory","--ingestion-version","grounded-formation-v5"],
+                          "grounded-formation-v5","reliable-v2",True),
                          (["--reliable-memory","--ingestion-version","grounded-formation-v4"],
-                          "grounded-formation-v4","reliable-v2")])
-def test_dream_cli_profile_is_explicit(args,version,read,monkeypatch,capsys):
+                          "grounded-formation-v4","reliable-v2",True)])
+def test_dream_cli_profile_is_explicit(args,version,read,first_hit,monkeypatch,capsys):
     import Dream.runner as runner
     calls=[]; policies=[]
     model=SimpleNamespace(client_kind="model")
@@ -173,7 +185,7 @@ def test_dream_cli_profile_is_explicit(args,version,read,monkeypatch,capsys):
     monkeypatch.setattr(runner,"build_default_runner",build)
     assert runner.main(args)==0
     assert policies[0].ingestion_version==version and calls[0].get("associative_read_profile")==read
-    assert bool(calls[0].get("first_hit"))==bool(args)
+    assert bool(calls[0].get("first_hit"))==first_hit
     capsys.readouterr()
 
 
@@ -246,3 +258,41 @@ def test_first_hit_v5_checkpoint_key_stays_disjoint(tmp_path):
     assert store.get(store.key("s","first-hit-v1:grounded-formation-v5"))==v5
     assert store.get(store.key("s","first-hit-v1:grounded-formation-v4")) is None
     assert load_first_hit_stage(new,segment,"digest",new_formation=False)==v5
+
+
+def test_facade_accepts_v6_and_keeps_versioned_checkpoint_and_metadata_pairing(tmp_path,monkeypatch):
+    from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter, _formed_event_metadata
+    from Conversation_Memory.adapter.first_hit import FirstHitPolicy
+    from Conversation_Memory.ingestion.state_store import IngestionStateStore
+    from Conversation_Memory.adapter import _entity_ingestion
+    segment,_=material(version="grounded-formation-v6"); result=object(); calls=[]
+    monkeypatch.setattr(_entity_ingestion,"ingest_entity_formation",lambda adapter,source:(calls.append(source),result)[1])
+    memory=MagmaMemoryAdapter(SimpleNamespace(),IngestionStateStore(tmp_path/"v6-state"),
+                             ingestion_version="grounded-formation-v6",formation_model=object(),
+                             first_hit=FirstHitPolicy(),associative_read_profile="reliable-v2")
+    assert memory.ingest(segment) is result and calls==[segment]
+    unit=material(version="grounded-formation-v6")[1]
+    formed=_formed_event_metadata(segment,unit,segment.turns[1],
+                                  ingestion_version="grounded-formation-v6",configured_entities=())
+    assert formed["formation_version"]==formed["provenance"]["ingestion_version"]=="grounded-formation-v6"
+    assert formed["origin_turn_id"]=="accepted" and formed["entities"]==[]
+    with pytest.raises(ValueError,match="origin anchor mismatch"):
+        _formed_event_metadata(segment,unit,segment.turns[1],
+                               ingestion_version="grounded-formation-v5",configured_entities=())
+    with pytest.raises(ValueError,match="origin anchor mismatch"):
+        _formed_event_metadata(segment,material()[1],segment.turns[1],
+                               ingestion_version="grounded-formation-v6",configured_entities=())
+
+
+def test_first_hit_v6_checkpoint_key_stays_disjoint(tmp_path):
+    from Conversation_Memory.adapter._first_hit_ingestion import load_first_hit_stage
+    from Conversation_Memory.adapter.first_hit import FirstHitPolicy
+    from Conversation_Memory.ingestion.state_store import IngestionStateStore
+    store=IngestionStateStore(tmp_path/"state"); segment,_=material()
+    new=SimpleNamespace(state_store=store,ingestion_version="grounded-formation-v6",first_hit=FirstHitPolicy())
+    v6=load_first_hit_stage(new,segment,"digest",new_formation=True)
+    assert v6["formation_version"]=="grounded-formation-v6"
+    assert store.get(store.key("s","first-hit-v1:grounded-formation-v6"))==v6
+    assert store.get(store.key("s","first-hit-v1:grounded-formation-v4")) is None
+    assert store.get(store.key("s","first-hit-v1:grounded-formation-v5")) is None
+    assert load_first_hit_stage(new,segment,"digest",new_formation=False)==v6

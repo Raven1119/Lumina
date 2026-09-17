@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from Conversation_Memory.adapter.models import (
     MemoryContext,
     MemoryEvidence,
@@ -359,7 +361,6 @@ def test_enabled_recall_unavailable_is_normal_chat_without_evidence_block(
     retriever = _RecordingRetriever(
         MemoryContext(
             "hello",
-            rendered_text="must not be used",
             safe_error_code="recall_unavailable",
         )
     )
@@ -376,6 +377,37 @@ def test_enabled_recall_unavailable_is_normal_chat_without_evidence_block(
     assert len(retriever.calls) == 1
     assert model.contexts == [[]]
     assert model.system_prompts == [_CHAT_BACKGROUND]
+    assert result.response.response.text == "model answer"
+
+
+@pytest.mark.parametrize(
+    "code", ["cold_source_partial", "cold_source_unavailable"]
+)
+def test_degraded_optional_source_channel_keeps_authorized_facts(
+    tmp_path: Path,
+    code: str,
+) -> None:
+    model = _RecordingModel()
+    retriever = _RecordingRetriever(
+        MemoryContext(
+            "hello",
+            rendered_text="[USER]\nverified historical fact",
+            safe_error_code=code,
+        )
+    )
+    runtime, _, _ = _runtime(
+        tmp_path,
+        model,
+        recall_enabled=True,
+        memory_retriever=retriever,
+        recall_policy=RecallPolicy(),
+    )
+
+    result = runtime.handle_chat(ChatRequest(message="hello"))
+
+    assert len(retriever.calls) == 1
+    assert "verified historical fact" in model.system_prompts[0]
+    assert "memory_recall_degraded" in result.events
     assert result.response.response.text == "model answer"
 
 

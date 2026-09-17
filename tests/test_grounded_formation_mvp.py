@@ -1019,8 +1019,10 @@ def test_app_and_cli_wiring_select_formation_only_with_model(monkeypatch, tmp_pa
         staticmethod(fake_create_real),
     )
     assert core_main._build_memory_retriever(model) is not None
-    assert created[-1][1]["ingestion_version"] == FORMATION_ENTITY_VERSION
+    assert created[-1][1]["ingestion_version"] == "grounded-formation-v6"
     assert created[-1][1]["formation_model"] is model
+    assert type(created[-1][1]["first_hit"]).__name__ == "FirstHitPolicy"
+    assert created[-1][1]["associative_read_profile"] == "reliable-v2"
 
     monkeypatch.setattr(
         MagmaMemoryAdapter,
@@ -1053,7 +1055,7 @@ def test_cli_default_version_tracks_effective_model_and_explicit_value(monkeypat
             observed.append(policy.ingestion_version)
             return DreamRunReport.from_results(())
 
-    monkeypatch.setattr(runner_module, "build_default_runner", lambda _model: Runner())
+    monkeypatch.setattr(runner_module, "build_default_runner", lambda _model, **kwargs: Runner())
     requested_models = []
 
     def build_mock(*, model_name_override=None, max_tokens_override=None):
@@ -1074,7 +1076,7 @@ def test_cli_default_version_tracks_effective_model_and_explicit_value(monkeypat
     monkeypatch.setattr(runner_module, "build_model_client_from_env", build_real)
     assert runner_module.main([]) == 0
     assert requested_models[-1] == (None, 8192)
-    assert observed[-1] == FORMATION_ENTITY_VERSION
+    assert observed[-1] == "grounded-formation-v6"
     assert runner_module.main(["--ingestion-version", "grounded-span-v2"]) == 0
     assert observed[-1] == "grounded-span-v2"
 

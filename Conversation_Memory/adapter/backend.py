@@ -188,9 +188,11 @@ class RealMagmaBackend:
                 # Upstream guesses otherwise enter vector metadata/enrichment.
                 from .reliable_formation import (
                     FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
+                    FORMATION_RELIABLE_VERSION_V6,
                 )
                 if (metadata or {}).get("formation_version") in {
                     FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
+                    FORMATION_RELIABLE_VERSION_V6,
                 }:
                     extraction.entities = []
                 return extraction
@@ -668,7 +670,12 @@ class RealMagmaBackend:
         if node is None or getattr(node, "node_type", None) != self._node_type.EVENT:
             raise ValueError("memory_event_missing")
         vector_db = self.trg.vector_db
-        if memory_id in vector_db.id_to_index:
+        position = vector_db.id_to_index.get(memory_id)
+        if position is not None:
+            if (not isinstance(position, Integral) or isinstance(position, bool)
+                    or not 0 <= position < vector_db.index.ntotal
+                    or vector_db.index_to_id.get(int(position)) != memory_id):
+                raise ValueError("memory_vector_mapping_invalid")
             self._refresh_entity_membership(memory_id)
             return False
         import numpy as np
@@ -676,10 +683,11 @@ class RealMagmaBackend:
         if not isinstance(vector, list) or not vector:
             raise ValueError("memory_event_embedding_missing")
         metadata = node.attributes
-        vector_db.add_vector(vector_id=memory_id, vector=np.asarray(vector, dtype=np.float32),
-                             metadata={"timestamp": node.timestamp.isoformat(),
-                                       "keywords": metadata.get("keywords", []),
-                                        "entities": metadata.get("entities", [])})
+        if not vector_db.add_vector(vector_id=memory_id, vector=np.asarray(vector, dtype=np.float32),
+                                    metadata={"timestamp": node.timestamp.isoformat(),
+                                              "keywords": metadata.get("keywords", []),
+                                              "entities": metadata.get("entities", [])}):
+            raise ValueError("memory_vector_write_failed")
         self._refresh_entity_membership(memory_id)
         return True
 

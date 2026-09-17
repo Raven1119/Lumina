@@ -26,6 +26,7 @@ from core.contracts import (
     ExecutionResponse,
     HistoryResponse,
     HistoryTurnResponse,
+    MemoryStatusResponse,
     StatusResponse,
 )
 from core.draft_context import DraftContextProvider
@@ -51,14 +52,14 @@ _ROOT_DIRECTORY = Path(__file__).resolve().parent.parent
 _CHAT_BACKGROUND_PATH = _ROOT_DIRECTORY / "prompts" / "chat_background.md"
 _CONVERSATION_MEMORY_DIRECTORY = _ROOT_DIRECTORY / "Conversation_Memory"
 _DREAM_POLICY = DreamRunPolicy()
-_FORMATION_INGESTION_VERSION = "grounded-formation-v2"
+_FORMATION_INGESTION_VERSION = "grounded-formation-v6"
 _CHAT_RECALL_POLICY = RecallPolicy(
     top_k=10,
     max_graph_depth=1,
     max_nodes=20,
     max_evidence_items=3,
     max_chars=5000,
-    final_min_score=0.144,
+    include_source_context=True,
 )
 # Explicit read-first experiment: one Answer call sees whole bounded candidates.
 _DIRECT_RECALL_POLICY = RecallPolicy(
@@ -219,10 +220,12 @@ def _load_chat_background(path: Path) -> str:
 
 def _build_memory_retriever(
     formation_model: ModelClient | None = None,
+    cold_store: ColdDraftStore | None = None,
 ) -> MemoryRetriever:
     if str(_CONVERSATION_MEMORY_DIRECTORY) not in sys.path:
         sys.path.insert(0, str(_CONVERSATION_MEMORY_DIRECTORY))
 
+    from Conversation_Memory.adapter.first_hit import FirstHitPolicy
     from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
 
     persist_dir = Path(
@@ -231,15 +234,22 @@ def _build_memory_retriever(
             str(_ROOT_DIRECTORY / "data" / "conversation_memory" / "magma"),
         )
     )
+    if formation_model is None:
+        # Mock/legacy deterministic path: grounded spans, no FirstHit.
+        return MagmaMemoryAdapter.create_real(
+            persist_dir,
+            fail_if_unavailable=True,
+            ingestion_version=_DREAM_POLICY.ingestion_version,
+        )
+    # Production path: reliable v6 writer with the reliable-v2 reader.
     return MagmaMemoryAdapter.create_real(
         persist_dir,
         fail_if_unavailable=True,
-        ingestion_version=(
-            _FORMATION_INGESTION_VERSION
-            if formation_model is not None
-            else _DREAM_POLICY.ingestion_version
-        ),
+        ingestion_version=_FORMATION_INGESTION_VERSION,
         formation_model=formation_model,
+        first_hit=FirstHitPolicy(),
+        cold_store=cold_store,
+        associative_read_profile="reliable-v2",
     )
 
 
@@ -289,6 +299,13 @@ def create_app(
         if effective_recall_enabled
         else None
     )
+    hot_path = _hot_path(draft_store_path)
+    effective_cold_path = Path(cold_draft_path) if cold_draft_path is not None else hot_path.parent / "cold_drafts.jsonl"
+    effective_state_path = Path(compaction_state_path) if compaction_state_path is not None else hot_path.parent / "hot_draft_compaction_state.json"
+
+    hot_store = JsonlDraftStore(hot_path)
+    # One Cold owner: Chat reads its bounded source window, Dream owns state.
+    cold_store = ColdDraftStore(effective_cold_path, source_window_segments=32)
     if effective_memory is None:
         try:
             formation_model = (
@@ -299,18 +316,13 @@ def create_app(
             effective_memory = _build_memory_retriever(
                 formation_model
                 if getattr(formation_model, "client_kind", None) == "model"
-                else None
+                else None,
+                cold_store,
             )
         except Exception:
             effective_memory = None
     runtime_retriever = effective_memory if effective_recall_enabled else None
 
-    hot_path = _hot_path(draft_store_path)
-    effective_cold_path = Path(cold_draft_path) if cold_draft_path is not None else hot_path.parent / "cold_drafts.jsonl"
-    effective_state_path = Path(compaction_state_path) if compaction_state_path is not None else hot_path.parent / "hot_draft_compaction_state.json"
-
-    hot_store = JsonlDraftStore(hot_path)
-    cold_store = ColdDraftStore(effective_cold_path)
     dream_runner = None
     if (
         effective_memory is not None
@@ -415,6 +427,16 @@ def create_app(
                 running=app.state.dream_running,
                 pending_segments=pending.count,
                 pending_truncated=pending.truncated,
+            ),
+            memory=(
+                MemoryStatusResponse(
+                    writer_version=getattr(effective_memory, "ingestion_version", None),
+                    reader_profile=getattr(
+                        effective_memory, "associative_read_profile", None,
+                    ),
+                )
+                if effective_memory is not None
+                else None
             ),
         )
 

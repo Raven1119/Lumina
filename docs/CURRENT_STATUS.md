@@ -9,12 +9,16 @@ the manual Execution API is also separate.
 
 ## Chat bounded memory use
 
-The default Chat path retains the original v2 boolean gate, eight-token budget
-and existing Recall policy. `LUMINA_MIND_GATE_MODE=direct` explicitly enables a
+The default Chat path retains the original v2 boolean gate and eight-token
+budget. Its Recall policy keeps the 20-node, depth-one and 5000-character
+bounds with up to 3 whole evidence items, carries no final score floor (the
+reliable reader rejects one as an explicit policy conflict) and renders source
+speaking time, USER/LUMINA role and anonymous existing subject/object bindings.
+`LUMINA_MIND_GATE_MODE=direct` explicitly enables a
 read-first experiment: no pre-read gate or query editing, one original-question
 Recall, then Answer with the original recent context and bounded historical
-candidates. It keeps the existing 20-node, depth-one and 5000-character bounds,
-removes the final score floor and allows up to 20 whole evidence items.
+candidates. It keeps the same bounds
+while allowing up to 20 whole evidence items.
 
 The experiment presents source speaking time, USER/LUMINA role and anonymous
 existing subject/object bindings within the same whole-group budget. The labels
@@ -46,7 +50,9 @@ fact competition through `recall_associative`. The same core plans at most three
 semantic connections per newly verified Formation v2 fact, with a frozen stage
 in the existing ingestion store. The injected Cold owner supplies a recent
 segment/byte-bounded original-source view, including explicit raw-only lookup.
-Default v2, legacy Recall, manual Dream and existing source interfaces remain.
+The reliable reader built on this activation is the production Chat/Dream read;
+legacy BGE/Hindsight Recall and existing source interfaces remain for explicit
+profiles.
 No Chat event integration, new generated read calls or upstream change is made.
 See the [maintained contract and usage](../Conversation_Memory/docs/FIRST_HIT_MEMORY.md).
 Implementation correctness and recovery are distinct from semantic usefulness;
@@ -72,7 +78,13 @@ Local paired experiment outputs remain separate from maintained source.
 
 ## Conversation Memory entity enhancement
 
-Configured manual Dream now uses source-grounded `grounded-formation-v2` fact
+Production Chat and app Dream share one Memory adapter: a configured real
+model writes `grounded-formation-v6` and reads through the `reliable-v2`
+associative presentation (FirstHit activation, always-visible canonical bodies
+plus a bounded Cold source supplement) at the ordinary Recall boundary.
+Historical v2/v4/v5 writers and `first-hit-v1`/`reliable-v1` readers remain
+explicit selections; mock/legacy construction keeps `grounded-span-v2`.
+The v2 lineage introduced source-grounded fact
 and mention extraction with batch proposition/identity verification. Exact
 occurrences survive zero-fact windows; explicit subject/object roles and literal
 attributes persist through the existing graph/checkpoint owners. The public

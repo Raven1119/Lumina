@@ -38,7 +38,7 @@ from .grounded_formation import (
     serialize_grounded_memory_units,
     validate_persisted_grounded_memory_units,
 )
-from .reliable_formation import FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5
+from .reliable_formation import FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6
 from .models import (
     AssociativeMemoryContext,
     ColdDraftSegment,
@@ -96,7 +96,7 @@ class MagmaMemoryAdapter:
     ):
         if (
             formation_model is not None
-            and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
+            and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
         ):
             raise ValueError("formation_ingestion_version_required")
         if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2"}:
@@ -121,7 +121,7 @@ class MagmaMemoryAdapter:
                     first_hit = FirstHitPolicy(**asdict(first_hit))
                 except (TypeError, ValueError):
                     raise ValueError("invalid_first_hit_policy") from None
-            if ingestion_version not in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}:
+            if ingestion_version not in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
                 raise ValueError("first_hit_requires_supported_formation_version")
         self.first_hit = first_hit
         self.cold_store = cold_store
@@ -178,7 +178,7 @@ class MagmaMemoryAdapter:
         return None
 
     def ingest(self, segment: ColdDraftSegment) -> IngestionResult:
-        if self.ingestion_version in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}:
+        if self.ingestion_version in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
             if self.formation_model is None:
                 return IngestionResult(segment.segment_id, self.ingestion_version,
                                        "failed", safe_error_code="formation_model_unavailable")
@@ -221,7 +221,37 @@ class MagmaMemoryAdapter:
             return EntityMentionContext(query.strip(), safe_error_code="recall_unavailable")
 
     def recall(self, query: str, policy: RecallPolicy) -> MemoryContext:
+        dispatched = self._reliable_dispatch(query, policy)
+        if dispatched is not None:
+            return dispatched
         return self._recall(query, policy)
+
+    def _reliable_dispatch(
+        self, query: str, policy: RecallPolicy,
+    ) -> MemoryContext | None:
+        """Reliable read profiles serve the ordinary Recall boundary too.
+
+        The associative result's Fact channel is itself a MemoryContext; the
+        combined rendering keeps the always-visible bodies plus the bounded
+        source supplement. A non-None BGE/Hindsight floor stays an explicit
+        policy conflict inside the associative read. Legacy profiles and
+        adapters without FirstHit keep the original BGE/Hindsight read.
+        """
+        if (
+            self.associative_read_profile in ("reliable-v1", "reliable-v2")
+            and self.first_hit is not None
+        ):
+            result = self.recall_associative(
+                query, policy, include_sources=True, source_context_turns=0,
+            )
+            return MemoryContext(
+                result.facts.query,
+                result.facts.evidence,
+                result.rendered_text,
+                result.truncated,
+                result.safe_error_code,
+            )
+        return None
 
 
     def _activate_first_hit(self, cue: str, *, target_entity_refs=None,
@@ -282,6 +312,12 @@ class MagmaMemoryAdapter:
 
     def prepare_recall(self, query: str, policy: RecallPolicy) -> PreparedRecall:
         """Perform the same single read and retain its exact subset view."""
+        dispatched = self._reliable_dispatch(query, policy)
+        if dispatched is not None:
+            # The reliable read has no block/dependency selection metadata;
+            # the context remains the documented fallback and selection
+            # operations raise their stable, safe error.
+            return PreparedRecall(dispatched, _dependencies=None)
         metadata = {}
         context = self._recall(query, policy, _prepared_data=metadata)
         if not context.evidence:
@@ -1303,7 +1339,8 @@ def _formed_event_metadata(
     referenced_time_turn: ColdDraftTurn | None = None,
 ) -> dict[str, Any]:
     turns = {turn.turn_id: turn for turn in segment.turns}
-    reliable = unit.formation_version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
+    reliable = unit.formation_version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
+                                          FORMATION_RELIABLE_VERSION_V6}
     if reliable and (ingestion_version != unit.formation_version
                      or source_turn.turn_id not in turns
                      or asdict(source_turn) != asdict(turns[source_turn.turn_id])):

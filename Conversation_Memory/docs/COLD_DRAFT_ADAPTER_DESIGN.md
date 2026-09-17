@@ -124,7 +124,7 @@ Current fields:
 | `max_evidence_items` | 5 | maximum public anchors + expansions |
 | `max_graph_depth` | 5 | graph depth; `0` is valid anchor-only |
 | `max_nodes` | 100 | bounds returned retrieval candidates, projected nodes and actual graph adjacency reads; not historical vector membership |
-| `final_min_score` | `None` | optional inclusive composed-score floor; default Chat uses `0.144` |
+| `final_min_score` | `None` | optional inclusive composed-score floor; default Chat leaves it unset (the reliable reader treats a floor as an explicit policy conflict) |
 | `relation_surfaces` | `None` | explicit caller-supplied relation surfaces |
 | `include_source_context` | `False` | strict boolean; opt-in source time and anonymous existing role bindings in rendering |
 
@@ -302,8 +302,10 @@ Empty or failed Recall falls back to ordinary Chat.
 
 ## Current capability boundaries
 
-- Default Chat uses the fixed BGE reranker and inclusive
-  `final_min_score=0.144`; neither constitutes a reliable semantic no-answer
+- Default Chat reads through the reliable-v2 profile, which rejects an
+  inclusive `final_min_score` as an explicit policy conflict; the fixed BGE
+  reranker and the floor remain available to explicit legacy profiles. Neither
+  constitutes a reliable semantic no-answer
   contract. Explicit callers can remove the floor through the existing policy;
   source-context rendering does not change BGE, Hindsight or candidate retrieval.
 - No automatic intent/query classification, free-text query relation parser,

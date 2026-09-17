@@ -224,15 +224,24 @@ class MessageRuntime:
                 memory_context = self._memory_retriever.recall(query, self._recall_policy)
                 if self._evidence_selector is not None:
                     event = "memory_selection_unavailable"
+            rendered_text = getattr(memory_context, "rendered_text", None)
+            if not isinstance(rendered_text, str) or not rendered_text.strip():
+                if getattr(memory_context, "safe_error_code", None):
+                    return self._chat_background, (
+                        "memory_recall_failed" if self._evidence_selector is not None else None
+                    )
+                return self._chat_background, event
+            # A non-empty rendered_text is consumable by the Memory contract,
+            # even when safe_error_code reports a degraded optional channel.
             if getattr(memory_context, "safe_error_code", None):
-                return self._chat_background, (
-                    "memory_recall_failed" if self._evidence_selector is not None else None
-                )
+                event = "memory_recall_degraded"
             if prepared is not None and memory_context.evidence:
-                memory_context, event = self._select_evidence(
+                memory_context, selection_event = self._select_evidence(
                     prepared, query, recent_context or [], turn_id=turn_id,
                 )
-            rendered_text = memory_context.rendered_text
+                if selection_event != "memory_evidence_selected" or event is None:
+                    event = selection_event
+                rendered_text = memory_context.rendered_text
         except Exception:
             return self._chat_background, (
                 "memory_recall_failed" if self._evidence_selector is not None else None

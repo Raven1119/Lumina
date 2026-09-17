@@ -236,10 +236,14 @@ def test_graph_only_partial_event_vector_write_is_repaired_once(graph_types):
     node = _event(backend, graph_types, "F1", "小林负责项目A。", "E_LIN", "E_A")
     node.embedding_vector = [0.1, 0.2]
     writes = []
-    vector_db = SimpleNamespace(id_to_index={})
+    vector_db = SimpleNamespace(id_to_index={}, index_to_id={},
+                                index=SimpleNamespace(ntotal=0))
     def add_vector(**kwargs):
         writes.append(kwargs)
         vector_db.id_to_index[kwargs["vector_id"]] = 0
+        vector_db.index_to_id[0] = kwargs["vector_id"]
+        vector_db.index.ntotal = 1
+        return True
     vector_db.add_vector = add_vector
     backend.trg.vector_db = vector_db
     backend.ensure_event_persisted("F1")

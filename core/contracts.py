@@ -18,6 +18,13 @@ class CompactionStatusResponse(BaseModel):
     running: bool
 
 
+class MemoryStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    writer_version: str | None = None
+    reader_profile: str | None = None
+
+
 class StatusResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -28,6 +35,7 @@ class StatusResponse(BaseModel):
     recall_enabled: bool
     compaction: CompactionStatusResponse
     dream: "DreamStatusResponse"
+    memory: MemoryStatusResponse | None = None
 
 
 class DreamStatusResponse(BaseModel):

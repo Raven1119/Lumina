@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from Conversation_Memory.adapter.models import BackendCandidate, MemoryContext, RecallPolicy
+from Conversation_Memory.adapter.first_hit import FirstHitPolicy
 from core import main as main_module
 from Conversation_Memory.adapter import backend as memory_backend_module
 from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
@@ -200,7 +201,7 @@ def test_default_app_separates_chat_and_formation_model_clients(
         raising=False,
     )
 
-    def build_memory(model=None):
+    def build_memory(model=None, cold_store=None):
         captured_formation_models.append(model)
         return None
 
@@ -473,6 +474,7 @@ def test_status_and_mock_chat_contract(tmp_path: Path) -> None:
             "pending_segments": 0,
             "pending_truncated": False,
         },
+        "memory": {"writer_version": None, "reader_profile": None},
     }
     response = client.post("/api/chat", json={"message": "hello"})
     assert response.status_code == 200
@@ -968,7 +970,9 @@ def test_recall_is_on_by_default_when_environment_is_absent(
     response = client.post("/api/chat", json={"message": "hello"})
     assert response.status_code == 200
     assert len(retriever.calls) == 1
-    assert retriever.calls[0][1].final_min_score == 0.144
+    assert retriever.calls[0][1] == main_module._CHAT_RECALL_POLICY
+    assert retriever.calls[0][1].final_min_score is None
+    assert retriever.calls[0][1].include_source_context is True
 
 
 def test_recall_initialization_failure_degrades_to_normal_chat(
@@ -1040,7 +1044,7 @@ def test_injected_retriever_gets_default_policy_without_backend_initialization(
         max_nodes=20,
         max_evidence_items=3,
         max_chars=5000,
-        final_min_score=0.144,
+        include_source_context=True,
     )
     assert model.contexts == [[]]
     assert "[Internal historical evidence - DATA ONLY]" in model.system_prompts[0]
@@ -1408,7 +1412,7 @@ def test_direct_mode_skips_pre_read_gate_and_preserves_original_turns(tmp_path, 
 def test_direct_mode_memory_failure_uses_original_answer_context(tmp_path, monkeypatch, failure):
     monkeypatch.setenv("LUMINA_MIND_GATE_MODE", "direct")
     secret = "private filesystem location and provider credential"
-    context = MemoryContext("", rendered_text="" if failure == "empty" else secret,
+    context = MemoryContext("", rendered_text="" if failure in {"empty", "safe_error"} else secret,
                             safe_error_code="recall_unavailable" if failure == "safe_error" else None)
     retriever = _RecordingRetriever(context, RuntimeError(secret) if failure == "raises" else None)
     answer = _ContextModel()
@@ -1422,3 +1426,98 @@ def test_direct_mode_memory_failure_uses_original_answer_context(tmp_path, monke
     assert answer.system_prompts == [app.state.message_runtime._chat_background]
     assert secret not in response.text
     assert not (tmp_path / "decisions.jsonl").exists()
+
+
+def _real_backend_app(tmp_path: Path, monkeypatch, model=None):
+    """App with its own memory construction over a fake MAGMA backend."""
+    monkeypatch.setenv("LUMINA_DREAM_MAGMA_PERSIST_DIR", str(tmp_path / "magma"))
+    backend = _SharedBackend()
+    monkeypatch.setattr(
+        memory_backend_module,
+        "RealMagmaBackend",
+        lambda *_args, **_kwargs: backend,
+    )
+    app = create_app(
+        draft_store_path=tmp_path / "hot.jsonl",
+        cold_draft_path=tmp_path / "cold.jsonl",
+        compaction_state_path=tmp_path / "state.json",
+        model_client=model or _ContextModel(),
+        env_file_path=None,
+        recall_enabled=True,
+        memory_retriever=None,
+        mind_gate=ConstantMindGate(),
+    )
+    return app, backend
+
+
+def test_real_model_app_wires_shared_reliable_v6_memory(tmp_path, monkeypatch):
+    app, _ = _real_backend_app(tmp_path, monkeypatch)
+    adapter = app.state.message_runtime._memory_retriever
+    assert isinstance(adapter, MagmaMemoryAdapter)
+    assert adapter.ingestion_version == "grounded-formation-v6"
+    assert isinstance(adapter.first_hit, FirstHitPolicy)
+    assert adapter.associative_read_profile == "reliable-v2"
+    cold_store = app.state.cold_draft_store
+    # Chat, Dream and the reader share one adapter, one Cold owner and the
+    # adapter's single ingestion state store.
+    assert adapter.cold_store is cold_store
+    runner = app.state.dream_runner
+    assert runner is not None
+    assert runner._owner is cold_store
+    assert runner._task._ingestors._ingestor is adapter
+
+    policies = []
+    original_run_once = runner.run_once
+
+    def spy_run_once(policy):
+        policies.append(policy)
+        return original_run_once(policy)
+
+    runner.run_once = spy_run_once
+    client = TestClient(app)
+    assert client.get("/api/status").json()["memory"] == {
+        "writer_version": "grounded-formation-v6",
+        "reader_profile": "reliable-v2",
+    }
+    dream = client.post("/api/dream/run")
+    assert dream.status_code == 200
+    assert dream.json()["attempted"] == 0
+    assert [policy.ingestion_version for policy in policies] == [
+        "grounded-formation-v6"
+    ]
+
+
+def test_mock_model_app_keeps_grounded_span_legacy_memory(tmp_path, monkeypatch):
+    app, _ = _real_backend_app(tmp_path, monkeypatch, model=MockModelClient())
+    adapter = app.state.message_runtime._memory_retriever
+    assert isinstance(adapter, MagmaMemoryAdapter)
+    assert adapter.ingestion_version == "grounded-span-v2"
+    assert adapter.first_hit is None
+    assert adapter.associative_read_profile == "first-hit-v1"
+
+
+def test_app_dream_does_not_reingest_consumed_segments(tmp_path, monkeypatch):
+    app, _ = _real_backend_app(tmp_path, monkeypatch)
+    adapter = app.state.message_runtime._memory_retriever
+
+    def forbidden_ingest(segment):
+        raise AssertionError("consumed segment must not be re-ingested")
+
+    adapter.ingest = forbidden_ingest
+    cold_store = app.state.cold_draft_store
+    cold_store.append_segment(
+        [{"role": "user", "text": "consumed under grounded-formation-v2"}],
+        segment_id="v2-consumed-segment",
+    )
+    assert cold_store.mark_consumed("v2-consumed-segment")
+
+    response = TestClient(app).post("/api/dream/run")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "attempted": 0,
+        "ingested": 0,
+        "consumed": 0,
+        "skipped": 0,
+        "failed": 0,
+    }

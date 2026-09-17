@@ -6,7 +6,10 @@ from dataclasses import replace
 from . import grounded_formation as gf
 from .entity_consolidation import stable_entity_ref
 from .user_self import CURRENT_USER_ENTITY_REF
-from .reliable_formation import FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, digest
+from .reliable_formation import (
+    FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6,
+    digest,
+)
 
 
 G1_PROMPT = """G1: Propose OPTIONAL graph structure for the already accepted canonical conversational statements; independently identify entity occurrences in the current source window.
@@ -47,6 +50,8 @@ _FIRST_PERSON_SELF_SURFACES = frozenset({
 
 
 def _version_tag(version):
+    if version == FORMATION_RELIABLE_VERSION_V6:
+        return "v6"
     return "v5" if version == FORMATION_RELIABLE_VERSION_V5 else "v4"
 
 
@@ -82,7 +87,7 @@ def parse_g1(raw, segment, facts, prior, *, version=FORMATION_RELIABLE_VERSION):
             or not isinstance(raw["projections"], list) or len(raw["projections"]) > gf._MAX_ENTITY_UNITS):
         raise gf.FormationError("reliable_g1_output_invalid")
     turns = {t.turn_id: t for t in segment.turns}; issues = []; mentions = []; handles = set(); positions = set()
-    v5 = version == FORMATION_RELIABLE_VERSION_V5
+    v5 = version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
     prior_refs = {r["entity_ref"] for r in prior if isinstance(r, dict) and isinstance(r.get("entity_ref"), str)}
     required = {"handle", "surface", "turn_id", "occurrence", "identity", "same_as", "distinct_from", "identity_source_ids", "existing_entity_ref"}
     for index, m in enumerate(raw["mentions"]):
@@ -199,7 +204,7 @@ def parse_g2(raw, proposed, *, version=FORMATION_RELIABLE_VERSION):
 def authorized_batch(segment, facts, proposed, decisions, *, version=FORMATION_RELIABLE_VERSION):
     turns = {t.turn_id: t for t in segment.turns}; mm = {m["handle"]: m for m in proposed["mentions"]}
     handles = {h: m["mention_id"] for h, m in mm.items()}; mentions = {}; invalid = set(); existing = {}; deferred = []
-    v5 = version == FORMATION_RELIABLE_VERSION_V5
+    v5 = version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
     for index, (m, d) in enumerate(zip(proposed["mentions"], decisions["mentions"])):
         mid = m["mention_id"]
         if not d["occurrence_supported"]:
