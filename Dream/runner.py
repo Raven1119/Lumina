@@ -26,7 +26,10 @@ if str(_CONVERSATION_MEMORY_ROOT) not in sys.path:
 
 from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
 from adapter.grounded_formation import FORMATION_ENTITY_VERSION as FORMATION_VERSION  # noqa: E402
-from adapter.reliable_formation import FORMATION_RELIABLE_VERSION  # noqa: E402
+from adapter.reliable_formation import (  # noqa: E402
+    FORMATION_RELIABLE_VERSION,
+    FORMATION_RELIABLE_VERSION_V5,
+)
 from adapter.interfaces import MemoryIngestor  # noqa: E402
 from ingestion.state_store import IngestionStateStore  # noqa: E402
 
@@ -48,10 +51,11 @@ class RealMemoryIngestorProvider:
         self._cache: dict[str, MemoryIngestor] = {}
 
     def get(self, ingestion_version: str) -> MemoryIngestor:
-        if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION, _LEGACY_INGESTION_VERSION}:
+        if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION,
+                                     FORMATION_RELIABLE_VERSION_V5, _LEGACY_INGESTION_VERSION}:
             raise RuntimeError("unsupported_ingestion_version")
         if (
-            ingestion_version in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION}
+            ingestion_version in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
             and self._formation_model is None
         ):
             raise RuntimeError("formation_model_unavailable")
@@ -65,7 +69,7 @@ class RealMemoryIngestorProvider:
                 associative_read_profile=self._associative_read_profile,
                 formation_model=(
                     self._formation_model
-                    if ingestion_version in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION}
+                    if ingestion_version in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
                     else None
                 ),
             )
@@ -180,7 +184,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--first-hit", action="store_true",
                         help="Explicit first-hit-v1 local links for new Formation v2 windows")
     parser.add_argument("--reliable-memory", action="store_true",
-                        help="Explicit Formation v4, FirstHit local links and reliable-v1 reading")
+                        help="Explicit Formation v5, FirstHit local links and reliable-v2 reading")
     return parser
 
 
@@ -188,9 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         effective_model = build_formation_model_client()
-        if args.reliable_memory and args.ingestion_version not in {None, FORMATION_RELIABLE_VERSION}:
-            raise ValueError("reliable_memory_requires_formation_v4")
-        ingestion_version = args.ingestion_version or (FORMATION_RELIABLE_VERSION if args.reliable_memory else None) or (
+        if args.reliable_memory and args.ingestion_version not in {None, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}:
+            raise ValueError("reliable_memory_requires_reliable_formation")
+        ingestion_version = args.ingestion_version or (FORMATION_RELIABLE_VERSION_V5 if args.reliable_memory else None) or (
             FORMATION_VERSION
             if getattr(effective_model, "client_kind", None) == "model"
             else _LEGACY_INGESTION_VERSION
@@ -202,11 +206,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.first_hit or args.reliable_memory:
             from adapter.first_hit import FirstHitPolicy
-            if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION}:
+            if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}:
                 raise ValueError("first_hit_requires_supported_formation_version")
             runner = build_default_runner(
                 effective_model, first_hit=FirstHitPolicy(),
-                **({"associative_read_profile": "reliable-v1"} if args.reliable_memory else {}),
+                **({"associative_read_profile": "reliable-v2"} if args.reliable_memory else {}),
             )
         else:
             runner = build_default_runner(effective_model)

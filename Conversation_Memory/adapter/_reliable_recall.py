@@ -1,8 +1,14 @@
 """Fixed direct/associated packing over one unchanged FirstHit activation.
 
 The direct share is an engineering starting value, not a confidence estimate.
-Source expansion replaces complete Fact views only after their base selection is
-protected. Every visible range consumes its actual item/character/UTF-8 budget.
+Every visible range consumes its actual item/character/UTF-8 budget.
+
+`reliable-v1`: source expansion replaces complete Fact views only after their
+base selection is protected; upgraded source items share the Fact item cap.
+`reliable-v2`: a selected Fact always renders its canonical body; sources are
+a bounded supplement with a separate item allowance of
+`policy.max_evidence_items`, sharing only the character/byte budget with the
+always-visible bodies. Selection is identical for both profiles.
 """
 from __future__ import annotations
 
@@ -109,15 +115,37 @@ def _views(selected, source_views, source_items, policy):
             visible_sources, tuple(selections), fact_count + len(visible_sources))
 
 
-def _source_views(adapter, query, policy, selected, candidates, source_context_turns, diagnostics):
-    """One bounded owner read; failed optional upgrades never remove a Fact."""
-    per_fact = {item.evidence_id: _references(item, candidates[item.evidence_id]) for item, _ in selected}
-    refs = list({_reference_key(ref): ref for values in per_fact.values() for ref in values}.values())
-    outcomes = diagnostics["source_outcomes"]
-    if adapter.cold_store is None or not refs:
-        for item, _ in selected:
-            outcomes[item.evidence_id] = "cold_source_unavailable" if adapter.cold_store is None else "source_refs_invalid"
-        return {}, (), "cold_source_unavailable", True
+def _views_v2(selected, source_views, source_items, policy):
+    """reliable-v2: the canonical body is always visible; sources supplement it."""
+    wanted = {sid for ids in source_views.values() for sid in ids}
+    visible_sources = tuple(s for s in source_items if s.evidence_id in wanted)
+    handles = {s.evidence_id: f"S{i+1}" for i, s in enumerate(visible_sources)}
+    sources = {s.evidence_id: s for s in visible_sources}
+    seen, parts, fact_parts, source_parts, selections = set(), [], [], [], []
+    for index, (item, channel) in enumerate(selected):
+        handle = f"M{index+1}"
+        block = render_reliable_fact(item, handle, include_source_context=policy.include_source_context)
+        parts.append(block)
+        fact_parts.append(block)
+        ids = source_views.get(item.evidence_id, ())
+        if not ids:
+            selections.append(AssociativeSelection(item.evidence_id, channel, "fact"))
+            continue
+        parts.append("[" + handle + " sources=" + ",".join(handles[sid] for sid in ids) + "]")
+        for sid in ids:
+            if sid in seen:
+                continue
+            seen.add(sid)
+            block = render_reliable_source(sources[sid], handles[sid], include_source_context=policy.include_source_context)
+            parts.append(block)
+            source_parts.append(block)
+        selections.append(AssociativeSelection(item.evidence_id, channel, "fact+sources", ids))
+    return ("\n".join(parts), "\n".join(fact_parts), "\n".join(source_parts),
+            visible_sources, tuple(selections), len(visible_sources))
+
+
+def _source_refs_read(adapter, query, policy, refs, source_context_turns, diagnostics):
+    """One bounded owner read over exact refs; ((), None) means the read failed."""
     # Cold's legacy transport renders full private provenance headers. Reserve a
     # separately metered bounded transport allowance; the visible view below is
     # still constrained by the caller's unchanged total character/byte budget.
@@ -143,12 +171,28 @@ def _source_views(adapter, query, policy, selected, candidates, source_context_t
         source_items = tuple({s.evidence_id: s for s in source_items}.values())
         diagnostics["cold_returned_items"] = len(source_items)
         diagnostics["cold_returned_chars"], diagnostics["cold_returned_bytes"] = _measure(context.rendered_text)
+        return source_items, context
     except Exception:
+        return (), None
+    finally:
+        diagnostics["cold_read_seconds"] = perf_counter() - read_started
+
+
+def _source_views(adapter, query, policy, selected, candidates, source_context_turns, diagnostics):
+    """One bounded owner read; failed optional upgrades never remove a Fact."""
+    per_fact = {item.evidence_id: _references(item, candidates[item.evidence_id]) for item, _ in selected}
+    refs = list({_reference_key(ref): ref for values in per_fact.values() for ref in values}.values())
+    outcomes = diagnostics["source_outcomes"]
+    if adapter.cold_store is None or not refs:
+        for item, _ in selected:
+            outcomes[item.evidence_id] = "cold_source_unavailable" if adapter.cold_store is None else "source_refs_invalid"
+        return {}, (), "cold_source_unavailable", True
+    source_items, context = _source_refs_read(adapter, query, policy, refs,
+                                              source_context_turns, diagnostics)
+    if context is None:
         for item, _ in selected:
             outcomes[item.evidence_id] = "cold_source_unavailable"
         return {}, (), "cold_source_unavailable", True
-    finally:
-        diagnostics["cold_read_seconds"] = perf_counter() - read_started
     groups = {}
     for item, _ in selected:
         item_refs = per_fact[item.evidence_id]
@@ -179,12 +223,66 @@ def _source_views(adapter, query, policy, selected, candidates, source_context_t
     return views, source_items, error, incomplete
 
 
-def pack_reliable(adapter, query, policy, activation, *, include_sources=False, source_context_turns=0):
+def _source_views_v2(adapter, query, policy, selected, candidates, source_context_turns, diagnostics):
+    """reliable-v2: a bounded supplement with its own source item allowance.
+
+    Up to `policy.max_evidence_items` distinct source items are charged to a
+    separate allowance (parity with the first-hit-v1 appended source read);
+    characters/bytes stay shared with the always-visible bodies. A group whose
+    supplement does not fit keeps complete bodies only — never handle-only.
+    """
+    per_fact = {item.evidence_id: _references(item, candidates[item.evidence_id]) for item, _ in selected}
+    refs = list({_reference_key(ref): ref for values in per_fact.values() for ref in values}.values())
+    outcomes = diagnostics["source_outcomes"]
+    diagnostics["source_reserved_items"] = policy.max_evidence_items
+    if adapter.cold_store is None or not refs:
+        for item, _ in selected:
+            outcomes[item.evidence_id] = "cold_source_unavailable" if adapter.cold_store is None else "source_refs_invalid"
+        return {}, (), "cold_source_unavailable", True
+    source_items, context = _source_refs_read(adapter, query, policy, refs,
+                                              source_context_turns, diagnostics)
+    if context is None:
+        for item, _ in selected:
+            outcomes[item.evidence_id] = "cold_source_unavailable"
+        return {}, (), "cold_source_unavailable", True
+    groups = {}
+    for item, _ in selected:
+        item_refs = per_fact[item.evidence_id]
+        matches = [next((s for s in source_items if _cover(ref, s)), None) for ref in item_refs]
+        if not item_refs or any(s is None for s in matches):
+            outcomes[item.evidence_id] = context.safe_error_code or "source_support_incomplete"
+            continue
+        required = {s.evidence_id for s in matches}
+        anchors = {(s.provenance.segment_id, s.turn_index) for s in matches}
+        ids = tuple(s.evidence_id for s in source_items if s.evidence_id in required or
+                    source_context_turns and any(s.provenance.segment_id == segment and
+                    abs(s.turn_index-index) <= source_context_turns for segment, index in anchors))
+        groups.setdefault(ids, []).append(item.evidence_id)
+    views = {}
+    # Shared packages are still accepted or rejected jointly, but the joint
+    # fit is measured against the separate source item allowance plus the
+    # remaining shared character/byte budget; rejection never removes a body.
+    for ids, evidence_ids in groups.items():
+        proposed = {**views, **{eid: ids for eid in evidence_ids}}
+        rendered, _, _, _, _, source_items_used = _views_v2(selected, proposed, source_items, policy)
+        reason = _budget_reason(rendered, source_items_used, count=policy.max_evidence_items,
+                                chars=policy.max_chars, bytes_limit=policy.max_bytes)
+        for eid in evidence_ids:
+            outcomes[eid] = "source_" + reason if reason else "sources_visible"
+        if reason is None:
+            views = proposed
+    incomplete = len(views) != len(selected) or bool(context.truncated or context.safe_error_code)
+    error = context.safe_error_code or ("cold_source_partial" if incomplete else None)
+    return views, source_items, error, incomplete
+
+
+def pack_reliable(adapter, query, policy, activation, *, include_sources=False, source_context_turns=0,
+                  profile="reliable-v1"):
     from .first_hit import project_attention
     from .magma_adapter import _relation_compatible, _RELATION_RESOLVER
 
     started = perf_counter()
-    diagnostics = {"profile": "reliable-v1", "direct_share": DIRECT_SHARE,
+    diagnostics = {"profile": profile, "direct_share": DIRECT_SHARE,
                    "candidate_outcomes": {}, "source_outcomes": {}, "cold_read_attempts": 0,
                    "cold_read_seconds": 0.0, "bge_pairs": 0, "provider_requests": 0}
     relation_ids = _RELATION_RESOLVER.resolve_query_relations(policy.relation_surfaces or ())
@@ -272,10 +370,20 @@ def pack_reliable(adapter, query, policy, activation, *, include_sources=False, 
             packing_omitted = True
     source_views, source_items, source_error, source_truncated = {}, (), None, False
     if include_sources and selected:
-        source_views, source_items, source_error, source_truncated = _source_views(
-            adapter, query, policy, selected, candidates, source_context_turns, diagnostics)
-    rendered, fact_rendered, source_rendered, visible_sources, selections, visible_items = _views(
-        selected, source_views, source_items, policy)
+        if profile == "reliable-v2":
+            source_views, source_items, source_error, source_truncated = _source_views_v2(
+                adapter, query, policy, selected, candidates, source_context_turns, diagnostics)
+        else:
+            source_views, source_items, source_error, source_truncated = _source_views(
+                adapter, query, policy, selected, candidates, source_context_turns, diagnostics)
+    if profile == "reliable-v2":
+        rendered, fact_rendered, source_rendered, visible_sources, selections, source_items_used = _views_v2(
+            selected, source_views, source_items, policy)
+        visible_items = len(selected) + source_items_used
+        diagnostics["visible_source_items"] = source_items_used
+    else:
+        rendered, fact_rendered, source_rendered, visible_sources, selections, visible_items = _views(
+            selected, source_views, source_items, policy)
     diagnostics["visible_items"] = visible_items
     diagnostics["visible_chars"], diagnostics["visible_bytes"] = _measure(rendered)
     diagnostics["selected_direct"] = sum(channel == "direct" for _, channel in selected)

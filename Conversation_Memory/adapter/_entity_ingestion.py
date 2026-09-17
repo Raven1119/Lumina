@@ -11,13 +11,24 @@ from .entity_consolidation import EntityBinding, stable_entity_ref
 from .grounded_formation import (
     FORMATION_ENTITY_VERSION,
     FormationError,
+    GroundedMemoryBatch,
+    GroundedMemoryUnit,
+    GroundedUnitMentions,
+    SourceRef,
     can_repair_grounded_memory_batch,
     form_grounded_memory_batch,
     repair_grounded_memory_batch,
     serialize_grounded_memory_batch,
 )
 from .models import IngestionResult, SourceProvenance
-from .reliable_formation import FORMATION_RELIABLE_VERSION, form_reliable_batch
+from .reliable_formation import (
+    FORMATION_RELIABLE_VERSION,
+    FORMATION_RELIABLE_VERSION_V5,
+    digest as _reliable_digest,
+    form_reliable_batch,
+    form_reliable_bodies,
+    form_reliable_structure,
+)
 from .user_self import CURRENT_USER_ENTITY_REF
 from ._first_hit_ingestion import (
     FirstHitIngestionError,
@@ -37,7 +48,7 @@ def _bind_mentions(batch, segment, backend, *, version=FORMATION_ENTITY_VERSION,
                    explicit_identity_refs=None) -> list[dict[str, Any]]:
     """Resolve all roles against one source-ordered view, retaining ambiguity."""
     explicit_identity_refs = explicit_identity_refs or {}
-    reliable = version == FORMATION_RELIABLE_VERSION
+    reliable = version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
     turns = {turn.turn_id: turn for turn in segment.turns}
     records: dict[str, dict[str, Any]] = {}
     overlay: dict[str, dict[str, str]] = {}
@@ -164,7 +175,8 @@ def _validate_records(raw, batch, segment, *, version=FORMATION_ENTITY_VERSION,
             return False
         if mention.identity == "unresolved" and ref is not None:
             return False
-        if (version == FORMATION_RELIABLE_VERSION and mention.identity == "named"
+        if (version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
+                and mention.identity == "named"
                 and not mention.same_as and ref != (explicit_identity_refs or {}).get(mention.id)):
             return False
     by_id = {record["mention_id"]: record for record in raw}
@@ -217,7 +229,8 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
     from .magma_adapter import _formed_event_metadata, _formed_source_turn
 
     version = adapter.ingestion_version
-    reliable = version == FORMATION_RELIABLE_VERSION
+    reliable = version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
+    reliable_v5 = version == FORMATION_RELIABLE_VERSION_V5
     invalid = adapter._validate(segment)
     if invalid:
         return IngestionResult(segment.segment_id, version, "failed",
@@ -234,6 +247,20 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 "segment_id": segment.segment_id, "ingestion_version": version,
                 "status": "pending", "memory_ids": [],
             }
+        elif reliable_v5:
+            if (not set(state).issubset({"schema_version", "source_digest", "segment_id", "ingestion_version",
+                                        "status", "memory_ids", "formation", "mentions", "bodies"})
+                    or state.get("schema_version") != version or state.get("source_digest") != digest
+                    or state.get("segment_id") != segment.segment_id or state.get("ingestion_version") != version
+                    or state.get("status") not in {"pending", "in_progress", "bodies_persisted", "partial", "completed"}
+                    or not isinstance(state.get("memory_ids"), list)
+                    or not all(isinstance(mid, str) and mid for mid in state["memory_ids"])
+                    or ("bodies" in state and "formation" not in state)
+                    or ("mentions" in state and not {"formation", "bodies"} <= state.keys())
+                    or (state.get("status") == "bodies_persisted" and "bodies" not in state)
+                    or state.get("status") in {"partial", "completed"}
+                    and not {"formation", "mentions", "bodies"} <= state.keys()):
+                raise ValueError("state_corrupt")
         elif reliable:
             if (not set(state).issubset({"schema_version", "source_digest", "segment_id", "ingestion_version",
                                         "status", "memory_ids", "formation", "mentions"})
@@ -287,6 +314,8 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
         except Exception:
             return IngestionResult(segment.segment_id, version, "failed",
                                    retryable=True, safe_error_code="state_write_failed")
+    if reliable_v5:
+        return _ingest_reliable_v5(adapter, segment, state, store, key, association)
 
     def checkpoint(stage, payload):
         allowed = {"formation"} if reliable else {"extracted", "verified", "repair", "repair_verified"}
@@ -477,6 +506,221 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                                    retryable=not reliable and "repair" not in state and can_repair_grounded_memory_batch(
                                        segment, extracted_checkpoint=state["extracted"], batch=batch,
                                    ), safe_error_code="formation_processing_incomplete")
+        return IngestionResult(segment.segment_id, version, "completed", tuple(memory_ids))
+    except FirstHitIngestionError as error:
+        return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
+                               retryable=error.retryable, safe_error_code=error.code)
+    except Exception:
+        return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
+                               retryable=True, safe_error_code="memory_write_failed")
+
+
+def _ingest_reliable_v5(adapter, segment, state, store, key, association) -> IngestionResult:
+    """v5 body/structure decoupling: F2-accepted bodies persist before G stages.
+
+    A G-stage failure leaves durable projection-free EVENTs and a
+    ``bodies_persisted`` checkpoint; recovery adds only the missing structure.
+    """
+    from .backend import _EVENT_PROJECTION_KEYS
+    from .magma_adapter import _formed_event_metadata
+    from ._reliable_projection import reliable_unit_id
+
+    version = adapter.ingestion_version
+    backend = adapter.backend
+    turns = {turn.turn_id: turn for turn in segment.turns}
+
+    def checkpoint(stage, payload):
+        if stage != "formation":
+            raise ValueError("formation_stage_invalid")
+        state[stage] = payload
+        store.put(key, state)
+
+    try:
+        accepted, f1, f2, progress = form_reliable_bodies(
+            segment, adapter.formation_model, progress=state.get("formation"),
+            checkpoint=checkpoint, version=version)
+    except FormationError as error:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               tuple(state["memory_ids"]), retryable=error.retryable,
+                               safe_error_code=error.code)
+    except Exception:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               tuple(state["memory_ids"]), retryable=True,
+                               safe_error_code="state_write_failed")
+    body_units = tuple(
+        GroundedMemoryUnit(
+            reliable_unit_id(segment, fact, version=version), fact["text"], None, None, None,
+            tuple(SourceRef(tid, turns[tid].content) for tid in fact["allowed_source_ids"]),
+            version, None)
+        for fact in accepted)
+    manifest = _reliable_digest([asdict(unit) for unit in body_units])
+    if "bodies" in state:
+        saved = state["bodies"]
+        if (not isinstance(saved, dict) or set(saved) != {"memory_ids", "manifest"}
+                or saved["manifest"] != manifest
+                or not isinstance(saved["memory_ids"], list)
+                or saved["memory_ids"] != state["memory_ids"]
+                or len(saved["memory_ids"]) != len(body_units)
+                or any(backend.find_memory_id(unit.id) != memory_id
+                       for unit, memory_id in zip(body_units, saved["memory_ids"]))):
+            return IngestionResult(segment.segment_id, version, "failed",
+                                   tuple(state["memory_ids"]), safe_error_code="state_corrupt")
+    else:
+        receipts = {stage: {field: progress["stages"][stage][field]
+                            for field in ("request_digest", "response_digest", "parsed_digest", "execution")}
+                    for stage in ("F1", "F2")}
+        used_sources = {f["fact_id"]: d["used_source_ids"] for f, d in zip(f1["facts"], f2)}
+        memory_ids = []
+        try:
+            state["status"] = "in_progress"
+            store.put(key, state)
+            for unit, fact in zip(body_units, accepted):
+                memory_id = backend.find_memory_id(unit.id)
+                if memory_id is None:
+                    origin = turns[fact["origin_turn_id"]]
+                    metadata = _formed_event_metadata(
+                        segment, unit, origin, ingestion_version=version,
+                        configured_entities=adapter.configured_entities)
+                    metadata.update(origin_turn_id=origin.turn_id,
+                                    formation_receipts=receipts,
+                                    source_package_ids=[ref.turn_id for ref in unit.source_refs],
+                                    used_source_ids=used_sources[fact["fact_id"]])
+                    # Projection attributes belong to the structure phase only.
+                    for field in _EVENT_PROJECTION_KEYS:
+                        metadata.pop(field, None)
+                    memory_id = backend.add_event(unit.text, origin.timestamp, metadata,
+                                                  automatic_semantic=False)
+                    backend.persist()
+                memory_ids.append(memory_id)
+                state["memory_ids"] = list(memory_ids)
+                store.put(key, state)
+            backend.create_relationships(memory_ids, automatic_entity_links=False)
+            backend.persist()
+            state["bodies"] = {"memory_ids": list(memory_ids), "manifest": manifest}
+            state["memory_ids"] = list(memory_ids)
+            state["status"] = "bodies_persisted"
+            store.put(key, state)
+        except Exception:
+            return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
+                                   retryable=True, safe_error_code="memory_write_failed")
+    try:
+        batch, context = form_reliable_structure(
+            segment, adapter.formation_model, progress=progress, checkpoint=checkpoint,
+            identity_candidates=lambda: _identity_source_candidates(adapter, segment),
+            accepted=accepted, f1=f1, f2=f2, version=version)
+    except FormationError as error:
+        # Bodies are already durable projection-free EVENTs; only the optional
+        # structure is missing, so the body checkpoint stays authoritative.
+        return IngestionResult(segment.segment_id, version, "failed",
+                               tuple(state["memory_ids"]), retryable=error.retryable,
+                               safe_error_code=error.code)
+    except Exception:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               tuple(state["memory_ids"]), retryable=True,
+                               safe_error_code="state_write_failed")
+    try:
+        if "mentions" not in state:
+            state["mentions"] = _bind_mentions(batch, segment, backend, version=version,
+                                               explicit_identity_refs=context.get("explicit_identity_refs"))
+            store.put(key, state)
+        if not _validate_records(state["mentions"], batch, segment, version=version,
+                                 explicit_identity_refs=context.get("explicit_identity_refs")):
+            raise ValueError("state_corrupt")
+        if len(state["memory_ids"]) != len(batch.units):
+            raise ValueError("state_corrupt")
+        pending_issues = any(issue.status == "pending" for issue in batch.issues)
+        if state["status"] in {"completed", "partial"}:
+            if (state["status"] == "partial") != pending_issues:
+                raise ValueError("state_corrupt")
+            if any(backend.find_memory_id(unit.id) != memory_id
+                   for unit, memory_id in zip(batch.units, state["memory_ids"])):
+                raise ValueError("state_corrupt")
+            if association is not None and (
+                association["status"] != "completed"
+                or association["evidence_ids"] != [unit.id for unit in batch.units]
+            ):
+                # The association checkpoint precedes either terminal state.
+                # An inconsistent pair is not a resumable planning gap.
+                raise FirstHitIngestionError("first_hit_checkpoint_invalid")
+            if pending_issues:
+                return IngestionResult(segment.segment_id, version, "failed",
+                                       tuple(state["memory_ids"]), retryable=False,
+                                       safe_error_code="formation_processing_incomplete")
+            ensure = getattr(backend, "ensure_event_persisted", None)
+            repaired = False
+            if callable(ensure):
+                for memory_id in state["memory_ids"]:
+                    repaired = bool(ensure(memory_id)) or repaired
+            if repaired:
+                backend.persist()
+            return IngestionResult(segment.segment_id, version, "completed",
+                                   tuple(state["memory_ids"]), already_ingested=True)
+    except FirstHitIngestionError as error:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               tuple(state["memory_ids"]), retryable=error.retryable,
+                               safe_error_code=error.code)
+    except ValueError as error:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               tuple(state["memory_ids"]),
+                               retryable=isinstance(error.__cause__, OSError),
+                               safe_error_code="entity_consolidation_failed")
+    except Exception:
+        return IngestionResult(segment.segment_id, version, "failed",
+                               tuple(state["memory_ids"]), retryable=True,
+                               safe_error_code="entity_consolidation_failed")
+
+    memory_ids = list(state["memory_ids"])
+    try:
+        # FirstHit planning happens once, here, with complete bindings; bodies
+        # without structure simply have no first-hit links yet.
+        if association is not None:
+            prepare_first_hit_stage(adapter, association, batch, state["mentions"])
+        backend.upsert_entity_mentions(state["mentions"])
+        backend.persist()
+        records = {record["mention_id"]: record for record in state["mentions"]}
+        roles = {item.unit_id: item for item in batch.unit_mentions}
+        for unit, memory_id in zip(batch.units, memory_ids):
+            role = roles[unit.id]
+            subject = records.get(role.subject, {})
+            obj = records.get(role.object, {})
+            origin = turns[context["origins"][unit.id]]
+            time = context.get("times", {}).get(unit.id)
+            time_turn = next((t for t in segment.turns if time and t.turn_id == time["turn_id"]), None)
+            full = _formed_event_metadata(
+                segment, unit, origin, ingestion_version=version,
+                configured_entities=adapter.configured_entities,
+                subject_entity_binding=(
+                    EntityBinding(unit.id, subject["entity_ref"], subject["surface"])
+                    if subject.get("entity_ref") else None
+                ),
+                referenced_time_turn=time_turn)
+            participants = [records[mid] for mid in role.mentions if records[mid]["entity_ref"]]
+            projection = {
+                "subject": full["subject"], "relation": full["relation"], "value": full["value"],
+                "subject_entity_ref": subject.get("entity_ref"),
+                "subject_entity_surface": subject.get("surface") if subject.get("entity_ref") else None,
+                "object_entity_ref": obj.get("entity_ref"),
+                "object_entity_surface": obj.get("surface"),
+                # The body phase attached F1/F2 receipts; the structure phase
+                # grows them to the full four-stage set, entries preserved.
+                "formation_receipts": context["receipts"],
+                "mention_entity_refs": [r["entity_ref"] for r in participants],
+                "mention_entity_surfaces": [r["surface"] for r in participants],
+                "mention_ids": list(role.mentions),
+                "referenced_time": full["referenced_time"],
+                "temporal_mentions": full["temporal_mentions"],
+                "dates_mentioned": full["dates_mentioned"],
+            }
+            backend.update_event_projection(memory_id, projection)
+        backend.create_relationships(memory_ids, automatic_entity_links=False)
+        backend.persist()
+        if association is not None:
+            complete_first_hit_stage(adapter, association)
+        state["status"] = "partial" if pending_issues else "completed"
+        store.put(key, state)
+        if pending_issues:
+            return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
+                                   retryable=False, safe_error_code="formation_processing_incomplete")
         return IngestionResult(segment.segment_id, version, "completed", tuple(memory_ids))
     except FirstHitIngestionError as error:
         return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),

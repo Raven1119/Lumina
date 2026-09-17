@@ -136,15 +136,19 @@ Default configuration, manual Dream, consumer boundaries and pinned MAGMA stay.
 ## Explicit reliable path
 
 `--reliable-memory` (Dream CLI) or explicit adapter construction selects the
-maintained `grounded-formation-v4` writer and `reliable-v1` associative
-presentation. Read [its contract](docs/RELIABLE_MEMORY.md) before changing
-them. Four bounded batch stages (F1/F2/G1/G2) authorize canonical attributed
-text before optional graph structure; only F2-supported text becomes EVENT and
-only G2-authorized structure becomes role/identity edges. The direct recall
-subset is protected at a fixed 0.6 share inside the unchanged FirstHit
-activation. Default Dream and Chat stay on v2/`first-hit-v1`; v4 uses the
-separate `first-hit-v1:grounded-formation-v4` checkpoint key and never
-migrates or reinterprets v2 checkpoints. Known limitations are listed in the
+maintained `grounded-formation-v5` writer; its reader pair is the `reliable-v2`
+associative presentation. `grounded-formation-v4` with `reliable-v1` remains an
+explicit historical selection. Read [its contract](docs/RELIABLE_MEMORY.md)
+before changing them. Four bounded batch stages (F1/F2/G1/G2) authorize
+canonical attributed text before optional graph structure; only F2-supported
+text becomes EVENT and only G2-authorized structure becomes role/identity
+edges. v5 additionally persists F2-accepted bodies as projection-free EVENTs
+before the G stages (`bodies_persisted`), so a G-stage failure no longer
+strands them. The direct recall subset is protected at a fixed 0.6 share
+inside the unchanged FirstHit activation. Default Dream and Chat stay on
+v2/`first-hit-v1`; each reliable version uses its own
+`first-hit-v1:<version>` checkpoint key and never migrates or reinterprets
+v2 or cross-version checkpoints. Known limitations are listed in the
 contract.
 
 ## Preserved boundaries

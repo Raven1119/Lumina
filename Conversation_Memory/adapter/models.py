@@ -274,13 +274,14 @@ class SourceMemoryContext:
 class AssociativeSelection:
     """The representation actually sent for a selected Fact.
 
-    A source view retains its Fact DTO for traceability; it does not claim that
-    the Fact text was also rendered. Source IDs name only visible exact ranges.
+    `sources` (reliable-v1) replaces the Fact text: the Fact DTO is retained
+    for traceability only. `fact+sources` (reliable-v2) supplements the
+    always-visible canonical body. Source IDs name only visible exact ranges.
     """
 
     evidence_id: str
     channel: Literal["direct", "associated"]
-    visible_representation: Literal["fact", "sources"]
+    visible_representation: Literal["fact", "sources", "fact+sources"]
     source_evidence_ids: tuple[str, ...] = ()
 
 

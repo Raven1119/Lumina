@@ -123,11 +123,13 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
         return empty("invalid_source_policy")
     activation = adapter._activate_first_hit(query)
     adapter._last_first_hit_diagnostics = dict(activation.diagnostics)
-    if getattr(adapter, "associative_read_profile", "first-hit-v1") == "reliable-v1":
+    profile = getattr(adapter, "associative_read_profile", "first-hit-v1")
+    if profile in ("reliable-v1", "reliable-v2"):
         from ._reliable_recall import pack_reliable
         return pack_reliable(adapter, query, policy, activation,
                              include_sources=include_sources,
-                             source_context_turns=source_context_turns)
+                             source_context_turns=source_context_turns,
+                             profile=profile)
     relation_ids = _RELATION_RESOLVER.resolve_query_relations(policy.relation_surfaces or ())
     ranked = sorted(activation.candidates,
                     key=lambda row: (-row[2], -row[1], row[0].metadata.get("evidence_id", "")))

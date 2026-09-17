@@ -54,6 +54,15 @@ def _is_persistent_name_surface(surface: str) -> bool:
     )
 
 
+# Projection attributes a v5 structure phase may attach to an existing EVENT.
+_EVENT_PROJECTION_KEYS = frozenset({
+    "subject", "relation", "value", "subject_entity_ref", "subject_entity_surface",
+    "object_entity_ref", "object_entity_surface", "mention_entity_refs",
+    "mention_entity_surfaces", "mention_ids", "referenced_time",
+    "temporal_mentions", "dates_mentioned",
+})
+
+
 class MemoryBackend(Protocol):
     def find_memory_id(self, evidence_id: str) -> str | None: ...
     def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any], *,
@@ -72,6 +81,7 @@ class MemoryBackend(Protocol):
     def upsert_entity_mentions(self, records: list[dict]) -> None: ...
     def list_entity_mentions(self, query: str, *, limit: int) -> tuple[dict, ...]: ...
     def ensure_event_persisted(self, memory_id: str) -> bool: ...
+    def update_event_projection(self, memory_id: str, projection: dict) -> None: ...
     def persist(self) -> None: ...
     def resolve_target_entity_ref(self, query: str) -> str | None: ...
     def recall(
@@ -125,6 +135,9 @@ class UnavailableMemoryBackend:
     def ensure_event_persisted(self, memory_id: str) -> bool:
         self._raise()
 
+    def update_event_projection(self, memory_id: str, projection: dict) -> None:
+        self._raise()
+
     def recall(
         self,
         query: str,
@@ -173,8 +186,12 @@ class RealMagmaBackend:
                 extraction.content_narrative = content
                 # Only explicit G2-authorized bindings may grant entity rights.
                 # Upstream guesses otherwise enter vector metadata/enrichment.
-                from .reliable_formation import FORMATION_RELIABLE_VERSION
-                if (metadata or {}).get("formation_version") == FORMATION_RELIABLE_VERSION:
+                from .reliable_formation import (
+                    FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
+                )
+                if (metadata or {}).get("formation_version") in {
+                    FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
+                }:
                     extraction.entities = []
                 return extraction
 
@@ -665,6 +682,42 @@ class RealMagmaBackend:
                                         "entities": metadata.get("entities", [])})
         self._refresh_entity_membership(memory_id)
         return True
+
+    def update_event_projection(self, memory_id: str, projection: dict) -> None:
+        """Attach authorized projection attributes to an existing EVENT (v5).
+
+        Only ``_EVENT_PROJECTION_KEYS`` plus ``formation_receipts`` may be
+        written, and only onto an EVENT that does not already hold a
+        conflicting value; replaying the same authorized projection is a
+        no-op. Receipts may only grow: every already recorded stage entry must
+        be preserved exactly while later stage entries are attached. The
+        caller persists.
+        """
+        if (not isinstance(projection, dict)
+                or not set(projection) <= _EVENT_PROJECTION_KEYS | {"formation_receipts"}):
+            raise ValueError("event_projection_invalid")
+        node = self.trg.graph_db.get_node(memory_id)
+        if node is None or getattr(node, "node_type", None) != self._node_type.EVENT:
+            raise ValueError("memory_event_missing")
+        attributes = node.attributes
+        receipts = projection.get("formation_receipts")
+        if receipts is not None:
+            existing_receipts = attributes.get("formation_receipts")
+            if (not isinstance(receipts, dict)
+                    or existing_receipts is not None and not isinstance(existing_receipts, dict)
+                    or isinstance(existing_receipts, dict)
+                    and any(stage not in receipts or receipts[stage] != entry
+                            for stage, entry in existing_receipts.items())):
+                raise ValueError("event_projection_conflict")
+        for key, value in projection.items():
+            if key == "formation_receipts":
+                continue
+            existing = attributes.get(key)
+            if existing is not None and existing != value:
+                raise ValueError("event_projection_conflict")
+        self._prepare_entity_membership_write()
+        attributes.update(projection)
+        self._refresh_entity_membership(memory_id)
 
     def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any], *,
                   automatic_semantic: bool = True) -> str:

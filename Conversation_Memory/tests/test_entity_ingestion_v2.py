@@ -104,6 +104,25 @@ class Backend:
     def create_relationships(self, ids):
         self.linked = list(ids)
 
+    def update_event_projection(self, memory_id, projection):
+        metadata = self.events[memory_id]["metadata"]
+        receipts = projection.get("formation_receipts")
+        if receipts is not None:
+            existing_receipts = metadata.get("formation_receipts")
+            if (not isinstance(receipts, dict)
+                    or existing_receipts is not None and not isinstance(existing_receipts, dict)
+                    or isinstance(existing_receipts, dict)
+                    and any(stage not in receipts or receipts[stage] != entry
+                            for stage, entry in existing_receipts.items())):
+                raise ValueError("event_projection_conflict")
+        for key, value in projection.items():
+            if key == "formation_receipts":
+                continue
+            existing = metadata.get(key)
+            if existing is not None and existing != value:
+                raise ValueError("event_projection_conflict")
+        metadata.update(projection)
+
 
 def adapter(tmp_path, backend, model):
     return MagmaMemoryAdapter(backend, IngestionStateStore(tmp_path / "state.json"),

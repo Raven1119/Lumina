@@ -23,6 +23,8 @@ from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn
 
 PROMPTS = {"F1": rf.F1_PROMPT, "F2": rf.F2_PROMPT,
            "G1": rp.G1_PROMPT, "G2": rp.G2_PROMPT}
+PROMPTS_V5 = {"F1": rf.F1_PROMPT_V5, "F2": rf.F2_PROMPT,
+              "G1": rp.G1_PROMPT_V5, "G2": rp.G2_PROMPT_V5}
 
 
 def segment(*turns):
@@ -89,14 +91,15 @@ def approve_projections(payload):
 
 class StagedModel:
     def __init__(self, facts=(), *, f2=approve_bodies, g1=no_projections,
-                 g2=approve_projections, overrides=None):
+                 g2=approve_projections, overrides=None, prompts=None):
         self.responses = {"F1": {"facts": list(facts)}, "F2": f2,
                           "G1": g1, "G2": g2, **(overrides or {})}
+        self.prompts = prompts or PROMPTS
         self.calls = []
 
     def generate(self, recent_context, user_message, *, system_prompt):
         assert recent_context == []
-        stage = next(key for key, value in PROMPTS.items() if value == system_prompt)
+        stage = next(key for key, value in self.prompts.items() if value == system_prompt)
         payload = json.loads(user_message)
         self.calls.append((stage, deepcopy(payload)))
         value = self.responses[stage]
@@ -138,6 +141,21 @@ def run(seg, model, *, progress=None, store=None, prior=()):
         seg, model, progress=progress, checkpoint=store, identity_candidates=prior,
     )
     return batch, context, store
+
+
+def run_v5(seg, model, *, progress=None, store=None, prior=()):
+    store = store if store is not None else ReceiptStore()
+    batch, context = rf.form_reliable_batch(
+        seg, model, progress=progress, checkpoint=store, identity_candidates=prior,
+        version=rf.FORMATION_RELIABLE_VERSION_V5,
+    )
+    return batch, context, store
+
+
+def borrowing_v5(**kwargs):
+    seg, model = borrowing(**kwargs)
+    model.prompts = PROMPTS_V5
+    return seg, model
 
 
 def ordinary():
@@ -924,3 +942,149 @@ def test_real_magma_repairs_missing_vector_without_reforming_then_recall_expands
     assert [stage for stage, _ in model.calls] == list(PROMPTS)
 
     print("reliable_formation_local_compute=" + json.dumps(compute, sort_keys=True))
+
+
+@pytest.mark.parametrize("origin,text", [
+    ("t1", "The user asked Ada to return the cart."),
+    ("t1", "user asked Ada to return the cart."),
+    ("t1", "用户要求 Ada 归还推车。"),
+    ("t0", "Lumina noted the return."),
+    ("t0", "The assistant noted the return."),
+    ("t0", "助手记录了归还。"),
+])
+def test_v5_cross_attribution_is_isolated_and_window_continues(origin, text):
+    seg = segment(("user", "Ada returned the cart."), ("assistant", "I noted the return."))
+    model = StagedModel([fact(text, origin), fact("Ada returned the cart.", "t0")],
+                        prompts=PROMPTS_V5)
+    batch, _, _ = run_v5(seg, model)
+    assert [unit.text for unit in batch.units] == ["User stated: Ada returned the cart."]
+    assert [candidate["text"] for candidate in dict(model.calls)["F2"]["candidates"]] == [
+        "User stated: Ada returned the cart."]
+    assert any(issue.code == "reliable_fact_attribution_conflict" and issue.status == "rejected"
+               for issue in batch.issues)
+
+
+@pytest.mark.parametrize("origin,text", [("t1", "The user asked Ada to return the cart."),
+                                         ("t0", "The assistant noted the return.")])
+def test_v4_parse_has_no_attribution_screen(origin, text):
+    seg = segment(("user", "Ada returned the cart."), ("assistant", "I noted the return."))
+    model = StagedModel([fact(text, origin)])
+    batch, _, _ = run(seg, model)
+    assert len(batch.units) == 1
+    assert not any(issue.code == "reliable_fact_attribution_conflict" for issue in batch.issues)
+
+
+def test_v5_missing_identity_evidence_is_valid_for_new_and_current_user():
+    seg, model = borrowing_v5()
+    model.responses["G1"]["mentions"][0]["identity_source_ids"] = []
+    model.responses["G1"]["mentions"][1]["identity_source_ids"] = []
+    batch, _, _ = run_v5(seg, model)
+    actor = next(m for m in batch.mentions if m.surface == "Ada")
+    owner = next(m for m in batch.mentions if m.surface == "my")
+    assert actor.identity == "new" and owner.identity == "current_user"
+    assert batch.unit_mentions[0].subject == actor.id
+    assert owner.id in batch.unit_mentions[0].mentions
+    assert not any(i.code == "reliable_identity_evidence_deferred_to_g2" for i in batch.issues)
+
+
+def test_v5_dangling_identity_evidence_is_invalid_despite_g2_approval():
+    seg, model = borrowing_v5()
+    model.responses["G1"]["mentions"][0]["identity_source_ids"] = ["t9"]
+    batch, _, _ = run_v5(seg, model)
+    actor = next(m for m in batch.mentions if m.surface == "Ada")
+    assert actor.identity == "unresolved"
+    assert batch.unit_mentions[0].subject is None
+    assert not any(i.code == "reliable_identity_evidence_deferred_to_g2" for i in batch.issues)
+
+
+def test_v5_named_still_requires_positive_identity_evidence():
+    seg = segment(("user", "Ada returned the cart."))
+    prior = [{"entity_ref": "E_existing", "canonical_surface": "Ada"}]
+
+    def run_with(sources):
+        g1 = {"mentions": [mention("a", "Ada", identity="named", existing="E_existing",
+                                   sources=sources)],
+              "projections": [projection(mentions=["a"])]}
+        return run_v5(seg, StagedModel([fact("Ada returned the cart.")], g1=g1,
+                                       prompts=PROMPTS_V5), prior=prior)
+
+    batch, context, _ = run_with([])
+    assert batch.mentions[0].identity == "unresolved"
+    assert context["explicit_identity_refs"] == {}
+    batch, context, _ = run_with(["t0"])
+    assert batch.mentions[0].identity == "named"
+    assert context["explicit_identity_refs"] == {batch.mentions[0].id: "E_existing"}
+
+
+@pytest.mark.parametrize("surface", ["I", "me", "My", "mine", "Myself", "we", "us", "OUR", "ours",
+                                     "我", "我们", "俺", "咱们", "咱"])
+def test_v5_first_person_on_assistant_turn_cannot_be_current_user(surface):
+    content = (surface + " suggested asking Ada.") if surface.isascii() else (surface + "建议询问 Ada。")
+    seg = segment(("assistant", content))
+    g1 = {"mentions": [mention("speaker", surface, identity="current_user")],
+          "projections": [projection(mentions=["speaker"])]}
+    batch, _, _ = run_v5(seg, StagedModel([fact("Lumina suggested asking Ada.")], g1=g1,
+                                          prompts=PROMPTS_V5))
+    assert batch.mentions[0].identity == "unresolved"
+    assert batch.unit_mentions[0].mentions == ()
+    assert any(i.code == "reliable_identity_self_reference_role_conflict" for i in batch.issues)
+    assert not any(i.code == "reliable_identity_evidence_deferred_to_g2" for i in batch.issues)
+
+
+def test_v5_first_person_on_user_turn_binds_current_user_normally():
+    batch, _, _ = run_v5(*borrowing_v5())
+    owner = next(m for m in batch.mentions if m.surface == "my")
+    assert owner.identity == "current_user"
+    assert owner.id in batch.unit_mentions[0].mentions
+    assert not any(i.code == "reliable_identity_self_reference_role_conflict" for i in batch.issues)
+
+
+def test_v5_rejected_relation_voids_its_role_votes():
+    seg, model = borrowing_v5()
+
+    def g2(payload):
+        result = approve_projections(payload)
+        result["projections"][0].update(relation_supported=False,
+                                        subject_role_supported=True,
+                                        object_role_supported=True)
+        return result
+
+    model.responses["G2"] = g2
+    batch, _, _ = run_v5(seg, model)
+    unit, roles = batch.units[0], batch.unit_mentions[0]
+    assert unit.subject is unit.relation is unit.value is None
+    assert roles.subject is roles.object is None
+    assert len(roles.mentions) == 2
+    assert unit.formation_version == rf.FORMATION_RELIABLE_VERSION_V5
+    assert unit.id.startswith("grounded_memory_v5:")
+    assert all(m.id.startswith("mention_v5:") for m in batch.mentions)
+
+
+def test_v5_one_call_composes_body_and_structure_phases():
+    seg, composed_model = borrowing_v5()
+    expected, expected_context, _ = run_v5(seg, composed_model)
+    _, phase_model = borrowing_v5()
+    store = ReceiptStore()
+    accepted, f1, f2, progress = rf.form_reliable_bodies(
+        seg, phase_model, progress=None, checkpoint=store,
+        version=rf.FORMATION_RELIABLE_VERSION_V5)
+    assert [s for s, _ in phase_model.calls] == ["F1", "F2"]
+    batch, context = rf.form_reliable_structure(
+        seg, phase_model, progress=progress, checkpoint=store, identity_candidates=(),
+        accepted=accepted, f1=f1, f2=f2, version=rf.FORMATION_RELIABLE_VERSION_V5)
+    assert batch == expected and context == expected_context
+    assert [s for s, _ in phase_model.calls] == list(PROMPTS_V5)
+    assert [s for s, _ in composed_model.calls] == list(PROMPTS_V5)
+
+
+def test_v5_progress_schema_is_never_reinterpreted_as_v4():
+    seg, model = borrowing_v5()
+    _, _, store = run_v5(seg, model)
+    assert store.latest["schema_version"] == rf.PROGRESS_VERSION_V5
+    with pytest.raises(gf.FormationError, match="reliable_stage_checkpoint_invalid"):
+        run(seg, NoCalls(), progress=store.latest)
+    seg4, model4 = borrowing()
+    _, _, store4 = run(seg4, model4)
+    assert store4.latest["schema_version"] == rf.PROGRESS_VERSION
+    with pytest.raises(gf.FormationError, match="reliable_stage_checkpoint_invalid"):
+        run_v5(seg4, NoCalls(), progress=store4.latest)

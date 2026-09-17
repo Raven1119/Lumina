@@ -38,7 +38,7 @@ from .grounded_formation import (
     serialize_grounded_memory_units,
     validate_persisted_grounded_memory_units,
 )
-from .reliable_formation import FORMATION_RELIABLE_VERSION
+from .reliable_formation import FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5
 from .models import (
     AssociativeMemoryContext,
     ColdDraftSegment,
@@ -96,12 +96,12 @@ class MagmaMemoryAdapter:
     ):
         if (
             formation_model is not None
-            and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION}
+            and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
         ):
             raise ValueError("formation_ingestion_version_required")
-        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1"}:
+        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2"}:
             raise ValueError("invalid_associative_read_profile")
-        if associative_read_profile == "reliable-v1" and first_hit is None:
+        if associative_read_profile in {"reliable-v1", "reliable-v2"} and first_hit is None:
             raise ValueError("reliable_read_requires_first_hit")
         self.associative_read_profile = associative_read_profile
         self.backend = backend
@@ -121,7 +121,7 @@ class MagmaMemoryAdapter:
                     first_hit = FirstHitPolicy(**asdict(first_hit))
                 except (TypeError, ValueError):
                     raise ValueError("invalid_first_hit_policy") from None
-            if ingestion_version not in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION}:
+            if ingestion_version not in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}:
                 raise ValueError("first_hit_requires_supported_formation_version")
         self.first_hit = first_hit
         self.cold_store = cold_store
@@ -178,7 +178,7 @@ class MagmaMemoryAdapter:
         return None
 
     def ingest(self, segment: ColdDraftSegment) -> IngestionResult:
-        if self.ingestion_version in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION}:
+        if self.ingestion_version in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}:
             if self.formation_model is None:
                 return IngestionResult(segment.segment_id, self.ingestion_version,
                                        "failed", safe_error_code="formation_model_unavailable")
@@ -1303,8 +1303,8 @@ def _formed_event_metadata(
     referenced_time_turn: ColdDraftTurn | None = None,
 ) -> dict[str, Any]:
     turns = {turn.turn_id: turn for turn in segment.turns}
-    reliable = unit.formation_version == FORMATION_RELIABLE_VERSION
-    if reliable and (ingestion_version != FORMATION_RELIABLE_VERSION
+    reliable = unit.formation_version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5}
+    if reliable and (ingestion_version != unit.formation_version
                      or source_turn.turn_id not in turns
                      or asdict(source_turn) != asdict(turns[source_turn.turn_id])):
         raise ValueError("formed origin anchor mismatch")

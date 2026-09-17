@@ -6,7 +6,7 @@ from dataclasses import replace
 from . import grounded_formation as gf
 from .entity_consolidation import stable_entity_ref
 from .user_self import CURRENT_USER_ENTITY_REF
-from .reliable_formation import FORMATION_RELIABLE_VERSION, digest
+from .reliable_formation import FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, digest
 
 
 G1_PROMPT = """G1: Propose OPTIONAL graph structure for the already accepted canonical conversational statements; independently identify entity occurrences in the current source window.
@@ -26,6 +26,33 @@ Exactly one decision per supplied mention handle and projection fact ID. mention
 For each relation assess the WHOLE subject--predicate--object proposition AS REPORTED in the accepted canonical Fact, with its actual source package and source attribution. Then verify each role mention really denotes THAT predicate argument. A possessive user in 'my watering can' is the owner, not the object of 'returned'; a person receiving a returned cart is not automatically that cart. Conversely a source-grounded cart occurrence should retain the correct cart object role. A meeting location is a legitimate ordinary participant if supported, not the object of agreement merely because it occurs nearby. Do not remove all roles as a shortcut.
 Evaluate ordinary entity participation separately from subject/object roles. A supported source occurrence can survive in a question or hypothesis without authorizing its event. Verify identities using their declared source_ids and, only for explicit existing_entity_ref, the supplied prior occurrence evidence. Same spelling alone is insufficient for identity reuse; invented distinct_from must fail its claimant without invalidating an independent target. current_user is the dialogue user; quoted or assistant first-person is not that user by default. Reject unsupported same_as, disambiguation and role claims.
 Use each Fact's allowed_source_ids; visibility elsewhere is not authorization. Check negation, conditions, tentative/proposal, unanswered, acceptance, completion and ownership as semantics, not keywords. Approved body text does NOT approve structure automatically. Time needs an exact supported expression and correct referenced turn. No source or model output proves an external execution merely because someone said it."""
+
+G1_PROMPT_V5 = G1_PROMPT.replace(
+    "Source IDs are actual current turn IDs.",
+    "Source IDs are actual current turn IDs. identity_source_ids is REQUIRED for same_as and "
+    "named claims and OPTIONAL for new and current_user claims; every listed ID must be an "
+    "actual current window turn ID.")
+
+G2_PROMPT_V5 = G2_PROMPT.replace(
+    "Do not remove all roles as a shortcut.",
+    "Do not remove all roles as a shortcut. Rejecting a relation voids its subject and object "
+    "role votes. Code-enforced evidence and role rules are not subject to your vote: a "
+    "syntactically invalid identity stays unresolved regardless of identity_supported.")
+
+# Closed-class first-person surfaces for the v5 current_user role backstop.
+_FIRST_PERSON_SELF_SURFACES = frozenset({
+    "i", "me", "my", "mine", "myself", "we", "us", "our", "ours",
+    "我", "我们", "俺", "咱们", "咱",
+})
+
+
+def _version_tag(version):
+    return "v5" if version == FORMATION_RELIABLE_VERSION_V5 else "v4"
+
+
+def reliable_unit_id(segment, fact, *, version=FORMATION_RELIABLE_VERSION):
+    return "grounded_memory_" + _version_tag(version) + ":" + digest(
+        [version, gf._entity_source_digest(segment), fact])
 
 
 def _refs(ids, turns):
@@ -49,12 +76,13 @@ def _g2_evidence_deferrable(mention, by_handle):
             and mention["existing_entity_ref"] is None)
 
 
-def parse_g1(raw, segment, facts, prior):
+def parse_g1(raw, segment, facts, prior, *, version=FORMATION_RELIABLE_VERSION):
     if (not isinstance(raw, dict) or set(raw) != {"mentions", "projections"}
             or not isinstance(raw["mentions"], list) or len(raw["mentions"]) > gf._MAX_MENTIONS
             or not isinstance(raw["projections"], list) or len(raw["projections"]) > gf._MAX_ENTITY_UNITS):
         raise gf.FormationError("reliable_g1_output_invalid")
     turns = {t.turn_id: t for t in segment.turns}; issues = []; mentions = []; handles = set(); positions = set()
+    v5 = version == FORMATION_RELIABLE_VERSION_V5
     prior_refs = {r["entity_ref"] for r in prior if isinstance(r, dict) and isinstance(r.get("entity_ref"), str)}
     required = {"handle", "surface", "turn_id", "occurrence", "identity", "same_as", "distinct_from", "identity_source_ids", "existing_entity_ref"}
     for index, m in enumerate(raw["mentions"]):
@@ -65,21 +93,36 @@ def parse_g1(raw, segment, facts, prior):
             start, end = gf._locate_entity_mention(m, turns[m["turn_id"]].content)
         except (gf.FormationError, KeyError, TypeError):
             issues.append({"index": index, "code": "reliable_mention_position_invalid"}); continue
-        mid = "mention_v4:" + digest([FORMATION_RELIABLE_VERSION, segment.conversation_id, m["turn_id"], start, end])
+        mid = "mention_" + _version_tag(version) + ":" + digest([version, segment.conversation_id, m["turn_id"], start, end])
         if mid in positions:
             # A duplicate source occurrence never creates a second identity.
             issues.append({"index": index, "code": "reliable_mention_duplicate"}); continue
         positions.add(mid); handles.add(m["handle"])
         refs = _refs(m["identity_source_ids"], turns)
         identity = m["identity"]
+        if v5:
+            # Missing evidence (empty) is contract-valid for new/current_user;
+            # a listed ID that names no current turn is invalid for every kind.
+            ids = m["identity_source_ids"]
+            evidence_ok = (refs is not None if m["same_as"] is not None or identity not in {"new", "current_user"}
+                           else isinstance(ids, list) and (not ids or refs is not None))
+        else:
+            evidence_ok = refs is not None
         valid = (isinstance(identity, str) and identity in {"new", "named", "current_user", "unresolved"}
-                 and refs is not None and (m["same_as"] is None or isinstance(m["same_as"], str))
+                 and evidence_ok and (m["same_as"] is None or isinstance(m["same_as"], str))
                  and isinstance(m["distinct_from"], list) and all(isinstance(x, str) for x in m["distinct_from"])
                  and (m["existing_entity_ref"] is None or isinstance(m["existing_entity_ref"], str)))
         if valid and identity == "named" and not m["same_as"]:
             valid = m["existing_entity_ref"] in prior_refs
         if valid and m["existing_entity_ref"] is not None and (identity != "named" or m["same_as"] is not None):
             valid = False
+        if (v5 and identity == "current_user" and turns[m["turn_id"]].role != "user"
+                and isinstance(m["surface"], str)
+                and m["surface"].strip().casefold() in _FIRST_PERSON_SELF_SURFACES):
+            # A first-person surface on a non-user turn cannot be the dialogue
+            # user; no G2 vote can override this code-determinable conflict.
+            valid = False
+            issues.append({"index": index, "code": "reliable_identity_self_reference_role_conflict"})
         mentions.append({**m, "mention_id": mid, "source_start": start, "source_end": end,
                          "source_role": turns[m["turn_id"]].role, "identity_syntax_valid": valid,
                          "identity_source_ids": list(dict.fromkeys(m["identity_source_ids"])) if refs else []})
@@ -124,7 +167,7 @@ def parse_g1(raw, segment, facts, prior):
     return parsed, {"mentions": len(mentions), "projections": len(projections), "syntax_withheld": len(issues)}
 
 
-def parse_g2(raw, proposed):
+def parse_g2(raw, proposed, *, version=FORMATION_RELIABLE_VERSION):
     if not isinstance(raw, dict) or set(raw) != {"mentions", "projections"}:
         raise gf.FormationError("reliable_g2_output_invalid")
     if not isinstance(raw["mentions"], list) or not isinstance(raw["projections"], list):
@@ -153,14 +196,17 @@ def parse_g2(raw, proposed):
                     "relations_supported": sum(d["relation_supported"] for d in projections.values())}
 
 
-def authorized_batch(segment, facts, proposed, decisions):
+def authorized_batch(segment, facts, proposed, decisions, *, version=FORMATION_RELIABLE_VERSION):
     turns = {t.turn_id: t for t in segment.turns}; mm = {m["handle"]: m for m in proposed["mentions"]}
     handles = {h: m["mention_id"] for h, m in mm.items()}; mentions = {}; invalid = set(); existing = {}; deferred = []
+    v5 = version == FORMATION_RELIABLE_VERSION_V5
     for index, (m, d) in enumerate(zip(proposed["mentions"], decisions["mentions"])):
         mid = m["mention_id"]
         if not d["occurrence_supported"]:
             invalid.add(mid);continue
-        deferrable = d["identity_supported"] and _g2_evidence_deferrable(m, mm)
+        # The v4 evidence-omission repair is itself declared valid by the v5
+        # contract, so the deferral path applies to frozen v4 parses only.
+        deferrable = not v5 and d["identity_supported"] and _g2_evidence_deferrable(m, mm)
         if deferrable:
             deferred.append(index)
         same = handles.get(m["same_as"]) if isinstance(m["same_as"], str) else None
@@ -194,19 +240,24 @@ def authorized_batch(segment, facts, proposed, decisions):
     units, roles, context = [], [], {"origins": {}, "times": {}, "fact_ids": {}, "explicit_identity_refs": existing}
     for f, p, d in zip(facts, proposed["projections"], decisions["projections"]):
         refs = tuple(gf.SourceRef(tid, turns[tid].content) for tid in f["allowed_source_ids"])
-        uid = "grounded_memory_v4:" + digest([FORMATION_RELIABLE_VERSION, gf._entity_source_digest(segment), f])
+        uid = reliable_unit_id(segment, f, version=version)
         relation = p["relation"] if d["relation_supported"] else None
         def authorized_handle(handle):
             mid = handles.get(handle)
             return mid if mid in mentions and mid not in invalid else None
-        subject = authorized_handle(relation["subject_mention"]) if relation and d["subject_role_supported"] else None
-        obj = authorized_handle(relation["object_mention"]) if relation and d["object_role_supported"] else None
+        if v5 and not d["relation_supported"]:
+            # A rejected relation voids its role votes; the manifest cannot
+            # keep a subject/object edge without its relation.
+            subject = obj = None
+        else:
+            subject = authorized_handle(relation["subject_mention"]) if relation and d["subject_role_supported"] else None
+            obj = authorized_handle(relation["object_mention"]) if relation and d["object_role_supported"] else None
         participants = tuple(dict.fromkeys(mid for h, allowed in zip(p["mentions"], d["mention_support"])
                                           if allowed and (mid := authorized_handle(h))))
         time = p["referenced_time"] if d["time_supported"] else None
         units.append(gf.GroundedMemoryUnit(uid, f["text"], relation["subject"] if relation else None,
                  relation["predicate"] if relation else None, relation["object"] if relation else None,
-                 refs, FORMATION_RELIABLE_VERSION, time["text"] if time else None))
+                 refs, version, time["text"] if time else None))
         roles.append(gf.GroundedUnitMentions(uid, subject, obj, participants))
         context["origins"][uid] = f["origin_turn_id"];context["times"][uid] = time;context["fact_ids"][uid] = f["fact_id"]
     issues = tuple(gf.FormationIssue("projection", i["index"], i["code"], "rejected") for i in proposed["issues"])

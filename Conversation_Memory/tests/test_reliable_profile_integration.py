@@ -156,7 +156,9 @@ def test_dream_provider_uses_explicit_v4_and_cached_single_adapter(tmp_path,monk
 
 @pytest.mark.parametrize("args,version,read", [([],"grounded-formation-v2",None),
                          (["--first-hit"],"grounded-formation-v2",None),
-                         (["--reliable-memory"],"grounded-formation-v4","reliable-v1")])
+                         (["--reliable-memory"],"grounded-formation-v5","reliable-v2"),
+                         (["--reliable-memory","--ingestion-version","grounded-formation-v4"],
+                          "grounded-formation-v4","reliable-v2")])
 def test_dream_cli_profile_is_explicit(args,version,read,monkeypatch,capsys):
     import Dream.runner as runner
     calls=[]; policies=[]
@@ -207,3 +209,40 @@ def test_v4_metadata_cannot_override_origin_speaker():
     with pytest.raises(ValueError,match="origin anchor mismatch"):
         _formed_event_metadata(segment,unit,replace(segment.turns[1],role="assistant"),
                                ingestion_version=unit.formation_version,configured_entities=())
+
+
+def test_facade_accepts_v5_and_keeps_versioned_checkpoint_and_metadata_pairing(tmp_path,monkeypatch):
+    from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter, _formed_event_metadata
+    from Conversation_Memory.adapter.first_hit import FirstHitPolicy
+    from Conversation_Memory.ingestion.state_store import IngestionStateStore
+    from Conversation_Memory.adapter import _entity_ingestion
+    segment,_=material(version="grounded-formation-v5"); result=object(); calls=[]
+    monkeypatch.setattr(_entity_ingestion,"ingest_entity_formation",lambda adapter,source:(calls.append(source),result)[1])
+    memory=MagmaMemoryAdapter(SimpleNamespace(),IngestionStateStore(tmp_path/"v5-state"),
+                             ingestion_version="grounded-formation-v5",formation_model=object(),
+                             first_hit=FirstHitPolicy(),associative_read_profile="reliable-v1")
+    assert memory.ingest(segment) is result and calls==[segment]
+    unit=material(version="grounded-formation-v5")[1]
+    formed=_formed_event_metadata(segment,unit,segment.turns[1],
+                                  ingestion_version="grounded-formation-v5",configured_entities=())
+    assert formed["formation_version"]==formed["provenance"]["ingestion_version"]=="grounded-formation-v5"
+    assert formed["origin_turn_id"]=="accepted" and formed["entities"]==[]
+    with pytest.raises(ValueError,match="origin anchor mismatch"):
+        _formed_event_metadata(segment,unit,segment.turns[1],
+                               ingestion_version="grounded-formation-v4",configured_entities=())
+    with pytest.raises(ValueError,match="origin anchor mismatch"):
+        _formed_event_metadata(segment,material()[1],segment.turns[1],
+                               ingestion_version="grounded-formation-v5",configured_entities=())
+
+
+def test_first_hit_v5_checkpoint_key_stays_disjoint(tmp_path):
+    from Conversation_Memory.adapter._first_hit_ingestion import load_first_hit_stage
+    from Conversation_Memory.adapter.first_hit import FirstHitPolicy
+    from Conversation_Memory.ingestion.state_store import IngestionStateStore
+    store=IngestionStateStore(tmp_path/"state"); segment,_=material()
+    new=SimpleNamespace(state_store=store,ingestion_version="grounded-formation-v5",first_hit=FirstHitPolicy())
+    v5=load_first_hit_stage(new,segment,"digest",new_formation=True)
+    assert v5["formation_version"]=="grounded-formation-v5"
+    assert store.get(store.key("s","first-hit-v1:grounded-formation-v5"))==v5
+    assert store.get(store.key("s","first-hit-v1:grounded-formation-v4")) is None
+    assert load_first_hit_stage(new,segment,"digest",new_formation=False)==v5
