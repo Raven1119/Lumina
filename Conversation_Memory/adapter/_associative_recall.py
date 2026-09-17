@@ -19,6 +19,8 @@ class Activation:
     candidates: tuple[tuple[BackendCandidate, float, float], ...] = ()
     safe_error_code: str | None = None
     diagnostics: dict = field(default_factory=dict, repr=False)
+    # Actual Fact seeds from the same search, in its original order.
+    seed_fact_ids: tuple[str, ...] = ()
 
 
 def activate(adapter, cue, *, target_entity_refs=None, exclude_evidence_ids=()):
@@ -56,11 +58,14 @@ def activate(adapter, cue, *, target_entity_refs=None, exclude_evidence_ids=()):
         total = sum(score for _, score in seeds)
         seeds = tuple((node_id, score / total) for node_id, score in seeds) if total else ()
         result = discover_first_hit(view, seeds, policy, excluded_node_ids=excluded)
-        candidates = []
+        candidates, seed_facts = [], {}
+        seed_nodes = {node_id for node_id, _ in seeds}
         for node_id in result.fact_ids:
             candidate = backend.first_hit_candidate(node_id)
             if candidate is not None:
                 candidates.append((candidate, result.h[node_id], result.attention[node_id]))
+                if node_id in seed_nodes:
+                    seed_facts[node_id] = candidate.metadata.get("evidence_id")
         view.check(version)
         diagnostics.update(result.stats)
         diagnostics["delta"] = result.delta
@@ -68,7 +73,8 @@ def activate(adapter, cue, *, target_entity_refs=None, exclude_evidence_ids=()):
                       if key.endswith("_unavailable"))
         return Activation(tuple(candidates),
                           "first_hit_seed_channel_unavailable" if partial else None,
-                          diagnostics)
+                          diagnostics, tuple(seed_facts[node_id] for node_id, _ in seeds
+                                             if isinstance(seed_facts.get(node_id), str)))
     except Exception:
         # One failure, no resampling/retrieval retry. Preserve only independently
         # projectable seed Facts; callers can see activation is unavailable.
@@ -89,7 +95,9 @@ def activate(adapter, cue, *, target_entity_refs=None, exclude_evidence_ids=()):
                         for (candidate, weight, _), score in zip(fallback, attention)]
         except Exception:
             fallback = []
-        return Activation(tuple(fallback), "first_hit_unavailable", diagnostics)
+        return Activation(tuple(fallback), "first_hit_unavailable", diagnostics,
+                          tuple(row[0].metadata["evidence_id"] for row in fallback
+                                if isinstance(row[0].metadata.get("evidence_id"), str)))
 
 
 def recall_associative(adapter, cue, policy, *, include_sources=False,
@@ -115,6 +123,11 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
         return empty("invalid_source_policy")
     activation = adapter._activate_first_hit(query)
     adapter._last_first_hit_diagnostics = dict(activation.diagnostics)
+    if getattr(adapter, "associative_read_profile", "first-hit-v1") == "reliable-v1":
+        from ._reliable_recall import pack_reliable
+        return pack_reliable(adapter, query, policy, activation,
+                             include_sources=include_sources,
+                             source_context_turns=source_context_turns)
     relation_ids = _RELATION_RESOLVER.resolve_query_relations(policy.relation_surfaces or ())
     ranked = sorted(activation.candidates,
                     key=lambda row: (-row[2], -row[1], row[0].metadata.get("evidence_id", "")))

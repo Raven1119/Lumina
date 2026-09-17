@@ -90,3 +90,19 @@ def bound_evidence_groups(
         # Capture exact successful blocks; callers never split/paraphrase text.
         _rendered_blocks.extend(parts)
     return tuple(selected), "\n".join(parts), truncated
+
+
+def render_reliable_fact(item, handle: str, *, include_source_context: bool = False) -> str:
+    """Compact whole-Fact view with an inseparable immutable source role."""
+    fields = [handle, _speaker_label(item)]
+    if include_source_context:
+        fields.append("spoken_at=" + item.provenance.source_timestamp)
+    return "[" + " ".join(fields) + "]\n" + item.text
+
+
+def render_reliable_source(item, handle: str, *, include_source_context: bool = False) -> str:
+    """One exact range, without repeating private IDs or full JSON headers."""
+    fields = [handle, _speaker_label(item), f"chars={item.source_start}:{item.source_end}"]
+    if include_source_context:
+        fields.append("spoken_at=" + item.provenance.source_timestamp)
+    return "[" + " ".join(fields) + "]\n" + item.text

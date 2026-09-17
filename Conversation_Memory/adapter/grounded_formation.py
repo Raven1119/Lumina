@@ -85,9 +85,9 @@ class SourceRef:
 class GroundedMemoryUnit:
     id: str
     text: str
-    subject: str
-    relation: str
-    value: str
+    subject: str | None
+    relation: str | None
+    value: str | None
     source_refs: tuple[SourceRef, ...]
     formation_version: str = FORMATION_VERSION
     referenced_time: str | None = None
@@ -1305,6 +1305,25 @@ def _invalid_identity_dependencies(
                 invalid.update(mention.distinct_from)
         if invalid == previous:
             return invalid
+
+
+def _directed_identity_dependencies(
+    mentions: dict[str, GroundedEntityMention], invalid: set[str],
+) -> set[str]:
+    """New protocols invalidate claimants and dependents, not independent targets.
+
+    A failed negative assertion is not positive equality evidence. Callers
+    withhold failed identities rather than retrying name binding. Historical
+    v2 parsing retains its checkpoint semantics.
+    """
+    invalid = set(invalid)
+    for mention in mentions.values():
+        if (mention.same_as is not None and mention.same_as not in mentions
+                or any(ref not in mentions for ref in mention.distinct_from)
+                or mention.id in mention.distinct_from
+                or mention.same_as in mention.distinct_from):
+            invalid.add(mention.id)
+    return _rejected_identity_dependencies(mentions, invalid)
 
 
 def _rejected_identity_dependencies(

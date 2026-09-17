@@ -133,6 +133,20 @@ through its bounded owner interface. The same store owns the separate
 `first-hit-v1` completion key; old v2 checkpoints do not migrate automatically.
 Default configuration, manual Dream, consumer boundaries and pinned MAGMA stay.
 
+## Explicit reliable path
+
+`--reliable-memory` (Dream CLI) or explicit adapter construction selects the
+maintained `grounded-formation-v4` writer and `reliable-v1` associative
+presentation. Read [its contract](docs/RELIABLE_MEMORY.md) before changing
+them. Four bounded batch stages (F1/F2/G1/G2) authorize canonical attributed
+text before optional graph structure; only F2-supported text becomes EVENT and
+only G2-authorized structure becomes role/identity edges. The direct recall
+subset is protected at a fixed 0.6 share inside the unchanged FirstHit
+activation. Default Dream and Chat stay on v2/`first-hit-v1`; v4 uses the
+separate `first-hit-v1:grounded-formation-v4` checkpoint key and never
+migrates or reinterprets v2 checkpoints. Known limitations are listed in the
+contract.
+
 ## Preserved boundaries
 
 - Immutable Cold source text, turn/segment IDs, order, roles, times and timezone.

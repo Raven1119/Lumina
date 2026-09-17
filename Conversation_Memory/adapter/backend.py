@@ -71,7 +71,7 @@ class MemoryBackend(Protocol):
     def resolve_target_entity_refs(self, query: str, *, limit: int = 20) -> tuple[str, ...]: ...
     def upsert_entity_mentions(self, records: list[dict]) -> None: ...
     def list_entity_mentions(self, query: str, *, limit: int) -> tuple[dict, ...]: ...
-    def ensure_event_persisted(self, memory_id: str) -> None: ...
+    def ensure_event_persisted(self, memory_id: str) -> bool: ...
     def persist(self) -> None: ...
     def resolve_target_entity_ref(self, query: str) -> str | None: ...
     def recall(
@@ -122,7 +122,7 @@ class UnavailableMemoryBackend:
     def resolve_target_entity_ref(self, query: str) -> str | None:
         return None
 
-    def ensure_event_persisted(self, memory_id: str) -> None:
+    def ensure_event_persisted(self, memory_id: str) -> bool:
         self._raise()
 
     def recall(
@@ -171,6 +171,11 @@ class RealMagmaBackend:
                 # keyword/entity metadata but encode and persist the full fact.
                 extraction = super()._extract_event(content, metadata)
                 extraction.content_narrative = content
+                # Only explicit G2-authorized bindings may grant entity rights.
+                # Upstream guesses otherwise enter vector metadata/enrichment.
+                from .reliable_formation import FORMATION_RELIABLE_VERSION
+                if (metadata or {}).get("formation_version") == FORMATION_RELIABLE_VERSION:
+                    extraction.entities = []
                 return extraction
 
             def _create_semantic_links(self, event_node, top_k=3):
@@ -638,7 +643,7 @@ class RealMagmaBackend:
                 return node_id
         return None
 
-    def ensure_event_persisted(self, memory_id: str) -> None:
+    def ensure_event_persisted(self, memory_id: str) -> bool:
         """Repair upstream's graph-before-vector failure using stored embedding."""
         self._prepare_entity_membership_write()
         self._prepare_first_hit_write()
@@ -648,7 +653,7 @@ class RealMagmaBackend:
         vector_db = self.trg.vector_db
         if memory_id in vector_db.id_to_index:
             self._refresh_entity_membership(memory_id)
-            return
+            return False
         import numpy as np
         vector = getattr(node, "embedding_vector", None)
         if not isinstance(vector, list) or not vector:
@@ -659,6 +664,7 @@ class RealMagmaBackend:
                                        "keywords": metadata.get("keywords", []),
                                         "entities": metadata.get("entities", [])})
         self._refresh_entity_membership(memory_id)
+        return True
 
     def add_event(self, text: str, timestamp: Any, metadata: dict[str, Any], *,
                   automatic_semantic: bool = True) -> str:

@@ -78,8 +78,12 @@ class RecallPolicy:
     final_min_score: float | None = None
     relation_surfaces: tuple[str, ...] | None = None
     include_source_context: bool = False
+    # UTF-8 bound for reliable-v1; old read profiles retain their contract.
+    max_bytes: int | None = None
 
     def __post_init__(self) -> None:
+        if self.max_bytes is not None and (type(self.max_bytes) is not int or self.max_bytes < 1):
+            raise ValueError("max_bytes must be a positive integer or None")
         if type(self.include_source_context) is not bool:
             raise ValueError("include_source_context must be a bool")
         for name in (
@@ -267,6 +271,20 @@ class SourceMemoryContext:
 
 
 @dataclass(frozen=True)
+class AssociativeSelection:
+    """The representation actually sent for a selected Fact.
+
+    A source view retains its Fact DTO for traceability; it does not claim that
+    the Fact text was also rendered. Source IDs name only visible exact ranges.
+    """
+
+    evidence_id: str
+    channel: Literal["direct", "associated"]
+    visible_representation: Literal["fact", "sources"]
+    source_evidence_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class AssociativeMemoryContext:
     """Fact activation and optional Cold excerpts share one character budget.
 
@@ -278,6 +296,7 @@ class AssociativeMemoryContext:
     rendered_text: str = ""
     truncated: bool = False
     safe_error_code: str | None = None
+    selections: tuple[AssociativeSelection, ...] = ()
 
 
 @dataclass(frozen=True)

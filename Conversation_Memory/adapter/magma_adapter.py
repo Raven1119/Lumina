@@ -38,6 +38,7 @@ from .grounded_formation import (
     serialize_grounded_memory_units,
     validate_persisted_grounded_memory_units,
 )
+from .reliable_formation import FORMATION_RELIABLE_VERSION
 from .models import (
     AssociativeMemoryContext,
     ColdDraftSegment,
@@ -91,12 +92,18 @@ class MagmaMemoryAdapter:
         formation_model: FormationModel | None = None,
         first_hit: FirstHitPolicy | None = None,
         cold_store: ColdDraftStore | None = None,
+        associative_read_profile: str = "first-hit-v1",
     ):
         if (
             formation_model is not None
-            and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2"}
+            and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION}
         ):
             raise ValueError("formation_ingestion_version_required")
+        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1"}:
+            raise ValueError("invalid_associative_read_profile")
+        if associative_read_profile == "reliable-v1" and first_hit is None:
+            raise ValueError("reliable_read_requires_first_hit")
+        self.associative_read_profile = associative_read_profile
         self.backend = backend
         self.state_store = state_store
         self.ingestion_version = ingestion_version
@@ -114,8 +121,8 @@ class MagmaMemoryAdapter:
                     first_hit = FirstHitPolicy(**asdict(first_hit))
                 except (TypeError, ValueError):
                     raise ValueError("invalid_first_hit_policy") from None
-            if ingestion_version != "grounded-formation-v2":
-                raise ValueError("first_hit_requires_formation_v2")
+            if ingestion_version not in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION}:
+                raise ValueError("first_hit_requires_supported_formation_version")
         self.first_hit = first_hit
         self.cold_store = cold_store
         self._bge_reranker = None
@@ -171,7 +178,7 @@ class MagmaMemoryAdapter:
         return None
 
     def ingest(self, segment: ColdDraftSegment) -> IngestionResult:
-        if self.ingestion_version == "grounded-formation-v2":
+        if self.ingestion_version in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION}:
             if self.formation_model is None:
                 return IngestionResult(segment.segment_id, self.ingestion_version,
                                        "failed", safe_error_code="formation_model_unavailable")
@@ -1293,8 +1300,14 @@ def _formed_event_metadata(
     configured_entities: tuple[str, ...],
     subject_entity_binding: EntityBinding | None = None,
     mention_entity_bindings: tuple[MentionEntityBinding, ...] = (),
+    referenced_time_turn: ColdDraftTurn | None = None,
 ) -> dict[str, Any]:
     turns = {turn.turn_id: turn for turn in segment.turns}
+    reliable = unit.formation_version == FORMATION_RELIABLE_VERSION
+    if reliable and (ingestion_version != FORMATION_RELIABLE_VERSION
+                     or source_turn.turn_id not in turns
+                     or asdict(source_turn) != asdict(turns[source_turn.turn_id])):
+        raise ValueError("formed origin anchor mismatch")
     refs = []
     for ref in unit.source_refs:
         turn = turns[ref.turn_id]
@@ -1314,13 +1327,26 @@ def _formed_event_metadata(
     first_ref = next(
         ref for ref in refs if ref["turn_id"] == source_turn.turn_id
     )
+    temporal_turn = source_turn
+    temporal_text = unit.text
+    if reliable:
+        # Statement provenance always uses the explicit origin. An approved
+        # relative-time projection can have a different source anchor.
+        temporal_text = ""
+        if unit.referenced_time is not None and referenced_time_turn is not None:
+            temporal_turn = turns.get(referenced_time_turn.turn_id)
+            if (temporal_turn is None or asdict(temporal_turn) != asdict(referenced_time_turn)
+                    or not any(ref.turn_id == temporal_turn.turn_id and
+                               unit.referenced_time in ref.supporting_span for ref in unit.source_refs)):
+                raise ValueError("formed referenced-time anchor mismatch")
+            temporal_text = unit.referenced_time
     formed_turn = ColdDraftTurn(
-        turn_id=source_turn.turn_id,
-        role=source_turn.role,
-        content=unit.text,
-        timestamp=source_turn.timestamp,
-        source_timezone=source_turn.source_timezone,
-        timezone_source=source_turn.timezone_source,
+        turn_id=temporal_turn.turn_id,
+        role=temporal_turn.role,
+        content=temporal_text,
+        timestamp=temporal_turn.timestamp,
+        source_timezone=temporal_turn.source_timezone,
+        timezone_source=temporal_turn.timezone_source,
     )
     temporal_mentions = [
         item.__dict__ for item in normalize_temporal_references(formed_turn)
@@ -1338,7 +1364,7 @@ def _formed_event_metadata(
     subject_entity_ref = (
         subject_entity_binding.entity_ref
         if subject_entity_binding is not None
-        else classify_subject_entity_ref(unit, segment)
+        else None if reliable else classify_subject_entity_ref(unit, segment)
     )
     metadata = {
         "evidence_id": unit.id,
@@ -1355,7 +1381,7 @@ def _formed_event_metadata(
         "source_start": first_ref["source_start"],
         "source_end": first_ref["source_end"],
         "role": source_turn.role,
-        "entities": list(extract_entities(unit.text, configured_entities)),
+        "entities": [] if reliable else list(extract_entities(unit.text, configured_entities)),
         "temporal_mentions": [dict(item) for item in temporal_mentions],
         "dates_mentioned": [
             {
@@ -1366,6 +1392,8 @@ def _formed_event_metadata(
         ],
         "provenance": provenance.__dict__,
     }
+    if reliable:
+        metadata["origin_turn_id"] = source_turn.turn_id
     if subject_entity_binding is not None:
         metadata["subject_entity_surface"] = (
             subject_entity_binding.canonical_surface

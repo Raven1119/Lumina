@@ -17,6 +17,7 @@ from .grounded_formation import (
     serialize_grounded_memory_batch,
 )
 from .models import IngestionResult, SourceProvenance
+from .reliable_formation import FORMATION_RELIABLE_VERSION, form_reliable_batch
 from .user_self import CURRENT_USER_ENTITY_REF
 from ._first_hit_ingestion import (
     FirstHitIngestionError,
@@ -32,8 +33,11 @@ def _source_digest(segment) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _bind_mentions(batch, segment, backend) -> list[dict[str, Any]]:
+def _bind_mentions(batch, segment, backend, *, version=FORMATION_ENTITY_VERSION,
+                   explicit_identity_refs=None) -> list[dict[str, Any]]:
     """Resolve all roles against one source-ordered view, retaining ambiguity."""
+    explicit_identity_refs = explicit_identity_refs or {}
+    reliable = version == FORMATION_RELIABLE_VERSION
     turns = {turn.turn_id: turn for turn in segment.turns}
     records: dict[str, dict[str, Any]] = {}
     overlay: dict[str, dict[str, str]] = {}
@@ -72,6 +76,8 @@ def _bind_mentions(batch, segment, backend) -> list[dict[str, Any]]:
                 # the distinct-from guard below still forbids actual conflicts.
                 if prior_ref:
                     ref = prior_ref
+            elif reliable and mention.identity == "named":
+                ref = explicit_identity_refs.get(mention.id)
             elif mention.identity == "new" or (
                 mention.identity == "named" and not overflow
                 and excluded and set(candidates).issubset(excluded)
@@ -89,7 +95,7 @@ def _bind_mentions(batch, segment, backend) -> list[dict[str, Any]]:
             provenance = SourceProvenance(
                 segment.segment_id, segment.conversation_id, turn.turn_id,
                 turn.role, turn.timestamp.isoformat(), turn.source_timezone,
-                FORMATION_ENTITY_VERSION, turn.timezone_source,
+                version, turn.timezone_source,
             )
             record = {
                 "mention_id": mention.id,
@@ -115,7 +121,8 @@ def _bind_mentions(batch, segment, backend) -> list[dict[str, Any]]:
     raise ValueError("mention_identity_cycle")
 
 
-def _validate_records(raw, batch, segment) -> bool:
+def _validate_records(raw, batch, segment, *, version=FORMATION_ENTITY_VERSION,
+                      explicit_identity_refs=None) -> bool:
     if not isinstance(raw, list) or len(raw) != len(batch.mentions):
         return False
     turns = {turn.turn_id: turn for turn in segment.turns}
@@ -136,7 +143,7 @@ def _validate_records(raw, batch, segment) -> bool:
             ("provenance", asdict(SourceProvenance(
                 segment.segment_id, segment.conversation_id, turn.turn_id,
                 turn.role, turn.timestamp.isoformat(), turn.source_timezone,
-                FORMATION_ENTITY_VERSION, turn.timezone_source,
+                version, turn.timezone_source,
             ))),
         )):
             return False
@@ -157,6 +164,9 @@ def _validate_records(raw, batch, segment) -> bool:
             return False
         if mention.identity == "unresolved" and ref is not None:
             return False
+        if (version == FORMATION_RELIABLE_VERSION and mention.identity == "named"
+                and not mention.same_as and ref != (explicit_identity_refs or {}).get(mention.id)):
+            return False
     by_id = {record["mention_id"]: record for record in raw}
     for mention in batch.mentions:
         ref = by_id[mention.id]["entity_ref"]
@@ -168,11 +178,46 @@ def _validate_records(raw, batch, segment) -> bool:
     return True
 
 
+def _identity_source_candidates(adapter, segment):
+    """Snapshot actual prior occurrences through the existing Cold owner.
+
+    Missing/oversized history simply leaves identities unresolved. Same-name
+    graph lookup supplies candidates, never identity authorization.
+    """
+    cold = getattr(adapter, "cold_store", None)
+    if cold is None:
+        return ()
+    records = adapter.backend.list_entity_mentions("\n".join(t.content for t in segment.turns), limit=24)
+    selected, refs = [], []
+    for record in records:
+        p = record.get("provenance", {})
+        if not record.get("entity_ref") or not isinstance(p, dict):
+            continue
+        if p.get("segment_id") == segment.segment_id:
+            continue
+        selected.append(record)
+        refs.append({**p, "source_start": record["source_start"], "source_end": record["source_end"],
+                     "supporting_span": record["surface"]})
+    if not refs:
+        return ()
+    result = cold.read_source_refs(refs, max_refs=24, max_items=24, max_chars=12000,
+                                   max_bytes=48000, whole_turns=True)
+    if result.safe_error_code:
+        return ()
+    sources = {(x.provenance.segment_id, x.provenance.turn_id): x for x in result.evidence
+               if x.source_start == 0 and x.source_end == x.turn_length}
+    return tuple({"entity_ref": r["entity_ref"], "mention_id": r["mention_id"],
+                  "surface": r["surface"], "provenance": r["provenance"],
+                  "source_text": sources[(r["provenance"]["segment_id"], r["provenance"]["turn_id"])].text}
+                 for r in selected if (r["provenance"]["segment_id"], r["provenance"]["turn_id"]) in sources)
+
+
 def ingest_entity_formation(adapter, segment) -> IngestionResult:
     """Persist extraction, verification and binding before graph mutations."""
     from .magma_adapter import _formed_event_metadata, _formed_source_turn
 
-    version = FORMATION_ENTITY_VERSION
+    version = adapter.ingestion_version
+    reliable = version == FORMATION_RELIABLE_VERSION
     invalid = adapter._validate(segment)
     if invalid:
         return IngestionResult(segment.segment_id, version, "failed",
@@ -189,6 +234,18 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 "segment_id": segment.segment_id, "ingestion_version": version,
                 "status": "pending", "memory_ids": [],
             }
+        elif reliable:
+            if (not set(state).issubset({"schema_version", "source_digest", "segment_id", "ingestion_version",
+                                        "status", "memory_ids", "formation", "mentions"})
+                    or state.get("schema_version") != version or state.get("source_digest") != digest
+                    or state.get("segment_id") != segment.segment_id or state.get("ingestion_version") != version
+                    or state.get("status") not in {"pending", "in_progress", "partial", "completed"}
+                    or not isinstance(state.get("memory_ids"), list)
+                    or not all(isinstance(mid, str) and mid for mid in state["memory_ids"])
+                    or "mentions" in state and "formation" not in state
+                    or state.get("status") in {"in_progress", "partial", "completed"}
+                    and not {"formation", "mentions"} <= state.keys()):
+                raise ValueError("state_corrupt")
         elif (
             not set(state).issubset({
                 "schema_version", "source_digest", "segment_id", "ingestion_version",
@@ -232,7 +289,8 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                                    retryable=True, safe_error_code="state_write_failed")
 
     def checkpoint(stage, payload):
-        if stage not in {"extracted", "verified", "repair", "repair_verified"}:
+        allowed = {"formation"} if reliable else {"extracted", "verified", "repair", "repair_verified"}
+        if stage not in allowed:
             raise ValueError("formation_stage_invalid")
         state[stage] = payload
         if stage == "repair_verified":
@@ -243,20 +301,27 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
         store.put(key, state)
 
     try:
-        batch = form_grounded_memory_batch(
-            segment, adapter.formation_model,
-            extracted_checkpoint=state.get("extracted"),
-            verified_checkpoint=state.get("repair_verified", state.get("verified")),
-            checkpoint=checkpoint,
-        )
-        if "repair_verified" in state:
-            original = form_grounded_memory_batch(
-                segment, adapter.formation_model, verified_checkpoint=state["verified"],
+        context = {}
+        if reliable:
+            batch, context = form_reliable_batch(
+                segment, adapter.formation_model, progress=state.get("formation"),
+                checkpoint=checkpoint, identity_candidates=lambda: _identity_source_candidates(adapter, segment),
             )
-            if (batch.mentions != original.mentions
-                    or batch.units[:len(original.units)] != original.units
-                    or batch.unit_mentions[:len(original.unit_mentions)] != original.unit_mentions):
-                raise FormationError("formation_checkpoint_invalid")
+        else:
+            batch = form_grounded_memory_batch(
+                segment, adapter.formation_model,
+                extracted_checkpoint=state.get("extracted"),
+                verified_checkpoint=state.get("repair_verified", state.get("verified")),
+                checkpoint=checkpoint,
+            )
+            if "repair_verified" in state:
+                original = form_grounded_memory_batch(
+                    segment, adapter.formation_model, verified_checkpoint=state["verified"],
+                )
+                if (batch.mentions != original.mentions
+                        or batch.units[:len(original.units)] != original.units
+                        or batch.unit_mentions[:len(original.unit_mentions)] != original.unit_mentions):
+                    raise FormationError("formation_checkpoint_invalid")
     except FormationError as error:
         return IngestionResult(segment.segment_id, version, "failed",
                                retryable=error.retryable, safe_error_code=error.code)
@@ -265,10 +330,13 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                                retryable=True, safe_error_code="state_write_failed")
     try:
         if "mentions" not in state:
-            state["mentions"] = _bind_mentions(batch, segment, backend)
-            state["verified"] = serialize_grounded_memory_batch(batch)
+            state["mentions"] = _bind_mentions(batch, segment, backend, version=version,
+                                                explicit_identity_refs=context.get("explicit_identity_refs"))
+            if not reliable:
+                state["verified"] = serialize_grounded_memory_batch(batch)
             store.put(key, state)
-        if not _validate_records(state["mentions"], batch, segment):
+        if not _validate_records(state["mentions"], batch, segment, version=version,
+                                 explicit_identity_refs=context.get("explicit_identity_refs")):
             raise ValueError("state_corrupt")
         if len(state["memory_ids"]) > len(batch.units):
             raise ValueError("state_corrupt")
@@ -288,11 +356,19 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 # The association checkpoint precedes either terminal v2
                 # state. An inconsistent pair is not a resumable planning gap.
                 raise FirstHitIngestionError("first_hit_checkpoint_invalid")
-            if pending_issues and "repair_verified" in state:
+            if pending_issues and (reliable or "repair_verified" in state):
                 return IngestionResult(segment.segment_id, version, "failed",
                                        tuple(state["memory_ids"]), retryable=False,
                                        safe_error_code="formation_processing_incomplete")
             if not pending_issues:
+                if reliable:
+                    ensure = getattr(backend, "ensure_event_persisted", None)
+                    repaired = False
+                    if callable(ensure):
+                        for memory_id in state["memory_ids"]:
+                            repaired = bool(ensure(memory_id)) or repaired
+                    if repaired:
+                        backend.persist()
                 return IngestionResult(segment.segment_id, version, "completed",
                                        tuple(state["memory_ids"]), already_ingested=True)
     except FirstHitIngestionError as error:
@@ -307,7 +383,7 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
         return IngestionResult(segment.segment_id, version, "failed",
                                retryable=True, safe_error_code="entity_consolidation_failed")
 
-    if state["status"] == "partial":
+    if state["status"] == "partial" and not reliable:
         try:
             batch = repair_grounded_memory_batch(
                 segment, adapter.formation_model,
@@ -351,15 +427,25 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 subject = records.get(role.subject, {})
                 obj = records.get(role.object, {})
                 subject_ref = subject.get("entity_ref")
+                origin = (next(t for t in segment.turns if t.turn_id == context["origins"][unit.id])
+                          if reliable else _formed_source_turn(segment, unit))
+                time = context.get("times", {}).get(unit.id)
+                time_turn = next((t for t in segment.turns if time and t.turn_id == time["turn_id"]), None)
                 metadata = _formed_event_metadata(
-                    segment, unit, _formed_source_turn(segment, unit),
+                    segment, unit, origin,
                     ingestion_version=version,
                     configured_entities=adapter.configured_entities,
                     subject_entity_binding=(
                         EntityBinding(unit.id, subject_ref, subject["surface"])
                         if subject_ref else None
                     ),
+                    **({"referenced_time_turn": time_turn} if reliable else {}),
                 )
+                if reliable:
+                    metadata.update(origin_turn_id=origin.turn_id,
+                                    formation_receipts=context["receipts"],
+                                    source_package_ids=[ref.turn_id for ref in unit.source_refs],
+                                    used_source_ids=context["used_sources"][context["fact_ids"][unit.id]])
                 # v2 roles come exclusively from verified mention handles;
                 # legacy first-person heuristics cannot resolve a missing role.
                 metadata["subject_entity_ref"] = subject_ref
@@ -370,8 +456,8 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 metadata["mention_entity_surfaces"] = [r["surface"] for r in participants]
                 metadata["mention_ids"] = list(role.mentions)
                 memory_id = backend.add_event(
-                    unit.text, _formed_source_turn(segment, unit).timestamp, metadata,
-                    **({"automatic_semantic": False} if association is not None else {}),
+                    unit.text, origin.timestamp, metadata,
+                    **({"automatic_semantic": False} if association is not None or reliable else {}),
                 )
                 backend.persist()
             memory_ids.append(memory_id)
@@ -379,7 +465,7 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
             store.put(key, state)
         backend.create_relationships(
             memory_ids,
-            **({"automatic_entity_links": False} if association is not None else {}),
+            **({"automatic_entity_links": False} if association is not None or reliable else {}),
         )
         backend.persist()
         if association is not None:
@@ -388,7 +474,7 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
         store.put(key, state)
         if pending_issues:
             return IngestionResult(segment.segment_id, version, "failed", tuple(memory_ids),
-                                   retryable="repair" not in state and can_repair_grounded_memory_batch(
+                                   retryable=not reliable and "repair" not in state and can_repair_grounded_memory_batch(
                                        segment, extracted_checkpoint=state["extracted"], batch=batch,
                                    ), safe_error_code="formation_processing_incomplete")
         return IngestionResult(segment.segment_id, version, "completed", tuple(memory_ids))

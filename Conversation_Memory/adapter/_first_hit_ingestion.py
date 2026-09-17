@@ -31,10 +31,16 @@ def _plan_digest(evidence_ids, link_plan):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _stage_version(formation_version):
+    # Preserve the historical v2 key; never overwrite another protocol's plan.
+    return (FIRST_HIT_VERSION if formation_version == FORMATION_ENTITY_VERSION
+            else FIRST_HIT_VERSION + ":" + formation_version)
+
+
 def _put(adapter, stage):
     try:
         adapter.state_store.put(
-            adapter.state_store.key(stage["segment_id"], FIRST_HIT_VERSION), stage,
+            adapter.state_store.key(stage["segment_id"], _stage_version(stage["formation_version"])), stage,
         )
     except Exception as error:
         raise FirstHitIngestionError("first_hit_state_write_failed", retryable=True) from error
@@ -44,13 +50,13 @@ def _valid_number(value):
     return type(value) in {int, float} and math.isfinite(value) and 0 < value <= 1
 
 
-def _validate_stage(stage, segment, digest, profile):
+def _validate_stage(stage, segment, digest, profile, formation_version=FORMATION_ENTITY_VERSION):
     if (
         set(stage) != {"schema_version", "formation_version", "segment_id",
                        "source_digest", "profile", "status", "evidence_ids",
                        "link_plan", "plan_digest"}
         or stage["schema_version"] != FIRST_HIT_VERSION
-        or stage["formation_version"] != FORMATION_ENTITY_VERSION
+        or stage["formation_version"] != formation_version
         or stage["segment_id"] != segment.segment_id
         or stage["source_digest"] != digest
         or stage["profile"] != profile
@@ -89,9 +95,10 @@ def _validate_stage(stage, segment, digest, profile):
 def load_first_hit_stage(adapter, segment, digest, *, new_formation):
     """Reserve only genuinely new Formation work; never migrate old records."""
     policy = getattr(adapter, "first_hit", None)
+    version = getattr(adapter, "ingestion_version", FORMATION_ENTITY_VERSION)
     try:
         stage = adapter.state_store.get(
-            adapter.state_store.key(segment.segment_id, FIRST_HIT_VERSION),
+            adapter.state_store.key(segment.segment_id, _stage_version(version)),
         )
     except Exception as error:
         retryable = isinstance(error, OSError) or isinstance(error.__cause__, OSError)
@@ -107,7 +114,7 @@ def load_first_hit_stage(adapter, segment, digest, *, new_formation):
     if stage is None:
         stage = {
             "schema_version": FIRST_HIT_VERSION,
-            "formation_version": FORMATION_ENTITY_VERSION,
+            "formation_version": version,
             "segment_id": segment.segment_id, "source_digest": digest,
             "profile": profile, "status": "pending", "evidence_ids": [],
             "link_plan": [], "plan_digest": _plan_digest([], []),
@@ -116,7 +123,7 @@ def load_first_hit_stage(adapter, segment, digest, *, new_formation):
         # starting v2 and recognizing its association completion responsibility.
         _put(adapter, stage)
     try:
-        _validate_stage(stage, segment, digest, profile)
+        _validate_stage(stage, segment, digest, profile, version)
     except FirstHitIngestionError:
         raise
     except Exception as error:

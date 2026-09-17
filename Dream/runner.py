@@ -26,6 +26,7 @@ if str(_CONVERSATION_MEMORY_ROOT) not in sys.path:
 
 from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
 from adapter.grounded_formation import FORMATION_ENTITY_VERSION as FORMATION_VERSION  # noqa: E402
+from adapter.reliable_formation import FORMATION_RELIABLE_VERSION  # noqa: E402
 from adapter.interfaces import MemoryIngestor  # noqa: E402
 from ingestion.state_store import IngestionStateStore  # noqa: E402
 
@@ -36,20 +37,21 @@ class RealMemoryIngestorProvider:
         persist_dir: Path,
         state_path: Path,
         formation_model: ModelClient | None = None,
-        *, first_hit=None, cold_store=None,
+        *, first_hit=None, cold_store=None, associative_read_profile="first-hit-v1",
     ) -> None:
         self._persist_dir = persist_dir
         self._state_store = IngestionStateStore(state_path)
         self._formation_model = formation_model
         self._first_hit = first_hit
         self._cold_store = cold_store
+        self._associative_read_profile = associative_read_profile
         self._cache: dict[str, MemoryIngestor] = {}
 
     def get(self, ingestion_version: str) -> MemoryIngestor:
-        if ingestion_version not in {FORMATION_VERSION, _LEGACY_INGESTION_VERSION}:
+        if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION, _LEGACY_INGESTION_VERSION}:
             raise RuntimeError("unsupported_ingestion_version")
         if (
-            ingestion_version == FORMATION_VERSION
+            ingestion_version in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION}
             and self._formation_model is None
         ):
             raise RuntimeError("formation_model_unavailable")
@@ -60,9 +62,10 @@ class RealMemoryIngestorProvider:
                 ingestion_version=ingestion_version,
                 first_hit=self._first_hit,
                 cold_store=self._cold_store,
+                associative_read_profile=self._associative_read_profile,
                 formation_model=(
                     self._formation_model
-                    if ingestion_version == FORMATION_VERSION
+                    if ingestion_version in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION}
                     else None
                 ),
             )
@@ -133,7 +136,7 @@ def build_formation_model_client() -> ModelClient:
 
 def build_default_runner(
     model_client: ModelClient | None = None,
-    *, first_hit=None,
+    *, first_hit=None, associative_read_profile="first-hit-v1",
 ) -> DreamRunner:
     cold_path = Path(
         os.environ.get(
@@ -163,7 +166,7 @@ def build_default_runner(
         effective_model
         if getattr(effective_model, "client_kind", None) == "model"
         else None,
-        first_hit=first_hit, cold_store=owner,
+        first_hit=first_hit, cold_store=owner, associative_read_profile=associative_read_profile,
     )
     task = ColdDraftDigestionTask(owner, provider)
     return DreamRunner(owner, task)
@@ -176,6 +179,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--ingestion-version", default=None)
     parser.add_argument("--first-hit", action="store_true",
                         help="Explicit first-hit-v1 local links for new Formation v2 windows")
+    parser.add_argument("--reliable-memory", action="store_true",
+                        help="Explicit Formation v4, FirstHit local links and reliable-v1 reading")
     return parser
 
 
@@ -183,7 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         effective_model = build_formation_model_client()
-        ingestion_version = args.ingestion_version or (
+        if args.reliable_memory and args.ingestion_version not in {None, FORMATION_RELIABLE_VERSION}:
+            raise ValueError("reliable_memory_requires_formation_v4")
+        ingestion_version = args.ingestion_version or (FORMATION_RELIABLE_VERSION if args.reliable_memory else None) or (
             FORMATION_VERSION
             if getattr(effective_model, "client_kind", None) == "model"
             else _LEGACY_INGESTION_VERSION
@@ -193,11 +200,14 @@ def main(argv: list[str] | None = None) -> int:
             stop_on_error=args.stop_on_error,
             ingestion_version=ingestion_version,
         )
-        if args.first_hit:
+        if args.first_hit or args.reliable_memory:
             from adapter.first_hit import FirstHitPolicy
-            if ingestion_version != FORMATION_VERSION:
-                raise ValueError("first_hit_requires_formation_v2")
-            runner = build_default_runner(effective_model, first_hit=FirstHitPolicy())
+            if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION}:
+                raise ValueError("first_hit_requires_supported_formation_version")
+            runner = build_default_runner(
+                effective_model, first_hit=FirstHitPolicy(),
+                **({"associative_read_profile": "reliable-v1"} if args.reliable_memory else {}),
+            )
         else:
             runner = build_default_runner(effective_model)
         report = runner.run_once(policy)

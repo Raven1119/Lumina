@@ -45,6 +45,18 @@ _SAFE_INGESTION_ERRORS = {
     "state_write_failed",
     "grounded_manifest_mismatch",
     "memory_write_failed",
+    "reliable_stage_input_too_large",
+    "reliable_stage_delivery_unknown",
+    "reliable_stage_checkpoint_invalid",
+    "reliable_stage_output_invalid",
+    "reliable_f1_output_invalid",
+    "reliable_f2_output_invalid",
+    "reliable_f2_authorization_invalid",
+    "reliable_identity_candidate_budget",
+    "reliable_g1_output_invalid",
+    "reliable_g1_projection_manifest_invalid",
+    "reliable_g2_output_invalid",
+    "reliable_g2_authorization_invalid",
 }
 
 
