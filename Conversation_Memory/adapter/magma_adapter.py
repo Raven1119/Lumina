@@ -100,9 +100,9 @@ class MagmaMemoryAdapter:
             and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
         ):
             raise ValueError("formation_ingestion_version_required")
-        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1"}:
+        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2"}:
             raise ValueError("invalid_associative_read_profile")
-        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1"} and first_hit is None:
+        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2"} and first_hit is None:
             raise ValueError("reliable_read_requires_first_hit")
         self.associative_read_profile = associative_read_profile
         self.backend = backend
@@ -239,7 +239,7 @@ class MagmaMemoryAdapter:
         adapters without FirstHit keep the original BGE/Hindsight read.
         """
         if (
-            self.associative_read_profile in ("reliable-v1", "reliable-v2", "graph-read-v1")
+            self.associative_read_profile in ("reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2")
             and self.first_hit is not None
         ):
             result = self.recall_associative(

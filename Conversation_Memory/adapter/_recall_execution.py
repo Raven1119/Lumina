@@ -345,7 +345,7 @@ def _bounded_projection(*, graph_db, anchors, constraints, target_refs,
 
 
 def find_recall_seeds(backend, query, policy, *, target_entity_refs=(),
-                      excluded_node_ids=()):
+                      excluded_node_ids=(), _candidate_buffer=False):
     """Seed-only RRF over existing indexes; no graph traversal or generation.
 
     Native FAISS distances order dense candidates; they are never excitation
@@ -424,7 +424,12 @@ def find_recall_seeds(backend, query, policy, *, target_entity_refs=(),
         stats["entity_unavailable"] = True
     if not channels:
         raise ValueError("first_hit_seeds_unavailable")
-    seeds = _rrf_fuse(channels, limit=policy.max_seeds)
+    # The query-driven reader may inspect the bounded union before sharing
+    # five seed slots. Each of the four existing channels still returns at
+    # most five entries: three searches retain at most 60 distinct entries.
+    # Legacy callers use exactly the original final truncation.
+    limit = min(20, 4 * policy.max_seeds) if _candidate_buffer else policy.max_seeds
+    seeds = _rrf_fuse(channels, limit=limit)
     stats["seed_search_seconds"] = perf_counter() - started
     stats["seeds_returned"] = len(seeds)
     return tuple((node.node_id, score) for node, score in seeds), stats

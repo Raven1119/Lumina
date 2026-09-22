@@ -14,6 +14,9 @@ from .models import BackendCandidate, SourceProvenance
 
 _LIMIT = 5
 _RESOLVER = ControlledRelationResolver()
+QUERY_MAX_RECENT_TURNS = 12
+QUERY_MAX_RECENT_CHARS = 6000
+QUERY_MAX_MESSAGE_CHARS = 8000
 
 
 def _text(value):
@@ -55,11 +58,115 @@ class RelationConstraint:
 
 
 @dataclass(frozen=True)
+class QueryContextTurn:
+    role: str
+    text: str
+
+    def __post_init__(self):
+        if self.role not in {"user", "assistant", "summary"} or not isinstance(self.text, str):
+            raise ValueError("graph_query_context_invalid")
+
+
+@dataclass(frozen=True)
+class QuerySource:
+    """Exact source location; -1 is the current message, others are near turns."""
+    index: int
+    quote: str
+    occurrence: int
+    start: int
+    end: int
+
+    def __post_init__(self):
+        if (type(self.index) is not int or not -1 <= self.index < QUERY_MAX_RECENT_TURNS
+                or not isinstance(self.quote, str) or not 1 <= len(self.quote) <= 256
+                or type(self.occurrence) is not int or not 0 <= self.occurrence < 16
+                or type(self.start) is not int or type(self.end) is not int
+                or not 0 <= self.start < self.end or self.end - self.start != len(self.quote)):
+            raise ValueError("graph_query_source_invalid")
+
+
+def _query_sources(sources):
+    if (not isinstance(sources, tuple) or not 1 <= len(sources) <= 2
+            or any(not isinstance(item, QuerySource) for item in sources)):
+        raise ValueError("graph_query_sources_invalid")
+
+
+@dataclass(frozen=True)
+class QueryClue:
+    id: str
+    text: str
+    kind: str
+    sources: tuple[QuerySource, ...]
+
+    def __post_init__(self):
+        if (self.id not in {"c1", "c2", "c3"} or not isinstance(self.text, str)
+                or not self.text.strip() or len(self.text) > 128
+                or self.kind not in {"name", "current_user", "topic", "literal"}):
+            raise ValueError("graph_query_clue_invalid")
+        _query_sources(self.sources)
+        if not any(self.text in source.quote for source in self.sources):
+            raise ValueError("graph_query_clue_not_in_source")
+
+
+@dataclass(frozen=True)
+class QueryRelation:
+    subject: str
+    predicate: str
+    object: str
+    sources: tuple[QuerySource, ...]
+
+    def __post_init__(self):
+        if (self.subject not in {"c1", "c2", "c3", "?entity"}
+                or self.object not in {"c1", "c2", "c3", "?entity", "?value"}
+                or not isinstance(self.predicate, str) or not self.predicate.strip()
+                or len(self.predicate) > 48):
+            raise ValueError("graph_query_relation_invalid")
+        _query_sources(self.sources)
+
+
+@dataclass(frozen=True)
+class QueryIntent:
+    mode: str
+    clues: tuple[QueryClue, ...] = ()
+    relations: tuple[QueryRelation, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        if self.mode not in {"open", "precise"}:
+            raise ValueError("graph_query_mode_invalid")
+        for values, cls, limit in ((self.clues, QueryClue, 3), (self.relations, QueryRelation, 2)):
+            if (not isinstance(values, tuple) or len(values) > limit
+                    or any(not isinstance(item, cls) for item in values)):
+                raise ValueError("graph_query_intent_limit")
+        if (not isinstance(self.unresolved, tuple) or len(self.unresolved) > 4
+                or any(not isinstance(item, str) or not item.strip() or len(item) > 96
+                       for item in self.unresolved)):
+            raise ValueError("graph_query_unresolved_invalid")
+        ids = {item.id for item in self.clues}
+        if len(ids) != len(self.clues):
+            raise ValueError("graph_query_duplicate_clue")
+        kinds = {item.id: item.kind for item in self.clues}
+        for relation in self.relations:
+            if any(value.startswith("c") and value not in ids for value in (relation.subject, relation.object)):
+                raise ValueError("graph_query_unknown_clue")
+            if kinds.get(relation.subject) == "literal":
+                raise ValueError("graph_query_literal_subject")
+        if self.mode == "precise" and not self.relations:
+            raise ValueError("graph_query_precise_needs_relation")
+        if self.mode == "open" and self.relations:
+            raise ValueError("graph_query_open_has_relation")
+        if sum(relation.object == "?value" for relation in self.relations) > 1:
+            raise ValueError("graph_query_multiple_unknown_values")
+
+
+@dataclass(frozen=True)
 class GraphReadQuery:
     text: str
     clues: tuple[ReadClue, ...] = ()
     require_all: bool = False
     relations: tuple[RelationConstraint, ...] = ()
+    intent: QueryIntent | None = None
+    recent_context: tuple[QueryContextTurn, ...] = ()
 
     def __post_init__(self):
         _text(self.text)
@@ -69,6 +176,54 @@ class GraphReadQuery:
             if (not isinstance(values, tuple) or len(values) > _LIMIT
                     or any(not isinstance(item, cls) for item in values)):
                 raise ValueError("graph_read_conditions_invalid")
+        if self.intent is not None and not isinstance(self.intent, QueryIntent):
+            raise ValueError("graph_query_intent_invalid")
+        if (not isinstance(self.recent_context, tuple)
+                or len(self.recent_context) > QUERY_MAX_RECENT_TURNS
+                or any(not isinstance(turn, QueryContextTurn) for turn in self.recent_context)
+                or sum(len(turn.text) for turn in self.recent_context) > QUERY_MAX_RECENT_CHARS):
+            raise ValueError("graph_query_context_limit")
+
+
+def query_source(index, quote, occurrence, text, recent_context):
+    """Locate the requested exact occurrence without trusting model offsets."""
+    if (type(index) is not int or not -1 <= index < len(recent_context)
+            or not isinstance(quote, str) or not 1 <= len(quote) <= 256
+            or type(occurrence) is not int or not 0 <= occurrence < 16):
+        raise ValueError("graph_query_source_invalid")
+    source = text if index == -1 else recent_context[index].text
+    start = -1
+    for _ in range(occurrence + 1):
+        start = source.find(quote, start + 1)
+        if start < 0:
+            raise ValueError("graph_query_quote_missing")
+    return QuerySource(index, quote, occurrence, start, start + len(quote))
+
+
+def validate_query_intent(query: GraphReadQuery) -> QueryIntent | None:
+    """Recheck source/shape at the Memory boundary; no semantic entailment claim."""
+    query.__post_init__()
+    intent = query.intent
+    if intent is None:
+        return None
+    if query.clues or query.relations or query.require_all:
+        raise ValueError("graph_query_mixed_contracts")
+    intent.__post_init__()
+    for turn in query.recent_context:
+        turn.__post_init__()
+    for item in (*intent.clues, *intent.relations):
+        item.__post_init__()
+        for source in item.sources:
+            source.__post_init__()
+            actual = query_source(source.index, source.quote, source.occurrence,
+                                  query.text, query.recent_context)
+            if source != actual:
+                raise ValueError("graph_query_source_mismatch")
+        if (isinstance(item, QueryClue) and item.kind == "current_user"
+                and not any(source.index == -1 or query.recent_context[source.index].role == "user"
+                            for source in item.sources)):
+            raise ValueError("graph_query_current_user_source_role")
+    return intent
 
 
 @dataclass(frozen=True)

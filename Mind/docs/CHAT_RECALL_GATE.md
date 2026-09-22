@@ -15,11 +15,12 @@ There is no query editor, second memory store or read-time ingestion.
 | `constant` | Constant allow decision, then the same bounded Recall. |
 | `direct` (explicit experiment) | No pre-read gate; original question reads whole bounded candidates for Answer. |
 | `select` (explicit experiment) | One original-question read, then one semantic selection of existing source evidence, then Answer. |
+| `graph-read-v2` (explicit candidate) | One structured Mind gate, then matching query-driven graph Memory, then Answer with original question and conversation. |
 
 The default v2 prompt, boolean parser, temperature 0 and eight-token output
-budget are unchanged. Mock models use the constant gate unless a read-first mode was
-explicitly selected. Gate-client construction failure falls back to the constant
-gate. Other mode strings use the existing default selection.
+budget are unchanged. Mock models use the constant gate unless a read-first or
+structured candidate mode was explicitly selected. Original gate-client construction
+failure falls back to the constant gate. Other mode strings use the existing default selection.
 
 V3 free-query generation and v4 character replacement are retired from maintained
 execution. Their frozen source and outcomes remain local experimental evidence;
@@ -39,6 +40,70 @@ failure restores allow and attempts one fallback append; if both writes fail,
 Chat remains available with a log-failure event. Direct `record` callers without
 an audit still use the original three-field format. Injected boolean gates may
 omit a logger as before.
+
+## Structured query candidate
+
+`LUMINA_MIND_GATE_MODE=graph-read-v2` explicitly pairs `LlmQueryMindGate`
+(`mind-query-gate-v1`) with the Memory adapter's `graph-read-v2` reader. Configured
+real-model apps retain the same v6 writer, FirstHit policy and Cold owner. Neither
+the default boolean gate nor `reliable-v2` is switched. The candidate keeps Chat's
+three-Fact / 5000-character output budget and the existing 32-segment Cold window.
+An additional evidence selector cannot be combined with this mode.
+
+The one gate client uses DeepSeek-V4-Pro, temperature 0 and a fixed 768-token
+output cap. It replaces the boolean call; no second parser/selector call follows.
+The input contains the unchanged current message and up to the last 12 complete
+near turns within 6000 characters. Over-budget turns are omitted with a count,
+never silently truncated or rewritten; Answer still receives its existing full
+context. A current message above 8000 characters bypasses the gate call and
+degrades to one open read of the original text.
+
+The strict JSON response has six fields:
+
+```json
+{"recall":true,"mode":"precise","clues":[{"id":"c1","text":"我","kind":"current_user","sources":[{"index":-1,"quote":"我","occurrence":0}]}],"relations":[{"subject":"c1","predicate":"用","object":"?entity","sources":[{"index":-1,"quote":"我用","occurrence":0}]},{"subject":"?entity","predicate":"重","object":"?value","sources":[{"index":-1,"quote":"多重","occurrence":0}]}],"unresolved":[]}
+```
+
+For the example input `我用的录音机多重？`, this requests two relations without
+guessing a device or value. The schema permits at most three clues and two
+relations. Clue kinds are `name`, `current_user`, `topic`, `literal`; endpoints
+are existing clue IDs, one shared `?entity`, or terminal `?value` in object
+position. Each clue/relation cites one or two exact quotes (at most 256 characters).
+Index -1 is the current user message; other indices refer to the actual bounded
+near input. Occurrence is zero-based. Code computes and checks true offsets,
+checks clue text against its quote, and refuses assistant-only evidence for a
+`current_user` clue. Models cannot supply EntityRefs or offsets.
+
+The Memory-owned DTO and `validate_query_intent()` recheck bounds and citations
+at the read boundary. A real quote proves its location, not a correct semantic
+interpretation: reference resolution, direction and meaningful predicates still
+need independent evaluation. Unsupported predicates remain unresolved in Memory;
+the example does not grant a new universal relation vocabulary.
+
+Valid `recall=false` has empty open conditions and performs no Memory read.
+Malformed output, unavailable clients and provider failures fail open with the
+original question, a stable audit reason and no retry. A valid precise intent
+with unresolved negation, permission, temporal scope or other limitations keeps
+its accepted relations and unresolved fields; Memory must not report a complete
+result by deleting them. An uncertain direction may be explicitly open with no
+relations and a preserved explanation. `mode=open` is not a precise success.
+
+`MindDecision` retains `recall` and optionally carries a `GraphReadQuery` plus
+audit data. `/api/chat` passes that request through public `Memory.recall()` once;
+Answer and Hot Draft keep the original user text. The append-only log adds the
+validated structured request, exact bounded near context, bounded raw gate
+receipt, output cap, attempted call count, latency and degradation reason. These
+private fields never enter historical evidence. `generate()` does not expose
+native provider usage; evaluation must meter actual input/output/cache usage at
+the provider boundary, and must not treat missing usage as zero tokens or cost.
+For this structured mode, an audit-write failure preserves an already valid
+decline or precise request and emits a log-failure event; it never substitutes an
+open query for accepted conditions. The legacy boolean gate's historical
+fail-open audit behavior remains unchanged.
+
+Tests `test_query_mind_gate.py` and `test_query_mind_chat.py` use injected models
+and synthetic evidence to check validation and actual Chat wiring. They do not
+establish natural-language parsing quality or net recall benefit.
 
 ## Direct bounded candidates
 

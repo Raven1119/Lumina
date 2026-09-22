@@ -112,7 +112,7 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
 
     from .graph_read_query import GraphReadQuery
     profile = getattr(adapter, "associative_read_profile", "first-hit-v1")
-    query = (cue.text if isinstance(cue, GraphReadQuery) and profile == "graph-read-v1"
+    query = (cue.text if isinstance(cue, GraphReadQuery) and profile in ("graph-read-v1", "graph-read-v2")
              else cue.strip() if isinstance(cue, str) else "")
 
     def empty(code):
@@ -130,18 +130,21 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
     if (type(include_sources) is not bool or type(source_context_turns) is not int
             or not 0 <= source_context_turns <= 4):
         return empty("invalid_source_policy")
-    if profile == "graph-read-v1":
+    if profile == "graph-read-v2":
+        from ._query_graph_read import activate_query_read
+        activation = activate_query_read(adapter, cue)
+    elif profile == "graph-read-v1":
         from ._graph_read import activate_read
         activation = activate_read(adapter, cue)
     else:
         activation = adapter._activate_first_hit(query)
     adapter._last_first_hit_diagnostics = dict(activation.diagnostics)
-    if profile in ("reliable-v1", "reliable-v2", "graph-read-v1"):
+    if profile in ("reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2"):
         from ._reliable_recall import pack_reliable
         return pack_reliable(adapter, query, policy, activation,
                              include_sources=include_sources,
                              source_context_turns=source_context_turns,
-                             profile="reliable-v2" if profile == "graph-read-v1" else profile)
+                             profile="reliable-v2" if profile in ("graph-read-v1", "graph-read-v2") else profile)
     relation_ids = _RELATION_RESOLVER.resolve_query_relations(policy.relation_surfaces or ())
     ranked = sorted(activation.candidates,
                     key=lambda row: (-row[2], -row[1], row[0].metadata.get("evidence_id", "")))

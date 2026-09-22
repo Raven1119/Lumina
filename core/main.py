@@ -43,7 +43,7 @@ from Mind.constant_gate import ConstantMindGate
 from Mind.decision_log import JsonlDecisionLog
 from Mind.interfaces import EvidenceSelector, MindGate
 from Mind.evidence_selector import LlmEvidenceSelector
-from Mind.llm_gate import LlmMindGate
+from Mind.llm_gate import LlmMindGate, LlmQueryMindGate, QUERY_GATE_MAX_TOKENS
 
 
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
@@ -175,10 +175,20 @@ def _recall_enabled(value: str | None) -> bool:
 
 
 def _default_mind_gate(chat_model: ModelClient) -> MindGate:
+    mode = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
+    if mode == "graph-read-v2":
+        if _model_kind(chat_model) == "mock":
+            return LlmQueryMindGate(None)
+        try:
+            gate_client = build_model_client_from_env(
+                max_tokens_override=QUERY_GATE_MAX_TOKENS, temperature_override=0.0,
+            )
+        except Exception:
+            return LlmQueryMindGate(None)
+        return LlmQueryMindGate(gate_client if getattr(gate_client, "client_kind", None) == "model" else None)
     # Mock mode is always the stage-1 constant gate (MIND_DEFINITION_V1 §2.4).
     if _model_kind(chat_model) == "mock":
         return ConstantMindGate()
-    mode = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
     if mode == "constant":
         return ConstantMindGate()
     try:
@@ -237,7 +247,10 @@ def _build_memory_retriever(
             fail_if_unavailable=True,
             ingestion_version=_DREAM_POLICY.ingestion_version,
         )
-    # Production path: reliable v6 writer with the reliable-v2 reader.
+    # Explicit candidate changes only the reader. The v6 writer is shared and
+    # continues to call its original FirstHit activation/connection planner.
+    read_profile = ("graph-read-v2" if os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
+                    == "graph-read-v2" else "reliable-v2")
     return MagmaMemoryAdapter.create_real(
         persist_dir,
         fail_if_unavailable=True,
@@ -245,7 +258,7 @@ def _build_memory_retriever(
         formation_model=formation_model,
         first_hit=FirstHitPolicy(),
         cold_store=cold_store,
-        associative_read_profile="reliable-v2",
+        associative_read_profile=read_profile,
     )
 
 
@@ -284,6 +297,8 @@ def create_app(
         )
     )
     memory_mode = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
+    if memory_mode == "graph-read-v2" and evidence_selector is not None:
+        raise ValueError("structured query gate cannot also select evidence")
     post_read_selection = memory_mode == "select" or evidence_selector is not None
     direct_memory_use = memory_mode == "direct" or post_read_selection
     effective_memory = memory_retriever

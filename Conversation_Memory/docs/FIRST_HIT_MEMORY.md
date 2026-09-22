@@ -189,6 +189,110 @@ final `rendered_text`. Natural and caller-constrained results are separate arms.
 The candidate remains explicitly unpromoted; it must not be inferred from a
 writer version or enabled by an application default.
 
+### Explicit query-driven graph-read-v2
+
+This candidate connects natural language through the existing Chat gate and
+Memory facade. With the normal configured model and memory owners, select:
+
+```bash
+LUMINA_MIND_GATE_MODE=graph-read-v2 \
+  Conversation_Memory/.venv/bin/python -m uvicorn core.main:app
+```
+
+Send the original message to the ordinary `POST /api/chat`. The candidate
+replaces the one boolean gate call with `LlmQueryMindGate` (temperature 0,
+768 output tokens); it does not call both gates or a separate rewriter.
+The original message and bounded recent conversation still reach Answer.
+Valid `recall=false` makes no Memory call. Invalid interpretation keeps the
+original message in a marked open fallback, with no resampling and at most
+one read. See [the gate schema and audit contract](../../Mind/docs/CHAT_RECALL_GATE.md).
+
+The DTO extends `GraphReadQuery` with optional `QueryIntent` and source context.
+It permits three source-quoted clues, two directional relations, one shared
+`?entity` and one terminal literal `?value`. Memory validates source positions
+again. The gate supplies no database identities. Existing indexed names resolve
+to up to five OR alternatives per clue; unresolved or truncated identities
+remain visible. Exact quote validation proves a location, not semantic parsing.
+Legacy conditions cannot be mixed with the new intent in one request; a v2
+request containing only legacy conditions is rejected, not silently made open.
+
+[`_query_graph_read.py`](../adapter/_query_graph_read.py) owns the read-only
+interpretation boundary, entry allocation and local joins. A whole-question
+search retains the bounded union of the same dense, lexical and entity channels,
+before the final five entries. Each channel retains at most five; each search
+retains at most twenty. Only a missing group may trigger a supplementary search,
+at most two, so the deduplicated buffer has at most sixty entries (under the
+64 ceiling). The first two whole-question anchors retain slots; remaining
+slots prioritize uncovered groups, then existing RRF scores with stable ties.
+One Fact can cover several groups without consuming several slots. Conditions
+form at most two entry groups, followed by unused clue groups up to three;
+all original clues also have separate coverage diagnostics.
+
+`discover_query_first_hit` in [`_first_hit_read.py`](../adapter/_first_hit_read.py)
+rotates active groups in fixed input order, one pending arc per group turn.
+Each group updates max-path priorities; all groups share cached physical arcs,
+at most 5 seeds, 64 nodes and 256 actual reads. Queue and cached relaxation work
+each have a finite `G * E * (N+1)` limit (`G <= 3`). Stale entries cannot restore
+weaker support. Full outgoing denominators, the global seed vector and FirstHit
+equation remain unchanged. One resolvent supplies global h and all group H.
+Scores measure support, never identity correctness, independent evidence count
+or logical conjunction. Uncovered groups retain zero input; if every group is
+empty, a single global frontier explores without declaring those groups met.
+
+For precise intent, each candidate must independently pass the existing
+`qualify_fact` role-edge and stored-source-shape checks. Cross-Fact combinations
+enumerate at most `64 * 64` pairs and require identical bindings for every shared
+clue/variable. Literal values need no entity edge. Predicate matching uses exact
+normalization and the existing controlled vocabulary. That vocabulary has no
+use/mass family, so this candidate alone adds the fixed ordinary use/使用/用
+and mass/weight/重量/质量/重 aliases; v1 and the shared resolver are unchanged.
+Unknown predicates remain unknown; traversal does not authorize them.
+
+Compatible role bindings are necessary but not sufficient for complete output.
+Multiple possible bindings or values remain ambiguous. Unresolved gate limits,
+unaccounted extra clues, and incompatible or one-sided stored time annotations
+keep the result partial. Extra clues are not silently turned into new AND
+conditions: only exact existing role surfaces/predicates account for them.
+Speaking timestamps alone are not treated as fact validity intervals. This
+small reader cannot prove arbitrary device classes, negation, permissions or
+historical scope from lexical similarity. It never fabricates a combined Fact.
+
+The reliable-v2 composer first reserves the same 0.6 direct share. It then tests
+all missing members of an evidence bundle jointly against the unchanged whole
+item/character/byte budget, charging existing members once. It never displaces
+protected direct evidence. Only an eligible complete bundle actually visible
+in the final canonical bodies can satisfy the accepted relations; otherwise
+the request returns `graph_read_evidence_incomplete` with available partial
+evidence. Open association does not impose relation joins. Cold remains a
+bounded supplement under the same 32-segment/1 MiB owner window and existing
+output allowances. Query syntax and diagnostics are not rendered as facts.
+
+For reproducible A/B/C comparisons, freeze the natural gate response and the
+request-local `QueryEntries` once. A uses production original FirstHit plus
+reliable-v2 on the raw question. B calls `activate_query_read(...,
+entries=entries, seed_only=True)` and the unchanged reliable-v2 composer; it
+opens no adjacency cursor. C uses the same entries with exploration enabled
+through the public facade. B/C thus differ only in expansion, while A/C also
+include interpretation and entry changes. `QueryEntries` is ephemeral and
+valid only for that request and graph version; it is not a new state store.
+
+Maintenance checks (synthetic, no provider or BGE) are:
+
+```bash
+Conversation_Memory/.venv/bin/python -m pytest \
+  tests/test_query_mind_gate.py tests/test_query_mind_chat.py \
+  Conversation_Memory/tests/test_query_first_hit.py \
+  Conversation_Memory/tests/test_query_graph_read.py -q
+```
+
+These checks establish mechanisms and actual routing, not natural retrieval
+benefit. Frozen real-graph comparisons must inspect complete `rendered_text`,
+retain semantic parse failures and missing historical data, and distinguish
+seed-selection benefit from new nonseed evidence. Experimental inputs, gold,
+model receipts and results are local materials, not repository dependencies.
+Production stays v6/original FirstHit/reliable-v2. `graph-read-v1`, its original
+source and numerical semantics, writer activation and checkpoints remain intact.
+
 ### Original FirstHit and shared equations
 
 Defaults are engineering starting values, not measured optima:

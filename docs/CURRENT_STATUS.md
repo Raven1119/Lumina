@@ -35,6 +35,17 @@ Memory discovery, source validation, persistence and write semantics remain
 with their existing owners. Configured real-model Chat uses v6 + FirstHit +
 reliable-v2 and bypasses legacy BGE/Hindsight.
 
+`LUMINA_MIND_GATE_MODE=graph-read-v2` explicitly selects the query-driven
+candidate. One structured Mind call (768 output tokens, temperature zero)
+replaces the boolean call, carries source-located clues and at most two
+relations to the real Memory facade, and preserves the original Chat question.
+The reader allocates at most five shared entries before three shared-budget
+frontiers, then checks role-supported identity joins and whole evidence bundles.
+Unsupported conditions, identity alternatives and incomplete bundles stay
+partial. This does not change the production default, writer, checkpoint or
+the earlier `graph-read-v1` reader. See the [read-side contract](../Conversation_Memory/docs/FIRST_HIT_MEMORY.md#explicit-query-driven-graph-read-v2)
+and [Chat gate contract](../Mind/docs/CHAT_RECALL_GATE.md).
+
 `LUMINA_MIND_GATE_MODE=select` explicitly adds one semantic decision after that
 same read. Memory retains a request-local immutable prepared view, and validates
 selected IDs plus complete association dependencies. The selector receives the

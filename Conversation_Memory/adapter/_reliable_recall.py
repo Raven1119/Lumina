@@ -288,7 +288,7 @@ def pack_reliable(adapter, query, policy, activation, *, include_sources=False, 
     relation_ids = _RELATION_RESOLVER.resolve_query_relations(policy.relation_surfaces or ())
     read_selection = activation.read_selection
     if read_selection is not None:
-        diagnostics["read_profile"] = "graph-read-v1"
+        diagnostics["read_profile"] = activation.diagnostics.get("profile", "graph-read-v1")
     legal, candidates, masses = {}, {}, {}
     for position, (candidate, h, _attention) in enumerate(activation.candidates):
         eid = candidate.metadata.get("evidence_id") if isinstance(candidate.metadata, dict) else None
@@ -363,6 +363,39 @@ def pack_reliable(adapter, query, policy, activation, *, include_sources=False, 
                                                        "protected_direct": protected}
 
     take(direct, "direct", direct_count, direct_chars, direct_bytes, protected=True)
+    # Query-driven joins reserve the complete missing bundle jointly. Existing
+    # protected direct items are immutable, charged only once, and never
+    # replaced. All members must also survive the same Fact legality and
+    # association attention rules above. v1 has no bundles and is unchanged.
+    bundles = getattr(read_selection, "bundles", ())
+    if bundles:
+        available = set(direct) | set(associated)
+        attempts = []
+        for bundle in sorted(bundles, key=lambda ids: -len(selected_ids.intersection(ids))):
+            missing = tuple(eid for eid in bundle if eid not in selected_ids)
+            if not missing:
+                break
+            if not set(bundle).issubset(available):
+                attempts.append({"bundle": bundle, "reason": "member_not_eligible_for_output"})
+                continue
+            proposed = [*selected, *((legal[eid], "direct" if eid in direct_set else "associated")
+                                     for eid in missing)]
+            rendered = "\n".join(render_reliable_fact(item, f"M{i+1}",
+                                  include_source_context=policy.include_source_context)
+                                 for i, (item, _) in enumerate(proposed))
+            reason = _budget_reason(rendered, len(proposed), count=count,
+                                    chars=policy.max_chars, bytes_limit=policy.max_bytes)
+            attempts.append({"bundle": bundle, "reason": reason or "selected"})
+            if reason:
+                continue
+            selected[:] = proposed
+            selected_ids.update(missing)
+            for eid in missing:
+                diagnostics["candidate_outcomes"][eid] = {
+                    "channel": "direct" if eid in direct_set else "associated",
+                    "reason": "selected", "protected_direct": False, "bundle_member": True}
+            break
+        diagnostics["bundle_packing_attempts"] = attempts
     take(associated, "associated", count-direct_count, policy.max_chars-direct_chars,
          policy.max_bytes-direct_bytes if policy.max_bytes is not None else None)
     # Unused quota can be borrowed, without replacing either already selected set.

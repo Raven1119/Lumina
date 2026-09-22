@@ -41,6 +41,8 @@ class JsonlDecisionLog:
             "decided_at": decided_at,
         }
         # Optional additions preserve direct legacy callers and existing lines.
+        if decision.audit is not None:
+            record["query_interpretation"] = decision.audit
         if query_audit is not None:
             record.update(query_audit)
         self._path.parent.mkdir(parents=True, exist_ok=True)

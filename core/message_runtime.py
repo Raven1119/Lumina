@@ -1,5 +1,6 @@
 """Single synchronous chat path for the Cold Draft MVP."""
 
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from Mind.interfaces import MindDecision
@@ -24,6 +25,7 @@ from core.turn_provenance import (
 )
 
 if TYPE_CHECKING:
+    from Conversation_Memory.adapter.graph_read_query import GraphReadQuery
     from Conversation_Memory.adapter.interfaces import MemoryRetriever
     from Conversation_Memory.adapter.models import RecallPolicy
     from Mind.decision_log import JsonlDecisionLog
@@ -111,6 +113,7 @@ class MessageRuntime:
         )
         system_prompt, memory_event = self._system_prompt_with_memory(
             user_message, decision.recall,
+            memory_query=decision.query,
             recent_context=recent_context, turn_id=user_turn.turn_id,
         )
         assistant_text, response_type, phase, model_event = self._generate(
@@ -176,6 +179,16 @@ class MessageRuntime:
             decision = self._mind_gate.decide(user_message, recent_context)
             if type(decision) is not MindDecision or type(decision.recall) is not bool:
                 raise ValueError("invalid mind decision")
+            if decision.query is not None:
+                from Conversation_Memory.adapter.graph_read_query import GraphReadQuery, validate_query_intent
+                if (not isinstance(decision.query, GraphReadQuery) or not decision.recall
+                        or decision.query.text != user_message):
+                    raise ValueError("invalid mind query")
+                validate_query_intent(decision.query)
+            if decision.audit is not None:
+                if not isinstance(decision.audit, dict):
+                    raise ValueError("invalid mind audit")
+                fallback_reason = decision.audit.get("fallback_reason")
         except Exception:
             decision = fallback
             fallback_reason = "gate_failed"
@@ -185,10 +198,24 @@ class MessageRuntime:
             "effective_query": user_message if decision.recall else None,
             "fallback_reason": fallback_reason,
         }
+        if decision.query is not None or decision.audit is not None:
+            audit["structured_query"] = asdict(decision.query) if decision.query else None
+            audit["query_interpretation"] = decision.audit
         if self._mind_decision_log is not None:
             try:
                 self._mind_decision_log.record(decision, turn_id=turn_id, query_audit=audit)
             except Exception:
+                if decision.query is not None or decision.audit is not None:
+                    # A candidate audit failure cannot turn a valid decline
+                    # into a read or erase already accepted precise conditions.
+                    try:
+                        self._mind_decision_log.record(
+                            decision, turn_id=turn_id,
+                            query_audit={**audit, "decision_log_error": "append_failed"},
+                        )
+                    except Exception:
+                        pass
+                    return decision, "mind_decision_log_failed"
                 fallback_audit = {**audit, "effective_query": user_message,
                                   "fallback_reason": "decision_log_failed"}
                 try:
@@ -197,13 +224,14 @@ class MessageRuntime:
                     pass
                 return fallback, "mind_decision_log_failed"
         if fallback_reason is not None:
-            return fallback, "mind_gate_failed"
+            return decision, "mind_gate_failed"
         return decision, "mind_recall_decided" if decision.recall else "mind_recall_declined"
 
     def _system_prompt_with_memory(
         self, query: str, recall_allowed: bool = True, *,
         recent_context: list[dict[str, str]] | None = None,
         turn_id: str | None = None,
+        memory_query: "GraphReadQuery | None" = None,
     ) -> tuple[str, str | None]:
         if (
             not recall_allowed
@@ -221,7 +249,8 @@ class MessageRuntime:
                 prepared = prepare(query, self._recall_policy)
                 memory_context = prepared.context
             else:
-                memory_context = self._memory_retriever.recall(query, self._recall_policy)
+                memory_context = self._memory_retriever.recall(
+                    memory_query if memory_query is not None else query, self._recall_policy)
                 if self._evidence_selector is not None:
                     event = "memory_selection_unavailable"
             rendered_text = getattr(memory_context, "rendered_text", None)
