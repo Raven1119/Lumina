@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class Activation:
     read_selection: ReadSelection | None = field(default=None, repr=False)
 
 
-def activate(adapter, cue, *, target_entity_refs=None, exclude_evidence_ids=()):
+def activate(adapter, cue, *, target_entity_refs=None, exclude_evidence_ids=(), seed_only=False):
     from .first_hit import discover_first_hit, project_attention
     from .user_self import classify_target_entity_ref
 
@@ -63,7 +63,8 @@ def activate(adapter, cue, *, target_entity_refs=None, exclude_evidence_ids=()):
                       if view.eligible(node_id) and node_id not in excluded)
         total = sum(score for _, score in seeds)
         seeds = tuple((node_id, score / total) for node_id, score in seeds) if total else ()
-        result = discover_first_hit(view, seeds, policy, excluded_node_ids=excluded)
+        result = discover_first_hit(view, seeds, replace(policy, max_edges=0) if seed_only else policy, excluded_node_ids=excluded)
+        adapter._last_first_hit_snapshot = result
         candidates, seed_facts = [], {}
         seed_nodes = {node_id for node_id, _ in seeds}
         for node_id in result.fact_ids:
@@ -130,6 +131,9 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
     if (type(include_sources) is not bool or type(source_context_turns) is not int
             or not 0 <= source_context_turns <= 4):
         return empty("invalid_source_policy")
+    if profile == "body-recall-v1":
+        from ._body_recall import recall_bodies
+        return recall_bodies(adapter, query, policy)
     if profile == "graph-read-v2":
         from ._query_graph_read import activate_query_read
         activation = activate_query_read(adapter, cue)

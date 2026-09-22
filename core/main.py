@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from Conversation_Memory.adapter.interfaces import MemoryIngestor, MemoryRetriever
 from Conversation_Memory.adapter.models import RecallPolicy
+from Conversation_Memory.adapter.body_payload import FORMATION_BODY_VERSION
 from core.cold_draft_store import ColdDraftStore
 from core.contracts import (
     ChatRequest,
@@ -240,6 +241,18 @@ def _build_memory_retriever(
             str(_ROOT_DIRECTORY / "data" / "conversation_memory" / "magma"),
         )
     )
+    memory_profile = os.environ.get("LUMINA_MEMORY_PROFILE", "production").strip().lower()
+    if memory_profile not in {"production", "body-recall-v1"}:
+        raise ValueError("invalid_memory_profile")
+    if memory_profile == "body-recall-v1":
+        if formation_model is None:
+            raise ValueError("body_memory_requires_formation_model")
+        if os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower() in {"graph-read-v2", "select"}:
+            raise ValueError("body_memory_gate_profile_conflict")
+        return MagmaMemoryAdapter.create_real(
+            persist_dir, fail_if_unavailable=True, ingestion_version=FORMATION_BODY_VERSION,
+            formation_model=formation_model, first_hit=FirstHitPolicy(), cold_store=cold_store,
+            associative_read_profile="body-recall-v1")
     if formation_model is None:
         # Mock/legacy deterministic path: grounded spans, no FirstHit.
         return MagmaMemoryAdapter.create_real(
@@ -339,7 +352,7 @@ def create_app(
         effective_memory is not None
         and callable(getattr(effective_memory, "ingest", None))
         and getattr(effective_memory, "ingestion_version", None)
-        in {_DREAM_POLICY.ingestion_version, _FORMATION_INGESTION_VERSION}
+        in {_DREAM_POLICY.ingestion_version, _FORMATION_INGESTION_VERSION, FORMATION_BODY_VERSION}
     ):
         ingestor = cast(MemoryIngestor, effective_memory)
         provider = _SharedMemoryIngestorProvider(

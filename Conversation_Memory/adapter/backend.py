@@ -190,9 +190,10 @@ class RealMagmaBackend:
                     FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
                     FORMATION_RELIABLE_VERSION_V6,
                 )
+                from .body_payload import FORMATION_BODY_VERSION
                 if (metadata or {}).get("formation_version") in {
                     FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
-                    FORMATION_RELIABLE_VERSION_V6,
+                    FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION,
                 }:
                     extraction.entities = []
                 return extraction
@@ -259,6 +260,29 @@ class RealMagmaBackend:
         from ._source_backend import rebuild as rebuild_sources
         rebuild_sources(self)
         self._rebuild_first_hit_view()
+
+    def put_memory_body(self, payload, *, repair=False):
+        from .body_payload import BodyPayloadStore
+        return BodyPayloadStore(self.persist_dir / "bodies" / "v1").put(payload, repair=repair)
+
+    def read_memory_body(self, body_ref, *, max_bytes):
+        from .body_payload import BodyPayloadStore
+        return BodyPayloadStore(self.persist_dir / "bodies" / "v1").read(body_ref, max_bytes=max_bytes)
+
+    def ensure_event_body_reference(self, memory_id, evidence_id, text, reference):
+        from .body_payload import FORMATION_BODY_VERSION
+        node = self.trg.graph_db.get_node(memory_id)
+        meta = node.attributes if node is not None else {}
+        if (meta.get("evidence_id") != evidence_id or meta.get("grounded_memory_unit_text") != text
+                or meta.get("formation_version") != FORMATION_BODY_VERSION):
+            raise ValueError("body_event_identity_mismatch")
+        if all(meta.get(k) == v for k, v in reference.items()):
+            return False
+        # Only ingestion calls this, after reconstructing and persisting the
+        # expected immutable body from the versioned frozen F1/F2 receipts.
+        meta.update(reference)
+        self._rebuild_first_hit_view()
+        return True
 
     def _rebuild_first_hit_view(self) -> None:
         from .first_hit import DerivedFirstHitGraph

@@ -16,6 +16,7 @@ from Conversation_Memory.adapter.reliable_formation import (
     FORMATION_RELIABLE_VERSION_V6,
 )
 from Conversation_Memory.adapter.interfaces import MemoryIngestor
+from Conversation_Memory.adapter.body_payload import FORMATION_BODY_VERSION
 from Conversation_Memory.ingestion.state_store import IngestionStateStore
 from core.cold_draft_store import ColdDraftStore
 from core.model_client import ModelClient, build_model_client_from_env
@@ -48,12 +49,12 @@ class RealMemoryIngestorProvider:
 
     def get(self, ingestion_version: str) -> MemoryIngestor:
         if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION,
-                                     FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6,
+                                     FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION,
                                      _LEGACY_INGESTION_VERSION}:
             raise RuntimeError("unsupported_ingestion_version")
         if (
             ingestion_version in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION,
-                                  FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
+                                  FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
             and self._formation_model is None
         ):
             raise RuntimeError("formation_model_unavailable")
@@ -68,7 +69,7 @@ class RealMemoryIngestorProvider:
                 formation_model=(
                     self._formation_model
                     if ingestion_version in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION,
-                                             FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
+                                             FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
                     else None
                 ),
             )
@@ -192,7 +193,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         effective_model = build_formation_model_client()
         explicit_version = args.ingestion_version
-        if args.reliable_memory and explicit_version not in {None, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
+        memory_profile = os.environ.get("LUMINA_MEMORY_PROFILE", "production").strip().lower()
+        if memory_profile not in {"production", "body-recall-v1"}:
+            raise ValueError("invalid_memory_profile")
+        body_memory = memory_profile == "body-recall-v1" or explicit_version == FORMATION_BODY_VERSION
+        if body_memory:
+            if explicit_version not in {None, FORMATION_BODY_VERSION}:
+                raise ValueError("body_memory_version_conflict")
+            explicit_version = FORMATION_BODY_VERSION
+        if args.reliable_memory and explicit_version not in {None, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}:
             raise ValueError("reliable_memory_requires_reliable_formation")
         real_model = getattr(effective_model, "client_kind", None) == "model"
         # Promoted default: a configured real model without an explicit
@@ -212,13 +221,14 @@ def main(argv: list[str] | None = None) -> int:
             stop_on_error=args.stop_on_error,
             ingestion_version=ingestion_version,
         )
-        if args.first_hit or reliable:
+        if args.first_hit or reliable or body_memory:
             from Conversation_Memory.adapter.first_hit import FirstHitPolicy
-            if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
+            if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}:
                 raise ValueError("first_hit_requires_supported_formation_version")
             runner = build_default_runner(
                 effective_model, first_hit=FirstHitPolicy(),
-                **({"associative_read_profile": "reliable-v2"} if reliable else {}),
+                **({"associative_read_profile": "body-recall-v1"} if body_memory else
+                   {"associative_read_profile": "reliable-v2"} if reliable else {}),
             )
         else:
             runner = build_default_runner(effective_model)

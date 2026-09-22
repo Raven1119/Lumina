@@ -134,6 +134,16 @@ class MemoryEvidence:
 
 
 @dataclass(frozen=True)
+class BodyMemoryEvidence(MemoryEvidence):
+    """One visible verified paraphrase unit, never an exact source quotation."""
+
+    body_ref: str
+    body_unit_ref: str
+    source_turn_ids: tuple[str, ...]
+    representation: str = "verified_paraphrase"
+
+
+@dataclass(frozen=True)
 class MemoryContext:
     """Bounded Recall result; successful evidence cardinality is zero to K.
 

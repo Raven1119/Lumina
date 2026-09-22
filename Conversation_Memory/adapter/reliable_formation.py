@@ -12,6 +12,7 @@ import hashlib
 import json
 
 from . import grounded_formation as gf
+from .body_payload import FORMATION_BODY_VERSION
 
 
 FORMATION_RELIABLE_VERSION = "grounded-formation-v4"
@@ -183,6 +184,8 @@ def _parse_f2(raw, candidates):
 
 
 def _progress_version(version):
+    if version == FORMATION_BODY_VERSION:
+        return "reliable-formation-progress-v4"
     if version == FORMATION_RELIABLE_VERSION_V6:
         return PROGRESS_VERSION_V6
     return PROGRESS_VERSION_V5 if version == FORMATION_RELIABLE_VERSION_V5 else PROGRESS_VERSION
@@ -191,7 +194,7 @@ def _progress_version(version):
 def _prepare_progress(progress, version):
     progress = deepcopy(progress) if progress is not None else {"schema_version": _progress_version(version), "stages": {}}
     allowed = {"schema_version", "stages", "identity_candidates"}
-    if version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
+    if version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}:
         # The owner may additionally mark its persisted body phase.
         allowed.add("bodies")
     if (not isinstance(progress, dict) or set(progress) - allowed
@@ -209,6 +212,17 @@ def form_reliable_bodies(segment, model, *, progress=None, checkpoint, version=F
     progress = _prepare_progress(progress, version)
     gf._check_entity_window(segment)
     sources = _sources(segment)
+    if version == FORMATION_BODY_VERSION:
+        from ._body_formation import F1_BODY_PROMPT, F2_BODY_SUFFIX, parse_body_f1
+        f1 = _stage("F1", F1_BODY_PROMPT, {"turns": list(sources.values())}, model, segment, progress, checkpoint,
+                    lambda raw: parse_body_f1(raw, segment))
+        visible = {tid for f in f1["facts"] for tid in f["allowed_source_ids"]}
+        f2 = _stage("F2", F2_PROMPT + F2_BODY_SUFFIX,
+                    {"candidates": f1["facts"], "groups": f1["groups"], "sources": {t: s for t, s in sources.items() if t in visible}},
+                    model, segment, progress, checkpoint, lambda raw: _parse_f2(raw, f1["facts"]),
+                    empty_response='{"decisions":[]}' if not f1["facts"] else None)
+        accepted = [f for f, d in zip(f1["facts"], f2) if d["verdict"] == "supported"]
+        return accepted, f1, f2, progress
     f1_prompt = {FORMATION_RELIABLE_VERSION_V5: F1_PROMPT_V5,
                  FORMATION_RELIABLE_VERSION_V6: F1_PROMPT_V6}.get(version, F1_PROMPT)
     f1 = _stage("F1", f1_prompt, {"turns": list(sources.values())}, model, segment, progress, checkpoint,
@@ -229,7 +243,7 @@ def form_reliable_structure(segment, model, *, progress, checkpoint, identity_ca
         parse_g1, parse_g2, authorized_batch,
     )
     progress = _prepare_progress(progress, version)
-    v5 = version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
+    v5 = version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
     sources = _sources(segment)
     if "identity_candidates" not in progress:
         if callable(identity_candidates):
@@ -265,7 +279,7 @@ def form_reliable_structure(segment, model, *, progress, checkpoint, identity_ca
 
 def form_reliable_batch(segment, model, *, progress=None, checkpoint, identity_candidates=(),
                         version=FORMATION_RELIABLE_VERSION):
-    if version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
+    if version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}:
         accepted, f1, f2, progress = form_reliable_bodies(
             segment, model, progress=progress, checkpoint=checkpoint, version=version)
         return form_reliable_structure(

@@ -21,6 +21,7 @@ from .grounded_formation import (
     serialize_grounded_memory_batch,
 )
 from .models import IngestionResult, SourceProvenance
+from .body_payload import FORMATION_BODY_VERSION
 from .reliable_formation import (
     FORMATION_RELIABLE_VERSION,
     FORMATION_RELIABLE_VERSION_V5,
@@ -50,7 +51,7 @@ def _bind_mentions(batch, segment, backend, *, version=FORMATION_ENTITY_VERSION,
     """Resolve all roles against one source-ordered view, retaining ambiguity."""
     explicit_identity_refs = explicit_identity_refs or {}
     reliable = version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
-                           FORMATION_RELIABLE_VERSION_V6}
+                           FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
     turns = {turn.turn_id: turn for turn in segment.turns}
     records: dict[str, dict[str, Any]] = {}
     overlay: dict[str, dict[str, str]] = {}
@@ -178,7 +179,7 @@ def _validate_records(raw, batch, segment, *, version=FORMATION_ENTITY_VERSION,
         if mention.identity == "unresolved" and ref is not None:
             return False
         if (version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
-                        FORMATION_RELIABLE_VERSION_V6}
+                        FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
                 and mention.identity == "named"
                 and not mention.same_as and ref != (explicit_identity_refs or {}).get(mention.id)):
             return False
@@ -233,8 +234,8 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
 
     version = adapter.ingestion_version
     reliable = version in {FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5,
-                           FORMATION_RELIABLE_VERSION_V6}
-    reliable_v5 = version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
+                           FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
+    reliable_v5 = version in {FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
     invalid = adapter._validate(segment)
     if invalid:
         return IngestionResult(segment.segment_id, version, "failed",
@@ -252,8 +253,11 @@ def ingest_entity_formation(adapter, segment) -> IngestionResult:
                 "status": "pending", "memory_ids": [],
             }
         elif reliable_v5:
-            if (not set(state).issubset({"schema_version", "source_digest", "segment_id", "ingestion_version",
-                                        "status", "memory_ids", "formation", "mentions", "bodies"})
+            allowed_state = {"schema_version", "source_digest", "segment_id", "ingestion_version",
+                             "status", "memory_ids", "formation", "mentions", "bodies"}
+            if version == FORMATION_BODY_VERSION:
+                allowed_state.add("body_manifest")
+            if (not set(state).issubset(allowed_state)
                     or state.get("schema_version") != version or state.get("source_digest") != digest
                     or state.get("segment_id") != segment.segment_id or state.get("ingestion_version") != version
                     or state.get("status") not in {"pending", "in_progress", "bodies_persisted", "partial", "completed"}
@@ -571,6 +575,32 @@ def _ingest_reliable_v5(adapter, segment, state, store, key, association) -> Ing
             tuple(SourceRef(tid, turns[tid].content) for tid in fact["allowed_source_ids"]),
             version, None)
         for fact in accepted)
+    body_references = {}
+    if version == FORMATION_BODY_VERSION:
+        from ._body_formation import body_payloads
+        try:
+            payloads, payload_manifest = body_payloads(segment, f1, f2, progress)
+            if "body_manifest" in state and state["body_manifest"] != payload_manifest:
+                raise ValueError("body_manifest_mismatch")
+            if "body_manifest" not in state:
+                state["body_manifest"] = payload_manifest
+                store.put(key, state)
+            # Frozen F1/F2 is authoritative for ingestion repair, including
+            # missing/corrupt payloads after an EVENT/checkpoint already exists.
+            for payload in payloads:
+                backend.put_memory_body(payload, repair=True)
+            body_references = payload_manifest["references"]
+            repaired_references = False
+            for unit in body_units:
+                mid = backend.find_memory_id(unit.id)
+                if mid is not None:
+                    repaired_references = backend.ensure_event_body_reference(
+                        mid, unit.id, unit.text, body_references[unit.id]) or repaired_references
+            if repaired_references:
+                backend.persist()
+        except Exception:
+            return IngestionResult(segment.segment_id, version, "failed", tuple(state["memory_ids"]),
+                                   retryable=True, safe_error_code="body_payload_write_failed")
     manifest = _reliable_digest([asdict(unit) for unit in body_units])
     if "bodies" in state:
         saved = state["bodies"]
@@ -616,6 +646,8 @@ def _ingest_reliable_v5(adapter, segment, state, store, key, association) -> Ing
                                     formation_receipts=receipts,
                                     source_package_ids=[ref.turn_id for ref in unit.source_refs],
                                     used_source_ids=used_sources[fact["fact_id"]])
+                    if version == FORMATION_BODY_VERSION:
+                        metadata.update(body_references[unit.id])
                     # Projection attributes belong to the structure phase only.
                     for field in _EVENT_PROJECTION_KEYS:
                         metadata.pop(field, None)
