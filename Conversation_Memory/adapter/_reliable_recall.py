@@ -286,10 +286,16 @@ def pack_reliable(adapter, query, policy, activation, *, include_sources=False, 
                    "candidate_outcomes": {}, "source_outcomes": {}, "cold_read_attempts": 0,
                    "cold_read_seconds": 0.0, "bge_pairs": 0, "provider_requests": 0}
     relation_ids = _RELATION_RESOLVER.resolve_query_relations(policy.relation_surfaces or ())
+    read_selection = activation.read_selection
+    if read_selection is not None:
+        diagnostics["read_profile"] = "graph-read-v1"
     legal, candidates, masses = {}, {}, {}
     for position, (candidate, h, _attention) in enumerate(activation.candidates):
         eid = candidate.metadata.get("evidence_id") if isinstance(candidate.metadata, dict) else None
         key = eid if isinstance(eid, str) and eid else f"invalid-candidate-{position}"
+        if read_selection is not None and not read_selection.permits(eid):
+            diagnostics["candidate_outcomes"][key] = {"reason": "explicit_condition_unmatched_or_unknown"}
+            continue
         if not _relation_compatible(candidate, relation_ids):
             diagnostics["candidate_outcomes"][key] = {"reason": "relation_filter"}
             continue
@@ -330,7 +336,12 @@ def pack_reliable(adapter, query, policy, activation, *, include_sources=False, 
 
     def take(pool, channel, item_cap, char_cap, byte_cap, *, protected=False):
         local_blocks, local_count = [], 0
-        for eid in pool:
+        remaining = list(pool)
+        pool_order = {eid: i for i, eid in enumerate(pool)}
+        while remaining:
+            if read_selection is not None:
+                remaining.sort(key=lambda eid: (*read_selection.priority(eid, selected_ids), pool_order[eid]))
+            eid = remaining.pop(0)
             if eid in selected_ids:
                 continue
             item = legal[eid]
@@ -357,6 +368,10 @@ def pack_reliable(adapter, query, policy, activation, *, include_sources=False, 
     # Unused quota can be borrowed, without replacing either already selected set.
     take(direct, "direct", count, policy.max_chars, policy.max_bytes)
     take(associated, "associated", count, policy.max_chars, policy.max_bytes)
+    selection_error = read_selection.finish(selected_ids) if read_selection is not None else None
+    if read_selection is not None:
+        diagnostics["graph_selection"] = dict(read_selection.diagnostics)
+        adapter._last_first_hit_diagnostics.update(read_selection.diagnostics)
     base, _, _, _, _, _ = _views(selected, {}, (), policy)
     packing_omitted = False
     for channel, pool in (("direct", direct), ("associated", associated)):
@@ -390,9 +405,9 @@ def pack_reliable(adapter, query, policy, activation, *, include_sources=False, 
     diagnostics["selected_associated"] = sum(channel == "associated" for _, channel in selected)
     diagnostics["packing_seconds"] = perf_counter() - started
     adapter._last_reliable_recall_diagnostics = diagnostics
-    truncated = packing_omitted or bool(activation.diagnostics.get("budget_exhausted"))
+    truncated = packing_omitted or bool(activation.diagnostics.get("budget_exhausted")) or bool(selection_error)
     facts = MemoryContext(query, tuple(item for item, _ in selected), fact_rendered,
-                          truncated, activation.safe_error_code)
+                          truncated, activation.safe_error_code or selection_error)
     sources = SourceMemoryContext(query, visible_sources, source_rendered, source_truncated, source_error)
     return AssociativeMemoryContext(facts, sources, rendered, truncated or source_truncated,
-                                    activation.safe_error_code or source_error, selections)
+                                    activation.safe_error_code or selection_error or source_error, selections)

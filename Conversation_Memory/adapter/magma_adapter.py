@@ -65,6 +65,7 @@ from .user_self import (
 
 if TYPE_CHECKING:
     from .first_hit import FirstHitPolicy
+    from .graph_read_query import GraphReadQuery
     from core.cold_draft_store import ColdDraftStore
 
 
@@ -99,9 +100,9 @@ class MagmaMemoryAdapter:
             and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}
         ):
             raise ValueError("formation_ingestion_version_required")
-        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2"}:
+        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1"}:
             raise ValueError("invalid_associative_read_profile")
-        if associative_read_profile in {"reliable-v1", "reliable-v2"} and first_hit is None:
+        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1"} and first_hit is None:
             raise ValueError("reliable_read_requires_first_hit")
         self.associative_read_profile = associative_read_profile
         self.backend = backend
@@ -220,14 +221,14 @@ class MagmaMemoryAdapter:
         except Exception:
             return EntityMentionContext(query.strip(), safe_error_code="recall_unavailable")
 
-    def recall(self, query: str, policy: RecallPolicy) -> MemoryContext:
+    def recall(self, query: str | GraphReadQuery, policy: RecallPolicy) -> MemoryContext:
         dispatched = self._reliable_dispatch(query, policy)
         if dispatched is not None:
             return dispatched
         return self._recall(query, policy)
 
     def _reliable_dispatch(
-        self, query: str, policy: RecallPolicy,
+        self, query: str | GraphReadQuery, policy: RecallPolicy,
     ) -> MemoryContext | None:
         """Reliable read profiles serve the ordinary Recall boundary too.
 
@@ -238,7 +239,7 @@ class MagmaMemoryAdapter:
         adapters without FirstHit keep the original BGE/Hindsight read.
         """
         if (
-            self.associative_read_profile in ("reliable-v1", "reliable-v2")
+            self.associative_read_profile in ("reliable-v1", "reliable-v2", "graph-read-v1")
             and self.first_hit is not None
         ):
             result = self.recall_associative(
@@ -260,7 +261,7 @@ class MagmaMemoryAdapter:
         return activate(self, cue, target_entity_refs=target_entity_refs,
                         exclude_evidence_ids=exclude_evidence_ids)
 
-    def recall_associative(self, cue: str, output_policy: RecallPolicy | None = None,
+    def recall_associative(self, cue: str | GraphReadQuery, output_policy: RecallPolicy | None = None,
                            *, include_sources: bool = False,
                            source_context_turns: int = 0) -> AssociativeMemoryContext:
         """Explicit first-hit facts and bounded owner source expansion."""

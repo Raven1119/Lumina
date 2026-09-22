@@ -83,6 +83,114 @@ safe aggregate checks. No credentials or real history are needed. See its
 
 ## Numerical and graph contract
 
+### Explicit graph-read-v1 candidate
+
+`associative_read_profile="graph-read-v1"` selects the complete read candidate
+through the existing `MagmaMemoryAdapter.recall` / `recall_associative` facade.
+Production remains `reliable-v2`. The candidate's owner is
+[`_graph_read.py`](../adapter/_graph_read.py); request DTOs live in
+[`graph_read_query.py`](../adapter/graph_read_query.py), bounded exploration in
+[`_first_hit_read.py`](../adapter/_first_hit_read.py). No new state or writer
+profile is introduced. `_activate_first_hit`, including the ingestion caller,
+still uses the original `discover_first_hit`. `FirstHitPolicy` and serialized
+link-plan/checkpoint fields are unchanged.
+
+```python
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.graph_read_query import (
+    GraphReadQuery, ReadClue, RelationConstraint,
+)
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
+
+# existing_magma_copy / checkpoint_copy / cold are isolated existing owners.
+# No formation_model is required for reading. No BGE/provider call is made.
+memory = MagmaMemoryAdapter.create_real(
+    existing_magma_copy, IngestionStateStore(checkpoint_copy),
+    fail_if_unavailable=True, ingestion_version="grounded-formation-v6",
+    first_hit=FirstHitPolicy(), cold_store=cold,
+    associative_read_profile="graph-read-v1",
+)
+budget = RecallPolicy(max_evidence_items=5, max_chars=3000)
+natural = memory.recall(original_question, budget)
+explicit = memory.recall(GraphReadQuery(
+    original_question,
+    clues=(ReadClue(known_name, (known_entity_ref,)),),
+    relations=(RelationConstraint(known_relation, object_refs=(known_entity_ref,)),),
+), budget)
+# A role-only caller constraint uses relation=None. Multiple relations are
+# separate obligations requiring actual Facts, not an inferred composite Fact.
+print(natural.rendered_text)
+print(explicit.rendered_text)
+```
+
+Only supply caller-known conditions; target Fact IDs and evaluation gold are
+not runtime inputs. A string preserves the complete natural question for one
+unchanged bounded seed search. Existing indexed entity surfaces supply cue
+groups; same-name refs within a group are OR alternatives. Names do not imply
+AND. This reader does **not** parse arbitrary relation direction or conjunction
+from language: natural input records both gaps and keeps open association.
+Explicit `require_all=True` enables coverage ranking for declared clues.
+
+The shared entry set is frozen once, at most five seeds. Each declared group
+masks that set by existing entity membership (ordinary mentions may support
+navigation) or the owner's existing lexical features. Covered groups have unit
+input mass; uncovered groups have zero mass and a visible diagnostic. No extra
+per-group retrieval, graph traversal or embedding is performed. Without named
+or declared clues, the whole query retains the global seed vector as one group.
+The original global `b` and `h` remain available. One resolvent solve is reused
+for `H[c] = (b_c @ R) / diag(R)`. For explicit conjunction, `min_c H[c,v]`
+ranks within each existing direct/associated pool; it measures graph support,
+not the probability or truth of a conjunction.
+
+The read queue updates best known max-path support, including an existing seed,
+and propagates strict improvements over cached arcs. Max-path values schedule
+work; first-hit values still sum multi-path contributions. Physical adjacency
+reads remain capped at `E=max_edges`; queue pushes at `E*(N+1)` and cached
+relaxation attempts at `E*N`, where `N=max_nodes`. Stale heap entries cannot
+override new priorities. Budget exhaustion returns a marked partial result.
+Even pending peeks whose endpoints are local belong to its already-read matrix.
+Unread adjacency keeps its complete denominator; zero-attention bridges conduct.
+These finite limits do not guarantee the globally best subgraph.
+
+The derived view keeps actual subject/object/ordinary labels from active stored
+`REFERS_TO` edges. Multiple labels never increase channel mass. Final explicit
+eligibility checks each original Fact's predicate, metadata bindings, actual
+role edges and stored source-range shape. Unknown roles or predicates cannot
+satisfy an explicit constraint. Missing Cold leaves canonical Facts visible
+with the existing source status; metadata qualification is not exact original
+source verification. Cold's owner still validates any requested supplement.
+No eligibility filter removes navigation bridges.
+
+Only eligible pool ordering and qualification change; the composer retains its
+0.6 direct reservation and complete canonical bodies plus bounded source
+supplement. Within a pool, unsatisfied relation obligations precede already
+covered ones, then explicit clue coverage, then the original stable ordering.
+Selected Facts collectively satisfy obligations only when all required actual
+evidence is visible. Missing obligations or uncovered required groups report
+`graph_read_evidence_incomplete` with partial evidence; no inferred statement is
+rendered. Group support alone is not semantic sufficiency. Private diagnostic
+snapshots contain groups, roles, work counts and the local matrix; none enter
+public evidence text or persistent state. A failed candidate graph read returns
+`graph_read_unavailable` without retrying the writer or dropping constraints.
+
+Provider-free maintained smoke and regression:
+
+```bash
+Conversation_Memory/.venv/bin/python -m pytest \
+  Conversation_Memory/tests/test_first_hit_read.py \
+  Conversation_Memory/tests/test_graph_read_query.py \
+  Conversation_Memory/tests/test_graph_read_facade.py -q
+```
+
+These synthetic checks prove mechanism and boundary behavior, not utility.
+Real comparison must freeze the same existing graph, full query, MiniLM model,
+seed/node/read-arc and rendering budgets; preserve missing questions and inspect
+final `rendered_text`. Natural and caller-constrained results are separate arms.
+The candidate remains explicitly unpromoted; it must not be inferred from a
+writer version or enabled by an application default.
+
+### Original FirstHit and shared equations
+
 Defaults are engineering starting values, not measured optima:
 
 | Policy | Default |

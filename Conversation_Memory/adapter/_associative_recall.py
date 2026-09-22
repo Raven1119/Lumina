@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ._graph_read import ReadSelection
 
 from Conversation_Memory.recall.rendering import bound_evidence_groups
 
@@ -21,6 +25,8 @@ class Activation:
     diagnostics: dict = field(default_factory=dict, repr=False)
     # Actual Fact seeds from the same search, in its original order.
     seed_fact_ids: tuple[str, ...] = ()
+    # Request-only candidate selection; never used by the shared writer path.
+    read_selection: ReadSelection | None = field(default=None, repr=False)
 
 
 def activate(adapter, cue, *, target_entity_refs=None, exclude_evidence_ids=()):
@@ -104,7 +110,10 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
                        source_context_turns=0):
     from .magma_adapter import _source_context_roles, _relation_compatible, _RELATION_RESOLVER
 
-    query = cue.strip() if isinstance(cue, str) else ""
+    from .graph_read_query import GraphReadQuery
+    profile = getattr(adapter, "associative_read_profile", "first-hit-v1")
+    query = (cue.text if isinstance(cue, GraphReadQuery) and profile == "graph-read-v1"
+             else cue.strip() if isinstance(cue, str) else "")
 
     def empty(code):
         return AssociativeMemoryContext(MemoryContext(query, safe_error_code=code),
@@ -121,15 +130,18 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
     if (type(include_sources) is not bool or type(source_context_turns) is not int
             or not 0 <= source_context_turns <= 4):
         return empty("invalid_source_policy")
-    activation = adapter._activate_first_hit(query)
+    if profile == "graph-read-v1":
+        from ._graph_read import activate_read
+        activation = activate_read(adapter, cue)
+    else:
+        activation = adapter._activate_first_hit(query)
     adapter._last_first_hit_diagnostics = dict(activation.diagnostics)
-    profile = getattr(adapter, "associative_read_profile", "first-hit-v1")
-    if profile in ("reliable-v1", "reliable-v2"):
+    if profile in ("reliable-v1", "reliable-v2", "graph-read-v1"):
         from ._reliable_recall import pack_reliable
         return pack_reliable(adapter, query, policy, activation,
                              include_sources=include_sources,
                              source_context_turns=source_context_turns,
-                             profile=profile)
+                             profile="reliable-v2" if profile == "graph-read-v1" else profile)
     relation_ids = _RELATION_RESOLVER.resolve_query_relations(policy.relation_surfaces or ())
     ranked = sorted(activation.candidates,
                     key=lambda row: (-row[2], -row[1], row[0].metadata.get("evidence_id", "")))

@@ -55,6 +55,12 @@ def _array(value, *, ndim):
 
 def solve_first_hit(P, b, full_row_mass, decay=0.75):
     """Return (h, delta), using row-oriented b @ solve(I-lambda*P, I)."""
+    h, delta, _ = _solve_first_hit_with_resolvent(P, b, full_row_mass, decay)
+    return h, delta
+
+
+def _solve_first_hit_with_resolvent(P, b, full_row_mass, decay=0.75):
+    """Same solve, retaining its resolvent for explicit grouped read callers."""
     P, b, full = _array(P, ndim=2), _array(b, ndim=1), _array(full_row_mass, ndim=1)
     size = len(b)
     tolerance = 128 * np.finfo(np.float64).eps * max(1, size)
@@ -68,7 +74,7 @@ def solve_first_hit(P, b, full_row_mass, decay=0.75):
     if np.any(local > full + tolerance):
         raise FirstHitUnavailable("first_hit_transition_invalid")
     if not size:
-        return np.empty(0, dtype=np.float64), 0.0
+        return np.empty(0, dtype=np.float64), 0.0, np.empty((0, 0), dtype=np.float64)
     identity = np.eye(size, dtype=np.float64)
     K = identity - decay * P
     try:
@@ -89,7 +95,7 @@ def solve_first_hit(P, b, full_row_mass, decay=0.75):
             or np.any(h > seed_mass + tolerance) or not isfinite(delta)
             or delta < -tolerance or delta > seed_mass + tolerance):
         raise FirstHitUnavailable("first_hit_result_invalid")
-    return np.clip(h, 0.0, seed_mass), min(max(delta, 0.0), seed_mass)
+    return np.clip(h, 0.0, seed_mass), min(max(delta, 0.0), seed_mass), R
 
 
 def project_attention(h, budget=1.0, penalty=0.0):
@@ -164,6 +170,7 @@ class DerivedFirstHitGraph:
         self._kinds = {}
         self._stable = {}
         self._channels = {}
+        self._roles = {}
         self._rows = {}
         self._totals = {}
         self._invalid = set()
@@ -219,6 +226,10 @@ class DerivedFirstHitGraph:
     def stable_id(self, node_id):
         return self._stable.get(node_id, node_id)
 
+    def entity_roles(self, fact_id, entity_ref):
+        """Actual persisted role labels; labels never add navigation mass."""
+        return frozenset(self._roles.get((fact_id, entity_ref), ()))
+
     def outgoing_weight(self, node_id):
         if node_id in self._invalid:
             raise FirstHitUnavailable("first_hit_edge_weight_unavailable")
@@ -252,6 +263,9 @@ class DerivedFirstHitGraph:
             if (subtype != "REFERS_TO" or not self.is_fact(source)
                     or self._kinds[target] != "entity"):
                 return
+            role = properties.get("role")
+            label = role if isinstance(role, str) and role in {"subject", "object"} else "ordinary"
+            self._roles.setdefault((source, self._stable[target]), set()).add(label)
             self._add_channel(source, target, family, 1.0)
             self._add_channel(target, source, family, 1.0)
         elif family == "TEMPORAL" and subtype in {"PRECEDES", "SUCCEEDS"}:
