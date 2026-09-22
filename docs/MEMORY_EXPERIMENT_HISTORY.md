@@ -1,5 +1,9 @@
 # Memory experiment history
 
+Current entries and retained alternatives: [scheme catalog](EXPERIMENTS.md).
+The table below preserves historical wording/results; v6/reliable-v2 now supplies
+the real-model default and is not credited with these older BGE/Formation scores.
+
 Historical outcomes condensed during owner-authorized cleanup on 2026-09-09.
 Provider names and adoption notes describe their historical stage; current runtime
 model policy is DeepSeek-V4-Pro. Raw campaigns were removed; this is not replayable evidence.

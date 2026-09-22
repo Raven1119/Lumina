@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"现役记忆链（f92ea8e）：Chat 已接入 Recall；真实模型默认 grounded-formation-v6 + FirstHit + reliable-v2，无 BGE。Cold-first 和手动 Dream 不变。代码：[地图](../README.md)；候选：[方案目录](../docs/EXPERIMENTS.md)。","x":-1775,"y":-910,"width":660,"height":170,"color":"5"},
 		{"id":"1000000000000001","type":"text","text":"用户消息","x":-125,"y":-700,"width":250,"height":60},
 		{"id":"1000000000000002","type":"text","text":"构建 Hot Draft 逻辑上下文","x":-125,"y":-560,"width":250,"height":60},
 		{"id":"1000000000000003","type":"text","text":"ModelClient 生成回答","x":-125,"y":-420,"width":250,"height":60},
@@ -9,16 +10,18 @@
 		{"id":"1000000000000007","type":"text","text":"Cold Draft（pending_digest）","x":-125,"y":140,"width":250,"height":60},
 		{"id":"2000000000000001","type":"text","text":"用户手动启动 Dream","x":-1775,"y":320,"width":250,"height":60},
 		{"id":"2000000000000002","type":"text","text":"Dream","x":-1475,"y":320,"width":250,"height":60},
-		{"id":"2000000000000003","type":"text","text":"Conversation Memory Adapter","x":-1175,"y":320,"width":250,"height":60},
+		{"id":"2000000000000003","type":"text","text":"v6 Formation / checkpoint / FirstHit 连边 → Memory Adapter","x":-1175,"y":320,"width":250,"height":60},
 		{"id":"2000000000000004","type":"text","text":"MAGMA","x":-875,"y":320,"width":250,"height":60},
 		{"id":"2000000000000005","type":"text","text":"completed checkpoint","x":-575,"y":320,"width":250,"height":60},
 		{"id":"2000000000000006","type":"text","text":"Cold Draft（consumed）","x":-275,"y":320,"width":250,"height":60},
 		{"id":"3000000000000001","type":"text","text":"Recall 查询","x":325,"y":520,"width":250,"height":60},
-		{"id":"3000000000000002","type":"text","text":"有界 Recall","x":625,"y":520,"width":250,"height":60},
+		{"id":"3000000000000002","type":"text","text":"FirstHit → reliable-v2（真实模型默认）","x":625,"y":520,"width":250,"height":60},
 		{"id":"3000000000000003","type":"text","text":"MemoryContext","x":925,"y":520,"width":250,"height":60},
-		{"id":"3000000000000004","type":"text","text":"尚未接入 /api/chat","x":1225,"y":520,"width":250,"height":60}
+		{"id":"3000000000000004","type":"text","text":"已注入 /api/chat Answer 上下文","x":1225,"y":520,"width":250,"height":60}
 	],
 	"edges":[
+		{"id":"current-chat-recall","fromNode":"1000000000000002","fromSide":"right","toNode":"3000000000000001","toSide":"left","label":"Mind 门控允许"},
+		{"id":"current-recall-answer","fromNode":"3000000000000004","fromSide":"right","toNode":"1000000000000003","toSide":"right","label":"有界证据"},
 		{"id":"8000000000000001","fromNode":"1000000000000001","fromSide":"bottom","toNode":"1000000000000002","toSide":"top"},
 		{"id":"8000000000000002","fromNode":"1000000000000002","fromSide":"bottom","toNode":"1000000000000003","toSide":"top"},
 		{"id":"8000000000000003","fromNode":"1000000000000003","fromSide":"bottom","toNode":"1000000000000004","toSide":"top"},

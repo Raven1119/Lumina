@@ -19,19 +19,19 @@ from pathlib import Path
 
 import pytest
 
-from adapter.backend import RealMagmaBackend
-from adapter.grounded_formation import FORMATION_VERSION
-from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import ColdDraftSegment, ColdDraftTurn
-from adapter.user_self import CURRENT_USER_ENTITY_REF
-from ingestion.state_store import IngestionStateStore
+from Conversation_Memory.adapter.backend import RealMagmaBackend
+from Conversation_Memory.adapter.grounded_formation import FORMATION_VERSION
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn
+from Conversation_Memory.adapter.user_self import CURRENT_USER_ENTITY_REF
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
 
 _REAL_MAGMA_VENV = (
-    Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe"
+    Path(__file__).resolve().parents[1] / ".venv"
 )
 
 pytestmark = pytest.mark.skipif(
-    Path(sys.executable).resolve() != _REAL_MAGMA_VENV.resolve(),
+    Path(sys.prefix).resolve() != _REAL_MAGMA_VENV.resolve(),
     reason="real MAGMA test runs in the isolated Conversation Memory environment",
 )
 
@@ -597,7 +597,7 @@ def test_corrupt_persisted_mention_bindings_fail_as_state_corrupt(tmp_path):
 
 
 def test_unbound_mention_create_ref_is_deterministic_across_runs(tmp_path):
-    from adapter.entity_consolidation import stable_mention_entity_ref
+    from Conversation_Memory.adapter.entity_consolidation import stable_mention_entity_ref
 
     span = "陈雨在北京工作。"
 
@@ -756,7 +756,7 @@ def test_subject_mention_reuses_subject_ref_while_other_mentions_bind_normally(t
     }
     assert by_surface["小林"] == subject_ref
     # 王老师 is not the subject surface: normal deterministic CREATE
-    from adapter.entity_consolidation import stable_mention_entity_ref
+    from Conversation_Memory.adapter.entity_consolidation import stable_mention_entity_ref
 
     unit_id = state["unit_ids"][0]
     assert by_surface["王老师"] == stable_mention_entity_ref(unit_id, "王老师")

@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"Execution 状态职责示意；真实事件/执行状态/恢复源码入口见 [代码地图](../README.md) 与 [恢复契约](../docs/RECOVERY_AND_WORKING_CONTEXT_DESIGN.md)。图中文字是概念标签，不保证对应同名模块。","x":-125,"y":-240,"width":660,"height":170,"color":"5"},
 		{"id":"13ed204771f91cb0","type":"text","text":"ToolHost","x":-125,"y":-30,"width":250,"height":60},
 		{"id":"50f57749082c77de","x":220,"y":-30,"width":250,"height":60,"type":"text","text":"Shared Environment"},
 		{"id":"8990a7c77bb9db40","x":60,"y":140,"width":250,"height":60,"type":"text","text":"result/event"},

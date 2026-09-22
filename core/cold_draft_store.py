@@ -365,14 +365,9 @@ class ColdDraftStore:
     @staticmethod
     def _source_types():
         # DTO-only imports keep default Cold independent of Memory/model loading.
-        try:
-            from adapter.models import SourceExcerpt, SourceMemoryContext, SourceProvenance
-        except ModuleNotFoundError as exc:
-            if exc.name not in {"adapter", "adapter.models"}:
-                raise
-            from Conversation_Memory.adapter.models import (
-                SourceExcerpt, SourceMemoryContext, SourceProvenance,
-            )
+        from Conversation_Memory.adapter.models import (
+            SourceExcerpt, SourceMemoryContext, SourceProvenance,
+        )
         return SourceExcerpt, SourceMemoryContext, SourceProvenance
 
     @staticmethod

@@ -3,21 +3,14 @@
 from __future__ import annotations
 
 import re
-import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn
+
 from .interfaces import ColdDraftOwner, MemoryIngestorProvider
 from .models import SegmentDigestResult
-
-
-_CONVERSATION_MEMORY_ROOT = Path(__file__).resolve().parents[1] / "Conversation_Memory"
-if str(_CONVERSATION_MEMORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(_CONVERSATION_MEMORY_ROOT))
-
-from adapter.models import ColdDraftSegment, ColdDraftTurn  # noqa: E402
 
 
 _PENDING = "pending_digest"

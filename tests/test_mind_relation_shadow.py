@@ -1,8 +1,10 @@
-"""Unit tests for scripts/mind_relation_shadow.py (shadow-only harness)."""
+"""Unit tests for experiments/mind_relation.py (shadow-only harness)."""
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,66 +13,13 @@ from Conversation_Memory.adapter.controlled_relation import (
     UNRESOLVED,
     ControlledRelationResolver,
 )
-from scripts import mind_relation_shadow as mrs
+from experiments import mind_relation as mrs
 
 
-_CASE = {
-    "case_id": "rel-zh-01",
-    "stratum": "single_zh",
-    "message": "CM-707 相机的采集帧频是多少？",
-    "recall_needed": True,
-    "expected_relation_ids": ["CAMERA_CAPTURE_RATE"],
-    "out_of_vocabulary": False,
-    "memory": {
-        "correct": [
-            {
-                "subject": "CM-707",
-                "relation": "frames per second",
-                "value": "50 fps",
-                "text": "Camera CM-707 captures at 50 frames per second.",
-            }
-        ],
-        "distractor": {
-            "subject": "CM-707",
-            "relation": "link behavior",
-            "value": "AUTO",
-            "text": "Port on CM-707 uses link mode AUTO.",
-        },
-    },
-    "rationale": "需要记忆中的相机采集速率关系。",
-}
-
-_OOV_CASE = {
-    "case_id": "rel-oov-01",
-    "stratum": "out_of_vocabulary",
-    "message": "设备 UN-413 当前用的是哪个配置档案？",
-    "recall_needed": True,
-    "expected_relation_ids": [],
-    "out_of_vocabulary": True,
-    "memory": {
-        "correct": [
-            {
-                "subject": "UN-413",
-                "relation": "configuration",
-                "value": "PROFILE-JADE",
-                "text": "Unit UN-413 uses service profile PROFILE-JADE.",
-            }
-        ],
-        "distractor": None,
-    },
-    "rationale": "词表外关系：resolver 应真实 UNRESOLVED 并 fail-open 放行。",
-}
-
-_NO_MEMORY_CASE = {
-    "case_id": "rel-nm-01",
-    "stratum": "no_memory",
-    "message": "1 到 10 之间有多少个偶数？",
-    "recall_needed": False,
-    "expected_relation_ids": [],
-    "out_of_vocabulary": False,
-    "memory": None,
-    "rationale": "公共知识，无需记忆。",
-}
+_FIXTURES = Path(__file__).resolve().parents[1] / "experiments" / "fixtures"
+_CASE, _OOV_CASE, _NO_MEMORY_CASE, _COMPOUND_CASE = mrs.load_cases(
+    _FIXTURES / "mind_relation_cases.json"
+)
 
 
 def _write_cases(tmp_path: Path, cases: list[dict]) -> Path:
@@ -373,39 +322,6 @@ def test_summarize_downstream_flags_correct_evidence_kill(tmp_path: Path) -> Non
     assert summary["correct_evidence_survival"]["candidate"] == 0.0
 
 
-_COMPOUND_CASE = {
-    "case_id": "rel-cp-x",
-    "stratum": "compound",
-    "message": "CP-615 的相机采样帧频和端口工作方式分别是什么？",
-    "recall_needed": True,
-    "expected_relation_ids": ["CAMERA_CAPTURE_RATE", "PORT_LINK_MODE"],
-    "out_of_vocabulary": False,
-    "memory": {
-        "correct": [
-            {
-                "subject": "CP-615",
-                "relation": "frames per second",
-                "value": "72 fps",
-                "text": "Camera CP-615 captures at 72 frames per second.",
-            },
-            {
-                "subject": "CP-615",
-                "relation": "link behavior",
-                "value": "AUTO",
-                "text": "Port CP-615 uses link mode AUTO.",
-            },
-        ],
-        "distractor": {
-            "subject": "CP-615",
-            "relation": "mesh category",
-            "value": "MESH-15",
-            "text": "Filter on CP-615 uses mesh classification MESH-15.",
-        },
-    },
-    "rationale": "复合关系：两个正确证据都必须存活。",
-}
-
-
 def test_compound_requires_both_correct_units(tmp_path: Path) -> None:
     # Both expected relations supplied: both correct units survive,
     # distractor rejected.
@@ -423,3 +339,76 @@ def test_compound_requires_both_correct_units(tmp_path: Path) -> None:
         state_path=tmp_path / "partial.json",
     )
     assert partial["correct_present"] is False
+
+
+def test_offline_cli_replays_synthetic_evidence(tmp_path: Path) -> None:
+    log = tmp_path / "replay.jsonl"
+    replay = (_FIXTURES / "mind_relation_replay.jsonl").read_bytes()
+    log.write_bytes(replay)
+    completed = subprocess.run(
+        [
+            sys.executable, "-m", "experiments.mind_relation",
+            "--labels", str(_FIXTURES / "mind_relation_cases.json"),
+            "--log", str(log), "--analyze",
+        ],
+        cwd=_FIXTURES.parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    summary = json.loads(completed.stdout)
+    assert summary["gate"]["records"] == 4
+    assert summary["gate"]["unsafe_failures"] == []
+    assert summary["gate"]["oov_probe"]["resolver_unresolved"] == 1
+    assert summary["downstream"]["correct_evidence_survival"] == {
+        "baseline": 1.0, "oracle": 1.0, "candidate": 1.0,
+    }
+    assert summary["downstream"]["wrong_relation_rejection"] == {
+        "baseline": 0.0, "oracle": 1.0, "candidate": 1.0,
+    }
+    assert log.read_bytes() == replay
+    assert json.loads((tmp_path / "downstream_summary.json").read_text()) == summary
+
+
+@pytest.mark.parametrize("gate", ["v2", "v3rel"])
+@pytest.mark.parametrize("budget", [None, 64])
+def test_cli_model_budget_is_explicit_without_changing_defaults(
+    tmp_path: Path, monkeypatch, gate: str, budget: int | None,
+) -> None:
+    from core import env_loader, model_client
+
+    configured = []
+
+    class Client:
+        client_kind = "model"
+
+        def generate(self, recent_context, user_message, *, system_prompt):
+            return "true" if gate == "v2" else (
+                '{"recall": true, "relations": ["camera capture rate"]}'
+            )
+
+    def build_client(**kwargs):
+        configured.append(kwargs)
+        return Client()
+
+    monkeypatch.setattr(env_loader, "load_env_file", lambda **kwargs: None)
+    monkeypatch.setattr(model_client, "build_model_client_from_env", build_client)
+    labels = _write_cases(tmp_path, [_CASE])
+    log = tmp_path / "shadow.jsonl"
+    arguments = [
+        "--labels", str(labels), "--log", str(log), "--gate", gate,
+        "--runs", "1",
+    ]
+    if budget is not None:
+        arguments += ["--max-tokens", str(budget)]
+    mrs.main(arguments)
+    assert configured == [{
+        "model_name_override": "deepseek-v4-pro",
+        "max_tokens_override": budget if budget is not None else (
+            8 if gate == "v2" else 64
+        ),
+        "temperature_override": 0.0,
+    }]
+    record = json.loads(log.read_text())
+    assert record["model"] == "deepseek-v4-pro"
+    assert record["parse_ok"] is True

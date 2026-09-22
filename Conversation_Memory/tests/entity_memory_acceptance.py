@@ -1,6 +1,6 @@
 """Frozen synthetic, real-provider / real-MAGMA acceptance; never production data.
 
-Run with Conversation_Memory/.venv/Scripts/python.exe. --source-root can point
+Run with the prepared Conversation_Memory/.venv Python. --source-root can point
 at a git-archive snapshot to keep baseline imports independent of working edits.
 The output deliberately contains synthetic source/output for independent review.
 It never serializes environment values, HTTP headers, or exception messages.
@@ -344,14 +344,16 @@ def main():
     if args.recall_after_retry and not args.retry_failed_once:
         parser.error("--recall-after-retry requires --retry-failed-once")
     source = args.source_root.resolve()
+    # Explicit historical checkouts still use organ-local imports internally.
+    # Keep their path compatibility in this cross-checkout CLI only.
     sys.path[:0] = [str(source / "Conversation_Memory"), str(source)]
     from dotenv import dotenv_values
     from core.model_client import build_model_client_from_env, DEEPSEEK_MODEL
-    from adapter.backend import RealMagmaBackend
-    from adapter.magma_adapter import MagmaMemoryAdapter
-    from adapter.models import ColdDraftSegment, ColdDraftTurn, RecallPolicy
-    from adapter import grounded_formation
-    from ingestion.state_store import IngestionStateStore
+    from Conversation_Memory.adapter.backend import RealMagmaBackend
+    from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+    from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn, RecallPolicy
+    from Conversation_Memory.adapter import grounded_formation
+    from Conversation_Memory.ingestion.state_store import IngestionStateStore
     fixture_bytes = args.fixture.read_bytes()
     fixture = json.loads(fixture_bytes)
     env = {**dotenv_values(args.config_root / ".env.local"), **os.environ}

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from adapter.interfaces import MemoryIngestor
+    from Conversation_Memory.adapter.interfaces import MemoryIngestor
 
 
 class ColdDraftOwner(Protocol):

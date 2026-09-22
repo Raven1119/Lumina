@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError, asdict, replace
 
 import pytest
 
-from adapter.models import MemoryContext, PreparedRecall, RecallPolicy
+from Conversation_Memory.adapter.models import MemoryContext, PreparedRecall, RecallPolicy
 from test_source_context_rendering import adapter, candidate
 
 

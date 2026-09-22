@@ -177,7 +177,7 @@ class SourceReader:
                 if not all(scorer.fits_pair(query, text) for text in texts):
                     raise ValueError("source_reranker_window_exceeded")
                 raw = tuple(scorer.score(query, texts))
-                from recall.hindsight_scoring import score_hindsight_post_rerank
+                from Conversation_Memory.recall.hindsight_scoring import score_hindsight_post_rerank
                 from .magma_adapter import _candidate_snapshot_reference_time
                 times = tuple(c.metadata["provenance"]["source_timestamp"] for c in candidates)
                 scores = score_hindsight_post_rerank(raw, times, now=_candidate_snapshot_reference_time(times))

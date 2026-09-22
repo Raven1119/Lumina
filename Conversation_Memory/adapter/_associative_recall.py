@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from recall.rendering import bound_evidence_groups
+from Conversation_Memory.recall.rendering import bound_evidence_groups
 
 from ._recall_execution import find_recall_seeds
 from .models import (

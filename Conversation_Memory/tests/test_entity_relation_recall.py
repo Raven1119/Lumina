@@ -9,11 +9,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from adapter._anchor_fusion import _rank_lexical_events
-from adapter._recall_execution import _bounded_projection
-from adapter.backend import RealMagmaBackend
-from adapter.models import MemoryEvidence, RecallPolicy, SourceProvenance
-from recall.rendering import bound_evidence, bound_evidence_groups
+from Conversation_Memory.adapter._anchor_fusion import _rank_lexical_events
+from Conversation_Memory.adapter._recall_execution import _bounded_projection
+from Conversation_Memory.adapter.backend import RealMagmaBackend
+from Conversation_Memory.adapter.models import MemoryEvidence, RecallPolicy, SourceProvenance
+from Conversation_Memory.recall.rendering import bound_evidence, bound_evidence_groups
 
 
 @pytest.fixture

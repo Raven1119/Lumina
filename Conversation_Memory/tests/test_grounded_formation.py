@@ -1,26 +1,22 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[1]
-MEMORY_ROOT = ROOT / "Conversation_Memory"
-if str(MEMORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(MEMORY_ROOT))
+ROOT = Path(__file__).resolve().parents[2]
 
-from adapter.grounded_formation import (  # noqa: E402
+from Conversation_Memory.adapter.grounded_formation import (  # noqa: E402
     FORMATION_VERSION,
     FormationError,
     form_grounded_memory_units,
 )
-from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.models import ColdDraftSegment, ColdDraftTurn  # noqa: E402
-from ingestion.state_store import IngestionStateStore  # noqa: E402
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
+from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn  # noqa: E402
+from Conversation_Memory.ingestion.state_store import IngestionStateStore  # noqa: E402
 
 
 class FakeFormationModel:
@@ -125,7 +121,7 @@ def _supports_subject_relations(units, subject, relations):
 
 def test_frozen_validator_audit_recovers_four_and_preserves_two():
     audit = json.loads(
-        (ROOT / "docs" / "FORMATION_VALIDATOR_AUDIT_CASES.json")
+        (ROOT / "Conversation_Memory" / "fixtures" / "formation_validator_audit_cases.json")
         .read_text(encoding="utf-8")
     )
     recovered = preserved = 0
@@ -302,7 +298,7 @@ def test_semantic_fallback_accepts_full_proposition_paraphrase():
 
 def test_semantic_fallback_accepts_exact_ap471_temporal_candidate():
     audit = json.loads(
-        (ROOT / "docs" / "EXACT_9_VALIDATOR_REJECTION_AUDIT_CASES.json")
+        (ROOT / "Conversation_Memory" / "fixtures" / "exact_9_validator_rejection_audit_cases.json")
         .read_text(encoding="utf-8")
     )
     case = next(
@@ -1002,7 +998,7 @@ def test_formation_failure_writes_no_checkpoint_or_magma(tmp_path):
 
 def test_app_and_cli_wiring_select_formation_only_with_model(monkeypatch, tmp_path):
     from Conversation_Memory.adapter import magma_adapter as packaged_magma
-    from adapter.grounded_formation import FORMATION_ENTITY_VERSION
+    from Conversation_Memory.adapter.grounded_formation import FORMATION_ENTITY_VERSION
     from Dream.runner import RealMemoryIngestorProvider
     from core import main as core_main
 
@@ -1043,7 +1039,7 @@ def test_app_and_cli_wiring_select_formation_only_with_model(monkeypatch, tmp_pa
 
 
 def test_cli_default_version_tracks_effective_model_and_explicit_value(monkeypatch):
-    from adapter.grounded_formation import FORMATION_ENTITY_VERSION
+    from Conversation_Memory.adapter.grounded_formation import FORMATION_ENTITY_VERSION
     import Dream.runner as runner_module
     from Dream.models import DreamRunReport
     from core.model_client import MockModelClient

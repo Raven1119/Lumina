@@ -8,7 +8,11 @@ The durable key is:
 segment_id + ":" + ingestion_version
 ```
 
-Configured real-model manual Dream uses `grounded-formation-v2`. Each unit ID
+Configured real-model manual Dream uses `grounded-formation-v6` with versioned
+F1/F2/G1/G2 receipts, body durability and FirstHit completion keys described in
+[Reliable Memory](RELIABLE_MEMORY.md). The shared source and checkpoint owner
+below remains the same. Historical `grounded-formation-v2` checkpoints and
+explicit runs retain the following protocol. Each v2 unit ID
 is a stable hash of the atomic SRV/text, exact source refs, optional referenced
 time, and Formation version. Mock/legacy ingestion retains
 `grounded-span-v2`; for every deterministic eligible user or assistant span,

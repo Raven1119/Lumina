@@ -1,195 +1,110 @@
-# Lumina
+# Lumina 代码地图
 
-The separate Mind-Nervous-Execution core runs through `python -m Mind`.
-Mind owns judgment, Nervous durable events, and Execution independent action;
-there is no central Host/Session. Use a fresh `--state` directory.
-See [current capabilities and limits](docs/CURRENT_STATUS.md),
-[start/resume usage](Mind/docs/INTEGRATED_CHAIN.md), and the
-[condensed experiment history](Mind/docs/EXPERIMENT_HISTORY.md).
+这里回答「现在怎样运行、功能在哪里」。替代方案、独立运行方法和历史去向统一见
+[方案目录](docs/EXPERIMENTS.md)。以下依据 `Execution_lab2` 的 `f92ea8e` 源码整理；
+实现事实补充在 [CURRENT_STATUS](docs/CURRENT_STATUS.md)，设计愿景在
+[NORTH_STAR](docs/NORTH_STAR.md)。文档中的历史成绩不代表当前版本的新测量。
 
+## 三个实际入口
 
-Lumina is a local-first conversational runtime built around a Cold-first
-continuity invariant: conversation evidence must be durably preserved before it
-leaves the live context.
+| 入口 | 主流程 | 运行边界 |
+| --- | --- | --- |
+| `python -m uvicorn core.main:app --workers 1` | 浏览器 → FastAPI → MessageRuntime → Recall 门控 → Memory → Answer → Hot Draft → Cold-first 压缩 | 单进程；Chat 不运行认知链，也不自动 Dream |
+| `python -m Mind start …` | Mind 判断 ↔ Nervous 持久事件 ↔ Execution 行动 ↔ 环境证据 | 独立前台链；默认单目标；各器官拥有自己的状态，没有中央 Host |
+| `python -m Dream.runner --max-segments 1` | Cold 待消化段 → 有界写入 → checkpoint/MAGMA 持久化 → Cold consumed | 显式、同步、串行；独立 CLI 使用同一状态时须先停止服务写入，并继承已配置的进程环境 |
 
-## Current Runtime
+服务还提供 `POST /api/dream/run`（共用写锁）和独立的 `POST /api/execution`。
+独立 Dream CLI 不自动加载 `.env.local`；真实模型模式/密钥须在调用环境中配置，
+否则会走 mock/legacy。API 的真实路由和组装都在 [core/main.py](core/main.py)，请求 DTO 在
+[core/contracts.py](core/contracts.py)。认知 CLI 参数及恢复用法见
+[Mind/cli.py](Mind/cli.py)、[集成链契约](Mind/docs/INTEGRATED_CHAIN.md)。
 
-Production chat now includes bounded long-term memory Recall:
+## 当前默认的记忆链
 
-```text
-Browser -> FastAPI -> MessageRuntime
--> Mind gate (LlmMindGate by default with a real model; constant in mock)
--> source-default-on Recall
-   -> query target_entity_ref classification (CURRENT_USER -> E_001, or
-      exact-surface lookup over persisted EntityNodes; 0/multi hit -> None)
-   -> MAGMA bounded candidates
-      (+ entity-conditioned FAISS subset list for entity queries)
-   -> ControlledRelationResolver when the caller supplies relation surfaces
-      (UNRESOLVED or absent metadata fails open)
-   -> BGE rerank ([SAME_ENTITY] per-pair projection on equal entity refs)
-   -> Hindsight post-rerank score
-   -> final_min_score >= 0.144
-   -> bounded MemoryContext
--> ModelClient
--> Hot Draft -> Cold-first logical compaction -> Cold Draft
-```
-
-Offline memory writing remains explicit:
+配置真实模型时，Chat 和服务内 Dream 共用同一 Memory adapter：
 
 ```text
-manual Dream
--> pending Cold Draft segments
--> DeepSeek-V4-Pro Grounded Formation (non-thinking, max_tokens=2000)
--> deterministic grounding validation + bounded semantic fallback
-   + self-name coverage guard
--> durable GroundedMemoryUnit checkpoint before MAGMA
--> span-grounded entity mention extraction + durable mention-binding checkpoint
--> Lumina Conversation Memory adapter
--> unmodified upstream MAGMA
--> Cold segment consumed
+显式 Dream
+Cold 原始段 → grounded-formation-v6（F1 提取 / F2 验证 / G1 绑定 / G2 验证）
+  → 持久化阶段响应、已核验正文和绑定 → FirstHit 连边计划 → MAGMA → Cold consumed
+
+Chat
+原问题 → v2 布尔门控（失败放行）→ Memory.recall
+  → FirstHit 有界种子/局部传播/事实竞争
+  → reliable-v2：保留 canonical 正文 + 有界 Cold 原文补充
+  → MemoryContext → Answer → Hot Draft
 ```
 
-Recall is read-only with respect to memory stores and fails soft: empty or
-unavailable memory does not block normal conversation.
+**这条默认路径不运行 BGE、旧 Hindsight 或旧分数阈值。** Chat 缺省输出最多
+3 个事实、5000 字符；reliable-v2 原文补充有独立条数上限、共用字符预算。
+FirstHit 自己的缺省发现预算是 5 seeds / 64 nodes / 256 edges；不要把
+`RecallPolicy` 中为旧路径保留的 depth/node 字段说成它的遍历规则。
+具体投递及预算见 [可靠记忆契约](Conversation_Memory/docs/RELIABLE_MEMORY.md)。
 
-## Current Capabilities
+真实运行模型保持 DeepSeek-V4-Pro。未配置真实模型时使用 mock/legacy
+`grounded-span-v2`；旧 BGE 路径仍供明确选择的历史接口和兼容调用，代码与结果位置见方案目录。
+读取空或失败不会阻断普通聊天。Cold 原文不可变，消费状态只由 Cold owner 改动。
 
-- same-origin browser chat, `GET /api/status`, and `POST /api/chat` (`Enter`
-  sends, `Shift+Enter` inserts a newline, IME-composition Enter never sends);
-- mock mode plus explicit DeepSeek Anthropic-compatible real-model mode;
-- safe provider fallback;
-- restart-persistent Hot Draft and Cold-first compaction;
-- stable per-turn provenance with aware timestamps/timezones;
-- immutable Cold source records;
-- manual bounded Dream;
-- dedicated DeepSeek-V4-Pro, non-thinking Grounded Formation with a 2000-token
-  output budget for configured real-model Dream;
-- deterministic `grounded-span-v2` projection for mock/legacy ingestion;
-- a deterministic, LLM-free self-name coverage guard inside Formation:
-  an omitted explicit self-identification (我叫X / 我的名字是X / 你可以叫我X)
-  is restored as exactly one source-grounded identity unit through the
-  unchanged strict validator, never duplicated and never widening fact
-  authorization;
-- pinned, unmodified upstream MAGMA;
-- durable idempotent memory checkpoints;
-- production Recall injection through Lumina-owned DTOs;
-- keyword-enriched dense + bounded lexical anchors with RRF;
-- fixed depth-1 bounded graph traversal;
-- fixed `BAAI/bge-reranker-v2-m3` reranking;
-- deterministic Hindsight-style recency scoring;
-- inclusive production `final_min_score=0.144`;
-- bounded top-3 / 5000-character historical evidence injection;
-- restart/idempotency/leak-safe Recall E2E coverage;
-- a Mind gate on every chat message before Recall (stage 2 `LlmMindGate`
-  promoted as the real-model default, `{recall: bool}`, fail-open, audited);
-- generic entity binding: `CURRENT_USER` -> `E_001` plus deterministic
-  exact-surface EntityRef binding for ordinary named subjects and grounded
-  mentions; graph-only non-temporal EntityNodes with one
-  `REFERS_TO(role=subject)` edge per event subject and generic role-less
-  `REFERS_TO` edges per additional mention; an entity-conditioned FAISS
-  subset candidate channel with exact-surface query-side ref lookup
-  (unique hit binds, 0 or multi misses fail open); and the `[SAME_ENTITY]`
-  ranking cue on equal refs.
+## 按功能找实现、状态和测试
 
-Recall is enabled by source default. It can be explicitly disabled before
-startup:
+| 功能 / 状态所有者 | 实现 | 验证与详细契约 |
+| --- | --- | --- |
+| API、前端、依赖组装 | [core/main.py](core/main.py)、[edge/static](edge/static) | [test_chat_api](tests/test_chat_api.py)、[test_execution_api](tests/test_execution_api.py) |
+| 消息流程、记忆注入、回答 | [message_runtime.py](core/message_runtime.py)、[model_client.py](core/model_client.py)、[chat_background.md](prompts/chat_background.md) | [test_message_runtime](tests/test_message_runtime.py)、[test_model_client](tests/test_model_client.py) |
+| Chat 的布尔门控 / 显式后读选择 | [Mind/llm_gate.py](Mind/llm_gate.py)、[evidence_selector.py](Mind/evidence_selector.py)、[decision_log.py](Mind/decision_log.py) | [读契约](Mind/docs/CHAT_RECALL_GATE.md)、[选择回归](tests/test_memory_evidence_selection.py)；与持久认知 Mind 是不同接口 |
+| Hot、Cold、压缩游标、逐轮来源 | [draft_store.py](core/draft_store.py)、[cold_draft_store.py](core/cold_draft_store.py)、[hot_draft_compactor.py](core/hot_draft_compactor.py)、[turn_provenance.py](core/turn_provenance.py) | [Cold 契约](docs/COLD_DRAFT.md)、[来源契约](docs/DRAFT_TURN_PROVENANCE_V2.md)、[Cold 测试](tests/test_cold_draft_store.py) |
+| 手动消化协调；不拥有记忆数据库 | [Dream/runner.py](Dream/runner.py)、[cold_draft_digest.py](Dream/cold_draft_digest.py) | [Dream 测试](Dream/tests)、[消化契约](Dream/docs/DREAM_COLD_DRAFT_DIGESTION.md) |
+| Memory 门面 / DTO / 幂等阶段 checkpoint | [magma_adapter.py](Conversation_Memory/adapter/magma_adapter.py)、[models.py](Conversation_Memory/adapter/models.py)、[state_store.py](Conversation_Memory/ingestion/state_store.py) | [幂等契约](Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md)、[Memory 测试](Conversation_Memory/tests) |
+| v6 写入及实体绑定 | [reliable_formation.py](Conversation_Memory/adapter/reliable_formation.py)、[_entity_ingestion.py](Conversation_Memory/adapter/_entity_ingestion.py) | [v6 回归](Conversation_Memory/tests/test_reliable_v6_ingestion.py)、[完整组装回归](Conversation_Memory/tests/test_reliable_profile_integration.py) |
+| FirstHit / reliable-v2 | [first_hit.py](Conversation_Memory/adapter/first_hit.py)、[_first_hit_ingestion.py](Conversation_Memory/adapter/_first_hit_ingestion.py)、[_reliable_recall.py](Conversation_Memory/adapter/_reliable_recall.py) | [FirstHit 测试](Conversation_Memory/tests/test_first_hit.py)、[可靠读取 v2](Conversation_Memory/tests/test_reliable_recall_v2.py) |
+| 图、向量和原文索引 | [backend.py](Conversation_Memory/adapter/backend.py)、[_source_backend.py](Conversation_Memory/adapter/_source_backend.py)、[固定上游 MAGMA](Conversation_Memory/upstream/MAGMA) | MAGMA gitlink `467cb70b67ac337b22fdb42194d37c04ad701b62`；一个 MultiDiGraph，不是四个物理图 |
+| 原文候选接口 | [source_memory.py](Conversation_Memory/adapter/source_memory.py)、[source_context.py](Conversation_Memory/adapter/source_context.py)、[source_reader.py](Conversation_Memory/adapter/source_reader.py)、[source_experiences.py](Conversation_Memory/adapter/source_experiences.py) | [原文契约](Conversation_Memory/docs/SOURCE_REPRESENTATION_PROTOTYPE.md)；独立候选如何跑见方案目录 |
+| Mind 判断、认知提交、活动和分析 | [organ.py](Mind/organ.py)、[cognition.py](Mind/cognition.py)、[trace.py](Mind/trace.py)、[activity.py](Mind/activity.py)、[analysis.py](Mind/analysis.py)、[world_model.py](Mind/world_model.py) | [认知架构](docs/MIND_COGNITIVE_ARCHITECTURE.md)、[Mind 测试](Mind)；Mind 不拥有业务文件系统操作权限 |
+| Nervous 邮箱、确认、前台续接和预算 | [organ.py](Nervous/organ.py)、[storage.py](Nervous/storage.py)、[provider.py](Nervous/provider.py)、[attention.py](Nervous/attention.py)、[watch.py](Nervous/watch.py) | [事件契约](docs/NERVOUS_EVENT_FOUNDATION.md)、[Nervous 测试](Nervous)；传递事实，不替 Mind 决策 |
+| Execution 行动、来源、恢复 | [runtime.py](Execution/runtime.py)（事件入口）、[organ.py](Execution/organ.py)（现役单次 facade）、[execution.py](Execution/execution.py)、[evidence.py](Execution/evidence.py)、[sandbox.py](Execution/sandbox.py) | [执行架构](docs/LUMINA_EXECUTION_FINAL_ARCHITECTURE.md)、[Execution 测试](Execution) |
+| 器官自己的工作上下文投影 | [working_context.py](working_context.py) | [恢复契约](docs/RECOVERY_AND_WORKING_CONTEXT_DESIGN.md)、[来源许可](vendor/kimi_compaction/PROVENANCE.md)；不拥有原始历史或权威状态 |
 
-```text
-LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED=false
-```
+Memory 内外统一使用 `Conversation_Memory.*`。只有上游 MAGMA loader、显式历史兼容测试及跨旧 checkout 的验收工具
+保留必要的路径适配；器官不再依赖测试收集顺序建立隐式 import。
+现有 Canvas 的状态说明和链接随本次整理修正，示意图不能替代以上实际调用关系。
 
-## Development baseline
+## 配置与本地运行
 
-The cognitive core uses organ-owned persistence, sparse original guidance,
-independent bounded analysis, and explicit execution feedback. Current tests
-cover its invariants; old campaign drivers and version replay are retired.
-This does not connect the core to production Chat or prove general autonomy.
-
-Execution's supported facade and manual API live in `Execution/` and
-`POST /api/execution`. Chat continues to use bounded Recall and manual Dream.
-Memory algorithm/history details remain in their maintained documents.
-
-See [current facts](docs/CURRENT_STATUS.md),
-[the core operating contract](Mind/docs/INTEGRATED_CHAIN.md),
-[Memory history](docs/MEMORY_EXPERIMENT_HISTORY.md), and
-[development guidance](AGENTS.md).
-
-## Install and Run
-
-Install root dependencies:
+开发和 Codex 运行在 Linux；Noespire 应用目标是 Windows，详见
+[平台约定](docs/final_goal.md#target-platform)。本次 Linux 验证不等于 Windows 验证。
 
 ```bash
-python -m pip install -r requirements.txt
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m uvicorn core.main:app --workers 1
 ```
 
-Run the app:
+打开 `http://127.0.0.1:8000/`。Memory 的额外依赖见
+[Conversation_Memory/requirements.txt](Conversation_Memory/requirements.txt)；有已准备环境时直接复用。
+上游新检出用 `git submodule update --init Conversation_Memory/upstream/MAGMA`，保持固定提交。
+模型缓存按实际选择的路线准备；不要为 v6/reliable-v2 下载旧 BGE。
 
-```bash
-python -m uvicorn core.main:app
-```
+| 配置入口 | 消费者 / 作用 |
+| --- | --- |
+| [.env.example](.env.example) → 私有 `.env.local`；进程环境优先 | [env_loader.py](core/env_loader.py)；`LUMINA_MODEL_MODE`、`DEEPSEEK_API_KEY` 由模型适配器读取 |
+| `LUMINA_MIND_GATE_MODE=llm` | Chat 缺省门控；`constant` 是支持的常量模式；`direct`、`select` 是显式候选 |
+| `LUMINA_CONVERSATION_MEMORY_RECALL_ENABLED` | 缺省开启 Recall，可显式关闭 |
+| `LUMINA_DRAFT_STORE_PATH` / `LUMINA_MIND_DECISION_LOG_PATH` / `LUMINA_DEFAULT_TIMEZONE` | Hot 路径、门控审计、时区后备；服务 Cold 和压缩游标默认跟随 Hot 父目录 |
+| `LUMINA_DREAM_MAGMA_PERSIST_DIR` | 服务与独立 Dream 的 MAGMA 目录 |
+| `LUMINA_DREAM_COLD_DRAFT_PATH` / `LUMINA_DREAM_INGESTION_STATE_PATH` | 独立 Dream CLI 的 Cold / checkpoint 路径；不覆盖服务 Cold owner |
+| `python -m Mind --help` | 认知链的 state、workspace、模型调用/输出/request-byte 预算及固定启动模式；不共用 Chat 状态 |
 
-Open `http://127.0.0.1:8000/`.
-
-The supported deployment remains single-process / single-worker. Do not use
-`--reload` for the production-style local runtime when Dream and memory state
-are active.
-
-## Real Model Mode
-
-Copy the ignored `.env.example` to `.env.local`, configure `DEEPSEEK_API_KEY`,
-and restart the process after changes. DeepSeek-V4-Pro is the only supported
-real model; Chat, Dream, Mind, and Execution use it through their existing
-authority-specific interfaces.
-Process environment values take precedence over `.env.local`.
-
-No provider request occurs merely from importing the application. Provider
-failure returns a safe fallback without exposing credentials, provider bodies,
-paths, or tracebacks.
-
-## Manual Dream
-
-From the repository root, using the prepared Conversation Memory environment
-when real MAGMA dependencies are needed:
-
-```bash
-python -m Dream.runner --max-segments 10
-```
-
-Dream processes only eligible pending segments, persists/checkpoints memory
-before consuming Cold state, and converges on retry.
-
-Dream is not run by Chat, startup, Recall, a timer, or a background worker.
-
-## Validation
-
-Use synthetic data and temporary paths:
+## 验证
 
 ```bash
 python -m pytest -q
-python -m pytest Conversation_Memory/tests -q
-python -m pytest Dream/tests -q
+python -m pytest Conversation_Memory/tests Dream/tests -q
+python -m pytest Mind Nervous Execution -q
 git diff --check
 git -C Conversation_Memory/upstream/MAGMA status --short
-git -C Conversation_Memory/upstream/MAGMA diff --stat
 ```
 
-Changes affecting real MAGMA Recall should also run the existing isolated
-Recall E2E harness.
-
-## Project Boundaries
-
-- `docs/NORTH_STAR.md` defines long-term direction only.
-- `docs/final_goal.md` defines the current product objective.
-- `docs/CURRENT_STATUS.md` is authoritative for built behavior.
-- `docs/COLD_DRAFT.md` defines Cold-first preservation.
-- `docs/DRAFT_TURN_PROVENANCE_V2.md` defines native turn provenance.
-- `docs/RECALL_E2E_ACCEPTANCE.md` defines Recall E2E behavior.
-- `docs/MAGMA_RECALL_ALGORITHM_AUDIT.md` records the current source-level
-  MAGMA/Lumina query-path comparison.
-- `docs/MEMORY_EXPERIMENT_HISTORY.md` consolidates rejected memory experiments
-  and the evidence behind adopted boundaries.
-
-The completed Memory stage and frozen Execution V1 do not authorize autonomous Dream,
-schedulers/workers, new databases, generalized memory managers, ContextBuilder,
-ToolRuntime, or unrelated organ development. New Execution work starts only
-from its own explicit task card.
+根 `pytest` 现在包含所有维护的器官套件。测试使用合成数据和临时目录；部分旧真实
+MAGMA/BGE 测试依赖专用环境和已有缓存，Docker 检查仍需原有显式开关。
+不通过新增 skip 或减少收集范围隐藏环境限制。本次实际结果、候选冒烟及历史映射见
+[方案目录](docs/EXPERIMENTS.md)。

@@ -25,7 +25,7 @@ The HTTP client cannot supply policy fields. Current defaults are:
 ```text
 max_segments = 10
 stop_on_error = false
-ingestion_version = grounded-formation-v2  # configured real-model app
+ingestion_version = grounded-formation-v6  # configured real-model app
 ```
 
 ### CLI
@@ -43,13 +43,18 @@ browser service.
 
 ### Explicit first-hit configuration
 
-`python -m Dream.runner --first-hit` opts newly started Formation v2 windows
+`python -m Dream.runner --ingestion-version grounded-formation-v2 --first-hit`
+opts newly started historical Formation v2 windows
 into local first-hit semantic linking. Python assembly may instead pass
 `first_hit=FirstHitPolicy(), cold_store=owner` to the existing
 `RealMemoryIngestorProvider`. The same adapter then exposes associative Recall
 and optional bounded source expansion through that Cold owner. The CLI enables
 a 32-segment/1 MiB recent source window; its existing path settings still apply.
-Default v2, original Recall, manual trigger and HTTP policy remain unchanged.
+The configured real-model CLI and app default to v6 + FirstHit + reliable-v2;
+mock/legacy construction retains grounded-span-v2. The explicit v2 command
+preserves the original v2 checkpoint/read contract. See
+[Reliable Memory](../../Conversation_Memory/docs/RELIABLE_MEMORY.md) for current
+four-stage writes, body durability and default read dispatch.
 
 The existing ingestion store freezes the new profile and link plan before graph
 writes; new combined ingestion completes only after those edges are durable.
@@ -116,29 +121,33 @@ explicit trigger
 -> ColdDraftStore.list_pending_page(limit)
 -> complete logical Cold segment
 -> ColdDraftSegmentConverter
--> bounded DeepSeek-V4-Pro extraction of facts and full-window mentions
--> extraction checkpoint, then batch proposition/role/identity verification
--> verified batch and stable bindings checkpointed in Memory
 -> MemoryIngestor.ingest(ColdDraftSegment)
--> MAGMA graph/vector persistence
+-> DeepSeek-V4-Pro F1 extraction / F2 canonical-body verification
+-> accepted bodies checkpointed and persisted as projection-free EVENTs
+-> G1 optional structure proposal / G2 verification
+-> verified bindings and FirstHit plan checkpointed
+-> MAGMA graph/vector/role/link persistence
 -> ingestion checkpoint completed
 -> validate complete IngestionResult
 -> ColdDraftStore.mark_consumed(segment_id)
 -> DreamRunReport
 ```
 
-Dream passes the bounded source segment to the adapter. Configured real-model
-writes use DeepSeek-V4-Pro in non-thinking mode with a local 8192-token output
-budget. One extraction and one verification call process a healthy new batch;
-the raw response is checkpointed before parsing. Invalid candidates isolate
-their dependencies while independent verified results persist. Pending
-processing issues keep the parent segment pending. A later explicit retry may
-perform one checkpointed source-ref repair and verify only its new subset.
-Facts and independent
-mentions must both be durable before completion, including zero-fact windows.
-Retries reuse successful stages. Mock/legacy adapters retain deterministic
-`grounded-span-v2`; either path may produce `0..M` memory IDs. See the
-[current entity-memory contract](../../Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md).
+Dream passes the bounded source segment to the shared v6 adapter. The configured
+DeepSeek-V4-Pro client has an 8192-token output budget per bounded stage.
+Each F1/F2/G1/G2 stage reserves its request and saves its received response before
+advancing; no stage automatically resamples an unknown delivery. F2-supported
+canonical bodies persist before optional G-stage structure. A later structure
+failure leaves those bodies readable and Cold pending. Retry reuses receipts,
+repairs missing vectors from persisted embeddings and completes the original
+version's obligations before consumption.
+
+The explicit historical v2 writer retains its extraction/verification and one
+eligible source-ref-repair protocol; it is not applied to v6 checkpoints.
+Mock/legacy adapters retain deterministic `grounded-span-v2`. Every version may
+produce `0..M` memory IDs. See [Reliable Memory](../../Conversation_Memory/docs/RELIABLE_MEMORY.md)
+for current stages and [versioned provenance](../../Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md)
+for the shared source and checkpoint boundary.
 
 ## Policy and ordering
 

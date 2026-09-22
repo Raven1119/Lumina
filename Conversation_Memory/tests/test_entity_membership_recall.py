@@ -17,10 +17,10 @@ import faiss
 import numpy as np
 import pytest
 
-from adapter.backend import RealMagmaBackend
-from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import RecallPolicy
-from ingestion.state_store import IngestionStateStore
+from Conversation_Memory.adapter.backend import RealMagmaBackend
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import RecallPolicy
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
 from Conversation_Memory.tests.test_entity_relation_recall import graph_types
 from Conversation_Memory.tests.test_entity_ingestion_v2 import Model, mention, segment, unit
 from Conversation_Memory.tests.test_memory_admission import NoCalls
@@ -319,7 +319,7 @@ def test_warm_entity_query_does_not_iterate_graph_or_adjacency(backend_factory, 
     backend._rebuild_indexes()
     backend._lexical_index.rank = lambda **_kwargs: []
     graph.nodes.blocked = graph.links.blocked = True
-    import adapter._recall_execution as execution
+    import Conversation_Memory.adapter._recall_execution as execution
     def forbidden(*_args, **_kwargs):
         raise AssertionError("anchor-only entity query must not read adjacency")
     monkeypatch.setattr(execution, "_iter_adjacent_links", forbidden)

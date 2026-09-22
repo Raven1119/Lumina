@@ -813,8 +813,8 @@ def test_manual_dream_consumes_only_after_reliable_projection_and_edges_are_dura
     assert owner.list_all_turns() == original_turns
 
 
-@pytest.mark.skipif(Path(sys.executable).resolve() !=
-                    (Path(__file__).resolve().parents[1] / ".venv/Scripts/python.exe").resolve(),
+@pytest.mark.skipif(Path(sys.prefix).resolve() !=
+                    (Path(__file__).resolve().parents[1] / ".venv").resolve(),
                     reason="real MAGMA uses the isolated Memory environment")
 def test_real_magma_repairs_missing_vector_without_reforming_then_recall_expands_cold(tmp_path, monkeypatch):
     import dotenv

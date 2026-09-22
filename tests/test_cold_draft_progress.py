@@ -15,7 +15,7 @@ from core.cold_draft_store import ColdDraftStore, PendingCount
 from Dream.cold_draft_digest import ColdDraftDigestionTask
 from Dream.models import DreamRunPolicy
 from Dream.runner import DreamRunner
-from adapter.models import IngestionResult
+from Conversation_Memory.adapter.models import IngestionResult
 
 
 CURSOR_TYPE = "dream_selection_cursor"

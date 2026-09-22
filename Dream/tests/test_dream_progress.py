@@ -13,7 +13,7 @@ from core.cold_draft_store import ColdDraftStore
 from Dream.cold_draft_digest import ColdDraftDigestionTask
 from Dream.models import DreamRunPolicy
 from Dream.runner import DreamRunner
-from adapter.models import IngestionResult
+from Conversation_Memory.adapter.models import IngestionResult
 
 
 _BLOCKED = tuple(f"dream-blocked-{index:02d}" for index in range(10))

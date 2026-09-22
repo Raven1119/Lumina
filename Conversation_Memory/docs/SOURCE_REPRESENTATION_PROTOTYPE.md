@@ -1,7 +1,9 @@
 # Explicit source representation prototype
 
-This opt-in Memory interface leaves production v2, Formation, Cold consumption
-and existing checkpoints unchanged. Local experimental reports are separate
+These explicit source-index interfaces remain separate from the production
+v6/FirstHit/reliable-v2 adapter. They preserve Formation, Cold consumption and
+existing checkpoints. Their use of BGE belongs to these supported prototypes,
+not to the current reliable reader. Local experimental reports are separate
 artifacts, not runtime dependencies or evidence of production readiness.
 
 ## Source ownership and persistence
@@ -210,8 +212,8 @@ Expand a returned reference through the existing bounded source reader:
 
 ```python
 from dataclasses import asdict
-from adapter.models import RecallPolicy
-from adapter.source_reader import SourceReadLimits
+from Conversation_Memory.adapter.models import RecallPolicy
+from Conversation_Memory.adapter.source_reader import SourceReadLimits
 
 context = memory.recall_experiences(cue, RecallPolicy(max_chars=5000))
 if context.experiences:

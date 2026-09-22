@@ -5,11 +5,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from adapter._grounded_spans import (
+from Conversation_Memory.adapter._grounded_spans import (
     GroundedSpanUnit,
     build_grounded_spans,
 )
-from adapter.models import ColdDraftTurn
+from Conversation_Memory.adapter.models import ColdDraftTurn
 
 
 def _turn(

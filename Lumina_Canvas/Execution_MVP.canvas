@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"单次 Execution 的历史阶段示意；当前 facade 仍支持单次运行，事件入口另在 Execution/runtime.py。Child/Mind/串行 Task 已发展，不能沿用旧 MVP 排除条件。见 [现行契约](../docs/LUMINA_EXECUTION_FINAL_ARCHITECTURE.md)。","x":-200,"y":-240,"width":660,"height":170,"color":"5"},
 		{"id":"d2cf34338c296542","type":"text","text":"Single goal","x":-125,"y":-30,"width":250,"height":60},
 		{"id":"8bf43e7c49535c9a","type":"text","text":"Root agentprocess","x":-125,"y":100,"width":250,"height":60},
 		{"id":"d709a464cdbd3412","type":"text","text":"Bounded context","x":-125,"y":240,"width":250,"height":60},

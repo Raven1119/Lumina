@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from adapter.magma_adapter import _score_candidates
-from recall.bge_reranker import BGE_MAX_LENGTH, BgeReranker
-from recall.hindsight_scoring import normalize_cross_encoder_scores, score_hindsight_post_rerank
+from Conversation_Memory.adapter.magma_adapter import _score_candidates
+from Conversation_Memory.recall.bge_reranker import BGE_MAX_LENGTH, BgeReranker
+from Conversation_Memory.recall.hindsight_scoring import normalize_cross_encoder_scores, score_hindsight_post_rerank
 from Conversation_Memory.tests.test_bge_reranker import _adapter, _candidate, _policy
 
 

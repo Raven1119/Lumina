@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import IngestionResult
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import IngestionResult
 from core.cold_draft_store import ColdDraftStore
 from core.contracts import MemoryTurn
 from core.main import create_app
@@ -28,7 +28,7 @@ from Dream.runner import (
     build_default_runner,
     main,
 )
-from ingestion.state_store import IngestionStateStore
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -816,8 +816,8 @@ def test_dream_runner_is_only_triggered_by_explicit_http_request(tmp_path):
 
 
 @pytest.mark.skipif(
-    Path(sys.executable).resolve()
-    != (ROOT / "Conversation_Memory" / ".venv" / "Scripts" / "python.exe").resolve(),
+    Path(sys.prefix).resolve()
+    != (ROOT / "Conversation_Memory" / ".venv").resolve(),
     reason="real MAGMA test runs in the isolated Conversation Memory environment",
 )
 def test_real_magma_manual_dream_ingestion_consumes_production_segment(tmp_path):

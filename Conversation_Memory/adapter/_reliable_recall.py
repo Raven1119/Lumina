@@ -16,7 +16,7 @@ from dataclasses import asdict
 from math import ceil, isfinite
 from time import perf_counter
 
-from recall.rendering import render_reliable_fact, render_reliable_source
+from Conversation_Memory.recall.rendering import render_reliable_fact, render_reliable_source
 
 from .models import (
     AssociativeMemoryContext, AssociativeSelection, MemoryContext,

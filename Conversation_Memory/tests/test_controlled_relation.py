@@ -1,25 +1,19 @@
-import sys
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from adapter.controlled_relation import (  # noqa: E402
+from Conversation_Memory.adapter.controlled_relation import (
     UNRESOLVED,
     ControlledRelationResolver,
 )
-from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.models import (  # noqa: E402
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import (
     BackendCandidate,
     RecallPolicy,
     SourceProvenance,
 )
-from ingestion.state_store import IngestionStateStore  # noqa: E402
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
 
 
 ALIASES = {

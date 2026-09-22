@@ -4,10 +4,10 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import BackendCandidate, MemoryEvidence, RecallPolicy, SourceProvenance
-from ingestion.state_store import IngestionStateStore
-from recall.rendering import bound_evidence_groups
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import BackendCandidate, MemoryEvidence, RecallPolicy, SourceProvenance
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
+from Conversation_Memory.recall.rendering import bound_evidence_groups
 
 
 def candidate(eid, text, *, subject=None, obj=None, role="user", **metadata):

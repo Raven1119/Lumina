@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone, tzinfo
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from adapter.models import (
+from Conversation_Memory.adapter.models import (
     ColdDraftTurn,
     NormalizedTemporalReference,
 )

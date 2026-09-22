@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"Supervisor/DAG 概念设计，尚无此整体调度实现，不是已可运行实验。现役 Execution/runtime.py 与 Execution/organ.py 见 [代码地图](../README.md)；未证实被另一独立路线完整取代，保留待明确用途。","x":-125,"y":-240,"width":660,"height":170,"color":"5"},
 		{"id":"0203f1ce03db6894","x":-125,"y":-30,"width":250,"height":60,"type":"text","text":"Task"},
 		{"id":"c9b06de2aaea0f67","x":-125,"y":180,"width":250,"height":60,"type":"text","text":"Supervisor"},
 		{"id":"6a9a537f9aef3b92","x":-125,"y":360,"width":250,"height":60,"type":"text","text":"DAG_Nodes"}

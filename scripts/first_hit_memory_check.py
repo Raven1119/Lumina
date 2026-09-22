@@ -16,7 +16,6 @@ import json
 import os
 from pathlib import Path
 import stat
-import sys
 import tempfile
 from unittest.mock import patch
 from time import perf_counter
@@ -130,12 +129,9 @@ def _link_snapshot(memory):
 
 
 def _run(work_dir):
-    memory_root = ROOT / "Conversation_Memory"
-    if str(memory_root) not in sys.path:
-        sys.path.insert(0, str(memory_root))
-    from adapter.first_hit import FirstHitPolicy
-    from adapter.grounded_formation import FORMATION_ENTITY_VERSION
-    from adapter.models import RecallPolicy
+    from Conversation_Memory.adapter.first_hit import FirstHitPolicy
+    from Conversation_Memory.adapter.grounded_formation import FORMATION_ENTITY_VERSION
+    from Conversation_Memory.adapter.models import RecallPolicy
     from core.cold_draft_store import ColdDraftStore
     from Dream.cold_draft_digest import ColdDraftDigestionTask, ColdDraftSegmentConverter
     from Dream.models import DreamRunPolicy

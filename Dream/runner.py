@@ -5,10 +5,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.grounded_formation import FORMATION_ENTITY_VERSION as FORMATION_VERSION
+from Conversation_Memory.adapter.reliable_formation import (
+    FORMATION_RELIABLE_VERSION,
+    FORMATION_RELIABLE_VERSION_V5,
+    FORMATION_RELIABLE_VERSION_V6,
+)
+from Conversation_Memory.adapter.interfaces import MemoryIngestor
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
 from core.cold_draft_store import ColdDraftStore
 from core.model_client import ModelClient, build_model_client_from_env
 
@@ -18,21 +26,8 @@ from .models import DreamRunPolicy, DreamRunReport, SegmentDigestResult
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-_CONVERSATION_MEMORY_ROOT = _ROOT / "Conversation_Memory"
 _LEGACY_INGESTION_VERSION = "grounded-span-v2"
 _FORMATION_MAX_TOKENS = 8192
-if str(_CONVERSATION_MEMORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(_CONVERSATION_MEMORY_ROOT))
-
-from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.grounded_formation import FORMATION_ENTITY_VERSION as FORMATION_VERSION  # noqa: E402
-from adapter.reliable_formation import (  # noqa: E402
-    FORMATION_RELIABLE_VERSION,
-    FORMATION_RELIABLE_VERSION_V5,
-    FORMATION_RELIABLE_VERSION_V6,
-)
-from adapter.interfaces import MemoryIngestor  # noqa: E402
-from ingestion.state_store import IngestionStateStore  # noqa: E402
 
 
 class RealMemoryIngestorProvider:
@@ -218,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             ingestion_version=ingestion_version,
         )
         if args.first_hit or reliable:
-            from adapter.first_hit import FirstHitPolicy
+            from Conversation_Memory.adapter.first_hit import FirstHitPolicy
             if ingestion_version not in {FORMATION_VERSION, FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6}:
                 raise ValueError("first_hit_requires_supported_formation_version")
             runner = build_default_runner(

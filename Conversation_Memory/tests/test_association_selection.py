@@ -3,9 +3,9 @@ from math import log
 
 import pytest
 
-from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import BackendCandidate, RecallPolicy
-from ingestion.state_store import IngestionStateStore
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import BackendCandidate, RecallPolicy
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
 
 
 def candidates():
@@ -100,7 +100,7 @@ def test_invalid_bridge_provenance_cannot_influence_endpoint_score(tmp_path):
 
 @pytest.mark.parametrize("fit_behavior", ["missing", "reject", "error"])
 def test_unverified_token_fit_uses_original_single_fact_score(fit_behavior):
-    from adapter.magma_adapter import _score_candidates
+    from Conversation_Memory.adapter.magma_adapter import _score_candidates
     bridge, endpoint = candidates()
     class Scorer:
         texts = ()
@@ -119,8 +119,8 @@ def test_unverified_token_fit_uses_original_single_fact_score(fit_behavior):
 
 
 def test_token_fit_checks_actual_same_entity_marked_pair():
-    from adapter.magma_adapter import _score_candidates
-    from adapter.user_self import entity_marked_text
+    from Conversation_Memory.adapter.magma_adapter import _score_candidates
+    from Conversation_Memory.adapter.user_self import entity_marked_text
     bridge, endpoint = candidates()
     class Scorer:
         fit_calls = []
@@ -140,7 +140,7 @@ def test_token_fit_checks_actual_same_entity_marked_pair():
 
 @pytest.fixture(scope="module")
 def cached_bge_tokenizer():
-    from recall.bge_reranker import BGE_MODEL, BGE_REVISION
+    from Conversation_Memory.recall.bge_reranker import BGE_MODEL, BGE_REVISION
     transformers = pytest.importorskip("transformers")
     try:
         return transformers.AutoTokenizer.from_pretrained(
@@ -152,8 +152,8 @@ def cached_bge_tokenizer():
 
 @pytest.mark.parametrize("long_bridge", [False, True])
 def test_cached_tokenizer_guards_complete_bridge_and_endpoint(cached_bge_tokenizer, long_bridge):
-    from adapter.magma_adapter import _score_candidates
-    from recall.bge_reranker import BgeReranker, BGE_MAX_LENGTH
+    from Conversation_Memory.adapter.magma_adapter import _score_candidates
+    from Conversation_Memory.recall.bge_reranker import BgeReranker, BGE_MAX_LENGTH
     bridge, endpoint = candidates()
     query = "负责项目甲的人研究什么？"
     if long_bridge:

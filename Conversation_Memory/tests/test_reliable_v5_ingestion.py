@@ -528,8 +528,8 @@ def test_ensure_event_persisted_validates_vector_mapping_and_write(tmp_path, mon
         backend.ensure_event_persisted("e1")
 
 
-@pytest.mark.skipif(Path(sys.executable).resolve() != (
-    Path(__file__).resolve().parents[1] / ".venv/Scripts/python.exe").resolve(),
+@pytest.mark.skipif(Path(sys.prefix).resolve() != (
+    Path(__file__).resolve().parents[1] / ".venv").resolve(),
     reason="real MAGMA runs in the prepared isolated Memory environment")
 def test_real_magma_body_vector_loss_repairs_on_restart(tmp_path, monkeypatch):
     """Real boundary fault injection: durable graph EVENT, missing vector.

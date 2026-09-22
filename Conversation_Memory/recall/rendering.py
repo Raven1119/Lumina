@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 
-from adapter.models import MemoryEvidence
+from Conversation_Memory.adapter.models import MemoryEvidence
 
 
 # Deterministic separation of retrieval from context serialization follows the

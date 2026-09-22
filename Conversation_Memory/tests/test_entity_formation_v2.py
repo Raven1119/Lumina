@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from adapter.grounded_formation import (
+from Conversation_Memory.adapter.grounded_formation import (
     FORMATION_ENTITY_VERSION,
     FormationError,
     _validate_candidate,
@@ -22,7 +22,7 @@ from adapter.grounded_formation import (
     serialize_grounded_memory_units,
     validate_persisted_grounded_memory_batch,
 )
-from adapter.models import ColdDraftSegment, ColdDraftTurn
+from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn
 
 
 def segment(*turns):

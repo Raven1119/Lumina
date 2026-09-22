@@ -2,8 +2,11 @@
 
 ## Status and scope
 
-This document describes the current production Conversation Memory v1 boundary,
-not only the original synthetic-fixture milestone.
+This document defines the shared Memory facade and the supported legacy
+Formation v2 / BGE Recall contracts. The real-model production default is
+Formation v6 + FirstHit + reliable-v2; its write stages and read dispatch are
+defined in [Reliable Memory](RELIABLE_MEMORY.md). The legacy algorithms below
+remain available to explicitly selected profiles and historical checkpoints.
 
 ```text
 production ColdDraftSegment
@@ -47,7 +50,7 @@ FAISS never cross the facade.
 
 ## Ingestion conversion
 
-Configured real-model Dream uses `grounded-formation-v2`: one bounded
+Explicit historical `grounded-formation-v2` Dream uses: one bounded
 DeepSeek-V4-Pro extraction over the complete source window, then batch
 verification of every structurally eligible proposition and mention identity.
 The local output budget is 8192 tokens per call; input remains 32 turns/20,000

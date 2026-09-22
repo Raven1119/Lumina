@@ -1,5 +1,9 @@
 # Lumina current state
 
+Navigation: [code map](../README.md) · [scheme catalog](EXPERIMENTS.md).
+This file records detailed contracts and version-bound evidence; the two maps
+identify current entry points and explicitly selected alternatives.
+
 The cognitive core is now `Mind <-> Nervous <-> Execution <-> Environment`.
 Each organ owns its state and continuation; there is no central Session/Host.
 The foreground CLI is `python -m Mind`, using a new `--state` directory.
@@ -10,8 +14,10 @@ the manual Execution API is also separate.
 ## Chat bounded memory use
 
 The default Chat path retains the original v2 boolean gate and eight-token
-budget. Its Recall policy keeps the 20-node, depth-one and 5000-character
-bounds with up to 3 whole evidence items, carries no final score floor (the
+budget. Its Recall policy keeps the legacy policy fields (20 nodes, depth one) and 5000-character
+output bound with up to 3 whole facts; reliable-v2 adds separately item-bounded
+source supplements within the same character budget. FirstHit discovery uses
+its own 5-seed/64-node/256-edge defaults. The policy carries no final score floor (the
 reliable reader rejects one as an explicit policy conflict) and renders source
 speaking time, USER/LUMINA role and anonymous existing subject/object bindings.
 `LUMINA_MIND_GATE_MODE=direct` explicitly enables a
@@ -25,8 +31,9 @@ existing subject/object bindings within the same whole-group budget. The labels
 do not create identity attributes or prove that distinct bindings denote distinct
 real-world people. Answer guidance preserves user corrections, history and
 conditions; unverified assistant guesses cannot stand in for established facts.
-Memory discovery, fixed BGE, source validation, persistence and write semantics
-remain with their existing owners.
+Memory discovery, source validation, persistence and write semantics remain
+with their existing owners. Configured real-model Chat uses v6 + FirstHit +
+reliable-v2 and bypasses legacy BGE/Hindsight.
 
 `LUMINA_MIND_GATE_MODE=select` explicitly adds one semantic decision after that
 same read. Memory retains a request-local immutable prepared view, and validates
@@ -56,7 +63,8 @@ profiles.
 No Chat event integration, new generated read calls or upstream change is made.
 See the [maintained contract and usage](../Conversation_Memory/docs/FIRST_HIT_MEMORY.md).
 Implementation correctness and recovery are distinct from semantic usefulness;
-this configuration remains explicit and its semantic effects await evaluation.
+the standalone v2/first-hit-v1 profile remains explicit. Its use inside the
+current reliable reader is already wired; semantic effects require separate evaluation.
 
 ## Explicit source-context prototype
 
@@ -90,7 +98,8 @@ occurrences survive zero-fact windows; explicit subject/object roles and literal
 attributes persist through the existing graph/checkpoint owners. The public
 Memory facade exposes bounded occurrence lookup as well as fact Recall.
 
-Name/lexical indexes cover stored history before limiting candidates; bounded
+For explicitly selected legacy BGE Recall (not the default reliable reader):
+name/lexical indexes cover stored history before limiting candidates; bounded
 multiple-identity retrieval and two-fact relationship projection retain fixed
 BGE, Hindsight weights and the production score floor. BGE raw logits receive
 one stable sigmoid, independent of their range or batching. Entity-conditioned

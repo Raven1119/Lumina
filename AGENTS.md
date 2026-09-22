@@ -5,6 +5,9 @@ with its creator. [NORTH_STAR](docs/NORTH_STAR.md) supplies direction;
 [CURRENT_STATUS](docs/CURRENT_STATUS.md) supplies current facts. The current
 task supplies authorization. Historical milestones are evidence, not new gates.
 
+For runtime platform, Codex process placement, or development-environment work,
+follow the Noespire platform decision in `docs/final_goal.md#target-platform`.
+
 ## Understand, then finish the authorized work
 
 Inspect HEAD, the working tree and applicable local instructions before editing.
@@ -26,6 +29,9 @@ speculative infrastructure. Ordinary refactors and bug fixes need focused
 regressions, not another research campaign. A new algorithm or architectural
 capability needs targeted evidence before promotion: freeze relevant conditions,
 retain failures and distinguish mechanism from behavioral benefit.
+
+Start with the [code map](README.md) and [scheme catalog](docs/EXPERIMENTS.md).
+Detailed contracts below support these two navigation entries.
 
 ## Current map and ownership
 
@@ -85,7 +91,10 @@ integration. Do not silently connect the separate cognitive chain to Chat.
 
 ## Validate and report
 
-Use the prepared `.venv/Scripts/python.exe` on this Windows workspace.
+Development runs in Linux using Codex. Use the prepared Linux virtual environment
+(e.g. `Conversation_Memory/.venv/bin/python` for Memory dependencies); Windows
+application checks use that environment's `Scripts/python.exe`. Do not download
+legacy BGE weights merely to repeat already recorded experiments.
 
 | Affected behavior | Validation |
 | --- | --- |

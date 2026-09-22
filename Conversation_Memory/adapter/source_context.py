@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from copy import deepcopy
 import json
-from recall.hindsight_scoring import score_hindsight_post_rerank
+from Conversation_Memory.recall.hindsight_scoring import score_hindsight_post_rerank
 from .models import SourceMemoryContext
 from ._source_backend import SOURCE_DENSE_UNAVAILABLE
 from .source_memory import _excerpt, render_source

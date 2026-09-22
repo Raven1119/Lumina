@@ -6,43 +6,44 @@ relation gate can operate in normal Chat. Shadow-only: production code
 (`Mind/llm_gate.py`, `core/`) is never touched.
 
 Historical scope and conclusions: docs/MEMORY_EXPERIMENT_HISTORY.md.
+The downstream probe uses synthetic memory and a fixed stub reranker in the
+legacy structured Recall seam; it does not evaluate reliable-v2 or load BGE.
+The four cases in experiments/fixtures/mind_relation_cases.json preserve the
+unit-test inputs. mind_relation_replay.jsonl contains handwritten responses,
+not a historical model run or evidence of extraction quality.
 The model outputs RAW relation surface text (never canonical IDs); query-side
 canonicalization is performed by the real ControlledRelationResolver.
 Out-of-vocabulary probes must resolve to the resolver's real UNRESOLVED —
 an empty relations list never stands in for UNRESOLVED.
 
 Usage (Conversation_Memory venv, from repository root):
-    Conversation_Memory/.venv/Scripts/python.exe -m scripts.mind_relation_shadow \
-        --labels labels.json --gate v3rel --runs 3 --delay 3
+    python -m experiments.mind_relation \
+        --labels labels.json --log /tmp/relation/v3rel/shadow.jsonl \
+        --gate v3rel --runs 3 --delay 3 --max-tokens 64
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-CM_ROOT = ROOT / "Conversation_Memory"
-if str(CM_ROOT) not in sys.path:
-    sys.path.insert(0, str(CM_ROOT))
-
-from adapter.controlled_relation import (  # noqa: E402
+from Conversation_Memory.adapter.controlled_relation import (
     UNRESOLVED,
     ControlledRelationResolver,
     _ALIASES,
 )
-from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.models import (  # noqa: E402
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import (
     BackendCandidate,
     RecallPolicy,
     SourceProvenance,
 )
-from ingestion.state_store import IngestionStateStore  # noqa: E402
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
+from scripts.mind_gate_shadow import _RawRecordingClient
 
 V3REL_PROMPT_VERSION = "mind-gate-v3rel"
 _GATE_MODEL_NAME = "deepseek-v4-pro"
@@ -145,24 +146,6 @@ def parse_v3rel_output(raw: str) -> tuple[bool, tuple[str, ...]]:
     ):
         raise ValueError("relations must be a list of <=2 non-empty strings")
     return recall, tuple(item.strip() for item in relations)
-
-
-class _RawRecordingClient:
-    client_kind = "model"
-
-    def __init__(self, inner) -> None:
-        self._inner = inner
-        self.last_text: str | None = None
-
-    def generate(self, recent_context, user_message, *, system_prompt):
-        self.last_text = None
-        text = self._inner.generate(
-            recent_context,
-            user_message,
-            system_prompt=system_prompt,
-        )
-        self.last_text = text
-        return text
 
 
 def build_v3rel_decide(client) -> Callable[[str, list[dict[str, str]]], dict]:
@@ -529,7 +512,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--log",
-        default="docs/experiments/mind_relation_shadow/shadow_log.jsonl",
+        required=True,
+        help="Caller-owned JSONL path; use a separate directory for each arm.",
     )
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument(
@@ -537,12 +521,19 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--delay", type=float, default=0.0)
     parser.add_argument(
+        "--max-tokens",
+        type=int,
+        help="Shared output budget for comparisons; omitted preserves v2=8 / v3rel=64.",
+    )
+    parser.add_argument(
         "--analyze",
         action="store_true",
         help="skip gate runs; read --log, run the three-way downstream "
         "comparison, and write downstream_summary.json next to the log",
     )
     args = parser.parse_args(argv)
+    if args.max_tokens is not None and args.max_tokens <= 0:
+        parser.error("--max-tokens must be positive")
 
     if args.analyze:
         import tempfile
@@ -578,7 +569,7 @@ def main(argv: list[str] | None = None) -> None:
         client = _RawRecordingClient(
             build_model_client_from_env(
                 model_name_override=_GATE_MODEL_NAME,
-                max_tokens_override=8,
+                max_tokens_override=args.max_tokens if args.max_tokens is not None else 8,
                 temperature_override=_GATE_TEMPERATURE,
             )
         )
@@ -608,7 +599,9 @@ def main(argv: list[str] | None = None) -> None:
         client = _RawRecordingClient(
             build_model_client_from_env(
                 model_name_override=_GATE_MODEL_NAME,
-                max_tokens_override=_GATE_MAX_TOKENS,
+                max_tokens_override=(
+                    args.max_tokens if args.max_tokens is not None else _GATE_MAX_TOKENS
+                ),
                 temperature_override=_GATE_TEMPERATURE,
             )
         )

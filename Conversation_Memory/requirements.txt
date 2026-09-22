@@ -1,5 +1,5 @@
 -r upstream/MAGMA/requirements.txt
 
-# Supported production BGE reranker runtime.
+# Supported legacy fact/source BGE runtime; reliable-v2 does not load BGE.
 torch==2.13.0
 transformers==5.14.1

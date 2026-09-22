@@ -1,11 +1,13 @@
 # Intention and Nervous Stage1 runtime contract
 
-Status: implemented, with partial bounded real acceptance. See the
-[implementation and verification result](INTENTION_STAGE1_RESULT.md): original
-Tasks A and B completed their feedback chains, but the separately authorized
-44-call continuation stopped before report correction and complete cognitive
-reconciliation. Its corrective guidance remains bound and unexecuted. Historical
-verdicts keep their original scope. The
+Status: implemented and opt-in. The original bounded acceptance and the
+44-call continuation remain PARTIAL historical results. The later authorized
+continuation delivered the report corrections and closed the same correction
+Run by call 96, with no pending runtime responsibilities and two quiet restarts.
+That closure followed disclosed developer feedback; it does not establish
+autonomous stall discovery or general judgment reliability. See the dated
+[implementation and verification result](INTENTION_STAGE1_RESULT.md#final-recovery-and-outcome-at-call-96)
+for the separate outcomes, costs and limitations. The
 [approved design](../../docs/plan/INTENTION_NERVOUS_STAGE1.md) supplies intent and
 acceptance requirements, not evidence that every behavioral claim has passed.
 

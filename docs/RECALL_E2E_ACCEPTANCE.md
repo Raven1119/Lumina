@@ -2,8 +2,8 @@
 
 ## Purpose
 
-`scripts.recall_e2e_test` is a developer-only acceptance harness for the current
-production boundaries:
+`scripts.recall_e2e_test` is a developer-only acceptance harness for the retained `grounded-span-v2` / BGE profile and the
+Cold/Dream persistence boundaries:
 
 ```text
 isolated production-format Hot Draft
@@ -18,9 +18,22 @@ isolated production-format Hot Draft
 It verifies evidence and provenance only. It does not ask an LLM to generate an
 answer, alter recall ranking, inject recall into `/api/chat`, or schedule Dream.
 
+The default real-model v6/reliable-v2 path is validated separately in
+`test_reliable_profile_integration.py`, `test_reliable_v6_ingestion.py`, and
+`test_reliable_recall_v2.py`. This legacy harness does not validate that algorithm.
+Do not download BGE merely to repeat its recorded results.
+
 ## Commands
 
 Run from the repository root with the isolated Conversation Memory environment:
+
+With already prepared legacy dependencies/cache, the Linux command is:
+
+```bash
+Conversation_Memory/.venv/bin/python -m scripts.recall_e2e_test --work-dir /tmp/lumina-legacy-e2e
+```
+
+Windows equivalent:
 
 ```powershell
 .\Conversation_Memory\.venv\Scripts\python.exe -m scripts.recall_e2e_test

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +25,6 @@ from core.contracts import ChatRequest
 from Mind.decision_log import JsonlDecisionLog
 
 ROOT = Path(__file__).resolve().parents[1]
-CM_ROOT = ROOT / "Conversation_Memory"
 
 
 def _read_log(log_path: Path) -> list[dict]:
@@ -82,16 +80,15 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--out",
-        default="docs/experiments/mind_stage2_promotion/regression",
+        required=True,
+        help="Explicit output directory for this isolated validation run",
     )
     args = parser.parse_args(argv)
 
-    if str(CM_ROOT) not in sys.path:
-        sys.path.insert(0, str(CM_ROOT))
 
-    from adapter.backend import RealMagmaBackend
-    from adapter.magma_adapter import MagmaMemoryAdapter
-    from adapter.models import RecallPolicy
+    from Conversation_Memory.adapter.backend import RealMagmaBackend
+    from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+    from Conversation_Memory.adapter.models import RecallPolicy
     from core.cold_draft_store import ColdDraftStore
     from core.draft_context import DraftContextProvider
     from core.draft_store import JsonlDraftStore
@@ -102,7 +99,7 @@ def main(argv: list[str] | None = None) -> None:
     from Dream.cold_draft_digest import ColdDraftDigestionTask
     from Dream.models import DreamRunPolicy
     from Dream.runner import DreamRunner
-    from ingestion.state_store import IngestionStateStore
+    from Conversation_Memory.ingestion.state_store import IngestionStateStore
     from Mind.llm_gate import LlmMindGate
     from scripts.mind_gate_operational import _guard_sandbox
     from scripts.recall_e2e_test import (

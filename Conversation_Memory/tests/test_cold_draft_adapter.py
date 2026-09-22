@@ -8,21 +8,21 @@ from pathlib import Path
 
 import pytest
 
-import adapter.magma_adapter as magma_adapter_module
-from adapter._grounded_spans import build_grounded_spans
-from adapter.backend import RealMagmaBackend
-from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import (
+import Conversation_Memory.adapter.magma_adapter as magma_adapter_module
+from Conversation_Memory.adapter._grounded_spans import build_grounded_spans
+from Conversation_Memory.adapter.backend import RealMagmaBackend
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import (
     BackendCandidate,
     ColdDraftTurn,
     MemoryEvidence,
     RecallPolicy,
     SourceProvenance,
 )
-from ingestion.fixture_loader import SegmentValidationError, load_fixture, parse_segment
-from ingestion.state_store import IngestionStateStore
-from ingestion.temporal import normalize_temporal_references
-from recall.rendering import bound_evidence
+from Conversation_Memory.ingestion.fixture_loader import SegmentValidationError, load_fixture, parse_segment
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
+from Conversation_Memory.ingestion.temporal import normalize_temporal_references
+from Conversation_Memory.recall.rendering import bound_evidence
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v2.json"
 LEGACY_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "cold_draft_segment_v1.json"
@@ -525,7 +525,7 @@ def test_corrupt_state_returns_structured_failure(tmp_path):
 
 
 def test_real_backend_initialization_failure_is_structured(tmp_path, monkeypatch):
-    import adapter.backend as backend_module
+    import Conversation_Memory.adapter.backend as backend_module
 
     def fail_init(*args, **kwargs):
         raise RuntimeError("OPENAI_API_KEY=secret C:\\private\\model")
@@ -682,7 +682,7 @@ def _controlled_real_backend(
 
 
 def test_private_lexical_scoring_rrf_and_bounded_scan():
-    from adapter._anchor_fusion import (
+    from Conversation_Memory.adapter._anchor_fusion import (
         _lexical_score,
         _rank_lexical_events,
         _rrf_fuse,
@@ -757,7 +757,7 @@ def test_controlled_rrf_lexical_anchor_reaches_public_evidence_and_fallback(
     tmp_path, monkeypatch
 ):
     from types import SimpleNamespace
-    import adapter._recall_execution as execution_module
+    import Conversation_Memory.adapter._recall_execution as execution_module
 
     at = datetime(2026, 7, 14, 2, tzinfo=UTC)
     anchor = _controlled_event("node-anchor", "a", "xy zq semantic dense result", at)
@@ -1218,11 +1218,11 @@ def test_recall_policy_validates_retained_controls_strictly():
 
 
 @pytest.mark.skipif(
-    Path(sys.executable).resolve() != (Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe").resolve(),
+    Path(sys.prefix).resolve() != (Path(__file__).resolve().parents[1] / ".venv").resolve(),
     reason="real MAGMA test runs in the isolated Conversation Memory environment",
 )
 def test_real_magma_lexical_rrf_recovers_non_dense_anchor(tmp_path):
-    from adapter._anchor_fusion import _rank_lexical_events
+    from Conversation_Memory.adapter._anchor_fusion import _rank_lexical_events
 
     query = "Which polymeric membrane diffusion evaluation identifier was ZXQJ-741?"
     contents = [
@@ -1290,7 +1290,7 @@ def test_real_magma_lexical_rrf_recovers_non_dense_anchor(tmp_path):
 
 
 @pytest.mark.skipif(
-    Path(sys.executable).resolve() != (Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe").resolve(),
+    Path(sys.prefix).resolve() != (Path(__file__).resolve().parents[1] / ".venv").resolve(),
     reason="real MAGMA test runs in the isolated Conversation Memory environment",
 )
 def test_real_magma_non_anchor_traversal_event_enters_bounded_evidence(
@@ -1398,7 +1398,7 @@ def test_real_magma_non_anchor_traversal_event_enters_bounded_evidence(
         assert internal_value not in public_output
 
 @pytest.mark.skipif(
-    Path(sys.executable).resolve() != (Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe").resolve(),
+    Path(sys.prefix).resolve() != (Path(__file__).resolve().parents[1] / ".venv").resolve(),
     reason="real MAGMA test runs in the isolated Conversation Memory environment",
 )
 def test_real_magma_fixture_ingestion_and_recall(tmp_path):
@@ -1413,12 +1413,10 @@ def test_real_magma_fixture_ingestion_and_recall(tmp_path):
 
 
 @pytest.mark.skipif(
-    Path(sys.executable).resolve()
+    Path(sys.prefix).resolve()
     != (
         Path(__file__).resolve().parents[1]
         / ".venv"
-        / "Scripts"
-        / "python.exe"
     ).resolve(),
     reason="real MAGMA+BGE test runs in the isolated Conversation Memory environment",
 )

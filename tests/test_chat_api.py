@@ -14,7 +14,7 @@ from Conversation_Memory.adapter.first_hit import FirstHitPolicy
 from core import main as main_module
 from Conversation_Memory.adapter import backend as memory_backend_module
 from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
-from ingestion.state_store import IngestionStateStore
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
 from core.main import create_app
 from core.model_client import DeepSeekAnthropicModelClient, MockModelClient
 from Mind.constant_gate import ConstantMindGate

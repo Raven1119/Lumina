@@ -18,7 +18,6 @@ import argparse
 import json
 import os
 import shutil
-import sys
 import tempfile
 import time
 from datetime import UTC, datetime
@@ -26,7 +25,6 @@ from pathlib import Path
 from statistics import median
 
 ROOT = Path(__file__).resolve().parents[1]
-CM_ROOT = ROOT / "Conversation_Memory"
 
 _GATE_MODEL_NAME = "deepseek-v4-pro"
 _GATE_MAX_TOKENS = 8
@@ -158,10 +156,8 @@ def _guard_sandbox(path: Path) -> Path:
 
 
 def _seed_memory(persist_dir: Path) -> None:
-    if str(CM_ROOT) not in sys.path:
-        sys.path.insert(0, str(CM_ROOT))
-    from adapter.magma_adapter import MagmaMemoryAdapter
-    from adapter.models import ColdDraftSegment, ColdDraftTurn
+    from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+    from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn
 
     adapter = MagmaMemoryAdapter.create_real(
         persist_dir,
@@ -195,8 +191,6 @@ def _seed_memory(persist_dir: Path) -> None:
 
 
 def _build_app(sandbox: Path, gate, gate_counter: CountingModelClient | None):
-    if str(CM_ROOT) not in sys.path:
-        sys.path.insert(0, str(CM_ROOT))
     os.environ["LUMINA_DREAM_MAGMA_PERSIST_DIR"] = str(sandbox / "magma")
 
     from fastapi.testclient import TestClient
@@ -285,7 +279,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--out",
-        default="docs/experiments/mind_stage2_promotion/operational",
+        required=True,
+        help="Explicit output directory for this isolated validation run",
     )
     args = parser.parse_args(argv)
 

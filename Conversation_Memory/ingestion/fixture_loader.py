@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from adapter.models import ColdDraftSegment, ColdDraftTurn
+from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn
 
 SUPPORTED_SCHEMAS = frozenset({"1", "2"})
 ALLOWED_ROLES = frozenset({"user", "assistant"})

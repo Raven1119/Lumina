@@ -6,11 +6,11 @@ from math import log
 
 import pytest
 
-import adapter.magma_adapter as magma_adapter_module
-from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import BackendCandidate, RecallPolicy, SourceProvenance
-from ingestion.state_store import IngestionStateStore
-from recall.bge_reranker import BGE_MODEL, BGE_REVISION
+import Conversation_Memory.adapter.magma_adapter as magma_adapter_module
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import BackendCandidate, RecallPolicy, SourceProvenance
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
+from Conversation_Memory.recall.bge_reranker import BGE_MODEL, BGE_REVISION
 
 
 class _CandidateBackend:

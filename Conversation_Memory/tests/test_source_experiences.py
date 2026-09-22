@@ -17,7 +17,7 @@ from Conversation_Memory.adapter.source_reader import SourceReadLimits, merge_ra
 from Conversation_Memory.tests.test_source_backend_views import segment
 from Conversation_Memory.tests.test_source_memory import adapter
 from Conversation_Memory.tests.test_source_reader import RangeBackend
-from recall.bge_reranker import BGE_MAX_LENGTH, BGE_MODEL, BGE_REVISION, BgeReranker
+from Conversation_Memory.recall.bge_reranker import BGE_MAX_LENGTH, BGE_MODEL, BGE_REVISION, BgeReranker
 
 
 class CheckedScorer:

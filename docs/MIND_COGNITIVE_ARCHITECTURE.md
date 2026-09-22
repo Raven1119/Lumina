@@ -31,11 +31,14 @@ Retired V/D/W formats are not loaded or migrated.
 
 A cognitive_step contains selective updates and a next decision. Unsubmitted
 items remain unchanged. An update replaces the named record completely,
-including claim, status, basis and optional discriminator. An optional current
-selection retires omitted records from effective understanding while preserving
-their history. In Stage1, this selection applies only to visible cognition;
-unselected records stay accepted. An exact current owner read expands the
-activity's editable set. Final commits alone change accepted state.
+including claim, status, basis and optional discriminator. New pursuit
+activities freeze `mind-cognitive-interface-v2`: `updates` is their only write
+path, `status=archived` explicitly retires a record, and `current` selection is
+rejected. Baseline and older frozen activities retain their original optional
+`current` semantics; older pursuit activities apply that selection only to
+visible cognition. These compatibility reads do not reinterpret accepted history.
+An exact current owner read expands the activity's editable set. Final commits
+alone change accepted state.
 
 A belief's status evaluates its NEW literal claim: supported means warranted,
 contradicted means its negation is warranted, open means unresolved. Conditions
@@ -80,7 +83,7 @@ goals, evidence and working background retain their original scope; the current
 request uses relevant content and retrieval references. This extends the existing
 organ journals and mailbox, without a new manager or a transplanted upstream loop.
 
-Implementation is under validation; the
+The implementation and its deterministic invariants are maintained; the
 [Stage1 runtime contract](../Mind/docs/INTENTION_STAGE1.md) defines the current
 authority, selection and continuation boundaries. Source identity, structural
 validity and effect delivery do not establish model judgment quality.

@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"带 Draft/手动 Dream 的 ReAct 设计，不是 Chat 的现役工具循环。实际 Chat/认知链/记忆默认见 [代码地图](../README.md)；未证明本图完全替代另一 ReAct 设计。","x":-1488,"y":-240,"width":660,"height":170,"color":"5"},
 		{"id":"66374fe45fbaa988","type":"text","text":"用户消息","x":-125,"y":-30,"width":250,"height":60},
 		{"id":"2455779f954a949e","type":"text","text":"构建上下文","x":-123,"y":139,"width":250,"height":60},
 		{"id":"b7639725ac9857af","type":"text","text":"系统提示词 + 可用工具说明","x":300,"y":139,"width":250,"height":81},

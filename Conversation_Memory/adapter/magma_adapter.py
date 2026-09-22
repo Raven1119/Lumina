@@ -9,12 +9,12 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Iterable, TYPE_CHECKING
 
-from ingestion.entities import extract_entities
-from ingestion.state_store import IngestionStateStore
-from ingestion.temporal import normalize_temporal_references
-from recall.bge_reranker import BgeReranker
-from recall.hindsight_scoring import score_hindsight_post_rerank
-from recall.rendering import bound_evidence_groups
+from Conversation_Memory.ingestion.entities import extract_entities
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
+from Conversation_Memory.ingestion.temporal import normalize_temporal_references
+from Conversation_Memory.recall.bge_reranker import BgeReranker
+from Conversation_Memory.recall.hindsight_scoring import score_hindsight_post_rerank
+from Conversation_Memory.recall.rendering import bound_evidence_groups
 
 from ._grounded_spans import GroundedSpanUnit, build_grounded_spans
 from .backend import MemoryBackend

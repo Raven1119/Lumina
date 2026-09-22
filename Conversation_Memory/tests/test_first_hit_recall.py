@@ -136,9 +136,13 @@ def test_recent_raw_entry_is_explicit_and_bounded(tmp_path):
     ("adapter", "Conversation_Memory.adapter"),
     ("Conversation_Memory.adapter", "adapter"),
 ])
-def test_first_hit_policy_accepts_the_existing_memory_namespace_alias(tmp_path, adapter_namespace, policy_namespace):
+def test_first_hit_policy_accepts_the_existing_memory_namespace_alias(tmp_path, monkeypatch, adapter_namespace, policy_namespace):
     from importlib import import_module
+    from pathlib import Path
 
+    # Historical callers explicitly added the organ to PYTHONPATH. Keep that
+    # compatibility local to this check; ordinary imports use the package name.
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]))
     adapter_type = import_module(adapter_namespace + ".magma_adapter").MagmaMemoryAdapter
     policy_type = import_module(policy_namespace + ".first_hit").FirstHitPolicy
     supplied = policy_type(decay=0.5, max_nodes=17, max_links=2)

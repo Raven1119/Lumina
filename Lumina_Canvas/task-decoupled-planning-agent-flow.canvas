@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"独立 TDP/Supervisor/DAG 设计，尚无完整可运行实现、调用入口或机制验证；不能列作已可比较候选。现役系统与保留方案见 [代码地图](../README.md) / [方案目录](../docs/EXPERIMENTS.md)。","x":-1360,"y":-630,"width":660,"height":170,"color":"5"},
 		{"id":"group-local","type":"group","x":950,"y":-120,"width":2330,"height":2520,"color":"2","label":"② 当前节点：严格局部的 Planner–Executor 循环"},
 		{"id":"group-global","type":"group","x":-1360,"y":-120,"width":1980,"height":2040,"color":"5","label":"① 全局任务结构与依赖调度"},
 		{"id":"group-revision","type":"group","x":1935,"y":2720,"width":850,"height":900,"color":"6","label":"③ 全局维护与终止"},

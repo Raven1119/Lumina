@@ -54,9 +54,10 @@ second Cold owner or a second resident MAGMA backend.
 explicit Dream trigger
 -> bounded complete pending segments from ColdDraftStore
 -> ColdDraftSegmentConverter
--> bounded DeepSeek-V4-Pro fact/mention extraction and batch verification
-   in non-thinking mode with max_tokens=8192 per call
--> each successful stage and stable bindings checkpointed before MAGMA writes
+-> bounded DeepSeek-V4-Pro F1/F2 canonical-body extraction/verification
+   then G1/G2 optional structure proposal/verification, max_tokens=8192 per call
+-> exact stage receipts checkpointed; accepted bodies persisted before G stages
+-> verified structure and stable bindings checkpointed before graph completion
 -> durable graph/vector persistence and ingestion checkpoint
 -> verify complete IngestionResult
 -> ColdDraftStore.mark_consumed(segment_id)

@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"历史/显式 legacy backend 路径示意，非当前默认 reader。当前真实模型默认 FirstHit + reliable-v2 见 [代码地图](../README.md) 和 [可靠记忆契约](../Conversation_Memory/docs/RELIABLE_MEMORY.md)。上游为一个 MultiDiGraph，保留固定 gitlink，未修改。","x":-1700,"y":-1030,"width":660,"height":170,"color":"5"},
 		{"id":"4100000000000001","type":"text","text":"Memory Adapter ingest","x":-1700,"y":-820,"width":250,"height":60},
 		{"id":"4100000000000002","type":"text","text":"构建 temporal / entity / provenance metadata","x":-1700,"y":-700,"width":250,"height":60},
 		{"id":"4100000000000003","type":"text","text":"RealMagmaBackend.add_event","x":-1700,"y":-580,"width":250,"height":60},

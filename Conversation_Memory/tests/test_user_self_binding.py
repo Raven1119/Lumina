@@ -1,37 +1,33 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[1]
-MEMORY_ROOT = ROOT / "Conversation_Memory"
-if str(MEMORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(MEMORY_ROOT))
+ROOT = Path(__file__).resolve().parents[2]
 
-import adapter.magma_adapter as magma_adapter_module  # noqa: E402
-from adapter.grounded_formation import (  # noqa: E402
+import Conversation_Memory.adapter.magma_adapter as magma_adapter_module  # noqa: E402
+from Conversation_Memory.adapter.grounded_formation import (  # noqa: E402
     FORMATION_VERSION,
     GroundedMemoryUnit,
     SourceRef,
 )
-from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.models import (  # noqa: E402
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
+from Conversation_Memory.adapter.models import (  # noqa: E402
     BackendCandidate,
     ColdDraftSegment,
     ColdDraftTurn,
     RecallPolicy,
 )
-from adapter.user_self import (  # noqa: E402
+from Conversation_Memory.adapter.user_self import (  # noqa: E402
     CURRENT_USER_ENTITY_REF,
     classify_subject_entity_ref,
     classify_target_entity_ref,
 )
-from ingestion.state_store import IngestionStateStore  # noqa: E402
+from Conversation_Memory.ingestion.state_store import IngestionStateStore  # noqa: E402
 
 
 def _segment(*turns: tuple[str, str, str]) -> ColdDraftSegment:

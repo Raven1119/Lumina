@@ -1,0 +1,3 @@
+[submodule "Conversation_Memory/upstream/MAGMA"]
+	path = Conversation_Memory/upstream/MAGMA
+	url = https://github.com/FredJiang0324/MAGMA.git

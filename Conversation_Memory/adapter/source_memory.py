@@ -5,7 +5,7 @@ from dataclasses import asdict
 from hashlib import sha256
 import json
 
-from recall.hindsight_scoring import score_hindsight_post_rerank
+from Conversation_Memory.recall.hindsight_scoring import score_hindsight_post_rerank
 from .models import IngestionResult, SourceExcerpt, SourceMemoryContext, SourceProvenance
 from ._source_backend import SOURCE_DENSE_UNAVAILABLE
 

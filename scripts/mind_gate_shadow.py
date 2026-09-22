@@ -6,8 +6,8 @@ JSONL shadow log, and summarizes protocol and decision metrics. Historical scope
 conclusions: docs/MEMORY_EXPERIMENT_HISTORY.md.
 
 Usage:
-    python -m scripts.mind_gate_shadow --labels labels.json --gate constant   # pipeline dry run
-    python -m scripts.mind_gate_shadow --labels labels.json # real LLM gate, 3 runs
+    python -m scripts.mind_gate_shadow --labels labels.json --log /tmp/gate-constant/shadow.jsonl --gate constant   # pipeline dry run
+    python -m scripts.mind_gate_shadow --labels labels.json --log /tmp/gate-llm/shadow.jsonl # real LLM gate, 3 runs
 """
 
 from __future__ import annotations
@@ -208,7 +208,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--log",
-        default="docs/experiments/mind_stage2_shadow/shadow_log.jsonl",
+        required=True,
+        help="Caller-owned JSONL output path; historical logs are not overwritten.",
     )
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--gate", choices=["llm", "constant"], default="llm")

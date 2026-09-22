@@ -2,9 +2,9 @@
 
 This scope implements the Lumina-owned Memory facade over pinned, unmodified
 MAGMA. Follow root AGENTS, the current task, `docs/COLD_DRAFT.md`,
-`docs/CURRENT_STATUS.md`, and the local provenance/temporal contracts. The
-current task authorizes the entity/relationship/attribute enhancement; older
-stage descriptions are historical evidence, not gates.
+`docs/CURRENT_STATUS.md`, and the local provenance/temporal contracts.
+The current task supplies authorization; older stage descriptions are historical
+evidence, not new gates.
 
 ## Current boundary
 
@@ -20,7 +20,7 @@ it does not assert that the mentioned proposition is true. Graph objects,
 EntityRefs, MAGMA UUIDs, vectors, backend scores and candidate paths remain
 private. No UI or automatic ingestion is introduced.
 
-## Current write path
+## Current writer and historical Formation compatibility
 
 Configured DeepSeek-V4-Pro Dream (the in-app runner and the default manual
 CLI) writes `grounded-formation-v6`; `grounded-formation-v2`/v4/v5 remain
@@ -29,8 +29,10 @@ explicit historical selections.
 functions/checkpoints remain for explicit historical compatibility; default
 Dream never selects them and never automatically reprocesses consumed Cold.
 
-`grounded_formation.py` extracts facts and mentions over the complete bounded
-source window, then verifies every structurally eligible proposition and its
+The default v6 stages and recovery are defined in [Reliable Memory](docs/RELIABLE_MEMORY.md).
+The following `grounded_formation.py` rules describe the still-supported v2
+writer and its checkpoint compatibility. It extracts facts and mentions over
+the complete bounded source window, then verifies every structurally eligible proposition and its
 subject/object roles in one batch. Mention surface plus occurrence locates
 exact immutable source offsets. Invalid positions or references isolate the
 candidate and its dependencies; independent valid results still pass the
@@ -72,7 +74,12 @@ MAGMA writes converge on stable evidence IDs. Retry repairs an existing graph
 node whose vector write was interrupted. Relationships and graph/vectors must
 be durable before the checkpoint becomes completed and Cold's owner consumes.
 
-## Current read path
+## Legacy fact Recall and explicit source readers
+
+The real-model default dispatches `recall()` to `reliable-v2`, described below,
+and does not load BGE. The following scoring contract applies to legacy fact
+Recall; the separate source-index prototypes also retain their documented BGE
+scoring. Preserve these explicit supported interfaces and their tests.
 
 Dense MiniLM, indexed lexical candidates and bounded entity-conditioned FAISS
 candidates use existing RRF(k=60), fixed BGE and pinned Hindsight scoring.
@@ -129,13 +136,16 @@ artifacts, not runtime dependencies.
 `first_hit=FirstHitPolicy()` is an opt-in, maintained read/write profile for new
 Formation v2 windows. Read [its contract](docs/FIRST_HIT_MEMORY.md) before changing
 local activation, frozen semantic plans or owner-bounded Cold expansion.
-`recall_associative` bypasses old BGE/Hindsight/floor scoring, while `recall`
-retains that scoring contract. The original Cold source may be expanded only
-through its bounded owner interface. The same store owns the separate
+`recall_associative` bypasses old BGE/Hindsight/floor scoring. On the explicit
+`first-hit-v1` profile, `recall` retains the legacy scoring contract; on a
+reliable profile it dispatches to the reliable associative read. Original Cold
+source expansion uses only its bounded owner interface. The same store owns the separate
 `first-hit-v1` completion key; old v2 checkpoints do not migrate automatically.
-Default configuration, manual Dream, consumer boundaries and pinned MAGMA stay.
+The v2 profile is an explicit historical selection; the production v6 writer
+shares the FirstHit mechanism. Manual Dream, consumer boundaries and pinned
+MAGMA keep their existing contracts.
 
-## Explicit reliable path
+## Production reliable path and historical profiles
 
 The maintained `grounded-formation-v6` writer and its `reliable-v2`
 associative reader pair are the normal production path: a real-model app
@@ -180,8 +190,12 @@ contract.
 
 ## Validation
 
-Use isolated synthetic state. The root prepared Python runs maintained tests;
-real MAGMA uses `Conversation_Memory/.venv/Scripts/python.exe`.
+Use isolated synthetic state. Run tests from the repository root. On Linux,
+the prepared Memory environment is `Conversation_Memory/.venv/bin/python`; Windows runtime deployments use
+`Conversation_Memory/.venv/Scripts/python.exe`. The test environment is identified
+by its venv prefix, independent of platform. Keep model loading offline for
+this organization task and use existing historical BGE results; do not download
+weights to repeat old experiments.
 
 Run affected Memory/Dream/Chat regressions. Recall changes additionally require
 `scripts.recall_e2e_test` under `docs/RECALL_E2E_ACCEPTANCE.md` isolation rules.

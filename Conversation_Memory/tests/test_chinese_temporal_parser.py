@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from adapter.models import ColdDraftTurn
-from ingestion import temporal as temporal_module
-from ingestion.temporal import normalize_temporal_references
+from Conversation_Memory.adapter.models import ColdDraftTurn
+from Conversation_Memory.ingestion import temporal as temporal_module
+from Conversation_Memory.ingestion.temporal import normalize_temporal_references
 
 
 BASE_NY = datetime(2026, 7, 15, 4, 5, tzinfo=UTC)

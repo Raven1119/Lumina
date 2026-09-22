@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"设计示意；现役前台链是 Mind ↔ Nervous ↔ Execution，入口 python -m Mind。图中的外部信号/Memory 等连线不代表自动接线。真实 owner/持久状态见 [代码地图](../README.md) 和 [事件契约](../docs/NERVOUS_EVENT_FOUNDATION.md)。","x":-980,"y":-930,"width":660,"height":170,"color":"5"},
 		{"id":"0dbd3ff8a9fcb9b1","type":"text","text":"Mind Organ","x":-116,"y":-201,"width":250,"height":60},
 		{"id":"19a013dd3d037bdf","type":"text","text":"Execution Organ","x":-116,"y":80,"width":250,"height":60},
 		{"id":"b5b9f1a292fd33f1","type":"text","text":"Event Bus","x":-116,"y":-480,"width":250,"height":60},

@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from adapter.backend import RealMagmaBackend
-from adapter.first_hit import (DerivedFirstHitGraph, FirstHitPolicy, FirstHitUnavailable,
+from Conversation_Memory.adapter.backend import RealMagmaBackend
+from Conversation_Memory.adapter.first_hit import (DerivedFirstHitGraph, FirstHitPolicy, FirstHitUnavailable,
                                discover_first_hit, project_attention, solve_first_hit)
 
 
@@ -275,8 +275,8 @@ def test_snapshot_owner_mutation_during_solve_is_rejected(graph_types,monkeypatc
         discover_first_hit(view,{"a":1},FirstHitPolicy())
 
 
-@pytest.mark.skipif(Path(sys.executable).resolve() != (
-    Path(__file__).resolve().parents[1]/".venv/Scripts/python.exe").resolve(),
+@pytest.mark.skipif(Path(sys.prefix).resolve() != (
+    Path(__file__).resolve().parents[1]/".venv").resolve(),
     reason="real MAGMA runs in the prepared isolated Memory environment")
 def test_real_backend_new_semantic_writer_and_default_remain_separate(tmp_path, monkeypatch):
     import dotenv

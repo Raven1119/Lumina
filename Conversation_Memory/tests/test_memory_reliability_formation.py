@@ -12,7 +12,7 @@ from copy import deepcopy
 
 import pytest
 
-from adapter.grounded_formation import (
+from Conversation_Memory.adapter.grounded_formation import (
     FormationError,
     form_grounded_memory_batch,
     repair_grounded_memory_batch,

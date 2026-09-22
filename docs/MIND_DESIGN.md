@@ -18,9 +18,13 @@ same identity. Business acceptance and safety constraints remain intact.
 Runtime completion is not business acceptance.
 
 Mind owns the continuing interpretation. A Directive does not silently change
-the task. DecisionIntent remains expressible, but formal goal switching requires
-an explicit future implementation/authorization. Focus, autonomous goals,
-emotions and personality evolution are longer-term objectives, not current facts.
+the task. Single-goal operation remains the default. Explicit `--pursuit` starts
+the same Mind under an owner-authorized scope and permits serial, immutable
+Task versions; Execution accepts each Task before it authorizes action.
+DecisionIntent by itself does not switch a goal. The
+[Stage1 contract](../Mind/docs/INTENTION_STAGE1.md) defines the supported scope,
+Task and Watch rules. Broader autonomous goals, emotions and personality
+evolution remain longer-term objectives.
 
 ## One cognitive activity
 

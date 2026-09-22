@@ -1,5 +1,10 @@
 # Lumina Recall 对本地 MAGMA Upstream 的算法审计
 
+> 历史范围：本文审计的是旧 bounded-BFS/BGE/Hindsight 路线，保留其当时判定。
+> `f92ea8e` 已采用 FirstHit/reliable-v2 为真实模型默认；本报告的“当前/生产”
+> 不随版本自动变成新默认事实。见 [代码地图](../README.md) 与
+> [可靠读取契约](../Conversation_Memory/docs/RELIABLE_MEMORY.md)。
+
 > 审计对象：当前工作区中的 Lumina Recall 生产链路，以及本地固定版本
 > `Conversation_Memory/upstream/MAGMA` 的实际源码。
 >

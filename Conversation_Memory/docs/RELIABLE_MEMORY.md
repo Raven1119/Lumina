@@ -20,8 +20,8 @@ this reliable read. Mock/legacy construction keeps `grounded-span-v2`.
 
 Run manual Dream with the service's writer stopped when using the separate CLI:
 
-```powershell
-Conversation_Memory/.venv/Scripts/python.exe -m Dream --max-segments 1
+```bash
+Conversation_Memory/.venv/bin/python -m Dream.runner --max-segments 1
 ```
 
 Without an explicit `--ingestion-version`, a configured real model defaults to
@@ -36,10 +36,10 @@ Use isolated paths for evaluation. The CLI does not schedule Dream. A caller
 can also explicitly construct the corresponding reader:
 
 ```python
-from adapter.first_hit import FirstHitPolicy
-from adapter.magma_adapter import MagmaMemoryAdapter
-from adapter.models import RecallPolicy
-from ingestion.state_store import IngestionStateStore
+from Conversation_Memory.adapter.first_hit import FirstHitPolicy
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
+from Conversation_Memory.adapter.models import RecallPolicy
+from Conversation_Memory.ingestion.state_store import IngestionStateStore
 from core.cold_draft_store import ColdDraftStore
 
 cold = ColdDraftStore(cold_path, source_window_segments=32,
@@ -58,8 +58,8 @@ result = memory.recall_associative(
 )
 ```
 
-Use the Memory environment and add `Conversation_Memory` to the import path,
-as in the maintained scripts. `formation_model` is unnecessary for read-only
+Run from the repository root with the Memory environment. Imports use the
+`Conversation_Memory` package; no organ path injection is required. `formation_model` is unnecessary for read-only
 construction. The caller chooses budgets; the profile does not raise them.
 
 ## Four bounded batch stages

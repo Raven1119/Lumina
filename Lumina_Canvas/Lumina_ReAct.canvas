@@ -1,5 +1,6 @@
 {
 	"nodes":[
+		{"id":"current-status-20260922","type":"text","text":"ReAct 长期形态设计；此图不代表当前 Chat 有通用工具执行。现役 Chat 与认知链各自入口见 [代码地图](../README.md)。与另一 ReAct 图用途不同，未证明完整替代关系，保留设计信息。","x":-1040,"y":-240,"width":660,"height":170,"color":"5"},
 		{"id":"66374fe45fbaa988","type":"text","text":"用户消息","x":-125,"y":-30,"width":250,"height":60},
 		{"id":"2455779f954a949e","type":"text","text":"构建上下文","x":-123,"y":139,"width":250,"height":60},
 		{"id":"b7639725ac9857af","type":"text","text":"系统提示词 + 可用工具说明","x":300,"y":139,"width":250,"height":81},

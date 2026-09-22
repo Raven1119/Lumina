@@ -8,8 +8,10 @@ windows use that same activation to plan local semantic links. Original source
 expansion goes through the injected Cold owner. Historical Formation v2,
 legacy `recall`,
 prepared Recall and the separate source-index interfaces retain their contracts.
-This is an implementation and correctness delivery; semantic quality is for
-later evaluation. It is not a default promotion or an A/B result.
+The original v2 profile remains explicit. Production v6 now reuses this
+FirstHit mechanism with `reliable-v2` presentation; see [Reliable Memory](RELIABLE_MEMORY.md).
+The historical mechanism evidence below is not an A/B result or a claim of
+semantic superiority for v6.
 
 No new persistent memory object, causal relation, identity inference, automatic
 Dream, memory agent or consumer/tool loop is introduced. Pinned MAGMA and the
@@ -27,8 +29,8 @@ from Dream.runner import RealMemoryIngestorProvider, DreamRunner
 from Dream.cold_draft_digest import ColdDraftDigestionTask
 from Dream.models import DreamRunPolicy
 from core.cold_draft_store import ColdDraftStore
-from adapter.first_hit import FirstHitPolicy
-from adapter.models import RecallPolicy
+from Conversation_Memory.adapter.first_hit import FirstHitPolicy
+from Conversation_Memory.adapter.models import RecallPolicy
 
 # Explicit isolated/new state; formation_model is the existing configured
 # DeepSeek-V4-Pro client, or fixed native responses in a synthetic check.
@@ -58,17 +60,18 @@ cold_store=owner)` exposes the same entries. Adapter construction never migrates
 stored windows. An omitted Cold owner leaves facts usable and reports source
 expansion unavailable. The Cold window defaults to disabled unless configured.
 
-The existing explicit CLI also accepts `python -m Dream.runner --first-hit`.
+The existing explicit CLI also accepts `python -m Dream.runner --ingestion-version grounded-formation-v2 --first-hit`.
 It uses existing `LUMINA_DREAM_COLD_DRAFT_PATH`,
 `LUMINA_DREAM_INGESTION_STATE_PATH` and `LUMINA_DREAM_MAGMA_PERSIST_DIR` settings,
-with a 32-segment/1 MiB Cold window. It requires Formation v2. As with the legacy
+with a 32-segment/1 MiB Cold window. This command explicitly selects Formation v2. Without the version option, a
+configured real model selects the current v6/reliable-v2 default. As with the legacy
 CLI, stop the single-worker application service before using it. There is no
 new Chat HTTP option or change to the Chat event flow.
 
 ### Provider-free vertical correctness check
 
-```powershell
-.\Conversation_Memory\.venv\Scripts\python.exe -m scripts.first_hit_memory_check
+```bash
+HF_HUB_OFFLINE=1 Conversation_Memory/.venv/bin/python -m scripts.first_hit_memory_check
 ```
 
 This maintained entry uses a fresh isolated directory, fixed synthetic Formation

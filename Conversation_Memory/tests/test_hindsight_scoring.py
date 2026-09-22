@@ -5,7 +5,7 @@ from math import exp
 
 import pytest
 
-from recall.hindsight_scoring import (
+from Conversation_Memory.recall.hindsight_scoring import (
     NEUTRAL_SIGNAL,
     compute_linear_recency,
     normalize_cross_encoder_scores,

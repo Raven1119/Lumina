@@ -9,6 +9,22 @@ product-development goal is narrower: **make durable conversation memory
 reliably retrievable and useful during ordinary chat without weakening the
 existing persistence and failure-isolation guarantees.**
 
+
+## Target Platform
+
+The user set the following platform direction for Noespire on 2026-09-22:
+
+- Noespire's application runtime targets Windows.
+- All of its Codex processes run in a Linux environment.
+- Development also takes place in Linux using Codex, with the user's goal of
+  making full use of Astra's capabilities.
+
+Treat Windows application execution and Linux Codex execution as distinct
+environments when designing process invocation, filesystem access, and
+integration. The choice of Linux hosting and cross-environment communication
+remains open. This is a target-platform decision; Windows compatibility must
+be validated on Windows before being reported as supported.
+
 ## Continuity Invariant
 
 Cold-first preservation remains non-negotiable:
@@ -28,78 +44,26 @@ provenance through Draft, Dream, MAGMA, Recall, and final evidence projection.
 
 ## Current Baseline
 
-The user-facing memory loop is now connected:
+Source-verified entry points and owners are maintained in the [code map](../README.md).
+The real-model Memory default is now `grounded-formation-v6` + FirstHit +
+`reliable-v2`; it bypasses legacy BGE/Hindsight and has no final score floor.
+Chat stays separate from the foreground Mind–Nervous–Execution chain.
+`ExecutionOrgan` supports both the chain's execution owner and the manual API.
+Dream remains explicit and Cold-first continuity remains unchanged.
 
-```text
-Production chat
-Browser -> FastAPI -> MessageRuntime
-        -> bounded Recall
-        -> optional MemoryContext injection
-        -> ModelClient
-        -> Hot Draft -> Cold-first compaction -> Cold Draft
+## Current Product Objective: Make the maintained system understandable
 
-Offline memory
-manual Dream -> pending Cold Draft
-             -> DeepSeek-V4-Pro Grounded Formation
-                (non-thinking, max_tokens=2000)
-             -> grounding validator + bounded semantic fallback
-                + value-only guard + self-name coverage guard
-             -> durable GroundedMemoryUnit checkpoint before MAGMA
-             -> span-grounded entity mention extraction
-                + durable mention-binding checkpoint
-             -> Conversation Memory adapter -> unmodified MAGMA
-             -> consumed
-```
+The current task consolidates responsibilities and the latest implementation of
+each independent candidate route. The [scheme catalog](EXPERIMENTS.md) records
+entry points, comparison conditions, evidence and historical replacements.
+It does not promote a candidate, change a runtime model, or connect new organs.
 
-Current production Recall is:
-
-```text
-query
--> target_entity_ref classification (CURRENT_USER -> E_001, or exact-surface
-   lookup over persisted EntityNodes; 0/multi hit -> None)
--> keyword-enriched MAGMA dense anchors
--> bounded lexical anchors
--> entity-conditioned FAISS subset list when a target_entity_ref is present
--> RRF
--> fixed depth-1 bounded graph BFS
--> fail-open ControlledRelationResolver when relation surfaces are supplied
--> BGE rerank ([SAME_ENTITY] per-pair projection on equal refs)
--> Hindsight recency adjustment
--> final_score >= 0.144
--> stable bounded top-3 MemoryContext
-```
-
-Recall is enabled by source default, remains explicitly disableable, and fails
-soft to normal chat when memory is empty or unavailable.
-
-## Current Problem
-
-The adopted memory loop works end to end. On the authorization-aligned 36-case
-development subset, Grounded Write scores 29/36 versus the raw-turn baseline at
-26/36, preserving all 6 currently authorized positive cases and improving
-negative correctness from 20/30 to 23/30.
-
-The remaining boundary is explicit: `ControlledRelationResolver` can use
-caller-supplied relation surfaces, but normal Chat supplies none. Assistant
-utterance alone is not verified fact/self-action provenance, and future
-self-action memory waits for Execution Trace or tool-result provenance.
-
-## Current Product Objective: Preserve the parent baseline around Execution
-
-The Memory objective is met: the adopted loop is in production end to end,
-including Recall in chat, the Mind Recall gate stage 2, Grounded Write with the
-self-name coverage guard, and the generic multi-entity Entity graph.
-
-Execution V1 is frozen as isolated experimental evidence at tag
-`execution-organ-v1-final` and was never promoted into the production path.
-The frozen and audited Execution V2 substrate is promoted as the supported
-`Execution/` package behind `ExecutionOrgan`. It remains deliberately separate
-from production Chat, Mind, Memory, and Dream; wiring any of those paths to
-Execution requires a separate approved task.
-
-The Memory-side boundary remains explicit: `ControlledRelationResolver` can
-use caller-supplied relation surfaces, but normal Chat supplies none. Future
-capabilities must preserve this seam unless separately authorized.
+The earlier 29/36 Grounded Write versus 26/36 raw-turn result belongs to its
+historical authorization-aligned Memory version; it is not a v6 measurement.
+Likewise, current mechanical correctness does not establish general answer
+quality or autonomous capability. Historical results remain in their original
+[Memory](MEMORY_EXPERIMENT_HISTORY.md) and [cognitive](../Mind/docs/EXPERIMENT_HISTORY.md)
+records.
 
 ## Recall Optimization Principles
 
@@ -109,8 +73,8 @@ capabilities must preserve this seam unless separately authorized.
    admission, and graph-formation failures.
 3. **No benchmark patching.** Do not tune production behavior to individual
    fixture strings, entities, or final-regression score gaps.
-4. **BGE remains the fixed reranker by default.** Replace or retrain it only
-   when evidence isolates ranking as the bottleneck.
+4. **Keep each comparison component fixed.** The current reliable reader has no
+   BGE step; explicit legacy routes retain their own fixed BGE policy.
 5. **MAGMA upstream stays pinned and unmodified.** Lumina may adapt behavior
    behind its own facade, but must not patch upstream.
 6. **Recall remains bounded and fail-soft.** Better retrieval must not make
@@ -151,4 +115,4 @@ Later memory capabilities must extend, not bypass, these boundaries:
 Conversation Graph as a separate production system, PostgreSQL/Neo4j,
 autonomous Dream, schedulers, additional organs, and generalized memory
 management are not implied by the completed Memory stage or the supported,
-still-unwired Execution substrate.
+separate Chat and cognitive-chain runtime boundaries.

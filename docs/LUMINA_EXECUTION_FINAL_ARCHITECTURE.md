@@ -5,7 +5,9 @@
 > 设计来源：结合 Codex 的持续真实执行 Runtime、DeepSeek Harness 的 event sourcing / capability seam，以及 Prime Agent 的 programmable execution / recursive AgentProcess 思路，并遵循 Lumina North Star 的连续整体心智与递归自进化方向。\
 > 当前文档定义目标架构，不代表所有机制立即实现。
 
-当前认知链通过 `Execution/runtime.py` 将用户授权工作区、执行生命周期、指导投递与结果反馈归属 Execution；`Execution/organ.py` 仍是单次运行 facade。Nervous 负责事件续接，Mind 在同一个正式目标下稀疏提供高层指导，没有中央 Host/Session。当前可运行范围与命令以 [CURRENT_STATUS](CURRENT_STATUS.md) 和 [认知链契约](../Mind/docs/INTEGRATED_CHAIN.md) 为准；下文的长期目标与能力规划不应直接视为当前实现。
+当前认知链通过 `Execution/runtime.py` 将用户授权工作区、执行生命周期、指导投递与结果反馈归属 Execution；`Execution/organ.py` 仍是该链复用的单次运行 facade，也是独立 Execution API 的入口。Nervous 负责事件续接，没有中央 Host/Session。默认 `--goal` 保持同一个正式目标；显式 `--pursuit` 允许同一 Mind 在原授权范围内提出串行 Task，由 Execution 接受其不可变版本后执行。当前可运行范围与命令以 [认知链契约](../Mind/docs/INTEGRATED_CHAIN.md) 和 [Stage1 契约](../Mind/docs/INTENTION_STAGE1.md) 为准；下文的长期目标与能力规划不应直接视为当前实现。
+
+早期单 Root MVP 设计已退出维护。其行动记录、状态折叠、Checkpoint、DecisionFrame、暂停恢复和完成验证职责，由本文件第 20–23 节、[恢复契约](RECOVERY_AND_WORKING_CONTEXT_DESIGN.md)及现役 `Execution/execution.py`、`Execution/organ.py` 承接。MVP 当时排除 Mind、Child 和递归的阶段限制不再适用于当前实现；原设计仍可从 [9d63da7 的文件](https://github.com/Raven1119/Lumina/blob/9d63da7311baa7611782cc8079fb09e9d81f4e25/docs/LUMINA_EXECUTION_MVP_ARCHITECTURE.md) 追溯，其历史验证结论保留在 [Mind 实验简史](../Mind/docs/EXPERIMENT_HISTORY.md)。
 
 ---
 

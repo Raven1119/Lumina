@@ -20,15 +20,13 @@ from typing import Any, Callable, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 CONVERSATION_MEMORY_ROOT = ROOT / "Conversation_Memory"
-if str(CONVERSATION_MEMORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(CONVERSATION_MEMORY_ROOT))
 
-import adapter.magma_adapter as magma_adapter_module  # noqa: E402
-from adapter._grounded_spans import build_grounded_spans  # noqa: E402
-from adapter.backend import RealMagmaBackend  # noqa: E402
-from adapter.interfaces import MemoryIngestor, MemoryRetriever  # noqa: E402
-from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.models import (  # noqa: E402
+import Conversation_Memory.adapter.magma_adapter as magma_adapter_module  # noqa: E402
+from Conversation_Memory.adapter._grounded_spans import build_grounded_spans  # noqa: E402
+from Conversation_Memory.adapter.backend import RealMagmaBackend  # noqa: E402
+from Conversation_Memory.adapter.interfaces import MemoryIngestor, MemoryRetriever  # noqa: E402
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
+from Conversation_Memory.adapter.models import (  # noqa: E402
     ColdDraftSegment,
     ColdDraftTurn,
     MemoryContext,
@@ -44,8 +42,8 @@ from Dream.cold_draft_digest import (  # noqa: E402
 )
 from Dream.models import DreamRunPolicy  # noqa: E402
 from Dream.runner import DreamRunner  # noqa: E402
-from ingestion.state_store import IngestionStateStore  # noqa: E402
-from recall.bge_reranker import BGE_MODEL, BGE_REVISION  # noqa: E402
+from Conversation_Memory.ingestion.state_store import IngestionStateStore  # noqa: E402
+from Conversation_Memory.recall.bge_reranker import BGE_MODEL, BGE_REVISION  # noqa: E402
 
 
 SANDBOX_MARKER = ".recall_e2e_sandbox"

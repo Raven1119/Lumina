@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import uuid
 from pathlib import Path
 from threading import Lock
@@ -50,7 +49,6 @@ from Mind.llm_gate import LlmMindGate
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent.parent / "edge" / "static"
 _ROOT_DIRECTORY = Path(__file__).resolve().parent.parent
 _CHAT_BACKGROUND_PATH = _ROOT_DIRECTORY / "prompts" / "chat_background.md"
-_CONVERSATION_MEMORY_DIRECTORY = _ROOT_DIRECTORY / "Conversation_Memory"
 _DREAM_POLICY = DreamRunPolicy()
 _FORMATION_INGESTION_VERSION = "grounded-formation-v6"
 _CHAT_RECALL_POLICY = RecallPolicy(
@@ -222,8 +220,6 @@ def _build_memory_retriever(
     formation_model: ModelClient | None = None,
     cold_store: ColdDraftStore | None = None,
 ) -> MemoryRetriever:
-    if str(_CONVERSATION_MEMORY_DIRECTORY) not in sys.path:
-        sys.path.insert(0, str(_CONVERSATION_MEMORY_DIRECTORY))
 
     from Conversation_Memory.adapter.first_hit import FirstHitPolicy
     from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter

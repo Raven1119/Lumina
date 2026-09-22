@@ -1,4 +1,6 @@
-"""Four bounded, separately receipted Formation stages for explicit v4 writes.
+"""Four bounded, separately receipted Formation stages for reliable v6 writes.
+
+Explicit v4/v5 checkpoints retain their original versioned parsing contracts.
 
 This module authorizes text before optional graph projections. It owns no store:
 the existing ingestion owner checkpoints the exact stage request and response.

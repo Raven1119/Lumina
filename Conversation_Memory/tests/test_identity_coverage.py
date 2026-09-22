@@ -11,32 +11,28 @@ non-self-identity content, and never duplicates an equivalent existing unit.
 from __future__ import annotations
 
 import json
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[1]
-MEMORY_ROOT = ROOT / "Conversation_Memory"
-if str(MEMORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(MEMORY_ROOT))
+ROOT = Path(__file__).resolve().parents[2]
 
-from adapter.grounded_formation import (  # noqa: E402
+from Conversation_Memory.adapter.grounded_formation import (  # noqa: E402
     FORMATION_VERSION,
     form_grounded_memory_units,
     serialize_grounded_memory_units,
     deserialize_grounded_memory_units,
     validate_persisted_grounded_memory_units,
 )
-from adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
-from adapter.models import ColdDraftSegment, ColdDraftTurn  # noqa: E402
-from adapter.user_self import (  # noqa: E402
+from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter  # noqa: E402
+from Conversation_Memory.adapter.models import ColdDraftSegment, ColdDraftTurn  # noqa: E402
+from Conversation_Memory.adapter.user_self import (  # noqa: E402
     CURRENT_USER_ENTITY_REF,
     classify_subject_entity_ref,
 )
-from ingestion.state_store import IngestionStateStore  # noqa: E402
+from Conversation_Memory.ingestion.state_store import IngestionStateStore  # noqa: E402
 
 
 class FakeFormationModel:

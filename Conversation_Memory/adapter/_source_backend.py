@@ -250,7 +250,7 @@ def text_fits(backend, text):
     count, maximum = _token_count(backend, text)
     if not hasattr(backend, "_source_bge_tokenizer"):
         from transformers import AutoTokenizer
-        from recall.bge_reranker import BGE_MODEL, BGE_REVISION
+        from Conversation_Memory.recall.bge_reranker import BGE_MODEL, BGE_REVISION
         loaded_at = perf_counter()
         backend._source_bge_tokenizer = AutoTokenizer.from_pretrained(
             BGE_MODEL, revision=BGE_REVISION, local_files_only=True)

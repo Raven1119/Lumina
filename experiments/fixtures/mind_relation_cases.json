@@ -1,0 +1,93 @@
+[
+  {
+    "case_id": "rel-zh-01",
+    "stratum": "single_zh",
+    "message": "CM-707 相机的采集帧频是多少？",
+    "recall_needed": true,
+    "expected_relation_ids": [
+      "CAMERA_CAPTURE_RATE"
+    ],
+    "out_of_vocabulary": false,
+    "memory": {
+      "correct": [
+        {
+          "subject": "CM-707",
+          "relation": "frames per second",
+          "value": "50 fps",
+          "text": "Camera CM-707 captures at 50 frames per second."
+        }
+      ],
+      "distractor": {
+        "subject": "CM-707",
+        "relation": "link behavior",
+        "value": "AUTO",
+        "text": "Port on CM-707 uses link mode AUTO."
+      }
+    },
+    "rationale": "需要记忆中的相机采集速率关系。"
+  },
+  {
+    "case_id": "rel-oov-01",
+    "stratum": "out_of_vocabulary",
+    "message": "设备 UN-413 当前用的是哪个配置档案？",
+    "recall_needed": true,
+    "expected_relation_ids": [],
+    "out_of_vocabulary": true,
+    "memory": {
+      "correct": [
+        {
+          "subject": "UN-413",
+          "relation": "configuration",
+          "value": "PROFILE-JADE",
+          "text": "Unit UN-413 uses service profile PROFILE-JADE."
+        }
+      ],
+      "distractor": null
+    },
+    "rationale": "词表外关系：resolver 应真实 UNRESOLVED 并 fail-open 放行。"
+  },
+  {
+    "case_id": "rel-nm-01",
+    "stratum": "no_memory",
+    "message": "1 到 10 之间有多少个偶数？",
+    "recall_needed": false,
+    "expected_relation_ids": [],
+    "out_of_vocabulary": false,
+    "memory": null,
+    "rationale": "公共知识，无需记忆。"
+  },
+  {
+    "case_id": "rel-cp-x",
+    "stratum": "compound",
+    "message": "CP-615 的相机采样帧频和端口工作方式分别是什么？",
+    "recall_needed": true,
+    "expected_relation_ids": [
+      "CAMERA_CAPTURE_RATE",
+      "PORT_LINK_MODE"
+    ],
+    "out_of_vocabulary": false,
+    "memory": {
+      "correct": [
+        {
+          "subject": "CP-615",
+          "relation": "frames per second",
+          "value": "72 fps",
+          "text": "Camera CP-615 captures at 72 frames per second."
+        },
+        {
+          "subject": "CP-615",
+          "relation": "link behavior",
+          "value": "AUTO",
+          "text": "Port CP-615 uses link mode AUTO."
+        }
+      ],
+      "distractor": {
+        "subject": "CP-615",
+        "relation": "mesh category",
+        "value": "MESH-15",
+        "text": "Filter on CP-615 uses mesh classification MESH-15."
+      }
+    },
+    "rationale": "复合关系：两个正确证据都必须存活。"
+  }
+]

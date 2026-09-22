@@ -16,15 +16,15 @@ from pathlib import Path
 
 import pytest
 
-from adapter.backend import RealMagmaBackend
+from Conversation_Memory.adapter.backend import RealMagmaBackend
 
 _REAL_MAGMA_VENV = (
-    Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe"
+    Path(__file__).resolve().parents[1] / ".venv"
 )
 
 
 @pytest.mark.skipif(
-    Path(sys.executable).resolve() != _REAL_MAGMA_VENV.resolve(),
+    Path(sys.prefix).resolve() != _REAL_MAGMA_VENV.resolve(),
     reason="real MAGMA test runs in the isolated Conversation Memory environment",
 )
 def test_entity_node_does_not_pollute_event_temporal_chain(tmp_path):
@@ -77,7 +77,7 @@ def test_entity_node_does_not_pollute_event_temporal_chain(tmp_path):
 
 
 @pytest.mark.skipif(
-    Path(sys.executable).resolve() != _REAL_MAGMA_VENV.resolve(),
+    Path(sys.prefix).resolve() != _REAL_MAGMA_VENV.resolve(),
     reason="real MAGMA test runs in the isolated Conversation Memory environment",
 )
 def test_plain_event_temporal_chain_unchanged(tmp_path):
