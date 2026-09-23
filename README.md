@@ -1,7 +1,7 @@
 # Lumina 代码地图
 
 这里回答「现在怎样运行、功能在哪里」。替代方案、独立运行方法和历史去向统一见
-[方案目录](docs/EXPERIMENTS.md)。以下依据 `Execution_lab2` 的 `f92ea8e` 源码整理；
+[方案目录](docs/EXPERIMENTS.md)。以下依据当前 `Execution_lab2` 源码整理；
 实现事实补充在 [CURRENT_STATUS](docs/CURRENT_STATUS.md)，设计愿景在
 [NORTH_STAR](docs/NORTH_STAR.md)。文档中的历史成绩不代表当前版本的新测量。
 
@@ -57,6 +57,7 @@ FirstHit 自己的缺省发现预算是 5 seeds / 64 nodes / 256 edges；不要�
 | Memory 门面 / DTO / 幂等阶段 checkpoint | [magma_adapter.py](Conversation_Memory/adapter/magma_adapter.py)、[models.py](Conversation_Memory/adapter/models.py)、[state_store.py](Conversation_Memory/ingestion/state_store.py) | [幂等契约](Conversation_Memory/docs/PROVENANCE_AND_IDEMPOTENCY.md)、[Memory 测试](Conversation_Memory/tests) |
 | v6 写入及实体绑定 | [reliable_formation.py](Conversation_Memory/adapter/reliable_formation.py)、[_entity_ingestion.py](Conversation_Memory/adapter/_entity_ingestion.py) | [v6 回归](Conversation_Memory/tests/test_reliable_v6_ingestion.py)、[完整组装回归](Conversation_Memory/tests/test_reliable_profile_integration.py) |
 | FirstHit / reliable-v2 | [first_hit.py](Conversation_Memory/adapter/first_hit.py)、[_first_hit_ingestion.py](Conversation_Memory/adapter/_first_hit_ingestion.py)、[_reliable_recall.py](Conversation_Memory/adapter/_reliable_recall.py) | [FirstHit 测试](Conversation_Memory/tests/test_first_hit.py)、[可靠读取 v2](Conversation_Memory/tests/test_reliable_recall_v2.py) |
+| 可弃权读侧候选 `calibrated-first-hit-v1` | [派生跨语言索引](Conversation_Memory/adapter/_calibrated_index.py)、[保幅激活与统一选择](Conversation_Memory/adapter/_calibrated_recall.py)、[模型及参数](Conversation_Memory/adapter/calibrated_first_hit_parameters.json)；由 [Memory facade](Conversation_Memory/adapter/magma_adapter.py) 与 [Chat 组装](core/main.py) 显式选择 | [数学及门面回归](Conversation_Memory/tests/test_calibrated_first_hit.py)、[Chat 回归](tests/test_calibrated_memory_chat.py)、[候选契约](Conversation_Memory/docs/RELIABLE_MEMORY.md#calibrated-first-hit-v1-explicit-reader)；独立验证未达到保留有用记忆要求，未晋升 |
 | 显式图读取候选 `graph-read-v1` | [_graph_read.py](Conversation_Memory/adapter/_graph_read.py)、[_first_hit_read.py](Conversation_Memory/adapter/_first_hit_read.py)、[查询条件](Conversation_Memory/adapter/graph_read_query.py) | [门面回归](Conversation_Memory/tests/test_graph_read_facade.py)、[调用和降级契约](Conversation_Memory/docs/FIRST_HIT_MEMORY.md#explicit-graph-read-v1-candidate)；未切换生产默认 |
 | 问题驱动候选 `graph-read-v2` | [一次结构化门控](Mind/llm_gate.py)、[入口与证据组合](Conversation_Memory/adapter/_query_graph_read.py)、[共享多前沿](Conversation_Memory/adapter/_first_hit_read.py)、[Chat 传递](core/message_runtime.py) | [自然输入与配置](Conversation_Memory/docs/FIRST_HIT_MEMORY.md#explicit-query-driven-graph-read-v2)、[组合回归](Conversation_Memory/tests/test_query_graph_read.py)、[实际 Chat 回归](tests/test_query_mind_chat.py)；显式 `LUMINA_MIND_GATE_MODE=graph-read-v2`，默认不变 |
 | 图导航与重写正文候选 `body-recall-v1` | [_body_formation.py](Conversation_Memory/adapter/_body_formation.py)、[backend 正文载荷](Conversation_Memory/adapter/body_payload.py)、[正文聚合与预算](Conversation_Memory/adapter/_body_recall.py) | [显式写入、恢复、Chat 与四臂入口](Conversation_Memory/docs/BODY_MEMORY.md)；`LUMINA_MEMORY_PROFILE=body-recall-v1`，v7/F1-F2 正文与原 FirstHit，未晋升 |

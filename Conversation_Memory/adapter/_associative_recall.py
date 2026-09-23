@@ -134,6 +134,10 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
     if profile == "body-recall-v1":
         from ._body_recall import recall_bodies
         return recall_bodies(adapter, query, policy)
+    if profile == "calibrated-first-hit-v1":
+        from ._calibrated_recall import recall_calibrated
+        return recall_calibrated(adapter, query, policy, include_sources=include_sources,
+                                 source_context_turns=source_context_turns)
     if profile == "graph-read-v2":
         from ._query_graph_read import activate_query_read
         activation = activate_query_read(adapter, cue)

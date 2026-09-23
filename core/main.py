@@ -242,7 +242,7 @@ def _build_memory_retriever(
         )
     )
     memory_profile = os.environ.get("LUMINA_MEMORY_PROFILE", "production").strip().lower()
-    if memory_profile not in {"production", "body-recall-v1"}:
+    if memory_profile not in {"production", "body-recall-v1", "calibrated-first-hit-v1"}:
         raise ValueError("invalid_memory_profile")
     if memory_profile == "body-recall-v1":
         if formation_model is None:
@@ -253,6 +253,11 @@ def _build_memory_retriever(
             persist_dir, fail_if_unavailable=True, ingestion_version=FORMATION_BODY_VERSION,
             formation_model=formation_model, first_hit=FirstHitPolicy(), cold_store=cold_store,
             associative_read_profile="body-recall-v1")
+    if formation_model is None and memory_profile == "calibrated-first-hit-v1":
+        raise ValueError("calibrated_memory_requires_formation_model")
+    if (memory_profile == "calibrated-first-hit-v1"
+            and os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower() in {"graph-read-v2", "select"}):
+        raise ValueError("calibrated_memory_gate_profile_conflict")
     if formation_model is None:
         # Mock/legacy deterministic path: grounded spans, no FirstHit.
         return MagmaMemoryAdapter.create_real(
@@ -262,7 +267,8 @@ def _build_memory_retriever(
         )
     # Explicit candidate changes only the reader. The v6 writer is shared and
     # continues to call its original FirstHit activation/connection planner.
-    read_profile = ("graph-read-v2" if os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
+    read_profile = ("calibrated-first-hit-v1" if memory_profile == "calibrated-first-hit-v1"
+                    else "graph-read-v2" if os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
                     == "graph-read-v2" else "reliable-v2")
     return MagmaMemoryAdapter.create_real(
         persist_dir,

@@ -1,7 +1,7 @@
 # Lumina 方案目录
 
 从 [代码地图](../README.md) 找现役功能；本页回答替代方案保留什么、怎样单独跑、
-证据属于哪个版本。**最新实现不等于最佳方案。本次没有晋升候选、自动接线或真实模型评测。**
+证据属于哪个版本。**最新实现不等于最佳方案。候选均须显式选择，生产默认未晋升。**
 
 ## 整理基准与分类
 
@@ -99,6 +99,7 @@ python -m pytest tests/test_mind_relation_shadow.py -q
 | standalone FirstHit / `first-hit-v1`：`MagmaMemoryAdapter(..., ingestion_version="grounded-formation-v2", first_hit=FirstHitPolicy()).recall_associative` | 直接返回稀疏事实竞争/可选来源；现生产 reliable-v2 在同一激活上增加 direct/associated 分配和呈现约束 | `python -m pytest Conversation_Memory/tests/test_first_hit.py Conversation_Memory/tests/test_first_hit_recall.py -q` |
 | 完整读侧候选 / `graph-read-v1`：同一 adapter 显式 `associative_read_profile="graph-read-v1"`，调用 `recall(str 或 GraphReadQuery, policy)` | 更新探索队列、保留线索贡献、按真实角色选择原 Fact；复用 reliable-v2 0.6 direct 和正文/原文预算。仅读配置，写入和生产默认保持原实现；自然语言未确认方向/组合时开放降级，不冒充精准解析 | `python -m pytest Conversation_Memory/tests/test_first_hit_read.py Conversation_Memory/tests/test_graph_read_query.py Conversation_Memory/tests/test_graph_read_facade.py -q`；[实际入口与限制](../Conversation_Memory/docs/FIRST_HIT_MEMORY.md#explicit-graph-read-v1-candidate) |
 | 问题驱动读侧候选 / `graph-read-v2`：Chat 显式 `LUMINA_MIND_GATE_MODE=graph-read-v2` | 用一次 768-token 结构化 Mind 门控替换一次布尔门控；原问题、最多三条线索和两条带共享变量的关系交给实际 Memory facade。先覆盖入口、再共享预算探索，按真实角色与一致身份共同呈现完整 Fact。旧默认及 v1 复现入口保留 | `python -m pytest tests/test_query_mind_gate.py tests/test_query_mind_chat.py Conversation_Memory/tests/test_query_first_hit.py Conversation_Memory/tests/test_query_graph_read.py -q`；[自然输入、A/B/C 与限制](../Conversation_Memory/docs/FIRST_HIT_MEMORY.md#explicit-query-driven-graph-read-v2)。合成回归是机制证据，真实自然输入效果必须另看冻结结果，未晋升 |
+| 保幅且可弃权的读侧候选 / `calibrated-first-hit-v1`：显式 `LUMINA_MEMORY_PROFILE=calibrated-first-hit-v1`，保留缺省 `LUMINA_MIND_GATE_MODE=llm` | 同一 v6 图与 writer；多语言只读派生索引保留原始 cosine，种子总幅度等于最大入口支持，直接/关联统一阈值且允许空返回。独立合成验证未能兼顾有用记忆保留，当前仅用于复现与后续比较，**不晋升** | `Conversation_Memory/.venv/bin/python -m pytest Conversation_Memory/tests/test_calibrated_first_hit.py tests/test_calibrated_memory_chat.py -q`；[具体配置、参数出处与限制](../Conversation_Memory/docs/RELIABLE_MEMORY.md#calibrated-first-hit-v1-explicit-reader)。本地冻结评估命令见最终报告；不提交旧图或实验结果 |
 | 图导航与有源转述正文 / `body-recall-v1`：显式 `LUMINA_MEMORY_PROFILE=body-recall-v1` | v7 直接由原始对话形成分组核验单元；同一 backend 持久化不可变正文，原 FirstHit 激活后先归组、后按真实单元及字节预算呈现；不启用关系硬过滤。与 v1/v2 是独立机制路线，不替代它们 | [入口、四臂与边界](../Conversation_Memory/docs/BODY_MEMORY.md)；`python -m pytest Conversation_Memory/tests/test_body_memory.py Conversation_Memory/tests/test_body_memory_persistence.py tests/test_body_memory_chat.py -q`；实现和机制测试不等于语义收益，未晋升 |
 | source-window-v1 原文索引：`ingest_sources` / `recall_sources` | 原始对话独立 MAGMA namespace，不靠 Formation 事实覆盖 | `python -m pytest Conversation_Memory/tests/test_source_memory.py Conversation_Memory/tests/test_source_lexical.py -q` |
 | 完整来源上下文：`recall_source_context` | 用事实/实体定位来源，返回完整角色/时间保真的原文上下文 | `python -m pytest Conversation_Memory/tests/test_source_context.py Conversation_Memory/tests/test_source_context_rendering.py -q` |

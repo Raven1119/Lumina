@@ -330,3 +330,55 @@ Still open:
   precise `source_refs_invalid` reason.
 - `whole_turns` source expansion is available only together with a positive
   `source_context_turns`; the default remains the write-verified ranges.
+
+## Calibrated FirstHit v1 explicit reader
+
+`calibrated-first-hit-v1` is an **opt-in read candidate**, not the production
+reader. A real-model Chat service selects it with
+`LUMINA_MEMORY_PROFILE=calibrated-first-hit-v1` while retaining the ordinary
+`LUMINA_MIND_GATE_MODE=llm` gate and the v6 writer. A direct Memory caller can
+use `MagmaMemoryAdapter.create_real(..., ingestion_version="grounded-formation-v6",
+first_hit=FirstHitPolicy(), associative_read_profile="calibrated-first-hit-v1")`
+and then `recall(question, RecallPolicy(max_evidence_items=3, max_chars=5000,
+max_bytes=20000))`. Both paths leave the stored EVENT vectors, graph links,
+checkpoint keys and writer-side FirstHit connection planner unchanged.
+
+The owner builds a separate read-only FAISS cosine index on load and rebuilds
+it after adapter-owned ingestion. Only the exact generated outer `User stated: `
+or `Lumina stated: ` prefix is removed from its retrieval view. The canonical
+fact, negation, attribution and provenance remain unchanged in output. The
+multilingual encoder is pinned to
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` revision
+`e8f8c211226b894fcb81acc59f3b34ba3efd5f42`; the parameter JSON also
+pins its actual weight digest. It is loaded offline from the local Hugging Face
+cache, or from the exact revision directory named by
+`LUMINA_CALIBRATED_MODEL_SNAPSHOT`. The 384-dimensional vectors are explicitly
+unit-normalized before `IndexFlatIP`; the old English MiniLM vector index is
+never searched using the new query encoding. Source version and complete
+fact-ID coverage are checked; an unavailable or stale derived index yields an
+empty result with a safe error code and is not rebuilt by Recall.
+
+RRF combines at most 20 dense, indexed lexical and entity candidates **for
+discovery only**. The caller can inspect each hit's raw cosine/metric,
+lexical/name support and channels in private diagnostics. At most five distinct
+seeds use `r=clip(cosine,0,1)` and `mu=max(r)`; their FirstHit input is
+`b_i=mu*r_i/sum(r)`. The existing 5/64/256 FirstHit solver and full-row
+transition denominator are unchanged. A single scorer uses absolute cosine,
+`max(h-b,0)`, `mu` and lexical support for both direct and nonseed Facts. Its
+five coefficients and strict threshold are in
+[`calibrated_first_hit_parameters.json`](../adapter/calibrated_first_hit_parameters.json),
+with story-disjoint training/validation IDs and the SHA-256 of the committed
+synthetic corpus. Scores express a frozen local selection rule, not a
+probability that a historical claim is true. No 0.6 direct reservation or
+mandatory fill applies; 0–3 canonical Facts compete under 5000 characters
+and 20000 UTF-8 bytes. The existing bounded Cold source supplement remains
+optional and cannot replace a selected Fact. An ordinary empty selection has
+no safe error; index, model or solver failures have one.
+
+The synthetic fit and held-out evaluation failed the predeclared useful-memory
+retention targets; the candidate is **not promoted**. Its single fit used the
+committed, invented [fixture](../tests/fixtures/calibrated_associative_synthetic.json),
+not AC01 or private conversation. The frozen real-graph comparison and
+final rendered-text review must be read before making any semantic-benefit
+claim. Mechanism tests alone establish only the amplitude, isolation, abstention
+and provenance contracts.

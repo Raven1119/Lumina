@@ -1,0 +1,818 @@
+{
+  "schema": "calibrated-associative-synthetic-v1",
+  "author": "Codex, synthetic maintenance corpus; no AC01 stories or user data",
+  "split": {
+    "fit": [
+      "K01",
+      "K02",
+      "K03",
+      "K04",
+      "K05",
+      "K06"
+    ],
+    "threshold_validation": [
+      "K07",
+      "K08"
+    ],
+    "held_out_test": [
+      "K09",
+      "K10",
+      "K11",
+      "K12"
+    ]
+  },
+  "stories": [
+    {
+      "id": "K01",
+      "name": "样本瓶编号",
+      "language": "zh-zh",
+      "facts": [
+        {
+          "id": "K01-F0",
+          "text": "User stated: 沈岚在河水采样前发现两个瓶号互换，先重贴标签再继续记录读数。"
+        },
+        {
+          "id": "K01-F1",
+          "text": "User stated: 沈岚保留了原始采样表，没有凭印象补写读数。"
+        },
+        {
+          "id": "K01-F2",
+          "text": "User stated: 沈岚上周给自行车换了车铃，尚未骑出去。"
+        },
+        {
+          "id": "K01-F3",
+          "text": "User stated: 另一位也叫沈岚的人负责仓库钥匙，与采样队的沈岚不是同一人。"
+        },
+        {
+          "id": "K01-F4",
+          "text": "User stated: 贺川曾经把土壤样本瓶放进蓝色盒子，没有碰河水样本。"
+        },
+        {
+          "id": "K01-F5",
+          "text": "User stated: 采样站墙上挂了一张旧潮汐图。"
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "河水采样那回瓶号弄混后，沈岚怎么处理？",
+          "relevant_fact_ids": [
+            "K01-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "现在两份检测记录对不上，我想先核对标识再下结论；过去有类似可用的做法吗？",
+          "relevant_fact_ids": [
+            "K01-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "沈岚买的新车铃已经安装好了吗？",
+          "relevant_fact_ids": [
+            "K01-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "沈岚是不是负责仓库钥匙的采样员？",
+          "relevant_fact_ids": [
+            "K01-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "我今天想预订一场电影。",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K02",
+      "name": "木工夹具",
+      "language": "en-zh",
+      "facts": [
+        {
+          "id": "K02-F0",
+          "text": "User stated: Nia loosened the cabinet clamp and measured again before cutting, because the first reading came from a bent ruler."
+        },
+        {
+          "id": "K02-F1",
+          "text": "User stated: Nia kept the first measurement on paper with a correction mark rather than erasing it."
+        },
+        {
+          "id": "K02-F2",
+          "text": "User stated: Nia ordered a set of paint brushes but had not opened the box."
+        },
+        {
+          "id": "K02-F3",
+          "text": "User stated: Another Nia maintained the theater prop closet and was not the cabinet builder."
+        },
+        {
+          "id": "K02-F4",
+          "text": "User stated: Theo sanded a different cabinet door and did not measure Nia’s panel."
+        },
+        {
+          "id": "K02-F5",
+          "text": "User stated: The workbench had three green screws in a tin."
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "尼娅做柜门时发现第一次测量不可靠，她先做了什么？",
+          "relevant_fact_ids": [
+            "K02-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "新切出的零件尺寸不对，我想先核对测量工具和夹紧方式，再决定是否重做。以前的经验有帮助吗？",
+          "relevant_fact_ids": [
+            "K02-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "尼娅的新画笔已经拆封了吗？",
+          "relevant_fact_ids": [
+            "K02-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "管理剧场道具柜的尼娅就是做柜门的那位吗？",
+          "relevant_fact_ids": [
+            "K02-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "请把今天的天气写成一句诗。",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K03",
+      "name": "实验室离心管",
+      "language": "zh-en",
+      "facts": [
+        {
+          "id": "K03-F0",
+          "text": "User stated: 郑禾发现离心管盖子没有扣紧，先停止转机并重新确认密封，再继续实验。"
+        },
+        {
+          "id": "K03-F1",
+          "text": "User stated: 郑禾记录了异常发生前的转速，没有把停机说成实验完成。"
+        },
+        {
+          "id": "K03-F2",
+          "text": "User stated: 郑禾在食堂预付了一份周五午餐，尚未领取。"
+        },
+        {
+          "id": "K03-F3",
+          "text": "User stated: 同名郑禾在摄影社管理镜头，并非负责离心机的人。"
+        },
+        {
+          "id": "K03-F4",
+          "text": "User stated: 叶青清洗的是另一台培养箱，没有触碰郑禾的离心机。"
+        },
+        {
+          "id": "K03-F5",
+          "text": "User stated: 台面上有一个黄色计时器。"
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "What did Zheng He do when the centrifuge tube cap was loose?",
+          "relevant_fact_ids": [
+            "K03-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "A machine seems unsafe mid-run; should I pause and verify the seal before trusting the output? Is there a relevant past example?",
+          "relevant_fact_ids": [
+            "K03-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "Did Zheng He already collect the prepaid Friday lunch?",
+          "relevant_fact_ids": [
+            "K03-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "Was the camera-club Zheng He the centrifuge operator?",
+          "relevant_fact_ids": [
+            "K03-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "I need a list of jazz albums released today.",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K04",
+      "name": "航海地图刻度",
+      "language": "zh-zh",
+      "facts": [
+        {
+          "id": "K04-F0",
+          "text": "User stated: 顾澄发现航海地图少了比例尺，先补上刻度说明才把路线发给队友。"
+        },
+        {
+          "id": "K04-F1",
+          "text": "User stated: 顾澄没有把未标尺度的草图当成可直接导航的正式图。"
+        },
+        {
+          "id": "K04-F2",
+          "text": "User stated: 顾澄周末买了花盆，但还没种花。"
+        },
+        {
+          "id": "K04-F3",
+          "text": "User stated: 同名顾澄是港口食堂员工，不参与制图。"
+        },
+        {
+          "id": "K04-F4",
+          "text": "User stated: 文榆标记的是另一条河道，不负责顾澄的航线。"
+        },
+        {
+          "id": "K04-F5",
+          "text": "User stated: 地图桌旁摆着一枚铜色书签。"
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "顾澄发出航线前发现地图缺什么，如何处理？",
+          "relevant_fact_ids": [
+            "K04-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "我写的示意图少了一个读者理解必需的尺度，现在应先补说明再让大家执行吗？",
+          "relevant_fact_ids": [
+            "K04-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "顾澄种好新花盆了吗？",
+          "relevant_fact_ids": [
+            "K04-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "食堂的顾澄就是制图人吗？",
+          "relevant_fact_ids": [
+            "K04-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "帮我列下周的蔬菜购物单。",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K05",
+      "name": "冷藏药箱",
+      "language": "en-zh",
+      "facts": [
+        {
+          "id": "K05-F0",
+          "text": "User stated: Mara found the vaccine cooler above its safe temperature and quarantined those vials pending a logged inspection."
+        },
+        {
+          "id": "K05-F1",
+          "text": "User stated: Mara did not tell the clinic the quarantined vials were usable before the inspection finished."
+        },
+        {
+          "id": "K05-F2",
+          "text": "User stated: Mara reserved a canoe for Sunday but had not paid the deposit."
+        },
+        {
+          "id": "K05-F3",
+          "text": "User stated: Another Mara repaired the clinic printer and had no authority over vaccine storage."
+        },
+        {
+          "id": "K05-F4",
+          "text": "User stated: Ivo signed the receipt for a separate medicine carton kept in a different refrigerator."
+        },
+        {
+          "id": "K05-F5",
+          "text": "User stated: A red sticky note was left on the shelf door."
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "玛拉发现疫苗冷藏箱超温后怎么处置那批药瓶？",
+          "relevant_fact_ids": [
+            "K05-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "一批物品温控可能失效，我想先隔离并留记录，不能直接说还能用；以前有相似处理吗？",
+          "relevant_fact_ids": [
+            "K05-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "玛拉周日的独木舟定金交了吗？",
+          "relevant_fact_ids": [
+            "K05-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "修打印机的玛拉也能决定疫苗放行吗？",
+          "relevant_fact_ids": [
+            "K05-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "给我一个不含奶制品的甜点配方。",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K06",
+      "name": "齿轮润滑",
+      "language": "zh-en",
+      "facts": [
+        {
+          "id": "K06-F0",
+          "text": "User stated: 罗忻听到齿轮箱异响后先停机查看润滑油位，补油并复测才恢复生产。"
+        },
+        {
+          "id": "K06-F1",
+          "text": "User stated: 罗忻将停机时间写入维护记录，没有把异响当成已经解决。"
+        },
+        {
+          "id": "K06-F2",
+          "text": "User stated: 罗忻报了一个陶艺班，课程下个月才开始。"
+        },
+        {
+          "id": "K06-F3",
+          "text": "User stated: 另一位罗忻在公司法务部，不操作生产设备。"
+        },
+        {
+          "id": "K06-F4",
+          "text": "User stated: 孙谷更换的是传送带皮带，没有碰齿轮箱。"
+        },
+        {
+          "id": "K06-F5",
+          "text": "User stated: 车间门口有一盆薄荷。"
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "How did Luo Xin respond to the gearbox noise?",
+          "relevant_fact_ids": [
+            "K06-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "Before restarting a noisy mechanism, I want to inspect lubrication and test again. Is there a past example?",
+          "relevant_fact_ids": [
+            "K06-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "Has Luo Xin already completed the pottery class?",
+          "relevant_fact_ids": [
+            "K06-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "Does the legal-department Luo Xin operate the gearbox?",
+          "relevant_fact_ids": [
+            "K06-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "Translate the word “sunflower” into Spanish.",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K07",
+      "name": "账本双重核对",
+      "language": "zh-zh",
+      "facts": [
+        {
+          "id": "K07-F0",
+          "text": "User stated: 傅庭在报销表发现重复票据，先把两条标记待核对，没有直接批准付款。"
+        },
+        {
+          "id": "K07-F1",
+          "text": "User stated: 傅庭请原提交人核实票号，确认前保留两条原记录。"
+        },
+        {
+          "id": "K07-F2",
+          "text": "User stated: 傅庭预订了秋天的火车票，还没有支付。"
+        },
+        {
+          "id": "K07-F3",
+          "text": "User stated: 另一位傅庭在修理站工作，与财务审批无关。"
+        },
+        {
+          "id": "K07-F4",
+          "text": "User stated: 吴柳整理的是上月库存清单，没有看傅庭的报销表。"
+        },
+        {
+          "id": "K07-F5",
+          "text": "User stated: 桌上放着一只白色杯垫。"
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "傅庭看到重复票据以后有没有直接批准，具体先做什么？",
+          "relevant_fact_ids": [
+            "K07-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "两笔记录可能指向同一张凭证，我应该先标待查并保留原记录，有过可类比的处理吗？",
+          "relevant_fact_ids": [
+            "K07-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "傅庭的秋季火车票付款了吗？",
+          "relevant_fact_ids": [
+            "K07-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "修理站的傅庭就是财务审批人吗？",
+          "relevant_fact_ids": [
+            "K07-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "请解释什么是圆周率。",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K08",
+      "name": "望远镜结露",
+      "language": "en-zh",
+      "facts": [
+        {
+          "id": "K08-F0",
+          "text": "User stated: Eli noticed dew on the telescope lens and paused the observation until the lens dried, preserving the earlier raw frames."
+        },
+        {
+          "id": "K08-F1",
+          "text": "User stated: Eli labeled the affected frames instead of presenting them as clean measurements."
+        },
+        {
+          "id": "K08-F2",
+          "text": "User stated: Eli mailed a parcel to an uncle but had not received delivery confirmation."
+        },
+        {
+          "id": "K08-F3",
+          "text": "User stated: A different Eli ran the museum ticket desk and did not use the telescope."
+        },
+        {
+          "id": "K08-F4",
+          "text": "User stated: June adjusted a separate camera tripod but not Eli’s optical lens."
+        },
+        {
+          "id": "K08-F5",
+          "text": "User stated: A paper star chart hung by the door."
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "伊莱发现望远镜镜片起雾后怎样处理观测？",
+          "relevant_fact_ids": [
+            "K08-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "传感器受潮导致新数据不稳，我想暂停、标注受影响数据而保留旧原始帧；有没有可用旧经验？",
+          "relevant_fact_ids": [
+            "K08-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "伊莱寄出的包裹确认送达了吗？",
+          "relevant_fact_ids": [
+            "K08-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "售票台的伊莱就是使用望远镜的人吗？",
+          "relevant_fact_ids": [
+            "K08-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "帮我把一段广告语改得押韵。",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K09",
+      "name": "玻璃模具裂纹",
+      "language": "zh-en",
+      "facts": [
+        {
+          "id": "K09-F0",
+          "text": "User stated: 戴眉在玻璃模具发现细裂纹后先停用模具，贴上待检标签，没有继续浇铸。"
+        },
+        {
+          "id": "K09-F1",
+          "text": "User stated: 戴眉保留了裂纹照片供工匠检查，没有宣称已经修好。"
+        },
+        {
+          "id": "K09-F2",
+          "text": "User stated: 戴眉订了新书，物流还没有更新。"
+        },
+        {
+          "id": "K09-F3",
+          "text": "User stated: 同名戴眉管理音乐教室，不接触玻璃模具。"
+        },
+        {
+          "id": "K09-F4",
+          "text": "User stated: 柏榆修的是另一个车间的金属框，不负责玻璃模具。"
+        },
+        {
+          "id": "K09-F5",
+          "text": "User stated: 玻璃房窗边摆着一盏小台灯。"
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "What did Dai Mei do when she found the mold crack?",
+          "relevant_fact_ids": [
+            "K09-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "A tool might be cracked; I want to stop using it and keep evidence for inspection before claiming it is fixed. Any precedent?",
+          "relevant_fact_ids": [
+            "K09-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "Has Dai Mei received the newly ordered book?",
+          "relevant_fact_ids": [
+            "K09-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "Did the music-room Dai Mei handle the glass mold?",
+          "relevant_fact_ids": [
+            "K09-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "Suggest a route for a weekend hike.",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K10",
+      "name": "蜂箱入口",
+      "language": "zh-zh",
+      "facts": [
+        {
+          "id": "K10-F0",
+          "text": "User stated: 梁一发现蜂箱入口被落叶堵住，先清理通道并观察蜂群进出，没立即换掉整个蜂箱。"
+        },
+        {
+          "id": "K10-F1",
+          "text": "User stated: 梁一把当天的进出次数记下，等待下一次观察再判断恢复情况。"
+        },
+        {
+          "id": "K10-F2",
+          "text": "User stated: 梁一预约了牙医但尚未去看。"
+        },
+        {
+          "id": "K10-F3",
+          "text": "User stated: 同名梁一是市图书馆志愿者，与蜂箱维护无关。"
+        },
+        {
+          "id": "K10-F4",
+          "text": "User stated: 林茵检查的是另一箱蜂王，没有改动梁一的蜂箱。"
+        },
+        {
+          "id": "K10-F5",
+          "text": "User stated: 蜂箱旁的木桩涂成浅绿色。"
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "梁一看到蜂箱入口堵住后先怎么处理？",
+          "relevant_fact_ids": [
+            "K10-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "系统入口堵塞时我想先排除局部阻碍并观察流量，而不是整个替换；之前有类比吗？",
+          "relevant_fact_ids": [
+            "K10-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "梁一已经看过牙医了吗？",
+          "relevant_fact_ids": [
+            "K10-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "图书馆的梁一也负责蜂箱吗？",
+          "relevant_fact_ids": [
+            "K10-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "说明月球为什么有潮汐。",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K11",
+      "name": "数字档案校验",
+      "language": "en-zh",
+      "facts": [
+        {
+          "id": "K11-F0",
+          "text": "User stated: Quinn found a checksum mismatch in an archive copy, isolated that copy, and verified the original before attempting another transfer."
+        },
+        {
+          "id": "K11-F1",
+          "text": "User stated: Quinn did not delete the original file or call the failed copy a valid backup."
+        },
+        {
+          "id": "K11-F2",
+          "text": "User stated: Quinn booked a swimming lesson but had not attended it."
+        },
+        {
+          "id": "K11-F3",
+          "text": "User stated: Another Quinn worked in gallery reception and did not manage the archive."
+        },
+        {
+          "id": "K11-F4",
+          "text": "User stated: Ada labeled a separate collection of photographs, not Quinn’s data copy."
+        },
+        {
+          "id": "K11-F5",
+          "text": "User stated: The archive shelf had a blue folder on its top row."
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "奎恩发现备份校验和不一致后先做什么？",
+          "relevant_fact_ids": [
+            "K11-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "复制品校验失败，我想保留原件、隔离副本再重新传输；以前有相似做法吗？",
+          "relevant_fact_ids": [
+            "K11-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "奎恩已经上过游泳课了吗？",
+          "relevant_fact_ids": [
+            "K11-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "画廊前台的奎恩负责档案校验吗？",
+          "relevant_fact_ids": [
+            "K11-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "把一段歌词改成三行摘要。",
+          "relevant_fact_ids": []
+        }
+      ]
+    },
+    {
+      "id": "K12",
+      "name": "温室遮阳网",
+      "language": "zh-en",
+      "facts": [
+        {
+          "id": "K12-F0",
+          "text": "User stated: 施旻发现温室幼苗晒伤后先加遮阳网并测温，暂时没有换掉整批幼苗。"
+        },
+        {
+          "id": "K12-F1",
+          "text": "User stated: 施旻记录了加网前后的叶面状态，还没断言幼苗全都恢复。"
+        },
+        {
+          "id": "K12-F2",
+          "text": "User stated: 施旻买了两张音乐会票，演出尚未开始。"
+        },
+        {
+          "id": "K12-F3",
+          "text": "User stated: 另一位施旻在食堂备餐，不经营温室。"
+        },
+        {
+          "id": "K12-F4",
+          "text": "User stated: 蒋禾浇灌的是隔壁花圃，没有处理施旻的幼苗。"
+        },
+        {
+          "id": "K12-F5",
+          "text": "User stated: 温室门把手上系了一截灰色绳子。"
+        }
+      ],
+      "queries": [
+        {
+          "kind": "direct",
+          "text": "What did Shi Min do first after seeing sunburned seedlings?",
+          "relevant_fact_ids": [
+            "K12-F0"
+          ]
+        },
+        {
+          "kind": "analogy",
+          "text": "A local environmental problem damaged a batch; should I adjust conditions and measure again before replacing everything? Any related past experience?",
+          "relevant_fact_ids": [
+            "K12-F0"
+          ]
+        },
+        {
+          "kind": "same_person_hard_negative",
+          "text": "Has Shi Min already attended the concert?",
+          "relevant_fact_ids": [
+            "K12-F2"
+          ]
+        },
+        {
+          "kind": "same_name_ambiguous",
+          "text": "Is the cafeteria Shi Min also the greenhouse caretaker?",
+          "relevant_fact_ids": [
+            "K12-F3"
+          ]
+        },
+        {
+          "kind": "no_history",
+          "text": "Write a short note congratulating a colleague.",
+          "relevant_fact_ids": []
+        }
+      ]
+    }
+  ]
+}

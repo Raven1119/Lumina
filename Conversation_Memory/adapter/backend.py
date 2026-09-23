@@ -260,6 +260,20 @@ class RealMagmaBackend:
         from ._source_backend import rebuild as rebuild_sources
         rebuild_sources(self)
         self._rebuild_first_hit_view()
+        self._calibrated_read_index = None
+
+    def rebuild_calibrated_read_index(self) -> None:
+        """Owner-only atomic replacement after load or a completed write step."""
+        from ._calibrated_index import CalibratedReadIndex
+        replacement = CalibratedReadIndex(self)
+        self._calibrated_read_index = replacement
+
+    def calibrated_read_index(self):
+        index = self._calibrated_read_index
+        if index is None:
+            raise ValueError("calibrated_index_unavailable")
+        index._check()
+        return index
 
     def put_memory_body(self, payload, *, repair=False):
         from .body_payload import BodyPayloadStore

@@ -1,0 +1,42 @@
+{
+  "schema": "calibrated-first-hit-v1",
+  "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+  "model_weights_sha256": "eaa086f0ffee582aeb45b36e34cdd1fe2d6de2bef61f8a559a1bbc9bd955917b",
+  "feature_version": "cosine-graph-mu-lexical-v1",
+  "text_view": "canonical-prefix-only-v1",
+  "synthetic_corpus_sha256": "53b17a4ef71a54e45d115fffd6563c0d0529959073268dc5ea030f8ab5b3bf28",
+  "fit_stories": [
+    "K01",
+    "K02",
+    "K03",
+    "K04",
+    "K05",
+    "K06"
+  ],
+  "threshold_validation_stories": [
+    "K07",
+    "K08"
+  ],
+  "held_out_test_stories": [
+    "K09",
+    "K10",
+    "K11",
+    "K12"
+  ],
+  "coefficients": [
+    -3.446846148144979,
+    5.843054052139164,
+    0.0,
+    0.9969150465183368,
+    0.6561370879450225
+  ],
+  "threshold": 0.809515220826449,
+  "validation_status": "validation_target_not_met",
+  "validation_counts": {
+    "wrong_queries": 0,
+    "no_history_wrong": 0,
+    "direct_kept": 1,
+    "analogy_kept": 0
+  }
+}

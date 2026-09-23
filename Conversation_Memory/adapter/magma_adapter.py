@@ -104,9 +104,9 @@ class MagmaMemoryAdapter:
             and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
         ):
             raise ValueError("formation_ingestion_version_required")
-        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1"}:
+        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1"}:
             raise ValueError("invalid_associative_read_profile")
-        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1"} and first_hit is None:
+        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1"} and first_hit is None:
             raise ValueError("reliable_read_requires_first_hit")
         from ._body_recall import BodyRecallPolicy
         if body_recall_policy is not None and not isinstance(body_recall_policy, BodyRecallPolicy):
@@ -137,6 +137,16 @@ class MagmaMemoryAdapter:
         self._bge_reranker = None
         self._bge_reranker_load_attempted = False
         self._bge_reranker_lock = Lock()
+        self._calibrated_index_error = None
+        if associative_read_profile == "calibrated-first-hit-v1":
+            self._rebuild_calibrated_index()
+
+    def _rebuild_calibrated_index(self) -> None:
+        try:
+            self.backend.rebuild_calibrated_read_index()
+            self._calibrated_index_error = None
+        except Exception:
+            self._calibrated_index_error = "calibrated_index_unavailable"
 
     @classmethod
     def create_real(
@@ -187,6 +197,14 @@ class MagmaMemoryAdapter:
         return None
 
     def ingest(self, segment: ColdDraftSegment) -> IngestionResult:
+        if self.associative_read_profile == "calibrated-first-hit-v1":
+            try:
+                return self._ingest_without_calibrated_rebuild(segment)
+            finally:
+                self._rebuild_calibrated_index()
+        return self._ingest_without_calibrated_rebuild(segment)
+
+    def _ingest_without_calibrated_rebuild(self, segment: ColdDraftSegment) -> IngestionResult:
         if self.ingestion_version in {"grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}:
             if self.formation_model is None:
                 return IngestionResult(segment.segment_id, self.ingestion_version,
@@ -247,7 +265,7 @@ class MagmaMemoryAdapter:
         adapters without FirstHit keep the original BGE/Hindsight read.
         """
         if (
-            self.associative_read_profile in ("reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1")
+            self.associative_read_profile in ("reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1")
             and self.first_hit is not None
         ):
             result = self.recall_associative(
