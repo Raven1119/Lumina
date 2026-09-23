@@ -182,6 +182,20 @@ reason. Here `recall=true` records the completed read, even when the selected
 subset is empty. Audit failure restores the original context and attempts one
 fallback append. No model output or audit record is elevated to a stored fact.
 
+## Grounded historical claims in Answer
+
+The production Chat base prompt applies the same rule to default and explicit
+read modes, including no-memory replies: a reference such as “last time” is
+not evidence of what happened. Concrete prior events need support in the
+current message, visible near conversation or relevant returned Memory. If
+that support is absent, Answer may address the present request and express
+uncertainty, but must not invent a shared episode. A returned unrelated story
+is still a retrieval error; the prompt instructs Answer not to transpose it.
+Old unverified LUMINA guesses do not become user facts, and a current user
+correction takes precedence. Supported relevant history remains usable. This
+is one prompt contract, not a second LLM verifier or a guarantee of model
+compliance; deterministic prompt tests and real Answer evaluation are separate.
+
 ## Failure and validation
 
 Disabled, unavailable, failed or empty Recall leaves Answer with the original
