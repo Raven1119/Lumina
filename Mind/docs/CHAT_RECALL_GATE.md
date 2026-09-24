@@ -54,6 +54,19 @@ exhaustive proof of what was ever recorded; empty or failed selection cannot
 justify a global absence claim. Selection failure still injects no candidate.
 Production and v1/v2 behavior are unchanged.
 
+`LUMINA_MEMORY_PROFILE=semantic-associative-v4` keeps the read-first boundary
+and makes two sequential decisions. The first Mind call sees only the
+graph-independent base panel and returns typed ranked Facts, `seek_graph`
+and a constrained graph intent. Memory locks up to two base Facts when a graph
+slot is requested, otherwise up to three. Only a positive request with a free
+slot runs FirstHit; a second Mind call sees only the locked base plus a separate
+graph-only panel. Mechanical intent checks and final packing can append a
+supplement but cannot replace base Facts. Graph or audit failure leaves the
+base answer intact. Answer receives a `NON_EXHAUSTIVE_BOUNDED_VIEW` marker;
+high-confidence global-absence wording is logged after generation without
+rewriting the response. These changes are opt-in and do not add a third
+Memory judgment or alter the production gate.
+
 The default v2 prompt, boolean parser, temperature 0 and eight-token output
 budget are unchanged. Mock models use the constant gate unless a read-first or
 structured candidate mode was explicitly selected. Original gate-client construction

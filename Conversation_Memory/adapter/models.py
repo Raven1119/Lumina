@@ -176,6 +176,7 @@ class PreparedRecall:
     _dependencies: tuple[tuple[str, tuple[str, ...]], ...] | None = field(default=(), repr=False)
     _semantic_final_limits: tuple[int, int, int] | None = field(default=None, repr=False)
     _selection_cards: tuple[str, ...] | None = field(default=None, repr=False)
+    _semantic_v4_snapshot: tuple | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self._rendered_blocks) is not tuple:

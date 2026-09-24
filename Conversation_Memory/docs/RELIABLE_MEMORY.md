@@ -546,3 +546,55 @@ Answer gain was **not** established. This profile remains experimental:
 `GRAPH_DISTRACTION_NEEDS_FIX`, with an independent Answer-grounding residual.
 The frozen graph, transfer questions, ratings, provider receipts and Answer
 texts are local experiment material and are not shipped with the repository.
+
+## Semantic associative v4 explicit reader
+
+`LUMINA_MEMORY_PROFILE=semantic-associative-v4` is an opt-in read-side successor
+to v3. `MagmaMemoryAdapter.prepare_recall` returns only v3's graph-independent
+BasePanel (32 cards, 9000 characters, 36000 UTF-8 bytes). Its immutable
+request-local snapshot binds the query's index signature, graph version,
+index hits, seed IDs and original amplitudes. The first Mind call receives
+only that panel and returns ranked `id/use/relation` suggestions plus a boolean
+`seek_graph` and an intent from `none`, `same_event_detail`, `analogy`,
+`disambiguation`, `boundary`. The strict parser requires `seek_graph=false`
+exactly when intent is `none`. The first selection locks at most three whole
+Facts if no graph is requested, or two if it is; overflow suggestions are
+audited. The locked IDs, order, rendered Fact blocks and panel fingerprint
+cannot be modified by the graph stage.
+
+Only a positive `seek_graph` with a free slot calls `prepare_graph_supplement`.
+It checks the original graph/index/seeds, then runs unchanged FirstHit bounds
+(five seeds, 64 nodes, 256 arcs, decay 0.75). The graph-only pool excludes
+index-hit and base-panel Facts and requires a real read arc, canonical body,
+valid provenance and relation compatibility. One Fact per source group is
+offered before activation-ordered fill; the separate graph panel is limited
+to 24 cards, 7000 characters and 28000 bytes. Its second Mind call sees the
+original question, recent context, locked base cards, intent and only graph
+cards. `analogy` may only select analogy relations;
+`same_event_detail`/`disambiguation`/`boundary` require their corresponding
+history relation. Code appends only Facts that fit the remaining final slot
+and the unchanged 5000-character/20000-byte/three-Fact Answer budget.
+Traversal, selection, snapshot or audit failures return the locked base.
+
+The v4 Chat block carries `NON_EXHAUSTIVE_BOUNDED_VIEW`: a missing visible
+Fact does not establish that the history never existed. A narrow phrase
+detector appends an Answer audit flag and matched phrase without modifying
+the user-visible answer. The v6 writer, persisted graph, multilingual
+encoder, FirstHit equation and production `reliable-v2` default are unchanged.
+Run the no-provider smoke check with
+`Conversation_Memory/.venv/bin/python -m pytest Conversation_Memory/tests/test_semantic_recall_v4.py tests/test_semantic_associative_v4_chat.py -q`.
+Real-model results remain separate from these mechanism tests; evaluation
+materials and receipts are local and do not define production behavior. In
+the frozen 18-question run, two base selections requested graph exploration,
+but both graph selectors returned an empty supplement. The F03 diagnostic
+Fact naturally entered the 24-card graph panel and disappeared/reappeared
+under an in-memory arc cut/restore, yet fresh original/cut Mind selected no
+graph Fact; the Answer inputs stayed base-only. All 12 formal B4/G4 Answer
+request pairs were byte-identical, so their wording differences are model
+variance, not graph benefit. The first known-case protocol version omitted
+explicit `use` enums: four returned illegal rows and one interrupted attempt
+remained UNKNOWN. Those receipts were not retried; the corrected schema was
+used only for untouched transfer questions, limiting uniform comparison.
+Answer still made unsupported global-absence claims on partial views; the
+audit phrase list was extended after a zero-generation review without
+altering those outputs. The candidate remains unpromoted.
