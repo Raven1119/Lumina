@@ -35,6 +35,15 @@ Memory discovery, source validation, persistence and write semantics remain
 with their existing owners. Configured real-model Chat uses v6 + FirstHit +
 reliable-v2 and bypasses legacy BGE/Hindsight.
 
+`semantic-associative-v7` is an explicit read-side candidate, not the default.
+It reuses v6 retrieval and leaves the writer unchanged. It changes Mind's
+useful-history selection prompt and gives Answer one CURRENT/HISTORY/RESPONSE
+contract. Frozen-panel and real-Chat checks found some selection and fixed-Memory
+Answer gains, as well as different-event `history` labels and new ungrounded
+Answer claims. Transfer-5 selection ran on all 12 questions, but only 10 received complete
+O/S/A/F Answers within the 128-call hard cap. It is not promoted; details and
+reproduction bounds are in the [scheme catalog](EXPERIMENTS.md).
+
 `LUMINA_MIND_GATE_MODE=graph-read-v2` explicitly selects the query-driven
 candidate. One structured Mind call (768 output tokens, temperature zero)
 replaces the boolean call, carries source-located clues and at most two

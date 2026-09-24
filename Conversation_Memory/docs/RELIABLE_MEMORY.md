@@ -700,3 +700,56 @@ Conversation_Memory/tests/test_semantic_recall_v6.py
 tests/test_semantic_associative_v6_chat.py -q`. Real-MAGMA evaluation requires
 the prepared Linux Memory environment and a separate isolated graph; it must
 not read or mutate production user memory.
+
+## Semantic associative v7 explicit reader
+
+`LUMINA_MEMORY_PROFILE=semantic-associative-v7` with
+`LUMINA_MIND_GATE_MODE=llm` is an opt-in consumer of the unchanged V6 reader.
+It calls the same `prepare_recall`, base lock, local FirstHit exploration and
+graph-supplement preparation functions; V6's 5/64/256 traversal limits,
+candidate pools, direct/graph 24-card selector bounds, three-Fact base, one-Fact
+supplement and final 5000-character/20000-byte budget are unchanged. The read
+diagnostic profile intentionally remains `semantic-associative-v6` so support
+diagnostics can be compared directly. Neither writer nor production default
+changes. The direct/index pool remains an isolated capacity control; the
+explicit Chat route uses the graph-exclusive supplement pool.
+
+Only `LlmSemanticEvidenceSelectorV7` changes what counts as useful: a concrete
+same-event continuation, boundary, interpretation or different-event analogy
+may help even when the current message is answerable on its own. The V6
+request shape, parser, schema and ID validation are reused. Direct and graph
+supplements would use the same source-blind V7 prompt. Chat selects via the
+same fail-closed V6 path and appends without replacing locked base. V7 Answer
+uses one internal CURRENT/HISTORY/RESPONSE contract and one bounded Fact block;
+the older V3/V5/V6 Memory guidance layers are absent from its request. The
+persona background is unchanged. The existing grounding detector remains an
+audit only and cannot guarantee or repair a safe answer.
+
+On the isolated 88-EVENT frozen graph, V6 and V7 base/direct/graph candidate
+IDs, card bytes, order and non-timing support diagnostics matched for all 18
+earlier queries. Transfer-5's 12 new base panels also matched. Six unrelated
+selector protocol cases parsed 6/6, and two actual Chat wrapper Answer smokes
+ran. The fixed-panel 15-case selection A/B found more useful Fact IDs but also
+retained incorrect `history/same_event` labels for different-event analogies.
+Fixed-Memory eight-case Answer A/B reduced manually assessed hard-error cases
+from four to two; visible-evidence denial and unsupported detail still occurred.
+Two already-configured alternate-Answer-model diagnostics on those failures
+were not better and are not promotion evidence.
+
+The Transfer-5 four-arm O/S/A/F experiment froze all 12 questions and completed
+selection on all 12. Exact request preview found 40 distinct Answer requests;
+only 32 provider attempts remained under the 128-call hard cap. A before-Answer
+cost-and-type-balanced plan completed all four arms for 10 questions and left
+two questions' Answers ungenerated. Among completed questions, the V7 Answer
+contract invented Blue Ink map history when no Fact was selected; all four
+arms also upgraded a current decision to send a handout into an already-sent
+action. V7 selection recovered useful facts in some cases but mislabeled a
+same-event graph Fact as an analogy and a different-event old card as history.
+This is a partial behavioral evaluation with material regressions, not a
+promotion or a complete 12-question factorial result. Formal questions, gold,
+frozen graph, provider receipts and actual Answers remain private local files.
+
+The provider-free maintained check is
+`Conversation_Memory/.venv/bin/python -m pytest
+Conversation_Memory/tests/test_semantic_recall_v7.py
+tests/test_semantic_associative_v7_chat.py -q`.
