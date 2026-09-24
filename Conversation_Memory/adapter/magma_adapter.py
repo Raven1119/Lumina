@@ -104,9 +104,9 @@ class MagmaMemoryAdapter:
             and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
         ):
             raise ValueError("formation_ingestion_version_required")
-        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4"}:
+        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4", "semantic-associative-v5"}:
             raise ValueError("invalid_associative_read_profile")
-        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4"} and first_hit is None:
+        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4", "semantic-associative-v5"} and first_hit is None:
             raise ValueError("reliable_read_requires_first_hit")
         from ._body_recall import BodyRecallPolicy
         if body_recall_policy is not None and not isinstance(body_recall_policy, BodyRecallPolicy):
@@ -138,7 +138,7 @@ class MagmaMemoryAdapter:
         self._bge_reranker_load_attempted = False
         self._bge_reranker_lock = Lock()
         self._calibrated_index_error = None
-        if associative_read_profile in {"calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4"}:
+        if associative_read_profile in {"calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4", "semantic-associative-v5"}:
             self._rebuild_calibrated_index()
 
     def _rebuild_calibrated_index(self) -> None:
@@ -197,7 +197,7 @@ class MagmaMemoryAdapter:
         return None
 
     def ingest(self, segment: ColdDraftSegment) -> IngestionResult:
-        if self.associative_read_profile in {"calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4"}:
+        if self.associative_read_profile in {"calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4", "semantic-associative-v5"}:
             try:
                 return self._ingest_without_calibrated_rebuild(segment)
             finally:
@@ -264,7 +264,7 @@ class MagmaMemoryAdapter:
         policy conflict inside the associative read. Legacy profiles and
         adapters without FirstHit keep the original BGE/Hindsight read.
         """
-        if self.associative_read_profile in {"semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4"}:
+        if self.associative_read_profile in {"semantic-associative-v1", "semantic-associative-v2", "semantic-associative-v3", "semantic-associative-v4", "semantic-associative-v5"}:
             return MemoryContext(query if isinstance(query, str) else "",
                                  safe_error_code="semantic_selection_required")
         if (
@@ -354,6 +354,9 @@ class MagmaMemoryAdapter:
         if self.associative_read_profile == "semantic-associative-v4":
             from ._semantic_recall_v4 import prepare_base
             return prepare_base(self, query, policy)
+        if self.associative_read_profile == "semantic-associative-v5":
+            from ._semantic_recall_v5 import prepare_base
+            return prepare_base(self, query, policy)
         if self.associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2"}:
             from ._reliable_recall import prepare_reliable_result
             result = self.recall_associative(query, policy, include_sources=True,
@@ -375,13 +378,19 @@ class MagmaMemoryAdapter:
             # or require another retrieval to recover its original context.
             return PreparedRecall(context, _dependencies=None)
 
-    def lock_semantic_base(self, prepared, suggestions, seek_graph, graph_intent):
+    def lock_semantic_base(self, prepared, suggestions, seek_graph, graph_intent, graph_need=None):
+        if self.associative_read_profile == "semantic-associative-v5":
+            from ._semantic_recall_v5 import lock_base
+            return lock_base(self, prepared, suggestions, seek_graph, graph_intent, graph_need)
         if self.associative_read_profile != "semantic-associative-v4":
             raise ValueError("semantic_v4_profile_required")
         from ._semantic_recall_v4 import lock_base
         return lock_base(self, prepared, suggestions, seek_graph, graph_intent)
 
     def prepare_graph_supplement(self, locked_base, policy):
+        if self.associative_read_profile == "semantic-associative-v5":
+            from ._semantic_recall_v5 import prepare_graph_supplement
+            return prepare_graph_supplement(self, locked_base, policy)
         if self.associative_read_profile != "semantic-associative-v4":
             raise ValueError("semantic_v4_profile_required")
         from ._semantic_recall_v4 import prepare_graph_supplement

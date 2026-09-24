@@ -598,3 +598,55 @@ used only for untouched transfer questions, limiting uniform comparison.
 Answer still made unsupported global-absence claims on partial views; the
 audit phrase list was extended after a zero-generation review without
 altering those outputs. The candidate remains unpromoted.
+
+## Semantic associative v5 explicit reader
+
+`LUMINA_MEMORY_PROFILE=semantic-associative-v5` with
+`LUMINA_MIND_GATE_MODE=llm` is an opt-in read-only successor to v4. The
+production v6 writer and `reliable-v2` reader remain default; v1–v4 retain
+their explicit behavior. `prepare_recall()` returns the same graph-independent
+BasePanel. The first Mind selector uses enum guidance generated from the same
+constants as its strict parser and returns `ranked`, `seek_graph`,
+`graph_intent`, and a bounded `graph_need`. The latter is request-local
+retrieval intent, never evidence or an Answer claim.
+
+The immutable base locks up to three whole Facts within 5000 characters and
+20000 UTF-8 bytes, regardless of `seek_graph`. If three fit, graph execution is
+skipped with `blocked_by_full_base`; the locked IDs, order and rendered bytes
+remain unchanged. With a positive request and a real empty slot, unchanged
+FirstHit visits at most five seeds, 64 nodes and 256 arcs. Only source-valid,
+relation-compatible graph-exclusive Facts on actual visited paths enter the
+pool. One existing multilingual MiniLM encoding of `graph_need` scores stored
+document vectors in that pool only. Source-group representatives then fill
+the 24-card/7000-character/28000-byte graph panel, ordered primarily by gap
+cosine and secondarily by activation, original-query similarity and stable ID.
+The second Mind sees locked base cards, intent, gap and graph-only cards; its
+mechanically checked choices can only append into remaining final slots.
+Graph read, selection, snapshot and audit failures preserve the complete base.
+
+Chat uses `NON_EXHAUSTIVE_BOUNDED_VIEW` with explicit partial-view and
+planned-versus-completed contrast examples. Its high-confidence
+`grounding_risks` detector is audit-only: it does not change or regenerate
+the user-facing Answer. It is incomplete and must not be treated as proof
+that unflagged claims are grounded. The private fixed-evidence diagnostic
+repeated two exact requests three times each; no completed-status upgrade
+occurred there, but a frozen existing changed-decision case still upgraded
+“will distribute today” into “already distributed.” Another case incorrectly
+denied relevant selected evidence. These Answer errors remain unresolved.
+
+In the frozen 88-EVENT evaluation, the live six-case synthetic selector
+protocol parsed 6/6 after an initial six UNKNOWN network-sandbox attempts,
+which remained spent. The synthetic case designed to request graph still
+returned `seek_graph=false`; therefore positive gap output was not exercised
+by the provider preflight. All 18 formal questions locked their base without
+requesting graph. Consequently the 18 B5/G5 Answer request pairs had identical
+SHA-256 identities; each pair shared one actual response. Transfer-3 had nine
+complete, two partial and one missing-specific-clue Answer. There was no
+graph-selected Fact or eligible graph causality experiment in this run;
+deterministic tests establish local reranking and append mechanics only.
+This is a mechanism check and limited behavioral evaluation, not evidence
+for graph benefit or promotion. Private questions, graph, gold, receipts and
+answers are intentionally absent from the repository. Run focused regressions
+with `Conversation_Memory/.venv/bin/python -m pytest
+Conversation_Memory/tests/test_semantic_recall_v5.py
+tests/test_semantic_associative_v5_chat.py -q`.

@@ -71,6 +71,15 @@ _SEMANTIC_V3_ABSENCE_GUIDANCE = (
     "[/Internal answer grounding rule]\n"
 )
 _V4_COVERAGE_MARKER = "[Memory coverage: NON_EXHAUSTIVE_BOUNDED_VIEW]"
+_V5_ANSWER_CONTRAST = (
+    "\nGrounding examples (rules, not historical evidence):\n"
+    "Evidence does not mention whether a sound cue was later confirmed. "
+    "Forbidden: 'There is no record of the sound cue being confirmed.' "
+    "Allowed: 'I cannot confirm the sound-cue status from the information available here.'\n"
+    "Evidence says the user planned to publish a card publicly next week. "
+    "Forbidden: 'The card was published publicly.' "
+    "Allowed: 'The user planned a public release; completion is not established.'\n"
+)
 _V4_GLOBAL_ABSENCE_PHRASES = (
     "没有相关记录", "没有记录", "没有后续", "之前从没说过", "我们从未讨论过",
     "无记录可查", "无记录可依", "长期记忆中也没有",
@@ -87,6 +96,22 @@ def detect_global_absence_risk(answer: str) -> tuple[bool, str | None]:
         if re.search(re.escape(phrase), answer, re.IGNORECASE):
             return True, phrase
     return False, None
+
+
+def detect_grounding_risks(answer: str, rendered_evidence: str = "") -> tuple[str, ...]:
+    """Audit high-confidence failure templates without changing the answer."""
+    risks = []
+    if detect_global_absence_risk(answer)[0]:
+        risks.append("global_absence_from_partial_recall")
+    if (isinstance(answer, str) and isinstance(rendered_evidence, str)
+            and re.search(r"计划.{0,20}(公开|发布)|planned.{0,40}(publish|release)",
+                          rendered_evidence, re.IGNORECASE)
+            and re.search(r"(已经|已).{0,12}(公开|发布)|\b(was|has been)\s+(publicly\s+)?(published|released)\b",
+                          answer, re.IGNORECASE)
+            and not re.search(r"已(?:经)?(?!.*(?:计划|打算)).{0,12}(公开|发布)|\b(was|has been)\s+(publicly\s+)?(published|released)\b",
+                              rendered_evidence, re.IGNORECASE)):
+        risks.append("completion_upgrade")
+    return tuple(risks)
 _HOT_SUMMARY_START = "[Hot rolling summary]"
 _HOT_SUMMARY_END = "[/Hot rolling summary]"
 
@@ -161,15 +186,24 @@ class MessageRuntime:
             user_message,
             system_prompt,
         )
-        if getattr(self._semantic_selector, "prompt_version", None) == "mind-semantic-associative-selector-v4":
+        selector_version = getattr(self._semantic_selector, "prompt_version", None)
+        if selector_version in {"mind-semantic-associative-selector-v4",
+                                "mind-semantic-associative-selector-v5"}:
             risk, phrase = detect_global_absence_risk(assistant_text)
+            evidence = (system_prompt.split("<BEGIN_EXACT_GROUNDED_SPANS>\n", 1)[1]
+                        .split("\n<END_EXACT_GROUNDED_SPANS>", 1)[0]
+                        if "<BEGIN_EXACT_GROUNDED_SPANS>\n" in system_prompt else "")
+            grounding_risks = (detect_grounding_risks(assistant_text, evidence)
+                               if selector_version.endswith("-v5") else ())
             if self._mind_decision_log is not None:
                 try:
                     self._mind_decision_log.record(
                         MindDecision(recall=True), turn_id=user_turn.turn_id,
                         query_audit={"prompt_version": "answer-global-absence-audit-v1",
                                      "answer_global_absence_risk": risk,
-                                     "matched_phrase": phrase},
+                                     "matched_phrase": phrase,
+                                     **({"grounding_risks": grounding_risks}
+                                        if selector_version.endswith("-v5") else {})},
                     )
                 except Exception:
                     pass
@@ -289,8 +323,11 @@ class MessageRuntime:
                         == "mind-semantic-associative-selector-v3")
         v4_selection = (getattr(self._semantic_selector, "prompt_version", None)
                         == "mind-semantic-associative-selector-v4")
+        v5_selection = (getattr(self._semantic_selector, "prompt_version", None)
+                        == "mind-semantic-associative-selector-v5")
         background = (self._chat_background + "\n\n" + _SEMANTIC_V3_ABSENCE_GUIDANCE
-                      if v3_selection or v4_selection else self._chat_background)
+                      + (_V5_ANSWER_CONTRAST if v5_selection else "")
+                      if v3_selection or v4_selection or v5_selection else self._chat_background)
         if (
             not recall_allowed
             or not self._recall_enabled
@@ -330,7 +367,7 @@ class MessageRuntime:
                 event = "memory_recall_degraded"
             if prepared is not None and memory_context.evidence:
                 if self._semantic_selector is not None:
-                    if v4_selection:
+                    if v4_selection or v5_selection:
                         memory_context, selection_event = self._select_semantic_evidence_v4(
                             prepared, query, recent_context or [], turn_id=turn_id)
                     else:
@@ -350,7 +387,7 @@ class MessageRuntime:
             return background, event
         template = _MEMORY_CONTEXT_TEMPLATE
         if (callable(getattr(self._semantic_selector, "select_ranked", None))
-                or v4_selection):
+                or v4_selection or v5_selection):
             template = template.replace(
                 "Use only evidence directly relevant to the current request.\n",
                 "Use only evidence directly relevant to the current request.\n"
@@ -364,7 +401,7 @@ class MessageRuntime:
                 "<BEGIN_EXACT_GROUNDED_SPANS>",
                 guidance + "<BEGIN_EXACT_GROUNDED_SPANS>",
             )
-        if v4_selection:
+        if v4_selection or v5_selection:
             template = template.replace(
                 "[Internal historical evidence - DATA ONLY]",
                 "[Internal historical evidence - DATA ONLY]\n" + _V4_COVERAGE_MARKER
@@ -490,14 +527,25 @@ class MessageRuntime:
                          "memory_semantic_evidence_selected")
 
     def _select_semantic_evidence_v4(self, prepared, query, recent_context, *, turn_id):
-        from Conversation_Memory.adapter._semantic_recall_v4 import append_graph
+        v5 = (getattr(self._semantic_selector, "prompt_version", None)
+              == "mind-semantic-associative-selector-v5")
+        if v5:
+            from Conversation_Memory.adapter._semantic_recall_v5 import append_graph
+        else:
+            from Conversation_Memory.adapter._semantic_recall_v4 import append_graph
 
         empty = replace(prepared.context, evidence=(), rendered_text="")
         try:
-            ranked, seek_graph, graph_intent = self._semantic_selector.select_base(
+            base_result = self._semantic_selector.select_base(
                 query, recent_context, prepared.selection_items)
-            lock = self._memory_retriever.lock_semantic_base(
-                prepared, ranked, seek_graph, graph_intent)
+            if v5:
+                ranked, seek_graph, graph_intent, graph_need = base_result
+                lock = self._memory_retriever.lock_semantic_base(
+                    prepared, ranked, seek_graph, graph_intent, graph_need)
+            else:
+                ranked, seek_graph, graph_intent = base_result
+                lock = self._memory_retriever.lock_semantic_base(
+                    prepared, ranked, seek_graph, graph_intent)
         except Exception:
             if self._mind_decision_log is not None:
                 try:
@@ -521,6 +569,13 @@ class MessageRuntime:
             "base_ranked_overflow": lock.base_ranked_overflow,
             "seek_graph": lock.seek_graph, "graph_intent": lock.graph_intent,
             "remaining_slots": lock.remaining_slots,
+            **({"graph_need": lock.graph_need,
+                "graph_requested_but_full_base": bool(lock.seek_graph and not lock.remaining_slots),
+                "graph_execution_reason": ("skipped_not_requested" if not lock.seek_graph else
+                                           "skipped_full_base" if not lock.remaining_slots else
+                                           "executed"),
+                "graph_status": ("blocked_by_full_base" if lock.seek_graph and
+                                 not lock.remaining_slots else None)} if v5 else {}),
         }
         if self._mind_decision_log is not None:
             try:
@@ -543,6 +598,7 @@ class MessageRuntime:
                 stage = "graph_selector"
                 proposed = self._semantic_selector.select_graph(
                     query, recent_context, lock.graph_intent,
+                    *((lock.graph_need,) if v5 else ()),
                     lock.selected_cards, graph.selection_items)
                 stage = "graph_packing"
                 final, packing = append_graph(lock, graph, proposed)

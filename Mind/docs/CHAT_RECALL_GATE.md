@@ -67,6 +67,18 @@ high-confidence global-absence wording is logged after generation without
 rewriting the response. These changes are opt-in and do not add a third
 Memory judgment or alter the production gate.
 
+`LUMINA_MEMORY_PROFILE=semantic-associative-v5` retains that read-first,
+two-stage boundary but never reserves a graph slot: the first Mind decision
+can lock all three useful base Facts. It also states a specific `graph_need`.
+Memory traverses FirstHit only when `seek_graph=true` and an actual slot
+remains; the gap can rank visited graph-exclusive Facts but cannot discover
+new ones or become Answer evidence. The second Mind call is optional and
+append-only. The selector prompt and parser share enum definitions. Chat adds
+partial-view and planned-versus-completed contrast rules, with audit-only
+grounding flags. The frozen evaluation did not trigger graph on any of 18
+formal questions, so graph benefit remains unverified; a changed-decision
+Answer still upgraded a plan into completion. The production gate is unchanged.
+
 The default v2 prompt, boolean parser, temperature 0 and eight-token output
 budget are unchanged. Mock models use the constant gate unless a read-first or
 structured candidate mode was explicitly selected. Original gate-client construction

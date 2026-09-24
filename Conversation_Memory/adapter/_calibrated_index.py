@@ -238,3 +238,31 @@ class CalibratedReadIndex:
         return {node_id:(float(query_vector @ self.vectors[self.id_to_position[node_id]]),
                          self._lexical(features,self.id_to_position[node_id]))
                 for node_id in node_ids if node_id in self.id_to_position}
+
+    def encode_query(self, text: str) -> tuple[np.ndarray, bool]:
+        """Encode one read-only intent in the existing multilingual vector space."""
+        self._check()
+        if not isinstance(text, str) or not text.strip() or len(text) > 240:
+            raise ValueError('calibrated_query_invalid')
+        cached = text in self._query_cache
+        if cached:
+            return self._query_cache[text][0].reshape(-1).copy(), True
+        raw = np.asarray(self.model.encode([text], convert_to_numpy=True,
+                                           show_progress_bar=False), dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(raw))
+        if raw.shape != (self.identity['dimension'],) or not np.isfinite(raw).all() or norm <= 0:
+            raise ValueError('calibrated_query_vector_invalid')
+        vector = np.ascontiguousarray(raw / norm, dtype=np.float32)
+        tokens = len(self.model.tokenizer.encode(text, add_special_tokens=True,
+                                                 truncation=False))
+        if len(self._query_cache) >= 128:
+            self._query_cache.clear()
+        self._query_cache[text] = (vector.reshape(1, -1).copy(), norm, tokens)
+        self._check()
+        return vector, False
+
+    def cosine_nodes(self, query_vector, node_ids) -> dict[str, float]:
+        """Score only already-discovered graph nodes against stored document vectors."""
+        self._check()
+        return {node_id: float(query_vector @ self.vectors[self.id_to_position[node_id]])
+                for node_id in node_ids if node_id in self.id_to_position}
