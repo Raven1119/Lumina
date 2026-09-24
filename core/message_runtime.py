@@ -56,6 +56,19 @@ _SEMANTIC_V2_ANSWER_GUIDANCE = (
     "in the event currently being discussed. Preserve the grounded historical claim "
     "rule: no unsupported claim about what happened before.\n"
 )
+_SEMANTIC_V3_ABSENCE_GUIDANCE = (
+    "[Internal answer grounding rule] The selected Memory block is a bounded, "
+    "non-exhaustive view of past conversation. Absence from this block is NOT "
+    "evidence that an event or detail never existed or was never recorded. "
+    "Do not claim 'there is no record', 'nothing was recorded', 'we never "
+    "discussed this', 'there was no follow-up', or equivalent Chinese claims "
+    "such as 没有记录、没有后续、你以前没说过, unless explicit visible evidence "
+    "supports that global absence. When evidence is insufficient, say only "
+    "that you cannot confirm the detail from the information currently "
+    "available, and answer any supported part. Do not reveal retrieval, "
+    "search, vector or Memory mechanics unless the user asks. "
+    "[/Internal answer grounding rule]\n"
+)
 _HOT_SUMMARY_START = "[Hot rolling summary]"
 _HOT_SUMMARY_END = "[/Hot rolling summary]"
 
@@ -242,13 +255,17 @@ class MessageRuntime:
         turn_id: str | None = None,
         memory_query: "GraphReadQuery | None" = None,
     ) -> tuple[str, str | None]:
+        v3_selection = (getattr(self._semantic_selector, "prompt_version", None)
+                        == "mind-semantic-associative-selector-v3")
+        background = (self._chat_background + "\n\n" + _SEMANTIC_V3_ABSENCE_GUIDANCE
+                      if v3_selection else self._chat_background)
         if (
             not recall_allowed
             or not self._recall_enabled
             or self._memory_retriever is None
             or self._recall_policy is None
         ):
-            return self._chat_background, None
+            return background, None
         event = None
         prepared = None
         try:
@@ -256,7 +273,7 @@ class MessageRuntime:
             prepare = (getattr(self._memory_retriever, "prepare_recall", None)
                        if selecting else None)
             if self._semantic_selector is not None and not callable(prepare):
-                return self._chat_background, "memory_selection_unavailable"
+                return background, "memory_selection_unavailable"
             if selecting and callable(prepare):
                 prepared = prepare(query, self._recall_policy)
                 memory_context = prepared.context
@@ -268,13 +285,13 @@ class MessageRuntime:
             rendered_text = getattr(memory_context, "rendered_text", None)
             if (self._semantic_selector is not None and prepared is not None
                     and rendered_text and not memory_context.evidence):
-                return self._chat_background, "memory_selection_unavailable"
+                return background, "memory_selection_unavailable"
             if not isinstance(rendered_text, str) or not rendered_text.strip():
                 if getattr(memory_context, "safe_error_code", None):
-                    return self._chat_background, (
+                    return background, (
                         "memory_recall_failed" if selecting else None
                     )
-                return self._chat_background, event
+                return background, event
             # A non-empty rendered_text is consumable by the Memory contract,
             # even when safe_error_code reports a degraded optional channel.
             if getattr(memory_context, "safe_error_code", None):
@@ -290,11 +307,11 @@ class MessageRuntime:
                     event = selection_event
                 rendered_text = memory_context.rendered_text
         except Exception:
-            return self._chat_background, (
+            return background, (
                 "memory_recall_failed" if self._evidence_selector is not None or self._semantic_selector is not None else None
             )
         if not isinstance(rendered_text, str) or not rendered_text.strip():
-            return self._chat_background, event
+            return background, event
         template = _MEMORY_CONTEXT_TEMPLATE
         if callable(getattr(self._semantic_selector, "select_ranked", None)):
             template = template.replace(
@@ -311,7 +328,7 @@ class MessageRuntime:
                 guidance + "<BEGIN_EXACT_GROUNDED_SPANS>",
             )
         memory_block = template.replace("{rendered_text}", rendered_text)
-        return f"{self._chat_background}\n\n{memory_block}", event
+        return f"{background}\n\n{memory_block}", event
 
     def _select_evidence(self, prepared, query, recent_context, *, turn_id):
         original = prepared.context

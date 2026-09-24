@@ -43,6 +43,17 @@ grounded historical claim guard applies. Actual fresh evaluation found that
 the model still mislabeled five of six cross-event analogies as history, so
 this profile remains experimental and is not the default.
 
+`LUMINA_MEMORY_PROFILE=semantic-associative-v3` keeps the same one-call
+read-after-selection seam and strict v2 parser/three-Fact packing. Memory
+first builds a graph-independent BasePanel from seeds and multilingual index
+hits; full graph read can append at most eight graph-exclusive cards without
+changing any base ID, order or card bytes. Mind's single v3 selector decides
+same-event history before treating a different past event as an analogy.
+Answer receives an internal rule that a bounded selected block is not an
+exhaustive proof of what was ever recorded; empty or failed selection cannot
+justify a global absence claim. Selection failure still injects no candidate.
+Production and v1/v2 behavior are unchanged.
+
 The default v2 prompt, boolean parser, temperature 0 and eight-token output
 budget are unchanged. Mock models use the constant gate unless a read-first or
 structured candidate mode was explicitly selected. Original gate-client construction

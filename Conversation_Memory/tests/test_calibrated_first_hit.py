@@ -11,6 +11,7 @@ from Conversation_Memory.adapter._calibrated_recall import amplitude_weights, pa
 from Conversation_Memory.adapter._semantic_recall import (
     prepare_semantic_recall, prepare_semantic_recall_v2,
 )
+from Conversation_Memory.adapter._semantic_recall_v3 import prepare_semantic_recall_v3
 from Conversation_Memory.adapter.first_hit import FirstHitPolicy, solve_first_hit
 from Conversation_Memory.adapter.models import BackendCandidate, RecallPolicy
 
@@ -43,6 +44,8 @@ class Index:
         return hits,{'metric':'IP_cosine'},np.array([1.],dtype=np.float32)
     def score_nodes(self, query_vector, query, node_ids):
         return {key:self.scores.get(key,(0.,0.)) for key in node_ids}
+    def _check(self):
+        if self.stale: raise ValueError('calibrated_index_stale')
 
 
 class Backend:
@@ -198,7 +201,8 @@ def test_semantic_panel_stale_index_is_diagnostic_not_legacy_fallback():
     assert memory.backend.builds==0
 
 
-@pytest.mark.parametrize('profile',['semantic-associative-v1','semantic-associative-v2'])
+@pytest.mark.parametrize('profile',['semantic-associative-v1','semantic-associative-v2',
+                                    'semantic-associative-v3'])
 def test_semantic_profile_cannot_bypass_selection_via_associative_read(profile):
     from Conversation_Memory.adapter._associative_recall import recall_associative
     memory=adapter({'a':(.9,0.)},{'a':[]})
@@ -206,6 +210,54 @@ def test_semantic_profile_cannot_bypass_selection_via_associative_read(profile):
     result=recall_associative(memory,'Past event?',RecallPolicy())
     assert result.rendered_text==''
     assert result.safe_error_code=='semantic_selection_required'
+
+
+def test_v3_graph_only_appends_to_identical_base_cards_and_caps_additions():
+    scores={'a':(.95,0.),'b':(.85,0.)}
+    scores.update({f'g{i}':(.1,0.) for i in range(12)})
+    edges={'a':[(f'g{i}',1.) for i in range(12)],'b':[]}
+    edges.update({f'g{i}':[] for i in range(12)})
+    memory=adapter(scores,edges)
+    original_search=memory.backend.index.search
+    def index_only_a_b(*args,**kwargs):
+        hits,diagnostics,vector=original_search(*args,**kwargs)
+        return hits[:2],diagnostics,vector
+    memory.backend.index.search=index_only_a_b
+    policy=RecallPolicy(max_evidence_items=40,max_chars=12000,max_bytes=48000)
+    base=prepare_semantic_recall_v3(memory,'Past event?',policy,seed_only=True)
+    base_ids=tuple(item.evidence_id for item in base.context.evidence)
+    base_cards=tuple(card.encode('utf-8') for _,card in base.selection_items)
+    full=prepare_semantic_recall_v3(memory,'Past event?',policy)
+    full_ids=tuple(item.evidence_id for item in full.context.evidence)
+    full_cards=tuple(card.encode('utf-8') for _,card in full.selection_items)
+    diagnostics=memory._last_semantic_read_diagnostics
+    assert base_ids==('a','b')==full_ids[:len(base_ids)]
+    assert base_cards==full_cards[:len(base_cards)]
+    assert 0<len(diagnostics['graph_appended_ids'])<=8
+    assert len(full_ids)==len(base_ids)+len(diagnostics['graph_appended_ids'])
+    assert diagnostics['base_panel_ids']==base_ids
+    assert diagnostics['full_panel_ids']==full_ids
+    assert set(diagnostics['graph_appended_ids']).isdisjoint(base_ids)
+    assert len(diagnostics['graph_omitted_by_item_budget'])==4
+
+
+def test_v3_fails_closed_if_index_changes_between_base_and_graph():
+    memory=adapter({'a':(.95,0.),'b':(.85,0.)},
+                   {'a':[('b',1.)],'b':[]})
+    search=memory.backend.index.search
+    calls=0
+    def changing_search(*args,**kwargs):
+        nonlocal calls
+        calls+=1
+        hits,diagnostics,vector=search(*args,**kwargs)
+        return (hits if calls==1 else hits[:1]),diagnostics,vector
+    memory.backend.index.search=changing_search
+    result=prepare_semantic_recall_v3(
+        memory,'Past event?',RecallPolicy(max_evidence_items=40,
+                                          max_chars=12000,max_bytes=48000))
+    assert result.context.evidence==()
+    assert result.context.safe_error_code=='semantic_panel_monotonicity_violation'
+    assert memory._last_semantic_read_diagnostics['failure']==result.context.safe_error_code
 
 
 def test_cjk_posting_can_also_score_and_prefix_view_keeps_negation():

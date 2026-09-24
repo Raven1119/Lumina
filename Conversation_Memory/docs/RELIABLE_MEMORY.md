@@ -494,3 +494,55 @@ for that Fact without rerunning a counterfactual Answer. The candidate is
 **retained, not promoted**: `SEMANTIC_SELECTION_NEEDS_FIX`. Full fictional
 stories, gold, frozen receipts and actual Answers remain local experiment
 materials, not repository code or production memory.
+
+## Semantic associative v3 explicit reader
+
+`LUMINA_MEMORY_PROFILE=semantic-associative-v3` is an opt-in successor at the
+same Memory/Chat seam. `MagmaMemoryAdapter.prepare_recall` dispatches to
+`prepare_semantic_recall_v3`. The v6 writer, persisted edges, FirstHit
+equation, multilingual index, final three-Fact packing and production default
+are unchanged. The `seed_only=True` BasePanel is formed only from seeds and
+index hits using v2's priority, source/window diversity, turn coverage and
+fill, under 32 items/9000 characters/36000 bytes. Full mode builds that exact
+base once, then explores at most 5 seeds, 64 nodes and 256 edges. Legal
+graph-exclusive Facts with a real read path, absent from index hits and base,
+are ranked first by best activation per source group, then by activation fill.
+At most eight whole cards append under the full 40/12000/48000 budget. No
+graph item can evict or rewrite a base card. A broken ordered ID/card prefix
+fails closed with `semantic_panel_monotonicity_violation`; diagnostics retain
+base, graph pool, appended, budget-omitted and full IDs.
+
+`LlmSemanticEvidenceSelectorV3` makes one Mind call after the read. It first
+classifies whether the present event is the same history, a different past
+experience useful as analogy, or needs no memory. It reuses v2's legal
+relation parser (12 suggestions accepted), deterministic final three-Fact
+packing and fixed use guidance. Selection failure returns empty Memory rather
+than the entire panel. The v3 Answer instruction treats selected Memory as a
+bounded, non-exhaustive view: missing evidence cannot establish that nothing
+was ever recorded or followed up, and internal retrieval mechanics should not
+be exposed. This rule is opt-in; v1/v2 and production prompts remain as before.
+
+For a no-model smoke check run
+`Conversation_Memory/.venv/bin/python -m pytest Conversation_Memory/tests/test_calibrated_first_hit.py tests/test_semantic_associative_v3_chat.py -q`.
+For real use set `LUMINA_MEMORY_PROFILE=semantic-associative-v3` and retain
+`LUMINA_MIND_GATE_MODE=llm` in an isolated single-worker service. Compare B/G
+against the same graph, query, recent context, model and budget; graph-only
+navigation or nonzero activation alone does not establish Answer benefit.
+
+On one frozen fictional 88-Fact graph, all 22 B/G pairs kept the exact base
+ID/card prefix. F01/F05 final-state base Facts survived G. F03-Q2's prior
+graph-only queue Fact remained in the eligible pool but fell outside the first
+eight natural additions; no gold insertion or ranking adjustment was made.
+The six old cross-event analogy questions were mislabeled as `history` in
+2/6 cases for both B and G (v2 had 5/6), but a new transfer analogy was also
+mislabeled. Twelve fixed B/G Answers and six N Answers exposed G-specific
+selection/Answer regressions, including partial-recall “no record” wording.
+One G Answer named the wrong object material even though its B/G Answer
+requests were byte-identical, so that error cannot be attributed to graph
+selection from this single run. A graph-only F02 Fact entered an original Answer
+and vanished on an in-memory arc cut; on restoration the Fact reappeared in
+the panel but Mind did not reselect it, so a stable three-step graph-only
+Answer gain was **not** established. This profile remains experimental:
+`GRAPH_DISTRACTION_NEEDS_FIX`, with an independent Answer-grounding residual.
+The frozen graph, transfer questions, ratings, provider receipts and Answer
+texts are local experiment material and are not shipped with the repository.
