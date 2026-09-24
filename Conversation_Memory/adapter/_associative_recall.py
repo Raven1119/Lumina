@@ -131,7 +131,7 @@ def recall_associative(adapter, cue, policy, *, include_sources=False,
     if (type(include_sources) is not bool or type(source_context_turns) is not int
             or not 0 <= source_context_turns <= 4):
         return empty("invalid_source_policy")
-    if profile == "semantic-associative-v1":
+    if profile in {"semantic-associative-v1", "semantic-associative-v2"}:
         return empty("semantic_selection_required")
     if profile == "body-recall-v1":
         from ._body_recall import recall_bodies

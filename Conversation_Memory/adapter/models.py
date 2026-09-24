@@ -175,6 +175,7 @@ class PreparedRecall:
     _rendered_blocks: tuple[str, ...] = field(default=(), repr=False)
     _dependencies: tuple[tuple[str, tuple[str, ...]], ...] | None = field(default=(), repr=False)
     _semantic_final_limits: tuple[int, int, int] | None = field(default=None, repr=False)
+    _selection_cards: tuple[str, ...] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self._rendered_blocks) is not tuple:
@@ -211,13 +212,21 @@ class PreparedRecall:
             or any(type(value) is not int or value < 1 for value in self._semantic_final_limits)
         ):
             raise ValueError("invalid_prepared_recall")
+        if self._selection_cards is not None and (
+            type(self._selection_cards) is not tuple
+            or len(self._selection_cards) != len(ids)
+            or any(type(card) is not str or item.text not in card
+                   for item, card in zip(self.context.evidence, self._selection_cards))
+        ):
+            raise ValueError("invalid_prepared_recall")
 
     @property
     def selection_items(self) -> tuple[tuple[str, str], ...]:
         if self._dependencies is None:
             raise ValueError("prepared_recall_unavailable")
+        cards = self._selection_cards if self._selection_cards is not None else self._rendered_blocks
         return tuple((item.evidence_id, block)
-                     for item, block in zip(self.context.evidence, self._rendered_blocks))
+                     for item, block in zip(self.context.evidence, cards))
 
     def subset(self, evidence_ids: tuple[str, ...]) -> MemoryContext:
         if self._dependencies is None:
@@ -269,6 +278,65 @@ class PreparedRecall:
         if len(rendered) > chars or len(rendered.encode("utf-8")) > bytes_limit:
             raise ValueError("semantic_selection_budget")
         return replace(context, rendered_text=rendered)
+
+    def ranked_semantic_subset(
+        self, suggestions: tuple[tuple[str, str, str], ...],
+    ) -> tuple[MemoryContext, dict[str, object]]:
+        """Pack validated ranked v2 suggestions without changing Fact text."""
+        from .semantic_protocol import validate_use_relation, usage_guidance
+
+        if (self._selection_cards is None or self._semantic_final_limits is None
+                or type(suggestions) is not tuple or len(suggestions) > 12):
+            raise ValueError("invalid_semantic_selection")
+        ids = tuple(item.evidence_id for item in self.context.evidence)
+        known = set(ids)
+        dependencies = dict(self._dependencies or ())
+        if (len(set(row[0] for row in suggestions if type(row) is tuple and row
+                    and type(row[0]) is str)) != len(suggestions)):
+            raise ValueError("invalid_semantic_selection")
+        for row in suggestions:
+            if (type(row) is not tuple or len(row) != 3
+                    or type(row[0]) is not str or row[0] not in known
+                    or not validate_use_relation(row[1], row[2])):
+                raise ValueError("invalid_semantic_selection")
+        lookup = {item.evidence_id: (item, block) for item, block in
+                  zip(self.context.evidence, self._rendered_blocks)}
+        accepted: list[tuple[MemoryEvidence, str]] = []
+        accepted_ids: set[str] = set()
+        rejected_budget = []
+        max_items, max_chars, max_bytes = self._semantic_final_limits
+        for evidence_id, use, relation in suggestions:
+            closure = {evidence_id}
+            pending = [evidence_id]
+            while pending:
+                for dependency in dependencies[pending.pop()]:
+                    if dependency not in closure:
+                        closure.add(dependency)
+                        pending.append(dependency)
+            if any(dep not in known for dep in closure):
+                raise ValueError("invalid_semantic_selection")
+            # Dependency Facts are inseparable and have the same bounded use.
+            additions = [(lookup[key][0], usage_guidance(use, relation) + "\n" + lookup[key][1])
+                         for key in ids if key in closure and key not in accepted_ids]
+            proposed = [*accepted, *additions]
+            rendered = "\n".join(block for _, block in proposed)
+            if (len(proposed) > max_items or len(rendered) > max_chars
+                    or len(rendered.encode("utf-8")) > max_bytes):
+                rejected_budget.append(evidence_id)
+                continue
+            accepted = proposed
+            accepted_ids.update(closure)
+            if len(accepted) == max_items:
+                break
+        context = replace(self.context, evidence=tuple(item for item, _ in accepted),
+                          rendered_text="\n".join(block for _, block in accepted))
+        return context, {
+            "proposed_ranked_count": len(suggestions),
+            "accepted_count": len(accepted),
+            "rejected_by_budget": tuple(rejected_budget),
+            "rejected_by_protocol": 0,
+            "selected_order": tuple(item.evidence_id for item, _ in accepted),
+        }
 
 
 @dataclass(frozen=True)

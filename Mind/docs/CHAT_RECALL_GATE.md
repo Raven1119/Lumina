@@ -27,6 +27,22 @@ unlike legacy `select`, they never restore the unselected panel. Its one
 384-output-token choice usually adds much more input than the default
 eight-token gate. Source Facts and fixed use labels alone enter Answer.
 
+`LUMINA_MEMORY_PROFILE=semantic-associative-v2` is a second explicit choice
+at the same Chat seam. It preserves the v1 profile and replaces its 20-item
+panel with up to 32 complete deterministic Fact cards. One
+`LlmSemanticEvidenceSelectorV2` call returns ranked, typed suggestions:
+`history` requires `same_event`, `same_entity_background` or
+`historical_boundary`; `analogy` requires one of five specific similarity
+relations. Mind is asked for at most eight; the parser tolerates twelve legal
+distinct IDs. Memory validates and packs at most three complete rendered Facts,
+then adds fixed relation/use guidance to Answer. Invalid output or unavailable
+preparation passes empty memory, never the full panel. The Answer template
+explicitly permits a labeled analogy as a comparison while forbidding transfer
+of its people, event, outcome or permission to the current case. The same
+grounded historical claim guard applies. Actual fresh evaluation found that
+the model still mislabeled five of six cross-event analogies as history, so
+this profile remains experimental and is not the default.
+
 The default v2 prompt, boolean parser, temperature 0 and eight-token output
 budget are unchanged. Mock models use the constant gate unless a read-first or
 structured candidate mode was explicitly selected. Original gate-client construction

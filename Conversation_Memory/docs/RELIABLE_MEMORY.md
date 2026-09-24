@@ -437,3 +437,60 @@ meet promotion criteria; the default remains `reliable-v2`. Generic advice or
 mere nonempty selection is not counted as a memory benefit. The local report
 contains per-case evidence, provider receipts and exact Chat text; it is not
 a runtime dependency and is not committed.
+
+## Semantic associative v2 explicit reader
+
+`semantic-associative-v2` is an opt-in successor to the v1 semantic reader,
+selected with `LUMINA_MEMORY_PROFILE=semantic-associative-v2` and the usual
+`LUMINA_MIND_GATE_MODE=llm`. It preserves the v1 reproduction path, the v6
+writer, persisted graph, FirstHit equation, 5-seed/64-node/256-arc discovery,
+multilingual index fingerprint and production `reliable-v2` default. A fresh
+service using this profile reads first, runs **one** post-read Mind selector in
+place of the boolean gate, and passes at most three selected Facts to Answer.
+Conflicting gate and selector modes are rejected at app creation.
+
+The direct facade is `MagmaMemoryAdapter.prepare_recall(question, policy)`;
+the profile dispatches to `prepare_semantic_recall_v2`. Normal Chat supplies
+`RecallPolicy(max_evidence_items=32, max_chars=9000, max_bytes=36000,
+include_source_context=True)`. The owner collects the same bounded seed,
+indexed and graph Fact pool. Its deterministic panel admission offers seeds,
+source-group representatives, graph-only representatives, then source-turn
+coverage before support fill. A group is a source window, **not** an event or
+identity assertion. Up to 32 complete canonical Fact cards with source role,
+timestamp and opaque group label enter Mind; an over-budget Fact is skipped
+whole and diagnosed. Full source-backed rendered blocks remain separate in
+`PreparedRecall` and never get shortened to fit the selector. The v1 20-card
+ordering and budgets remain available by explicit v1 profile.
+
+`LlmSemanticEvidenceSelectorV2` returns ranked existing IDs with a fixed
+`history` or `analogy` use and legal relation. The prompt asks for at most
+eight; the strict parser accepts at most twelve distinct, legal, in-panel
+suggestions, so a benign 5- or 9-ID response need not erase all memory.
+Malformed JSON, unknown/duplicate IDs, illegal use/relation pairs and outputs
+above twelve fail closed. `PreparedRecall.ranked_semantic_subset` checks
+dependencies and packs whole canonical rendered Facts in ranked order, skipping
+an item that exceeds the final **3 Fact / 5000 character / 20000 byte** budget.
+Each accepted block gets fixed, code-authored usage guidance. `history` is
+scoped to its recorded event, speaker and time; `analogy` is explicitly a
+different experience and cannot establish current identity, outcome, status
+or permission. A newer explicit user decision overrides an old boundary.
+The grounded historical claim guard continues to apply. No free-text model
+summary or second verifier enters the Answer prompt.
+
+`recall()` and `recall_associative()` cannot bypass the v2 selector to return
+the unselected panel. Selector failure yields empty long-term memory; audit
+records proposed/accepted counts, budget rejection and selected order.
+Production and other explicit profiles retain their prior behavior. Isolate
+Hot, Cold, MAGMA and audit paths when running a comparison, and keep the same
+graph, original question, recent context, model, temperature and Answer cap.
+
+The frozen old 32-question diagnostic confirmed that the previously omitted
+AC02/SA27 prompt-card Fact entered the v2 panel and was selected; 5/9 legal
+suggestions no longer fail the protocol. In a separate six-story, 24-question
+fresh panel, five of six explicit cross-event analogy requests were still
+labeled `history`, and one story cluster produced a qualified graph-only
+Answer gain. A read-side arc cut/restoration established navigation dependence
+for that Fact without rerunning a counterfactual Answer. The candidate is
+**retained, not promoted**: `SEMANTIC_SELECTION_NEEDS_FIX`. Full fictional
+stories, gold, frozen receipts and actual Answers remain local experiment
+materials, not repository code or production memory.

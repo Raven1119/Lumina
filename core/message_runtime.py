@@ -50,6 +50,12 @@ Local entity labels preserve stored subject/object bindings only. The same label
 Use only source-supported claims. When identity, scope or the requested fact is missing, give useful supported partial information or explain the remaining ambiguity. An empty candidate set does not prove an entity or memory does not exist.
 """
 _SELECTED_EVIDENCE_GUIDANCE = "An unresolved reference or an old source is not evidence that a recorded proposition is false or that an attribute is currently absent. Claims of change or current absence require source support. Otherwise preserve the source's stated temporal scope and explain only the actual uncertainty.\n"
+_SEMANTIC_V2_ANSWER_GUIDANCE = (
+    "A block explicitly labeled ANALOGY may be relevant as a comparison even though "
+    "it concerns a different event. Never describe an ANALOGY block as what happened "
+    "in the event currently being discussed. Preserve the grounded historical claim "
+    "rule: no unsupported claim about what happened before.\n"
+)
 _HOT_SUMMARY_START = "[Hot rolling summary]"
 _HOT_SUMMARY_END = "[/Hot rolling summary]"
 
@@ -290,6 +296,12 @@ class MessageRuntime:
         if not isinstance(rendered_text, str) or not rendered_text.strip():
             return self._chat_background, event
         template = _MEMORY_CONTEXT_TEMPLATE
+        if callable(getattr(self._semantic_selector, "select_ranked", None)):
+            template = template.replace(
+                "Use only evidence directly relevant to the current request.\n",
+                "Use only evidence directly relevant to the current request.\n"
+                + _SEMANTIC_V2_ANSWER_GUIDANCE,
+            )
         if getattr(self._recall_policy, "include_source_context", False):
             guidance = _SOURCE_CONTEXT_GUIDANCE
             if self._evidence_selector is not None or self._semantic_selector is not None:
@@ -342,6 +354,9 @@ class MessageRuntime:
         )
 
     def _select_semantic_evidence(self, prepared, query, recent_context, *, turn_id):
+        if callable(getattr(self._semantic_selector, "select_ranked", None)):
+            return self._select_semantic_evidence_v2(
+                prepared, query, recent_context, turn_id=turn_id)
         # This opt-in path cannot fall back to the unselected panel on any
         # selector, validation, timeout or audit failure.
         context = replace(prepared.context, evidence=(), rendered_text="")
@@ -368,6 +383,41 @@ class MessageRuntime:
             try:
                 self._mind_decision_log.record(MindDecision(recall=True), turn_id=turn_id,
                                                query_audit=audit)
+            except Exception:
+                return context, "mind_decision_log_failed"
+        return context, ("memory_semantic_selection_failed" if failure else
+                         "memory_semantic_evidence_selected")
+
+    def _select_semantic_evidence_v2(self, prepared, query, recent_context, *, turn_id):
+        context = replace(prepared.context, evidence=(), rendered_text="")
+        proposed = ()
+        packing = {"proposed_ranked_count": 0, "accepted_count": 0,
+                   "rejected_by_budget": (), "rejected_by_protocol": 0,
+                   "selected_order": ()}
+        failure = None
+        try:
+            proposed = self._semantic_selector.select_ranked(
+                query, recent_context, prepared.selection_items)
+            context, packing = prepared.ranked_semantic_subset(proposed)
+        except Exception:
+            failure = "semantic_selection_failed"
+            packing["rejected_by_protocol"] = 1
+            packing["proposed_ranked_count"] = len(proposed) if type(proposed) is tuple else 0
+        audit = {
+            "prompt_version": getattr(self._semantic_selector, "prompt_version", None),
+            "original_message": query, "effective_query": query,
+            "proposed_evidence_ids": tuple(row[0] for row in proposed
+                                           if type(row) is tuple and row
+                                           and type(row[0]) is str),
+            "selected_evidence_ids": tuple(item.evidence_id for item in context.evidence),
+            "selected_ranked": proposed if failure is None else (),
+            "fallback_reason": failure,
+            **packing,
+        }
+        if self._mind_decision_log is not None:
+            try:
+                self._mind_decision_log.record(
+                    MindDecision(recall=True), turn_id=turn_id, query_audit=audit)
             except Exception:
                 return context, "mind_decision_log_failed"
         return context, ("memory_semantic_selection_failed" if failure else

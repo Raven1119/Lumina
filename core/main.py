@@ -43,7 +43,9 @@ from Execution import ExecutionOrgan, FileContentEquals
 from Mind.constant_gate import ConstantMindGate
 from Mind.decision_log import JsonlDecisionLog
 from Mind.interfaces import EvidenceSelector, MindGate
-from Mind.evidence_selector import LlmEvidenceSelector, LlmSemanticEvidenceSelector
+from Mind.evidence_selector import (
+    LlmEvidenceSelector, LlmSemanticEvidenceSelector, LlmSemanticEvidenceSelectorV2,
+)
 from Mind.llm_gate import LlmMindGate, LlmQueryMindGate, QUERY_GATE_MAX_TOKENS
 
 
@@ -64,6 +66,11 @@ _CHAT_RECALL_POLICY = RecallPolicy(
 _DIRECT_RECALL_POLICY = RecallPolicy(
     top_k=10, max_graph_depth=1, max_nodes=20, max_evidence_items=20,
     max_chars=5000, final_min_score=None, include_source_context=True,
+)
+_SEMANTIC_V2_RECALL_POLICY = RecallPolicy(
+    top_k=10, max_graph_depth=1, max_nodes=20, max_evidence_items=32,
+    max_chars=9000, max_bytes=36000, final_min_score=None,
+    include_source_context=True,
 )
 _PENDING_STATUS_LIMIT = 100
 _EXECUTION_MAX_DECISIONS = 8
@@ -217,14 +224,15 @@ def _default_evidence_selector(chat_model: ModelClient) -> EvidenceSelector:
     return LlmEvidenceSelector(client)
 
 
-def _default_semantic_selector(chat_model: ModelClient) -> LlmSemanticEvidenceSelector:
+def _default_semantic_selector(chat_model: ModelClient, *, version: int = 1):
+    selector_type = LlmSemanticEvidenceSelectorV2 if version == 2 else LlmSemanticEvidenceSelector
     if _model_kind(chat_model) == "mock":
-        return LlmSemanticEvidenceSelector(chat_model)
+        return selector_type(chat_model)
     try:
         client = build_model_client_from_env(max_tokens_override=384, temperature_override=0.0)
     except Exception:
         client = MockModelClient()
-    return LlmSemanticEvidenceSelector(client)
+    return selector_type(client)
 
 
 def _load_chat_background(path: Path) -> str:
@@ -252,9 +260,9 @@ def _build_memory_retriever(
         )
     )
     memory_profile = os.environ.get("LUMINA_MEMORY_PROFILE", "production").strip().lower()
-    if memory_profile not in {"production", "body-recall-v1", "calibrated-first-hit-v1", "semantic-associative-v1"}:
+    if memory_profile not in {"production", "body-recall-v1", "calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2"}:
         raise ValueError("invalid_memory_profile")
-    if memory_profile == "semantic-associative-v1" and os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower() != "llm":
+    if memory_profile in {"semantic-associative-v1", "semantic-associative-v2"} and os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower() != "llm":
         raise ValueError("semantic_memory_gate_profile_conflict")
     if memory_profile == "body-recall-v1":
         if formation_model is None:
@@ -265,7 +273,7 @@ def _build_memory_retriever(
             persist_dir, fail_if_unavailable=True, ingestion_version=FORMATION_BODY_VERSION,
             formation_model=formation_model, first_hit=FirstHitPolicy(), cold_store=cold_store,
             associative_read_profile="body-recall-v1")
-    if formation_model is None and memory_profile in {"calibrated-first-hit-v1", "semantic-associative-v1"}:
+    if formation_model is None and memory_profile in {"calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2"}:
         raise ValueError("multilingual_memory_requires_formation_model")
     if (memory_profile == "calibrated-first-hit-v1"
             and os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower() in {"graph-read-v2", "select"}):
@@ -279,7 +287,7 @@ def _build_memory_retriever(
         )
     # Explicit candidate changes only the reader. The v6 writer is shared and
     # continues to call its original FirstHit activation/connection planner.
-    read_profile = (memory_profile if memory_profile in {"calibrated-first-hit-v1", "semantic-associative-v1"}
+    read_profile = (memory_profile if memory_profile in {"calibrated-first-hit-v1", "semantic-associative-v1", "semantic-associative-v2"}
                     else "graph-read-v2" if os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
                     == "graph-read-v2" else "reliable-v2")
     return MagmaMemoryAdapter.create_real(
@@ -329,7 +337,8 @@ def create_app(
         )
     )
     memory_mode = os.environ.get("LUMINA_MIND_GATE_MODE", "llm").strip().lower()
-    semantic_mode = os.environ.get("LUMINA_MEMORY_PROFILE", "production").strip().lower() == "semantic-associative-v1"
+    semantic_profile = os.environ.get("LUMINA_MEMORY_PROFILE", "production").strip().lower()
+    semantic_mode = semantic_profile in {"semantic-associative-v1", "semantic-associative-v2"}
     if semantic_mode and (memory_mode != "llm" or evidence_selector is not None or mind_gate is not None):
         raise ValueError("semantic_memory_gate_profile_conflict")
     if semantic_selector is not None and not semantic_mode:
@@ -343,7 +352,8 @@ def create_app(
     effective_recall_policy = (
         recall_policy
         if recall_policy is not None
-        else (_DIRECT_RECALL_POLICY if direct_memory_use else _CHAT_RECALL_POLICY)
+        else (_SEMANTIC_V2_RECALL_POLICY if semantic_profile == "semantic-associative-v2"
+              else _DIRECT_RECALL_POLICY if direct_memory_use else _CHAT_RECALL_POLICY)
         if effective_recall_enabled
         else None
     )
@@ -423,7 +433,8 @@ def create_app(
     ) if post_read_selection and effective_recall_enabled else None
     effective_semantic_selector = (
         semantic_selector if semantic_selector is not None
-        else _default_semantic_selector(effective_model)
+        else _default_semantic_selector(
+            effective_model, version=2 if semantic_profile == "semantic-associative-v2" else 1)
     ) if semantic_mode and effective_recall_enabled else None
     mind_decision_log = JsonlDecisionLog(
         _mind_decision_log_path(mind_decision_log_path)

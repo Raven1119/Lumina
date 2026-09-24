@@ -8,7 +8,9 @@ from Conversation_Memory.adapter._calibrated_index import (
     CalibratedReadIndex, SearchHit, lexical_features, retrieval_text,
 )
 from Conversation_Memory.adapter._calibrated_recall import amplitude_weights, parameters, recall_calibrated
-from Conversation_Memory.adapter._semantic_recall import prepare_semantic_recall
+from Conversation_Memory.adapter._semantic_recall import (
+    prepare_semantic_recall, prepare_semantic_recall_v2,
+)
 from Conversation_Memory.adapter.first_hit import FirstHitPolicy, solve_first_hit
 from Conversation_Memory.adapter.models import BackendCandidate, RecallPolicy
 
@@ -144,6 +146,50 @@ def test_semantic_panel_preserves_weak_seed_and_graph_fact_without_cold():
     assert memory._last_semantic_read_diagnostics['provider_requests']==0
 
 
+def test_v2_panel_preserves_late_source_turn_resolution_and_separate_cards():
+    keys=[f'distractor-{i:02d}' for i in range(39)]+['resolution']
+    scores={key:(.9-i*.01,0.) for i,key in enumerate(keys)}
+    scores['resolution']=(.01,0.)
+    memory=adapter(scores,{key:[] for key in keys})
+    def candidate(key):
+        index=keys.index(key)
+        provenance=dict(segment_id='episode-A' if index%2==0 else 'episode-B',
+                        conversation_id='conversation',turn_id=f'T{index%10:02d}',
+                        source_role='user',source_timestamp=f'2026-01-01T00:{index:02d}:00+00:00',
+                        source_timezone='UTC',ingestion_version='grounded-formation-v6')
+        if key=='resolution':
+            provenance.update(segment_id='episode-A',turn_id='T03')
+        text=f'User stated: complete {key} Fact.'
+        return BackendCandidate(text,None,None,{'evidence_id':key,'provenance':provenance})
+    memory.backend.first_hit_candidate=candidate
+    result=prepare_semantic_recall_v2(memory,'What was resolved?',RecallPolicy(
+        max_evidence_items=32,max_chars=9000,max_bytes=36000,include_source_context=True))
+    assert result.context.safe_error_code is None
+    assert len(result.context.evidence)==32 and result.context.truncated
+    assert 'resolution' in {item.evidence_id for item in result.context.evidence}
+    card=dict(result.selection_items)['resolution']
+    assert 'speaker=USER' in card and 'source_group=G' in card
+    assert 'complete resolution Fact.' in card
+    assert card not in result.context.rendered_text
+    assert 'complete resolution Fact.' in result.context.rendered_text
+    assert memory._last_semantic_read_diagnostics['candidate_outcomes']['resolution']['reason']=='panel'
+
+
+def test_v2_panel_skips_whole_oversized_fact_and_records_card_budget():
+    memory=adapter({'long':(.9,0.),'short':(.8,0.)},{'long':[],'short':[]})
+    original=memory.backend.first_hit_candidate
+    def candidate(key):
+        value=original(key)
+        return BackendCandidate(
+            'User stated: '+('X'*9000) if key=='long' else value.text,
+            value.timestamp,value.score,value.metadata)
+    memory.backend.first_hit_candidate=candidate
+    prepared=prepare_semantic_recall_v2(memory,'Past event?',RecallPolicy(
+        max_evidence_items=32,max_chars=9000,max_bytes=36000))
+    assert [item.evidence_id for item in prepared.context.evidence]==['short']
+    assert memory._last_semantic_read_diagnostics['candidate_outcomes']['long']['reason']=='selector_card_budget'
+
+
 def test_semantic_panel_stale_index_is_diagnostic_not_legacy_fallback():
     memory=adapter({'a':(.9,0.)},{'a':[]},stale=True)
     prepared=prepare_semantic_recall(memory,'Past event?',RecallPolicy(max_evidence_items=20))
@@ -152,10 +198,11 @@ def test_semantic_panel_stale_index_is_diagnostic_not_legacy_fallback():
     assert memory.backend.builds==0
 
 
-def test_semantic_profile_cannot_bypass_selection_via_associative_read():
+@pytest.mark.parametrize('profile',['semantic-associative-v1','semantic-associative-v2'])
+def test_semantic_profile_cannot_bypass_selection_via_associative_read(profile):
     from Conversation_Memory.adapter._associative_recall import recall_associative
     memory=adapter({'a':(.9,0.)},{'a':[]})
-    memory.associative_read_profile='semantic-associative-v1'
+    memory.associative_read_profile=profile
     result=recall_associative(memory,'Past event?',RecallPolicy())
     assert result.rendered_text==''
     assert result.safe_error_code=='semantic_selection_required'
