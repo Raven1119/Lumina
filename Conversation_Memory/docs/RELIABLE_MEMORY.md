@@ -650,3 +650,53 @@ answers are intentionally absent from the repository. Run focused regressions
 with `Conversation_Memory/.venv/bin/python -m pytest
 Conversation_Memory/tests/test_semantic_recall_v5.py
 tests/test_semantic_associative_v5_chat.py -q`.
+
+## Semantic associative v6 explicit reader
+
+`LUMINA_MEMORY_PROFILE=semantic-associative-v6` and
+`LUMINA_MIND_GATE_MODE=llm` enable the latest opt-in read candidate. Production
+remains `reliable-v2`; Formation, graph writes, FirstHit equations and the
+multilingual encoder are unchanged. The V5 graph-independent BasePanel and
+complete-Fact packer lock zero to three Facts before any graph result can enter
+the answer. V6's base selector returns only ranked `id/use/relation` rows; a
+malformed choice fails closed to empty memory. A healthy prepared read still
+explores the graph locally once on base selection failure, without injecting
+it as a fallback.
+
+After the base lock, one unchanged bounded FirstHit traversal (five seeds,
+64 nodes, 256 arcs, decay 0.75) supplies a graph-exclusive pool. A separate
+direct pool uses original multilingual index hits not selected in the base.
+Graph candidates must be on a real read path, absent from the base panel and
+original index hits, and have valid provenance and relation compatibility.
+Both pools apply source-group diversity followed by deterministic score order
+and the same 24-card, 7000-character, 28000-byte limits. The same source-blind
+Mind supplement selector accepts the original message, recent context, locked
+base cards and either pool. Empty or malformed selection adds nothing. The
+public V6 candidate uses the graph pool; the direct pool is an isolated
+capacity control, not another runtime profile.
+
+At most one complete supplement Fact is appended. Base IDs, order and rendered
+bytes cannot change. The final item ceiling is four, while the old total
+5000-character and 20000-byte limits stay fixed. If a whole supplement does
+not fit, the locked base is returned. Graph traversal, snapshot, selector or
+packing failures also preserve base. `recall()` cannot bypass the semantic
+selection path; callers use `prepare_recall()` through the Chat facade.
+
+Chat states that the visible Memory is non-exhaustive, forbids denial of
+relevant visible evidence and preserves planned/completed status from both
+current user text and historical Facts. The deterministic grounding detector
+only audits narrow phrase patterns; it does not rewrite the response and a
+zero flag does not establish grounding. The frozen 88-EVENT Transfer-4 run
+traversed all 18 known/new queries, admitted one graph-exclusive Fact in one
+of 12 new questions and admitted no direct supplement. That one graph Answer
+gave a specific useful constraint absent from B6/D6, but also stated an
+unsupported detail. A different Answer denied a relevant visible Fact. The
+candidate is therefore not promoted; private questions, graph, gold, receipts
+and outputs remain outside the repository.
+
+Run the provider-free regressions with
+`Conversation_Memory/.venv/bin/python -m pytest
+Conversation_Memory/tests/test_semantic_recall_v6.py
+tests/test_semantic_associative_v6_chat.py -q`. Real-MAGMA evaluation requires
+the prepared Linux Memory environment and a separate isolated graph; it must
+not read or mutate production user memory.

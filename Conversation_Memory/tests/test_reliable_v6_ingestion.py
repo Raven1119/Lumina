@@ -16,7 +16,7 @@ from Conversation_Memory.tests.test_reliable_formation import (
 )
 
 
-def configured_v6(tmp_path, backend, model, *, cold=None):
+def configured_v6(tmp_path, backend, model, *, cold=None, read_profile="reliable-v2"):
     from Conversation_Memory.adapter.first_hit import FirstHitPolicy
     from Conversation_Memory.adapter.magma_adapter import MagmaMemoryAdapter
     from Conversation_Memory.adapter.models import BackendCandidate
@@ -26,7 +26,7 @@ def configured_v6(tmp_path, backend, model, *, cold=None):
         backend, IngestionStateStore(tmp_path / "ingestion.json"),
         ingestion_version=rf.FORMATION_RELIABLE_VERSION_V6, formation_model=model,
         first_hit=FirstHitPolicy(), cold_store=cold,
-        associative_read_profile="reliable-v2",
+        associative_read_profile=read_profile,
     )
     activations = []
 
@@ -100,6 +100,25 @@ def test_v6_completed_replays_without_provider_and_without_mutation(tmp_path):
     again = resumed.ingest(seg)
     assert again.status == "completed" and again.already_ingested
     assert again.memory_ids == result.memory_ids and calls == []
+    assert (backend.path.read_bytes(), resumed.state_store.path.read_bytes()) == before
+
+
+def test_semantic_v6_reader_keeps_writer_and_checkpoint_recovery(tmp_path):
+    from Conversation_Memory.tests.test_first_hit_ingestion import DurableBackend
+
+    seg, model = cross_reference_window()
+    backend = DurableBackend(tmp_path / "graph.json")
+    memory, _ = configured_v6(tmp_path, backend, model,
+                              read_profile="semantic-associative-v6")
+    written = memory.ingest(seg)
+    assert written.status == "completed" and len(written.memory_ids) == 2
+    resumed, activations = configured_v6(
+        tmp_path, DurableBackend(backend.path), NoCalls(),
+        read_profile="semantic-associative-v6")
+    before = backend.path.read_bytes(), resumed.state_store.path.read_bytes()
+    replay = resumed.ingest(seg)
+    assert replay.status == "completed" and replay.already_ingested
+    assert replay.memory_ids == written.memory_ids and activations == []
     assert (backend.path.read_bytes(), resumed.state_store.path.read_bytes()) == before
 
 
