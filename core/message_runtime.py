@@ -1,6 +1,6 @@
 """Single synchronous chat path for the Cold Draft MVP."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING
 
 from Mind.interfaces import MindDecision
@@ -71,6 +71,7 @@ class MessageRuntime:
         recall_policy: "RecallPolicy | None" = None,
         mind_gate: "MindGate | None" = None,
         evidence_selector: "EvidenceSelector | None" = None,
+        semantic_selector: object | None = None,
         mind_decision_log: "JsonlDecisionLog | None" = None,
     ) -> None:
         self._hot_store = hot_store
@@ -81,10 +82,12 @@ class MessageRuntime:
         self._recall_enabled = recall_enabled
         self._memory_retriever = memory_retriever
         self._recall_policy = recall_policy
-        if mind_gate is not None and evidence_selector is not None:
+        if (mind_gate is not None and (evidence_selector is not None or semantic_selector is not None)
+                or evidence_selector is not None and semantic_selector is not None):
             raise ValueError("choose one memory decision stage")
         self._mind_gate = mind_gate
         self._evidence_selector = evidence_selector
+        self._semantic_selector = semantic_selector
         self._mind_decision_log = mind_decision_log
         self._turn_factory = DraftTurnFactory(
             clock=clock,
@@ -243,21 +246,27 @@ class MessageRuntime:
         event = None
         prepared = None
         try:
+            selecting = self._evidence_selector is not None or self._semantic_selector is not None
             prepare = (getattr(self._memory_retriever, "prepare_recall", None)
-                       if self._evidence_selector is not None else None)
-            if self._evidence_selector is not None and callable(prepare):
+                       if selecting else None)
+            if self._semantic_selector is not None and not callable(prepare):
+                return self._chat_background, "memory_selection_unavailable"
+            if selecting and callable(prepare):
                 prepared = prepare(query, self._recall_policy)
                 memory_context = prepared.context
             else:
                 memory_context = self._memory_retriever.recall(
                     memory_query if memory_query is not None else query, self._recall_policy)
-                if self._evidence_selector is not None:
+                if selecting:
                     event = "memory_selection_unavailable"
             rendered_text = getattr(memory_context, "rendered_text", None)
+            if (self._semantic_selector is not None and prepared is not None
+                    and rendered_text and not memory_context.evidence):
+                return self._chat_background, "memory_selection_unavailable"
             if not isinstance(rendered_text, str) or not rendered_text.strip():
                 if getattr(memory_context, "safe_error_code", None):
                     return self._chat_background, (
-                        "memory_recall_failed" if self._evidence_selector is not None else None
+                        "memory_recall_failed" if selecting else None
                     )
                 return self._chat_background, event
             # A non-empty rendered_text is consumable by the Memory contract,
@@ -265,22 +274,25 @@ class MessageRuntime:
             if getattr(memory_context, "safe_error_code", None):
                 event = "memory_recall_degraded"
             if prepared is not None and memory_context.evidence:
-                memory_context, selection_event = self._select_evidence(
-                    prepared, query, recent_context or [], turn_id=turn_id,
-                )
+                if self._semantic_selector is not None:
+                    memory_context, selection_event = self._select_semantic_evidence(
+                        prepared, query, recent_context or [], turn_id=turn_id)
+                else:
+                    memory_context, selection_event = self._select_evidence(
+                        prepared, query, recent_context or [], turn_id=turn_id)
                 if selection_event != "memory_evidence_selected" or event is None:
                     event = selection_event
                 rendered_text = memory_context.rendered_text
         except Exception:
             return self._chat_background, (
-                "memory_recall_failed" if self._evidence_selector is not None else None
+                "memory_recall_failed" if self._evidence_selector is not None or self._semantic_selector is not None else None
             )
         if not isinstance(rendered_text, str) or not rendered_text.strip():
             return self._chat_background, event
         template = _MEMORY_CONTEXT_TEMPLATE
         if getattr(self._recall_policy, "include_source_context", False):
             guidance = _SOURCE_CONTEXT_GUIDANCE
-            if self._evidence_selector is not None:
+            if self._evidence_selector is not None or self._semantic_selector is not None:
                 guidance += _SELECTED_EVIDENCE_GUIDANCE
             template = template.replace(
                 "<BEGIN_EXACT_GROUNDED_SPANS>",
@@ -328,6 +340,38 @@ class MessageRuntime:
             "memory_evidence_selection_failed" if fallback_reason
             else "memory_evidence_selected"
         )
+
+    def _select_semantic_evidence(self, prepared, query, recent_context, *, turn_id):
+        # This opt-in path cannot fall back to the unselected panel on any
+        # selector, validation, timeout or audit failure.
+        context = replace(prepared.context, evidence=(), rendered_text="")
+        proposed = ()
+        failure = None
+        try:
+            selected = self._semantic_selector.select_uses(
+                query, recent_context, prepared.selection_items)
+            if type(selected) is not tuple:
+                raise ValueError("invalid_semantic_selection")
+            proposed = selected
+            context = prepared.semantic_subset(proposed)
+        except Exception:
+            failure = "semantic_selection_failed"
+        proposed_ids = tuple(row[0] for row in proposed if type(row) is tuple
+                             and row and type(row[0]) is str)
+        audit = {"prompt_version": getattr(self._semantic_selector, "prompt_version", None),
+                 "original_message": query, "effective_query": query,
+                 "proposed_evidence_ids": proposed_ids,
+                 "selected_evidence_ids": tuple(item.evidence_id for item in context.evidence),
+                 "selected_uses": proposed if failure is None else (),
+                 "fallback_reason": failure}
+        if self._mind_decision_log is not None:
+            try:
+                self._mind_decision_log.record(MindDecision(recall=True), turn_id=turn_id,
+                                               query_audit=audit)
+            except Exception:
+                return context, "mind_decision_log_failed"
+        return context, ("memory_semantic_selection_failed" if failure else
+                         "memory_semantic_evidence_selected")
 
     def _generate(
         self,

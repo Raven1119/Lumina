@@ -20,11 +20,48 @@ from Conversation_Memory.recall.rendering import render_reliable_fact, render_re
 
 from .models import (
     AssociativeMemoryContext, AssociativeSelection, MemoryContext,
-    MemoryEvidence, SourceMemoryContext, SourceProvenance,
+    MemoryEvidence, PreparedRecall, SourceMemoryContext, SourceProvenance,
 )
 
 DIRECT_SHARE = 0.6
 _MAX_SOURCE_REFS = 64
+
+
+def prepare_reliable_result(result, policy):
+    """Keep exact rendered source groups from the single reliable read."""
+    context = MemoryContext(result.facts.query, result.facts.evidence,
+                            result.rendered_text, result.truncated, result.safe_error_code)
+    if not context.evidence:
+        return PreparedRecall(context)
+    try:
+        sources = {item.evidence_id: item for item in result.sources.evidence}
+        source_handles = {item.evidence_id: f"S{i+1}" for i, item in enumerate(result.sources.evidence)}
+        owner, seen, blocks, dependencies = {}, set(), [], []
+        for index, (item, selection) in enumerate(zip(context.evidence, result.selections), 1):
+            if item.evidence_id != selection.evidence_id:
+                raise ValueError("reliable_selection_mismatch")
+            handle = f"M{index}"
+            parts = []
+            if selection.visible_representation != "sources":
+                parts.append(render_reliable_fact(item, handle,
+                                                  include_source_context=policy.include_source_context))
+            ids = selection.source_evidence_ids
+            if ids:
+                parts.append("[" + handle + " sources=" + ",".join(source_handles[sid] for sid in ids) + "]")
+            required = set()
+            for sid in ids:
+                if sid in seen:
+                    required.add(owner[sid])
+                    continue
+                seen.add(sid)
+                owner[sid] = item.evidence_id
+                parts.append(render_reliable_source(sources[sid], source_handles[sid],
+                                                    include_source_context=policy.include_source_context))
+            blocks.append("\n".join(parts))
+            dependencies.append((item.evidence_id, tuple(sorted(required))))
+        return PreparedRecall(context, tuple(blocks), tuple(dependencies))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return PreparedRecall(context, _dependencies=None)
 
 
 def _measure(text):

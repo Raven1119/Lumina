@@ -138,6 +138,7 @@ class CalibratedReadIndex:
             for feature in features:postings[feature].add(pos)
         self.postings = {key:frozenset(value) for key,value in postings.items()}
         self.model = model
+        self._query_cache: dict[str, tuple[np.ndarray, float, int]] = {}
         self.coverage_digest = sha256(json.dumps(self.node_ids,separators=(',',':')).encode()).hexdigest()
         self._check()
 
@@ -160,12 +161,19 @@ class CalibratedReadIndex:
         self._check()
         if not isinstance(query,str) or not query.strip() or type(limit) is not int or not 1<=limit<=20:
             raise ValueError('calibrated_query_invalid')
-        qraw=np.asarray(self.model.encode([query],convert_to_numpy=True,
-                                           show_progress_bar=False),dtype=np.float32).reshape(-1)
-        qnorm=float(np.linalg.norm(qraw))
-        if qraw.shape!=(self.identity['dimension'],) or not np.isfinite(qraw).all() or qnorm<=0:
-            raise ValueError('calibrated_query_vector_invalid')
-        q=np.ascontiguousarray((qraw/qnorm).reshape(1,-1),dtype=np.float32)
+        cached=self._query_cache.get(query)
+        if cached is None:
+            qraw=np.asarray(self.model.encode([query],convert_to_numpy=True,
+                                               show_progress_bar=False),dtype=np.float32).reshape(-1)
+            qnorm=float(np.linalg.norm(qraw))
+            if qraw.shape!=(self.identity['dimension'],) or not np.isfinite(qraw).all() or qnorm<=0:
+                raise ValueError('calibrated_query_vector_invalid')
+            q=np.ascontiguousarray((qraw/qnorm).reshape(1,-1),dtype=np.float32)
+            tokens=len(self.model.tokenizer.encode(query,add_special_tokens=True,truncation=False))
+            if len(self._query_cache)>=128:self._query_cache.clear()
+            self._query_cache[query]=(q.copy(),qnorm,tokens)
+        else:
+            q,qnorm,tokens=cached
         count=min(limit,len(self.node_ids))
         distances,positions=self.index.search(q,count)
         dense=[int(pos) for pos in positions[0] if pos>=0]
@@ -173,18 +181,26 @@ class CalibratedReadIndex:
         postings=[(len(self.postings[f]),f) for f in qfeatures if f in self.postings]
         postings.sort()
         lex_candidates=set()
+        lexical_postings_examined=0
         for _,feature in postings:
-            lex_candidates.update(self.postings[feature])
-            if len(lex_candidates)>=64:break
+            for pos in sorted(self.postings[feature]):
+                if pos not in lex_candidates and len(lex_candidates) >= 64:
+                    break
+                lex_candidates.add(pos)
+                lexical_postings_examined += 1
+            if len(lex_candidates)>=64:
+                break
         lexical=sorted(lex_candidates,key=lambda pos:(-self._lexical(qfeatures,pos),self.node_ids[pos]))[:count]
         refs=tuple(dict.fromkeys(ref for ref in target_entity_refs if isinstance(ref,str) and ref!='E_001'))
         members=self.backend._entity_membership_for_recall() or {}
         source_db=self.backend.trg.vector_db
         entity_positions=set()
+        entity_positions_examined=0
         for ref in refs:
             member=members.get('entity:'+ref.casefold())
             if member is None:continue
             for old_position in member.positions:
+                entity_positions_examined += 1
                 node_id=source_db.index_to_id.get(int(old_position))
                 if node_id in self.id_to_position:entity_positions.add(self.id_to_position[node_id])
         entity=sorted(entity_positions,key=lambda pos:(-float(q[0] @ self.vectors[pos]),self.node_ids[pos]))[:count]
@@ -201,14 +217,16 @@ class CalibratedReadIndex:
                              self._lexical(qfeatures,pos),float(pos in entity_positions),
                              tuple(sorted(ranked[pos][1])),ranked[pos][0])
                    for i,pos in enumerate(candidates))
-        tokens=len(self.model.tokenizer.encode(query,add_special_tokens=True,truncation=False))
         self._check()
         return hits,{'model_identity':self.identity,'coverage_digest':self.coverage_digest,
                      'facts_indexed':len(self.node_ids),'fact_token_max':self.fact_token_max,
                      'facts_truncated':self.facts_truncated,'query_vector_norm':qnorm,
                      'fact_vector_norm_min':self.fact_norm_min,'fact_vector_norm_max':self.fact_norm_max,
                      'query_tokens':tokens,'query_truncated':tokens>self.identity['max_seq_length'],
+                     'query_encoding_cache_hit':cached is not None,
                      'dense_candidates':len(dense),'lexical_candidates':len(lexical),
+                     'lexical_postings_examined':lexical_postings_examined,
+                     'entity_positions_examined':entity_positions_examined,
                      'entity_candidates':len(entity),'union_candidates':len(hits),
                      'metric':'IP_cosine','query_text_view':'original',
                      'fact_text_view':TEXT_VIEW},q[0]

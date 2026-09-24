@@ -382,3 +382,58 @@ not AC01 or private conversation. The frozen real-graph comparison and
 final rendered-text review must be read before making any semantic-benefit
 claim. Mechanism tests alone establish only the amplitude, isolation, abstention
 and provenance contracts.
+
+## Semantic associative v1 explicit reader
+
+`semantic-associative-v1` is an opt-in **read-side** candidate. Set only
+`LUMINA_MEMORY_PROFILE=semantic-associative-v1` with the usual real-model
+Chat configuration and isolated Hot/Cold/MAGMA/audit paths. It requires the
+default `LUMINA_MIND_GATE_MODE=llm` setting but **replaces** that mode's
+boolean pre-read gate with one post-read Mind choice. Combining it with
+`direct`, `select`, `graph-read-v2`, an injected gate or the body profile is
+rejected. Production remains v6 writer + `reliable-v2`; no writer, checkpoint,
+stored EVENT vector or upstream MAGMA migration occurs.
+
+The owner builds the same pinned, fingerprint-checked multilingual derived
+index as `calibrated-first-hit-v1`, then uses the same cosine seed strengths,
+`sum(b)=max(r)` and 5-seed/64-node/256-read-arc FirstHit solve. The old fitted
+logistic threshold and 0.6 final direct reservation are not used for this
+profile. Up to 20 complete canonical Facts, 5000 characters and 20000 UTF-8
+bytes form one immutable `PreparedRecall` panel. Real seeds are offered first;
+remaining indexed hits and graph visits alternate in a fixed order. A Fact
+that misses the panel budget is recorded as an omission, not truncated or
+silently made available to Mind. Index construction, query encodes, cache hits,
+postings and graph traversal have distinct diagnostics. A stale index fails
+the read with a safe code; it is not rebuilt on a query.
+
+`MagmaMemoryAdapter.prepare_recall(question, policy)` is the direct facade
+entry. The candidate app uses `RecallPolicy(max_evidence_items=20,
+max_chars=5000, max_bytes=20000, include_source_context=True)` for the panel;
+the owner enforces a separate maximum of 3 whole Facts, 5000 characters and
+20000 bytes on `semantic_subset`. `recall()` on this profile returns
+`semantic_selection_required` instead of bypassing the choice through legacy
+BGE. The panel never pulls Cold text or a body payload. Source roles,
+timestamps and canonical attributed Fact text stay intact.
+
+`LlmSemanticEvidenceSelector` makes one temperature-zero, at-most-384-output-
+token Mind call on the original message, current recent conversation and
+bounded panel. Its versioned JSON output names only existing integer IDs and
+`history` or `analogy` use; at most three, with `[]` allowed. Memory maps those
+IDs to the same frozen evidence snapshot, rejects duplicates, unknown IDs,
+missing dependencies and final-budget excess, and adds only a fixed use label.
+An analogy is another experience, not evidence about the current event.
+Malformed output, timeout, unavailable preparation and audit-write failure
+cannot restore the entire candidate panel. Audit-write failure preserves a
+previously legal subset; other selection failures pass empty long-term memory
+to the ordinary Answer step with a diagnostic. Existing legacy `select`
+fallback remains unchanged. Reliable-v1/v2 prepared reads now retain their
+exact source/fact blocks and source dependencies from their one read, making
+their public `subset` boundary usable without a second retrieval.
+
+The frozen 32-question local comparison found useful sources omitted from the
+20-item panel for the Night Flight recording question, three selection
+protocol failures and no qualified graph-only conversation gain. It did not
+meet promotion criteria; the default remains `reliable-v2`. Generic advice or
+mere nonempty selection is not counted as a memory benefit. The local report
+contains per-case evidence, provider receipts and exact Chat text; it is not
+a runtime dependency and is not committed.

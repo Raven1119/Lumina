@@ -104,9 +104,9 @@ class MagmaMemoryAdapter:
             and ingestion_version not in {FORMATION_VERSION, "grounded-formation-v2", FORMATION_RELIABLE_VERSION, FORMATION_RELIABLE_VERSION_V5, FORMATION_RELIABLE_VERSION_V6, FORMATION_BODY_VERSION}
         ):
             raise ValueError("formation_ingestion_version_required")
-        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1"}:
+        if not isinstance(associative_read_profile, str) or associative_read_profile not in {"first-hit-v1", "reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1", "semantic-associative-v1"}:
             raise ValueError("invalid_associative_read_profile")
-        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1"} and first_hit is None:
+        if associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1", "semantic-associative-v1"} and first_hit is None:
             raise ValueError("reliable_read_requires_first_hit")
         from ._body_recall import BodyRecallPolicy
         if body_recall_policy is not None and not isinstance(body_recall_policy, BodyRecallPolicy):
@@ -138,7 +138,7 @@ class MagmaMemoryAdapter:
         self._bge_reranker_load_attempted = False
         self._bge_reranker_lock = Lock()
         self._calibrated_index_error = None
-        if associative_read_profile == "calibrated-first-hit-v1":
+        if associative_read_profile in {"calibrated-first-hit-v1", "semantic-associative-v1"}:
             self._rebuild_calibrated_index()
 
     def _rebuild_calibrated_index(self) -> None:
@@ -197,7 +197,7 @@ class MagmaMemoryAdapter:
         return None
 
     def ingest(self, segment: ColdDraftSegment) -> IngestionResult:
-        if self.associative_read_profile == "calibrated-first-hit-v1":
+        if self.associative_read_profile in {"calibrated-first-hit-v1", "semantic-associative-v1"}:
             try:
                 return self._ingest_without_calibrated_rebuild(segment)
             finally:
@@ -264,6 +264,9 @@ class MagmaMemoryAdapter:
         policy conflict inside the associative read. Legacy profiles and
         adapters without FirstHit keep the original BGE/Hindsight read.
         """
+        if self.associative_read_profile == "semantic-associative-v1":
+            return MemoryContext(query if isinstance(query, str) else "",
+                                 safe_error_code="semantic_selection_required")
         if (
             self.associative_read_profile in ("reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2", "body-recall-v1", "calibrated-first-hit-v1")
             and self.first_hit is not None
@@ -339,11 +342,18 @@ class MagmaMemoryAdapter:
 
     def prepare_recall(self, query: str, policy: RecallPolicy) -> PreparedRecall:
         """Perform the same single read and retain its exact subset view."""
+        if self.associative_read_profile == "semantic-associative-v1":
+            from ._semantic_recall import prepare_semantic_recall
+            return prepare_semantic_recall(self, query, policy)
+        if self.associative_read_profile in {"reliable-v1", "reliable-v2", "graph-read-v1", "graph-read-v2"}:
+            from ._reliable_recall import prepare_reliable_result
+            result = self.recall_associative(query, policy, include_sources=True,
+                                             source_context_turns=0)
+            return prepare_reliable_result(result, policy)
         dispatched = self._reliable_dispatch(query, policy)
         if dispatched is not None:
-            # The reliable read has no block/dependency selection metadata;
-            # the context remains the documented fallback and selection
-            # operations raise their stable, safe error.
+            # Other explicit read profiles still lack exact prepared blocks;
+            # keep their original context without pretending it is subsettable.
             return PreparedRecall(dispatched, _dependencies=None)
         metadata = {}
         context = self._recall(query, policy, _prepared_data=metadata)

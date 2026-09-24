@@ -174,6 +174,7 @@ class PreparedRecall:
     context: MemoryContext
     _rendered_blocks: tuple[str, ...] = field(default=(), repr=False)
     _dependencies: tuple[tuple[str, tuple[str, ...]], ...] | None = field(default=(), repr=False)
+    _semantic_final_limits: tuple[int, int, int] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if type(self._rendered_blocks) is not tuple:
@@ -204,6 +205,12 @@ class PreparedRecall:
             keys.append(edge[0])
         if tuple(keys) != ids:
             raise ValueError("invalid_prepared_recall")
+        if self._semantic_final_limits is not None and (
+            type(self._semantic_final_limits) is not tuple
+            or len(self._semantic_final_limits) != 3
+            or any(type(value) is not int or value < 1 for value in self._semantic_final_limits)
+        ):
+            raise ValueError("invalid_prepared_recall")
 
     @property
     def selection_items(self) -> tuple[tuple[str, str], ...]:
@@ -232,6 +239,36 @@ class PreparedRecall:
                          if item.evidence_id in wanted)
         return replace(self.context, evidence=tuple(item for item, _ in selected),
                        rendered_text="\n".join(block for _, block in selected))
+
+    def semantic_subset(self, selections: tuple[tuple[str, str], ...]) -> MemoryContext:
+        """Select whole canonical Facts with a fixed, non-factual use label."""
+        if self._semantic_final_limits is None or type(selections) is not tuple:
+            raise ValueError("invalid_semantic_selection")
+        if (len(selections) > self._semantic_final_limits[0]
+                or any(type(row) is not tuple or len(row) != 2
+                       or type(row[0]) is not str or type(row[1]) is not str
+                       or row[1] not in {"history", "analogy"}
+                       for row in selections)):
+            raise ValueError("invalid_semantic_selection")
+        ids = tuple(row[0] for row in selections)
+        if len(set(ids)) != len(ids):
+            raise ValueError("invalid_semantic_selection")
+        context = self.subset(ids)
+        if len(context.evidence) != len(ids):
+            raise ValueError("semantic_dependency_unselected")
+        uses = dict(selections)
+        blocks = []
+        for item, block in zip(self.context.evidence, self._rendered_blocks):
+            if item.evidence_id not in uses:
+                continue
+            label = ("[Use: historical material; preserve its stated scope]" if uses[item.evidence_id] == "history"
+                     else "[Use: analogy from another experience; not a record of the current event]")
+            blocks.append(label + "\n" + block)
+        rendered = "\n".join(blocks)
+        _, chars, bytes_limit = self._semantic_final_limits
+        if len(rendered) > chars or len(rendered.encode("utf-8")) > bytes_limit:
+            raise ValueError("semantic_selection_budget")
+        return replace(context, rendered_text=rendered)
 
 
 @dataclass(frozen=True)

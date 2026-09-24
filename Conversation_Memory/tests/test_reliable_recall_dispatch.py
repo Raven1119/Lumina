@@ -125,17 +125,29 @@ def test_recall_dispatch_keeps_score_floor_an_explicit_conflict(tmp_path):
     assert context.safe_error_code == "first_hit_score_policy_conflict"
 
 
-def test_prepare_recall_dispatch_fails_selection_visibly_without_crashing(tmp_path):
+def test_prepare_recall_dispatch_preserves_selectable_fact_blocks(tmp_path):
     fact = candidate("f", "User accepted only that one visit.")
     adapter = reliable_adapter(tmp_path, [(fact, 1.0, 1.0)], ("f",))
 
     prepared = adapter.prepare_recall("cue", RecallPolicy(max_chars=1000))
 
     assert fact.text in prepared.context.rendered_text
-    with pytest.raises(ValueError, match="prepared_recall_unavailable"):
-        prepared.selection_items
-    with pytest.raises(ValueError, match="prepared_recall_unavailable"):
-        prepared.subset(("f",))
+    assert prepared.selection_items == (("f", prepared.context.rendered_text),)
+    assert prepared.subset(("f",)).rendered_text == prepared.context.rendered_text
+    assert prepared.subset(()).rendered_text == ""
+
+
+@pytest.mark.parametrize("profile", ["reliable-v1", "reliable-v2"])
+def test_prepare_recall_keeps_exact_source_supplement_in_one_block(tmp_path, profile):
+    raw = source("s1", "I accepted only that one visit.", turn_id="t1")
+    fact = candidate("f", "User accepted only that one visit.", refs=[ref(raw)])
+    adapter = reliable_adapter(tmp_path, [(fact, 1.0, 1.0)], ("f",), cold=Cold(raw), profile=profile)
+
+    prepared = adapter.prepare_recall("cue", RecallPolicy(max_chars=1000, max_evidence_items=1))
+
+    assert prepared.selection_items == (("f", prepared.context.rendered_text),)
+    assert prepared.subset(("f",)).rendered_text == prepared.context.rendered_text
+    assert prepared.subset(()).rendered_text == ""
 
 
 @pytest.mark.parametrize("configure_first_hit", [True, False])

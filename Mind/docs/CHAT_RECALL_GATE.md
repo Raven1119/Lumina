@@ -17,6 +17,16 @@ There is no query editor, second memory store or read-time ingestion.
 | `select` (explicit experiment) | One original-question read, then one semantic selection of existing source evidence, then Answer. |
 | `graph-read-v2` (explicit candidate) | One structured Mind gate, then matching query-driven graph Memory, then Answer with original question and conversation. |
 
+`LUMINA_MEMORY_PROFILE=semantic-associative-v1` is a separate explicit
+read-side candidate. With the default gate-mode setting it substitutes one
+post-read semantic `history`/`analogy`/empty choice for the boolean call;
+there is no stacked gate. It requires Memory's complete candidate-level
+`PreparedRecall` and rejects conflicting gate/selector configurations.
+Selection failures pass empty long-term memory to Answer and are audited;
+unlike legacy `select`, they never restore the unselected panel. Its one
+384-output-token choice usually adds much more input than the default
+eight-token gate. Source Facts and fixed use labels alone enter Answer.
+
 The default v2 prompt, boolean parser, temperature 0 and eight-token output
 budget are unchanged. Mock models use the constant gate unless a read-first or
 structured candidate mode was explicitly selected. Original gate-client construction

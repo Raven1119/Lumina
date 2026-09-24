@@ -8,6 +8,7 @@ from Conversation_Memory.adapter._calibrated_index import (
     CalibratedReadIndex, SearchHit, lexical_features, retrieval_text,
 )
 from Conversation_Memory.adapter._calibrated_recall import amplitude_weights, parameters, recall_calibrated
+from Conversation_Memory.adapter._semantic_recall import prepare_semantic_recall
 from Conversation_Memory.adapter.first_hit import FirstHitPolicy, solve_first_hit
 from Conversation_Memory.adapter.models import BackendCandidate, RecallPolicy
 
@@ -31,7 +32,7 @@ class Index:
         self.identity={'model':p['model'],'revision':p['revision'],
                        'weights_sha256':p['model_weights_sha256'],'text_view':p['text_view']}
         self.scores=scores;self.stale=stale;self.calls=0
-    def search(self, query, *, target_entity_refs=()):
+    def search(self, query, *, target_entity_refs=(), limit=20):
         self.calls+=1
         if self.stale: raise ValueError('calibrated_index_stale')
         hits=tuple(SearchHit(key,self.scores[key][0],'IP_cosine',self.scores[key][0],
@@ -127,6 +128,37 @@ def test_model_fingerprint_failure_is_visible():
     result=recall_calibrated(memory,'Past event?',RecallPolicy())
     assert result.rendered_text==''
     assert result.safe_error_code=='calibrated_index_fingerprint_mismatch'
+
+
+def test_semantic_panel_preserves_weak_seed_and_graph_fact_without_cold():
+    memory=adapter({'a':(.2,0.)},{'a':[('b',1.)],'b':[]})
+    prepared=prepare_semantic_recall(memory,'Past event?',RecallPolicy(
+        max_evidence_items=20,max_chars=5000,max_bytes=20000))
+    assert prepared.context.safe_error_code is None
+    assert {item.evidence_id for item in prepared.context.evidence}=={'a','b'}
+    assert all(item.text in prepared.context.rendered_text for item in prepared.context.evidence)
+    selected=prepared.semantic_subset((('b','analogy'),))
+    assert [item.evidence_id for item in selected.evidence]==['b']
+    assert 'b only' in selected.rendered_text and 'a only' not in selected.rendered_text
+    assert 'not a record of the current event' in selected.rendered_text
+    assert memory._last_semantic_read_diagnostics['provider_requests']==0
+
+
+def test_semantic_panel_stale_index_is_diagnostic_not_legacy_fallback():
+    memory=adapter({'a':(.9,0.)},{'a':[]},stale=True)
+    prepared=prepare_semantic_recall(memory,'Past event?',RecallPolicy(max_evidence_items=20))
+    assert prepared.context.rendered_text==''
+    assert prepared.context.safe_error_code=='calibrated_index_stale'
+    assert memory.backend.builds==0
+
+
+def test_semantic_profile_cannot_bypass_selection_via_associative_read():
+    from Conversation_Memory.adapter._associative_recall import recall_associative
+    memory=adapter({'a':(.9,0.)},{'a':[]})
+    memory.associative_read_profile='semantic-associative-v1'
+    result=recall_associative(memory,'Past event?',RecallPolicy())
+    assert result.rendered_text==''
+    assert result.safe_error_code=='semantic_selection_required'
 
 
 def test_cjk_posting_can_also_score_and_prefix_view_keeps_negation():
