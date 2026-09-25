@@ -13,6 +13,7 @@ from .llm import CachedLLM,FakeLLM,RealLLM
 from .replay import ROOT,load_set,run_set
 from .report import write_json
 from .scoring import paired_delta
+from .measure import write_comparison_v2
 
 
 def _options(parser):
@@ -103,6 +104,7 @@ def _suite(args):
         ci=f"[{d['ci'][0]:.6f}, {d['ci'][1]:.6f}]"
         lines.append(f"| {d['set']} | {d['from']}→{d['to']} | {d['category']} | {d['delta']:.6f} | {ci} |")
     (root/'comparison.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    write_comparison_v2(root,names,stages)
     print(root)
 
 
@@ -114,6 +116,7 @@ def main(argv=None):
     suite=commands.add_parser('suite');suite.add_argument('--sets',default='dev_a,dev_b');suite.add_argument('--presets',default='B0,B1,P1,P2,P2g,P3,P4,P5,P6');_options(suite)
     compare=commands.add_parser('compare');compare.add_argument('left',type=Path);compare.add_argument('right',type=Path)
     inspect=commands.add_parser('inspect');inspect.add_argument('run',type=Path);inspect.add_argument('--probe',required=True);inspect.add_argument('--variant',type=int,default=0)
+    v2=commands.add_parser('comparison-v2');v2.add_argument('suite',type=Path);v2.add_argument('--sets',default='dev_a,dev_b');v2.add_argument('--presets',default='B0,B1,P1,P2,P2g,P3,P4,P5,P6')
     memories=commands.add_parser('memories');memories.add_argument('run',type=Path);memories.add_argument('--at')
     args=parser.parse_args(argv)
     if args.command=='build-eval':
@@ -123,6 +126,10 @@ def main(argv=None):
         out=args.out or _out(args.set,args.set+'_'+args.preset)
         print(_execute(args,args.set,args.preset,out)['out']);return 0
     if args.command=='suite':_suite(args);return 0
+    if args.command=='comparison-v2':
+        write_comparison_v2(args.suite,[x.strip() for x in args.sets.split(',') if x.strip()],
+                            [x.strip() for x in args.presets.split(',') if x.strip()])
+        print(args.suite/'comparison_v2.md');return 0
     if args.command=='compare':
         left=json.loads((args.left/'summary.json').read_text());right=json.loads((args.right/'summary.json').read_text())
         print(json.dumps({'left':left['by_category'],'right':right['by_category']},ensure_ascii=False,indent=2));return 0

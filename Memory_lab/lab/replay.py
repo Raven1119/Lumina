@@ -20,6 +20,7 @@ from .hotcold import HotCold
 from .answer import update_summary,generate_answer
 from .report import write_run,timing_summary
 from .scoring import score_probe,summarize
+from .measure import measure_probe,summarize_measure
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -144,6 +145,7 @@ def run_set(name,preset_name,llm,embedder,out:Path,*,answer=False,
             for item in result.raw:
                 if item.time>=at:raise AssertionError('future raw source')
             mark=score_probe(result,p,variant)
+            measure=measure_probe(result,p,snap,when,cfg)
             not_scored=changed_time and (probe['category']=='时间' or bool(result.diagnostics['time_intervals']))
             answer_data=None
             if answer:
@@ -155,7 +157,7 @@ def run_set(name,preset_name,llm,embedder,out:Path,*,answer=False,
                             'message':probe['message'],'variant_days':offset,'soft':probe.get('soft',False),
                             'pending_cold':store.pending_count(),'store_version':before,
                             'not_scored':not_scored,'recall':_serialize_result(result),
-                            'rendered':render_memory_block(result,when,cfg),'score':mark,
+                            'rendered':render_memory_block(result,when,cfg),'score':mark,'measure':measure,
                             'answer':answer_data})
         clock.set(at)
     summary={'set':name,'preset':preset_name,'by_category':summarize(records),
@@ -169,7 +171,8 @@ def run_set(name,preset_name,llm,embedder,out:Path,*,answer=False,
                       'attribution':r['score']['attribution']}
                      for r in records if r['soft'] and r['variant_days']==0],
              'attribution':{r['probe_id']:r['score']['attribution'] for r in records if r['variant_days']==0},
-             'probe_version_checks':probe_version_checks}
+             'probe_version_checks':probe_version_checks,
+             'measure':summarize_measure(records)}
     timing=timing_summary(times,sum(not x['cache_hit'] for x in dream_log),sum(x['cache_hit'] for x in dream_log),
                           llm.new_calls,llm.new_input_tokens,llm.new_output_tokens)
     curves={'dream':curve,'gap_sweep':{r['probe_id']+'+'+str(r['variant_days']):(

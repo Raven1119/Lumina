@@ -60,6 +60,12 @@ def write_run(out,config,store,now,cfg,dream_log,records,curves,summary,timing):
            '', '| 类别 | n | 完全命中 | 95% CI | 只命中干扰 |','| --- | ---: | ---: | --- | ---: |']
     for category,row in summary['by_category'].items():
         lines.append(f"| {category} | {row['n']} | {row['all_complete']:.6f} | {row['all_complete_ci']} | {row['only_distractor']} |")
+    if 'measure' in summary:
+        from .measure import LEGEND,measure_table,time_table
+        blocks=[(cat,block) for cat,block in summary['measure']['by_category'].items()]
+        blocks.append(('合计',summary['measure']['overall']))
+        lines.extend(['','## 测量 v2','',*LEGEND,'',*measure_table(blocks,'category','类别'),
+                      '','### 时间区间','',*time_table([('合计',summary['measure']['overall'])])])
     (out/'report.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
     missing=[name for name in REQUIRED if not (out/name).exists()]
     if missing:raise AssertionError(f'missing artifacts: {missing}')
