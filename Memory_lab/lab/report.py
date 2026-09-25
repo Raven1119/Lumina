@@ -71,10 +71,13 @@ def write_run(out,config,store,now,cfg,dream_log,records,curves,summary,timing):
     if missing:raise AssertionError(f'missing artifacts: {missing}')
 
 
-def timing_summary(samples,dream_new,dream_hits,model_new,input_tokens,output_tokens):
+def timing_summary(samples,dream_new,dream_hits,model_new,input_tokens,output_tokens,
+                   new_calls_by_purpose=None,cache_hits_by_purpose=None):
     ordered=sorted(samples)
     def pct(p):
         return ordered[min(len(ordered)-1,round((len(ordered)-1)*p))] if ordered else 0.0
     return {'probe_seconds':samples,'probe_p50':statistics.median(samples) if samples else 0.0,
             'probe_p95':pct(.95),'dream_new_calls':dream_new,'dream_cache_hits':dream_hits,
-            'new_model_calls':model_new,'new_input_tokens':input_tokens,'new_output_tokens':output_tokens}
+            'new_model_calls':model_new,'new_input_tokens':input_tokens,'new_output_tokens':output_tokens,
+            'new_calls_by_purpose':new_calls_by_purpose or {},
+            'cache_hits_by_purpose':cache_hits_by_purpose or {}}

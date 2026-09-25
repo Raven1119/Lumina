@@ -1,0 +1,939 @@
+{
+ "items": [
+  {
+   "id": "a-01",
+   "X": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "凌晨1:30问“刚跑完？”，跑步是前一天下午的计划，时间上不太合理；为疑问语气，不算错。",
+    "alive": 2
+   },
+   "Y": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "同样把凌晨的疲惫归因于下午的跑步，未体现他常在实验室待到深夜；疑问语气。",
+    "alive": 2
+   },
+   "prefer": "tie",
+   "reason": "两者几乎相同，都只接最近一句跑步，忽略深夜实验室常态与knockdown失败压力。"
+  },
+  {
+   "id": "a-02",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "“别拿咸肉当晚饭”呼应前一天食堂红烧肉咸，属轻松回扣，无事实错误。",
+    "alive": 4
+   },
+   "prefer": "Y",
+   "reason": "都用“难得”体现常态，Y还自然接上前一天食堂的咸红烧肉。"
+  },
+  {
+   "id": "a-03",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都支持他去跑步。"
+  },
+  {
+   "id": "a-04",
+   "X": {
+    "should": [
+     1,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "练琴卡在《晴天》前奏换和弦、练一小时、手指睡一觉、妈妈问清明、knockdown均与s19一致；未提五一。",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "内容正确，但未点出《晴天》，也未提五一。",
+    "alive": 4
+   },
+   "prefer": "X",
+   "reason": "两者都准确，X细节更完整（曲名、练一小时、她的建议）。"
+  },
+  {
+   "id": "a-05",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "与s17-t03/t05一致：补knockdown、推迟、多三四周。",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "只说了补knockdown，没说投稿推迟。",
+    "alive": 4
+   },
+   "prefer": "X",
+   "reason": "X完整说出要求和推迟投稿，Y漏了推迟这一关键结果。"
+  },
+  {
+   "id": "a-06",
+   "X": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "4/1成像、补图四时间点、两点结束均与s23一致。",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "4/1成像、补图四、麻辣烫、有点冷均与s23一致。",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "两者日期和事件都对，Y多了麻辣烫和天冷等准确细节，更像记得那晚。"
+  },
+  {
+   "id": "a-07",
+   "X": {
+    "should": [
+     0.5,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "赶成像文章、补图三图四、晚上抢机时、深夜换液基本有据；“常抢十点到一点”略夸大（三月初只有3/4一次是10-1，之后多为11-2），未提改图写讨论、月底投稿和陈老师开会。",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "称没有三月初的记录，关键往事全部遗忘。",
+    "alive": 2
+   },
+   "prefer": "X",
+   "reason": "X基本答出三月初在赶文章、晚上成像，Y完全答不上。"
+  },
+  {
+   "id": "a-08",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "“提前回来了？”前提有误：3/21走、约三周，4/13回并不算提前；为疑问语气，不计错。",
+    "alive": 2
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": true,
+    "note": "“她回来得比预期早”与记录不符：林晓3/21（周六）出发、开会交流约三周，预计4/11前后回，4/13回实验室并不算提前。",
+    "alive": 2
+   },
+   "prefer": "X",
+   "reason": "两者都误判为提前回来且未提抗体，X至少用疑问语气，Y直接断言错误。"
+  },
+  {
+   "id": "a-09",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "中性追问，未体现是哪个小周。",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "“培养箱？”正确接到师弟小周没关严培养箱门的事。",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "Y准确识别是实验室师弟小周并联系到上次培养箱的事，X只是泛泛追问。"
+  },
+  {
+   "id": "a-10",
+   "X": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，都联系到化毛膏。"
+  },
+  {
+   "id": "a-11",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "“你最近熬夜多”有据；建议复称看趋势，但没建议核对秤本身，也未联系到他先怀疑仪器的经历。",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "只有一句不信读数，没有核对方法，也未联系往事。",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "两者都未联系到先核对仪器的往事，X至少给了可操作的复核办法。"
+  },
+  {
+   "id": "a-12",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都只问机时，未提晚饭。"
+  },
+  {
+   "id": "a-13",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "X点出knockdown和图这两个当前进展，更接得上前文；Y较泛。"
+  },
+  {
+   "id": "a-14",
+   "X": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "问陈老师反应，间接联系到成了就投稿，未对比第一轮三成。",
+    "alive": 4
+   },
+   "prefer": "Y",
+   "reason": "Y联系到陈老师和后续投稿，X只有一句夸奖。"
+  },
+  {
+   "id": "a-15",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "呼应她说过的“手指需要睡一觉才会记住”，隐含知道是那首曲子，但未点名《晴天》或换和弦。",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "同样呼应“手指睡一觉”的建议，未点名曲子或换和弦。",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都用同一句旧话回扣。"
+  },
+  {
+   "id": "a-16",
+   "X": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "“定日子”暗合她当时说的“最好给它定个日子”。",
+    "alive": 4
+   },
+   "prefer": "Y",
+   "reason": "两者都没提细胞传代和五一，Y的“定日子”暗合当时建议，略好。"
+  },
+  {
+   "id": "a-17",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "与s17一致。",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "3/28时knockdown确实尚未开始，陈老师要求补完再投，与记录一致。",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "两者都记得计划已变，Y更明确可靠。"
+  },
+  {
+   "id": "a-18",
+   "X": {
+    "should": [
+     1,
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "阿杰换静音键盘、答应十二点后戴耳机与s18、s20一致。",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0.5,
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "隐含知道这事已告一段落，但没说出谈过、阿杰的承诺和不搬的决定。",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "X具体说出阿杰的承诺，明显记得这件事的来龙去脉，Y只是泛问。"
+  },
+  {
+   "id": "a-19",
+   "X": {
+    "should": [
+     1,
+     0.5
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "承认并说出修正理由（机时和细胞），但没提改为第二天上午不排事；最后一句是新补的理由，非旧话。",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     0.5
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "承认并说出修正理由，“想当然”与原话一致，但没提第二天上午不排事。",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都承认并说出修正原因，都漏了替代建议，实质相同。"
+  },
+  {
+   "id": "a-20",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "与s17-t08一致。",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": true,
+    "note": "“总时间其实差不多”与s17-t08原话“总时间反而更短”相反；“多一轮被拒风险、主动权”是当时没说过的理由。",
+    "alive": 2
+   },
+   "prefer": "X",
+   "reason": "X准确复述当时理由，Y把“总时间更短”说成“差不多”并编造新理由。"
+  },
+  {
+   "id": "a-21",
+   "X": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "先认真谈、说清具体边界正确，未提戴耳机、静音键盘和谈不拢再搬。",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "与s15-t14、t16一致。",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "Y完整准确复述当时的建议，X较概括。"
+  },
+  {
+   "id": "a-22",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "说出杭州没去成，未说原因和改约五一。",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "同X。",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者几乎一字不差，实质相同。"
+  },
+  {
+   "id": "a-23",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "独立温度计、37度、屏幕传感器坏了、一盆没扔均与s06一致。",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "没扔、温度计测37度正确，但没说出是屏幕传感器坏了。",
+    "alive": 5
+   },
+   "prefer": "X",
+   "reason": "两者都准确，X多说出了传感器故障这个原因。"
+  },
+  {
+   "id": "a-24",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "桂花拿铁是他3/3喝过的甜饮，疑问式提议，无错。",
+    "alive": 4
+   },
+   "prefer": "Y",
+   "reason": "基准时刻；Y自然想到他喝过的桂花拿铁，X为普通追问。"
+  },
+  {
+   "id": "a-25",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "60多天后主动提起3月一次性闲聊的桂花拿铁和店员小周，不自然；且那是限定款，断言现在“有”缺乏依据。",
+    "alive": 2
+   },
+   "prefer": "X",
+   "reason": "60天后Y硬拉出一次性的桂花拿铁旧事，X正常追问更得体。"
+  },
+  {
+   "id": "a-26",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同。"
+  },
+  {
+   "id": "a-27",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都正常追问，没硬扯柯基。"
+  },
+  {
+   "id": "a-28",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同。"
+  },
+  {
+   "id": "a-29",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "答非所问：他说食堂菜咸，回问60多天前计划的买猫粮，前提也不合理（疑问语气不计错）。",
+    "alive": 1
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "同X，答非所问地扯出60多天前的买猫粮计划。",
+    "alive": 1
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，都答非所问。"
+  },
+  {
+   "id": "a-30",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都体现知道他常因机时或收尾晚走，实质相同。"
+  },
+  {
+   "id": "a-31",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都想到机时，实质相同。"
+  },
+  {
+   "id": "a-32",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，都联系到化毛膏。"
+  },
+  {
+   "id": "a-33",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "问“还剩多少”略不合时宜，那支化毛膏应早已吃完；疑问语气不计错。",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "Y",
+   "reason": "都联系到化毛膏，Y给出梳毛、再备一支的实用建议，比问旧药还剩多少更合时宜。"
+  },
+  {
+   "id": "a-34",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同。"
+  },
+  {
+   "id": "a-35",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同。"
+  }
+ ]
+}

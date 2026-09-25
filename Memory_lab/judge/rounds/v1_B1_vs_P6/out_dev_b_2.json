@@ -1,0 +1,925 @@
+{
+ "items": [
+  {
+   "id": "b-01",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，都顺势接到清晨画画的习惯。"
+  },
+  {
+   "id": "b-02",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，“难得”都体现晚起对他少见。"
+  },
+  {
+   "id": "b-03",
+   "X": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都用擦窗户接上他焦虑就收拾的习惯，都没问是什么让他乱。"
+  },
+  {
+   "id": "b-04",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     1
+    ],
+    "wrong": true,
+    "note": "“前天晚上你刚交完第二批三张，说去河边骑了一圈……决定明早五点改发型”：前天晚上（5/19）实际是带豆包看医生；河边骑车和明早五点改发型是 5/14，交第二批是 5/15，张冠李戴。",
+    "alive": 1
+   },
+   "prefer": "X",
+   "reason": "X 准确说出 5/19 晚上豆包看医生的内容，Y 把 5/14、5/15 的事错当成前天晚上。"
+  },
+  {
+   "id": "b-05",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，都准确复述 5/20 换国风那通电话。"
+  },
+  {
+   "id": "b-06",
+   "X": {
+    "should": [
+     0.5,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     1
+    ],
+    "wrong": true,
+    "note": "“画到中途，老王提出整体从日系改成国风……跟他谈了加费用和延期”：换风格电话是 5/20，谈判是 5/23，属于五月中下旬，不是五月上旬。",
+    "alive": 2
+   },
+   "prefer": "X",
+   "reason": "X 大体符合五月上旬（立绘单+漫展周边），Y 把 5/20 之后的国风返工和谈判错放进五月上旬。"
+  },
+  {
+   "id": "b-07",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都正确对应 6/4 交第四批、排队没买喝了白开水。"
+  },
+  {
+   "id": "b-08",
+   "X": {
+    "should": [
+     0.5,
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": true,
+    "note": "“他带葡萄干了吗？”用“他”指阿遥，记录中阿遥是女性（“你画，她写”“她已经有个故事大纲了”）。",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0.5,
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "Y",
+   "reason": "两者都记得葡萄干之约，但 X 把阿遥的性别弄错成“他”。"
+  },
+  {
+   "id": "b-09",
+   "X": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，都只是追问改了什么，未提之前的换风格或小改。"
+  },
+  {
+   "id": "b-10",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "X",
+   "reason": "X 明确联系到医生让休息两周，Y 只提到之前好多了，没接上扭伤和医嘱。"
+  },
+  {
+   "id": "b-11",
+   "X": {
+    "should": [
+     0.5,
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5,
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都类比老王说“质感”，但都没明确建议先给几个方向让朋友挑。"
+  },
+  {
+   "id": "b-12",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，都未提交稿后的奶茶，属正常回应。"
+  },
+  {
+   "id": "b-13",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，正常追问，未编造老王会说什么。"
+  },
+  {
+   "id": "b-14",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都接上他之前还不会换气的阶段，实质相同。"
+  },
+  {
+   "id": "b-15",
+   "X": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "X 记得是淡青色加手写字那组，Y 只是泛泛回应。"
+  },
+  {
+   "id": "b-16",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "X 暗含五月那次因撞大单没去，Y 看不出记得什么。"
+  },
+  {
+   "id": "b-17",
+   "X": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都指出已改成国风、前四张已交，但都没提交付已推到 6/12 和加三成费用，实质相同。"
+  },
+  {
+   "id": "b-18",
+   "X": {
+    "should": [
+     0.5,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "X 提到当时决定真坏了再换，Y 提到屏已修好，各接住一半往事，优劣相当。"
+  },
+  {
+   "id": "b-19",
+   "X": {
+    "should": [
+     0.5,
+     1
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     1
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "Y 清楚承认原先针对整体换风格说该收费并说明后来的修正，X 只复述修正，没正面承认原来的说法。"
+  },
+  {
+   "id": "b-20",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "X",
+   "reason": "X 完整说出先查连接线、修比换便宜，Y 只说了一半。"
+  },
+  {
+   "id": "b-21",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 2
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 2
+   },
+   "prefer": "X",
+   "reason": "两者都没答出当时的劝法，但 X 至少定位到五月底那次，Y 完全像不记得。"
+  },
+  {
+   "id": "b-22",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     1
+    ],
+    "wrong": true,
+    "note": "“五月底那场，你和小鹿一起摆摊”：他因赶工没去，周边放在小鹿摊位上卖；且“具体卖了多少我这边没有数字”忽略了明信片半天卖完的记录。",
+    "alive": 1
+   },
+   "prefer": "X",
+   "reason": "X 准确说出明信片半天卖完、小鹿说很多人问作者，Y 错说他亲自摆摊。"
+  },
+  {
+   "id": "b-23",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都正确说明拍片确认是扭伤不是骨折。"
+  },
+  {
+   "id": "b-24",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，基准时刻提烤红薯自然得体。"
+  },
+  {
+   "id": "b-25",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，60 天后仍提烤红薯略显刻意，但作为零食建议尚属正常。"
+  },
+  {
+   "id": "b-26",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，用他常去河边骑车接话。"
+  },
+  {
+   "id": "b-27",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，河边骑车是反复出现的习惯，60 天后提及也不突兀。"
+  },
+  {
+   "id": "b-28",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，自然接上前不久外卖送错的事。"
+  },
+  {
+   "id": "b-29",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，用他常点的杨枝甘露猜测，属正常回应。"
+  },
+  {
+   "id": "b-30",
+   "X": {
+    "should": [
+     0.5
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都体现早醒是他的常态，但都没提清晨画画。"
+  },
+  {
+   "id": "b-31",
+   "X": {
+    "should": [
+     0.5
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者实质相同，都体现早醒是常态，措辞略有不同。"
+  },
+  {
+   "id": "b-32",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "X 联系到豆包的腿伤已恢复，Y 只接了没稿子的近况。"
+  },
+  {
+   "id": "b-33",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，都联系到腿伤已好。"
+  },
+  {
+   "id": "b-34",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，直接给出正确翻译。"
+  },
+  {
+   "id": "b-35",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两者完全相同，正常推荐，未编造他读过的书。"
+  }
+ ]
+}

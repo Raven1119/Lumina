@@ -8,12 +8,17 @@ Conversation Memory 重设计的实验室：在 Dream 中把对话整合成会�
 | `docs/TASK_CARD.md` | 实现任务卡 | 已执行；结果见下行 |
 | `docs/RESULTS_v1.md` | 两个开发集的运行结果、限制与偏差 | 已写 |
 | `docs/TASK_measure_v2.md` | 只重算测量的任务卡 | 已执行；结果追加在上一行文档 |
+| `docs/TASK_answer_v2.md` | 回答层 v2 实验任务卡 | 已执行；结果见下行 |
+| `docs/RESULTS_answer_v2.md` | 时间标注、记忆用法与召回阈值的实验记录 | 已写 |
 | `prompts/integrate_v1.md` | Dream 整合提示词 | 已写 |
 | `prompts/answer_v1.md` | 回答层提示词（可选） | 已写 |
+| `prompts/answer_v2.md`、`answer_v3.md` | 回答层实验提示词 | 已写 |
 | `eval_set/` | 三份剧本、90 条探针、构建与校验脚本 | 已写，`python eval_set/build.py` 通过 |
 | `memlab/` | 记忆系统 | 实验实现 |
 | `lab/` | 评测器与实验设施 | 实验实现 |
-| `tests/` | 离线测试 | 46 项通过 |
+| `tests/` | 离线测试 | 51 项通过 |
+| `answers_v1/`、`answers_v2/` | 已提交的回答原文与配置；v2 另含阈值扫描对照表 | 已写 |
+| `judge/` | 仓库主人提供的第一轮评审材料与工具 | 已写 |
 | `cache/` | 模型响应与嵌入缓存 | 运行后生成 |
 | `runs/` | 运行输出（不提交） | 运行后生成 |
 

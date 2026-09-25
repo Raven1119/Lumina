@@ -1,0 +1,282 @@
+{
+ "a-01": {
+  "probe": "A01",
+  "variant": 0,
+  "category": "理解当下",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-02": {
+  "probe": "A02",
+  "variant": 0,
+  "category": "理解当下",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-03": {
+  "probe": "A03",
+  "variant": 0,
+  "category": "理解当下",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-04": {
+  "probe": "A04",
+  "variant": 0,
+  "category": "时间",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-05": {
+  "probe": "A05",
+  "variant": 0,
+  "category": "时间",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-06": {
+  "probe": "A06",
+  "variant": 0,
+  "category": "时间",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-07": {
+  "probe": "A07",
+  "variant": 0,
+  "category": "时间",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-08": {
+  "probe": "A08",
+  "variant": 0,
+  "category": "实体",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-09": {
+  "probe": "A09",
+  "variant": 0,
+  "category": "实体",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-10": {
+  "probe": "A10",
+  "variant": 0,
+  "category": "实体",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-11": {
+  "probe": "A11",
+  "variant": 0,
+  "category": "远联想",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-12": {
+  "probe": "A12",
+  "variant": 0,
+  "category": "远联想",
+  "X": "B1",
+  "Y": "P6",
+  "soft": true
+ },
+ "a-13": {
+  "probe": "A13",
+  "variant": 0,
+  "category": "远联想",
+  "X": "P6",
+  "Y": "B1",
+  "soft": true
+ },
+ "a-14": {
+  "probe": "A14",
+  "variant": 0,
+  "category": "接续",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-15": {
+  "probe": "A15",
+  "variant": 0,
+  "category": "接续",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-16": {
+  "probe": "A16",
+  "variant": 0,
+  "category": "接续",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-17": {
+  "probe": "A17",
+  "variant": 0,
+  "category": "变化",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-18": {
+  "probe": "A18",
+  "variant": 0,
+  "category": "变化",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-19": {
+  "probe": "A19",
+  "variant": 0,
+  "category": "自己的看法",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-20": {
+  "probe": "A20",
+  "variant": 0,
+  "category": "自己的看法",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-21": {
+  "probe": "A21",
+  "variant": 0,
+  "category": "自己的看法",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-22": {
+  "probe": "A22",
+  "variant": 0,
+  "category": "否定",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-23": {
+  "probe": "A23",
+  "variant": 0,
+  "category": "否定",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-24": {
+  "probe": "A24",
+  "variant": 0,
+  "category": "淡忘",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-25": {
+  "probe": "A24",
+  "variant": 60,
+  "category": "淡忘",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-26": {
+  "probe": "A25",
+  "variant": 0,
+  "category": "淡忘",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-27": {
+  "probe": "A25",
+  "variant": 60,
+  "category": "淡忘",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-28": {
+  "probe": "A26",
+  "variant": 0,
+  "category": "淡忘",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-29": {
+  "probe": "A26",
+  "variant": 60,
+  "category": "淡忘",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-30": {
+  "probe": "A27",
+  "variant": 0,
+  "category": "保留",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-31": {
+  "probe": "A27",
+  "variant": 60,
+  "category": "保留",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-32": {
+  "probe": "A28",
+  "variant": 0,
+  "category": "保留",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-33": {
+  "probe": "A28",
+  "variant": 60,
+  "category": "保留",
+  "X": "B1",
+  "Y": "P6",
+  "soft": false
+ },
+ "a-34": {
+  "probe": "A29",
+  "variant": 0,
+  "category": "对照",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ },
+ "a-35": {
+  "probe": "A30",
+  "variant": 0,
+  "category": "对照",
+  "X": "P6",
+  "Y": "B1",
+  "soft": false
+ }
+}

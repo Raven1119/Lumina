@@ -109,10 +109,12 @@ class RealLLM:
 
 
 class CachedLLM:
-    def __init__(self,base,root:Path,cache_only:bool=False,temperature:float=0):
+    def __init__(self,base,root:Path,cache_only:bool=False,temperature:float=0,
+                 allow_new:set[str]|None=None):
         self.base=base;self.model=base.model;self.root=root;self.root.mkdir(parents=True,exist_ok=True)
-        self.cache_only=cache_only;self.temperature=temperature
+        self.cache_only=cache_only;self.temperature=temperature;self.allow_new=allow_new
         self.new_calls=0;self.hits=0;self.new_input_tokens=0;self.new_output_tokens=0
+        self.new_calls_by_purpose={};self.cache_hits_by_purpose={}
 
     def complete(self,*,system,messages,max_tokens,purpose,attempt=0):
         payload={'model':self.model,'max_tokens':max_tokens,'temperature':self.temperature,
@@ -122,14 +124,17 @@ class CachedLLM:
         if path.is_file():
             data=json.loads(path.read_text(encoding='utf-8'))
             self.hits+=1
+            self.cache_hits_by_purpose[purpose]=self.cache_hits_by_purpose.get(purpose,0)+1
             return LLMResult(data['text'],data['usage'],True,key)
-        if self.cache_only:raise CacheMiss(key)
+        if self.cache_only or (self.allow_new is not None and purpose not in self.allow_new):
+            raise CacheMiss(key)
         result=self.base.complete(system=system,messages=messages,max_tokens=max_tokens,purpose=purpose,attempt=attempt)
         data={'text':result.text,'usage':result.usage,'model':self.model,'purpose':purpose,'attempt':attempt}
         tmp=path.with_suffix('.tmp')
         tmp.write_text(json.dumps(data,ensure_ascii=False,sort_keys=True),encoding='utf-8')
         os.replace(tmp,path)
         self.new_calls+=1
+        self.new_calls_by_purpose[purpose]=self.new_calls_by_purpose.get(purpose,0)+1
         self.new_input_tokens+=int(result.usage.get('input_tokens',0))
         self.new_output_tokens+=int(result.usage.get('output_tokens',0))
         return LLMResult(result.text,result.usage,False,key)

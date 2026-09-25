@@ -16,6 +16,7 @@ class Config:
     tau: float = TAU
     theta: float = THETA
     pi_min: float = 0.05
+    pi_recall: float = 0.0
     dormant_days: float = 30.0
     w_write: float = 1.0
     w_recall: float = 0.5
@@ -84,9 +85,12 @@ class Config:
 
 
 def preset(name: str, embedder: str = "bge-m3") -> Config:
-    cfg = Config(preset=name, c_sem={"bge-m3": .60, "minilm": .50, "hash": .30}.get(embedder, .60),
+    recall_cutoffs={"P6r05":.05,"P6r10":.10,"P6r20":.20}
+    base_name="P6" if name in recall_cutoffs else name
+    cfg = Config(preset=name, pi_recall=recall_cutoffs.get(name,0.0),
+                 c_sem={"bge-m3": .60, "minilm": .50, "hash": .30}.get(embedder, .60),
                  dup_cos=.85 if embedder == "hash" else .90)
-    if name not in {"B0", "B1", "P1", "P2", "P2g", "P3", "P4", "P5", "P6"}:
+    if base_name not in {"B0", "B1", "P1", "P2", "P2g", "P3", "P4", "P5", "P6"}:
         raise ValueError(f"unknown preset: {name}")
     if name in {"B0", "B1"}:
         return replace(cfg, dream_enabled=False, raw_enabled=name == "B1",
@@ -96,7 +100,7 @@ def preset(name: str, embedder: str = "bge-m3") -> Config:
                        event_layer=False, cooccur=False, corecall=False,
                        salience_core=False, remote_slot=False)
     order = ["P1", "P2", "P2g", "P3", "P4", "P5", "P6"]
-    i = order.index(name)
+    i = order.index(base_name)
     return replace(cfg, time_channel=i >= 3, entity_channel=i >= 4,
                    diffusion=i >= 2, semantic_layer=i >= 2,
                    time_layer=i >= 3, entity_layer=i >= 4,

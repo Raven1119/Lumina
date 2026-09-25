@@ -19,9 +19,12 @@ from .measure import write_comparison_v2
 def _options(parser):
     parser.add_argument('--llm',choices=('fake','real'),default='fake')
     parser.add_argument('--cache-only',action='store_true')
+    parser.add_argument('--new-calls',help='comma-separated purposes allowed to miss cache')
     parser.add_argument('--embedder',choices=('auto','bge-m3','minilm','hash'),default='auto')
     parser.add_argument('--allow-download',action='store_true')
     parser.add_argument('--answer',action='store_true')
+    parser.add_argument('--answer-prompt',choices=('v1','v2','v3'),default='v1')
+    parser.add_argument('--answer-scope',choices=('primary','all'),default='all')
     parser.add_argument('--judge',choices=('none','deepseek'),default='none')
     parser.add_argument('--gap-sweep',default='0,1,7,14,30,60,120')
     parser.add_argument('--time-shift-days',type=float,default=0)
@@ -48,11 +51,13 @@ def _execute(args,name,preset_name,out,embedder=None):
     if args.judge!='none':raise ValueError('judge model is undecided; use --judge none')
     embedder=embedder or resolve_embedder(args.embedder,args.allow_download,ROOT/'cache'/'embed')
     base=FakeLLM(embedder) if args.llm=='fake' else RealLLM()
-    llm=CachedLLM(base,ROOT/'cache'/'llm',args.cache_only)
+    allow_new=None if args.new_calls is None else {x.strip() for x in args.new_calls.split(',') if x.strip()}
+    llm=CachedLLM(base,ROOT/'cache'/'llm',args.cache_only,allow_new=allow_new)
     return run_set(name,preset_name,llm,embedder,out,answer=args.answer,
                    gap_sweep=tuple(int(x) for x in args.gap_sweep.split(',') if x),
                    time_shift_days=args.time_shift_days,time_scale=args.time_scale,
-                   dream_retry_failed=args.dream_retry_failed,allow_holdout=args.allow_holdout)
+                   dream_retry_failed=args.dream_retry_failed,allow_holdout=args.allow_holdout,
+                   answer_prompt=args.answer_prompt,answer_scope=args.answer_scope)
 
 
 def _suite(args):

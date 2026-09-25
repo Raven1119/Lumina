@@ -94,11 +94,12 @@ def recall(snapshot,cue,now,cfg)->RecallResult:
     near=[]
     for i in sorted(range(n),key=lambda i:(-float(scores[i]),memories[i]['id'])):
         if len(near)>=cfg.near_cap:break
-        if scores[i]<=0 or similar(i):continue
+        if scores[i]<=0 or pi[i]<cfg.pi_recall or similar(i):continue
         near.append(item(i,'near'));selected.append(i)
     remote=[]
     if cfg.remote_slot and near:
-        options=[i for i in range(n) if a0[i]==0 and not dormant[i] and scores[i]>0 and i not in selected and not similar(i)]
+        options=[i for i in range(n) if a0[i]==0 and not dormant[i] and scores[i]>0
+                 and pi[i]>=cfg.pi_recall and i not in selected and not similar(i)]
         if options:
             i=min(options,key=lambda i:(-float(scores[i]),memories[i]['id']))
             if scores[i]>=cfg.remote_ratio*near[-1].score:remote=[item(i,'remote')];selected.append(i)
@@ -106,7 +107,7 @@ def recall(snapshot,cue,now,cfg)->RecallResult:
     if cfg.salience_core:
         for i in sorted(range(n),key=lambda i:(-float(B[i]),memories[i]['id'])):
             if len(core)>=cfg.core_cap:break
-            if dormant[i] or i in selected or similar(i):continue
+            if dormant[i] or pi[i]<cfg.pi_recall or i in selected or similar(i):continue
             core.append(item(i,'core'));selected.append(i)
     raw=search_raw(snapshot,cue,now,q,intervals,cfg) if cfg.raw_enabled else ()
     seeds={key:[{'id':(memories[i]['id'] if i<n else entities[i-n]['id']),'weight':round(float(vec[i]),6)}

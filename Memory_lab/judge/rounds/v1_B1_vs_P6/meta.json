@@ -1,0 +1,31 @@
+{
+ "labels": [
+  "B1",
+  "P6"
+ ],
+ "note": "第一轮：两个开发集，answer_v1；评审为两个互相独立、看不到系统身份的 Claude 评审 agent，每集两遍，第二遍交换 X/Y。",
+ "sets": {
+  "dev_a": {
+   "runs": {
+    "B1": "answers_v1/real_answer_dev_a_B1_v2",
+    "P6": "answers_v1/real_answer_dev_a_P6_v1"
+   },
+   "configs_sha256": {
+    "B1": "b4ffe2ac6e2d1ae9360915e87ccbd0b8f07ce5b75c71e8c9f520a218a42afba2",
+    "P6": "f099b096a1a530df82c55a324b12f0447f3a5862e9ce7a74339b5bc79469d414"
+   },
+   "items": 35
+  },
+  "dev_b": {
+   "runs": {
+    "B1": "answers_v1/real_answer_dev_b_B1_v1",
+    "P6": "answers_v1/real_answer_dev_b_P6_v1"
+   },
+   "configs_sha256": {
+    "B1": "f0a5fb34b94ea11de94d532ddc218de1fd51470f637e66791c69e780006a4495",
+    "P6": "f4370ad440ad936bfbf6d838e78168d130a7bee4f29f754a693cf2f552aedbcf"
+   },
+   "items": 35
+  }
+ }
+}

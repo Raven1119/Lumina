@@ -1,0 +1,939 @@
+{
+ "items": [
+  {
+   "id": "a-01",
+   "X": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 2
+   },
+   "Y": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 2
+   },
+   "prefer": "X",
+   "reason": "两者都只接了中午说的跑步，没联系到他常在实验室熬夜或第一轮 knockdown 只有三成的压力；凌晨一点半问“刚跑完”更不合时宜，X 略好。"
+  },
+  {
+   "id": "a-02",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "两者都点出“难得”；X 顺手接上前一天食堂红烧肉太咸的事，更像记得他的人。"
+  },
+  {
+   "id": "a-03",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两句几乎一样，都支持他去跑，都没有提到跑步是他减压的习惯。"
+  },
+  {
+   "id": "a-04",
+   "X": {
+    "should": [
+     0.5,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "两者都准确还原了练琴卡换和弦和妈妈问清明的事，都没提五一；Y 还点出《晴天》前奏和她当时的建议，更完整。"
+  },
+  {
+   "id": "a-05",
+   "X": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "两者都正确说出要补 knockdown；Y 还说了投稿推迟到做完再投，覆盖完整。"
+  },
+  {
+   "id": "a-06",
+   "X": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "X",
+   "reason": "两者都正确定位到 4/1 成像补图四；X 还带出麻辣烫和天冷，细节更贴近那晚；两者都没提愚人节纸条。"
+  },
+  {
+   "id": "a-07",
+   "X": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 2
+   },
+   "Y": {
+    "should": [
+     1,
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "X 说没有记录，等于遗忘；Y 准确说出赶文章、补图、抢晚上的成像机时、深夜换液，只漏了和陈老师开会。"
+  },
+  {
+   "id": "a-08",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": true,
+    "note": "“她回来得比预期早”：记录里只说她 3/21 出发，开会后在国外交流三周，4/13 回来基本按期，说她“提前”没有依据，而且用的是肯定语气。",
+    "alive": 2
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "Y",
+   "reason": "两者都默认知道她出差在外、都没提抗体；X 肯定地说她提前回来，没有依据，Y 用提问，更稳妥。"
+  },
+  {
+   "id": "a-09",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "X 问“培养箱？”，说明她认出是没关严培养箱门的师弟小周；Y 只是泛泛地问，看不出记得。"
+  },
+  {
+   "id": "a-10",
+   "X": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两句完全相同，都接上了化毛膏。"
+  },
+  {
+   "id": "a-11",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "Y",
+   "reason": "两者都没直接认定他胖了，也都没联系他以前先怀疑仪器的经历；Y 给了复称、看趋势这些可操作的办法，更可靠。"
+  },
+  {
+   "id": "a-12",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "都只问机时几点，没有提晚饭或麻辣烫，实质相同。"
+  },
+  {
+   "id": "a-13",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "Y",
+   "reason": "都没编造陈老师会说什么；Y 分出 knockdown 和图两条进度线，比 X 的泛问更有前文。"
+  },
+  {
+   "id": "a-14",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "都没提第一轮只有三成、只改了密度；X 接着问陈老师的反应，隐含投稿这一步，比 Y 只说“漂亮”更接得上前文。"
+  },
+  {
+   "id": "a-15",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都接上了她说的“手指睡一觉才会记住”，都没点出《晴天》和换和弦，实质相同。"
+  },
+  {
+   "id": "a-16",
+   "X": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     0.5,
+     0
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "两者都用“这次”暗示上次没去成，都没提五一；X 的“定日子了吗”呼应了她当初“最好给它定个日子”的建议。"
+  },
+  {
+   "id": "a-17",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都记得要等 knockdown 做完再投，一个直接说，一个反问，实质相同。"
+  },
+  {
+   "id": "a-18",
+   "X": {
+    "should": [
+     0.5,
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1,
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "两者都问他为什么又想搬；Y 还具体说出阿杰已换静音键盘、答应十二点后戴耳机，记得清楚。"
+  },
+  {
+   "id": "a-19",
+   "X": {
+    "should": [
+     1,
+     0.5
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     0.5
+    ],
+    "should_not": [
+     0,
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "X",
+   "reason": "两者都承认说过、都说出修正的理由，但都没提“第二天上午不排事”；X 用了她当时“想当然”的原话，Y 加了当时没说过的理由，X 更贴近原话。"
+  },
+  {
+   "id": "a-20",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": true,
+    "note": "“总时间其实差不多”与记录不符：她当时说的是“不如现在补，总时间反而更短”；“多一轮被拒的风险”“主动权”也不是当时给的理由。",
+    "alive": 2
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "Y 准确复述了“现在补，总时间反而更短”；X 把核心理由说反了，还换成了当时没说过的理由。"
+  },
+  {
+   "id": "a-21",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "Y": {
+    "should": [
+     0.5
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "X",
+   "reason": "X 完整复述了先谈、提具体要求（戴耳机、静音键盘）、谈不拢再搬；Y 对但笼统，缺了具体要求和“谈不拢再搬”。"
+  },
+  {
+   "id": "a-22",
+   "X": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1,
+     0
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两句几乎一样，都记得杭州没去成，都没提五一。"
+  },
+  {
+   "id": "a-23",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 5
+   },
+   "prefer": "Y",
+   "reason": "两者都正确说出没扔、用独立温度计测得 37 度；Y 还点明是屏幕传感器坏了，更完整。"
+  },
+  {
+   "id": "a-24",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "都正常回应；X 用问句带出他之前喝过的桂花拿铁，在六周后提起还算自然，更有个人记忆。"
+  },
+  {
+   "id": "a-25",
+   "X": {
+    "should": [
+     0.5
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 2
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "Y",
+   "reason": "60 多天后，X 主动提起只聊过一次的桂花拿铁和店员小周，不自然，而且那是限定款，现在未必还有；Y 正常得体。"
+  },
+  {
+   "id": "a-26",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两句完全相同，正常回应。"
+  },
+  {
+   "id": "a-27",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "都正常追问，都没硬扯柯基，实质相同。"
+  },
+  {
+   "id": "a-28",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两句基本相同，都没接上之前那次很咸的红烧肉。"
+  },
+  {
+   "id": "a-29",
+   "X": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": true,
+    "note": "“你还没去买猫粮？”：60 多天后仍预设他没买 4/11 说要买的猫粮，没有依据，而且和食堂菜咸无关。",
+    "alive": 1
+   },
+   "Y": {
+    "should": [
+     0
+    ],
+    "should_not": [],
+    "wrong": true,
+    "note": "“你还没去买猫粮？”：60 多天后仍预设他没买 4/11 说要买的猫粮，没有依据，而且和食堂菜咸无关。",
+    "alive": 1
+   },
+   "prefer": "tie",
+   "reason": "两句完全相同，都答非所问。"
+  },
+  {
+   "id": "a-30",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都默认他熬夜多半是因为机时，都体现这是他的常态，实质相同。"
+  },
+  {
+   "id": "a-31",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两者都从机时切入，都体现知道这是他的常态，实质相同。"
+  },
+  {
+   "id": "a-32",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "prefer": "tie",
+   "reason": "两句完全相同，都接上了化毛膏。"
+  },
+  {
+   "id": "a-33",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 4
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "X",
+   "reason": "都接上了化毛膏；过了两个多月，那一支早该吃完，X 建议再备一支、多梳毛，更合时宜也更实用；Y 问还剩多少略显脱节。"
+  },
+  {
+   "id": "a-34",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两句完全相同，直接给出翻译。"
+  },
+  {
+   "id": "a-35",
+   "X": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "Y": {
+    "should": [
+     1
+    ],
+    "should_not": [
+     0
+    ],
+    "wrong": false,
+    "note": "",
+    "alive": 3
+   },
+   "prefer": "tie",
+   "reason": "两句完全相同，正常推荐。"
+  }
+ ]
+}

@@ -48,14 +48,15 @@ def _serialize_result(result):
 
 def run_set(name,preset_name,llm,embedder,out:Path,*,answer=False,
             gap_sweep=(0,1,7,14,30,60,120),time_shift_days=0,time_scale=1.0,
-            dream_retry_failed=0,allow_holdout=False,summary_enabled=None):
+            dream_retry_failed=0,allow_holdout=False,summary_enabled=None,
+            answer_prompt='v1',answer_scope='all'):
     if name=='holdout_c' and not allow_holdout:raise ValueError('holdout requires --allow-holdout')
     dialogue,gold=load_set(name)
     if dialogue.get('split')=='holdout' and not allow_holdout:raise ValueError('holdout requires --allow-holdout')
     cfg=preset(preset_name,'hash' if embedder.identity['model'].startswith('hash') else
                'minilm' if 'MiniLM' in embedder.identity['model'] else 'bge-m3')
-    if answer and preset_name not in ('B1','P6'):
-        raise ValueError('answer comparison is limited to B1 and P6')
+    if answer and preset_name not in ('B1','P6','P6r10'):
+        raise ValueError('answer comparison is limited to B1, P6 and P6r10')
     raw_turns=[Turn(t['id'],session['id'],t['role'],datetime.fromisoformat(t['time']),t['text'])
                for session in dialogue['sessions'] for t in session['turns']]
     t0=raw_turns[0].time
@@ -120,6 +121,7 @@ def run_set(name,preset_name,llm,embedder,out:Path,*,answer=False,
         expected=simulate_hot([{'id':t.id,'role':t.role,'time':t.time} for t in raw_turns],original)
         if hot.ids()!=expected:raise AssertionError(f'Hot mismatch at {probe["id"]}')
         scenarios=[(0,at,probe,False)]
+        primary_offsets={0,*(v['offset_days'] for v in probe.get('gap_variants',[]))}
         for variant in probe.get('gap_variants',[]):
             scenarios.append((variant['offset_days'],at+timedelta(days=variant['offset_days']),
                               {**probe,**variant},True))
@@ -148,11 +150,13 @@ def run_set(name,preset_name,llm,embedder,out:Path,*,answer=False,
             measure=measure_probe(result,p,snap,when,cfg)
             not_scored=changed_time and (probe['category']=='时间' or bool(result.diagnostics['time_intervals']))
             answer_data=None
-            if answer:
-                answer_result=generate_answer(llm,probe,hot.hot,hot.summary,when,
-                                              render_memory_block(result,when,cfg))
+            if answer and (answer_scope=='all' or offset in primary_offsets):
+                answer_result,context=generate_answer(llm,probe,hot.hot,hot.summary,
+                                              hot.summary_until,when,render_memory_block(result,when,cfg),
+                                              answer_prompt)
                 answer_data={'text':answer_result.text,'usage':answer_result.usage,
-                             'cache_hit':answer_result.cache_hit,'cache_key':answer_result.cache_key}
+                             'cache_hit':answer_result.cache_hit,'cache_key':answer_result.cache_key,
+                             'context':context}
             records.append({'probe_id':probe['id'],'category':probe['category'],'time':when.isoformat(),
                             'message':probe['message'],'variant_days':offset,'soft':probe.get('soft',False),
                             'pending_cold':store.pending_count(),'store_version':before,
@@ -174,7 +178,8 @@ def run_set(name,preset_name,llm,embedder,out:Path,*,answer=False,
              'probe_version_checks':probe_version_checks,
              'measure':summarize_measure(records)}
     timing=timing_summary(times,sum(not x['cache_hit'] for x in dream_log),sum(x['cache_hit'] for x in dream_log),
-                          llm.new_calls,llm.new_input_tokens,llm.new_output_tokens)
+                          llm.new_calls,llm.new_input_tokens,llm.new_output_tokens,
+                          llm.new_calls_by_purpose,llm.cache_hits_by_purpose)
     curves={'dream':curve,'gap_sweep':{r['probe_id']+'+'+str(r['variant_days']):(
                                          r['score']['forgetting_pass'] if r['category']=='淡忘' and r['variant_days']>0
                                          else r['score']['all']['complete_strict'])
@@ -182,9 +187,10 @@ def run_set(name,preset_name,llm,embedder,out:Path,*,answer=False,
     import subprocess
     head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     config={'set':name,'preset':preset_name,'parameters':asdict(cfg),'embedder':embedder.identity,
-            'llm':llm.model,'prompt_versions':{'integrate':'integrate_v1','answer':'answer_v1'},
+            'llm':llm.model,'prompt_versions':{'integrate':'integrate_v1','answer':f'answer_{answer_prompt}'},
             'git_head':head,'answer':answer,'summary_enabled':bool(answer) if summary_enabled is None else summary_enabled,
-            'time_shift_days':time_shift_days,'time_scale':time_scale,'dream_retry_failed':dream_retry_failed}
+            'time_shift_days':time_shift_days,'time_scale':time_scale,'dream_retry_failed':dream_retry_failed,
+            'answer_scope':answer_scope}
     write_run(out,config,store,turns[-1].time,cfg,dream_log,records,curves,summary,timing)
     store.close()
     return {'out':str(out),'summary':summary,'timing':timing}
