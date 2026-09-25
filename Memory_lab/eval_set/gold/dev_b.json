@@ -1,0 +1,859 @@
+{
+ "id": "dev-b",
+ "plants": [
+  {
+   "tags": [
+    "habit-early"
+   ],
+   "kind": "习惯",
+   "summary": "他一般五点多起来画画，那时脑子最清楚、没人打扰。多次零散出现。"
+  },
+  {
+   "tags": [
+    "clean-b06",
+    "clean-b14",
+    "clean-b24"
+   ],
+   "kind": "习惯",
+   "summary": "焦虑时收拾房间（工作台、擦窗户、叠衣柜），收拾完心里就顺。"
+  },
+  {
+   "tags": [
+    "proj-plan",
+    "client-wang"
+   ],
+   "kind": "事件-计划",
+   "summary": "给游戏工作室画十二张角色立绘，日系，原定六月初交，对接制作人老王。"
+  },
+  {
+   "tags": [
+    "proj-style-change"
+   ],
+   "kind": "决定改变",
+   "summary": "5/20 老王来电：整体从日系改为国风，已画的也要重画，起初仍要求六月初交。"
+  },
+  {
+   "tags": [
+    "proj-renegotiate"
+   ],
+   "kind": "决定改变",
+   "summary": "5/23 谈判：加三成费用，交付推到 6/12。"
+  },
+  {
+   "tags": [
+    "proj-delivered"
+   ],
+   "kind": "事件-结果",
+   "summary": "6/11 最后一批交付，十二张全部通过。"
+  },
+  {
+   "tags": [
+    "deliver-b04",
+    "deliver-b09",
+    "deliver-b18",
+    "deliver-b23",
+    "deliver-b27"
+   ],
+   "kind": "共现-甲",
+   "summary": "交稿日（五次，其中两次在周四：5/28、6/4）。"
+  },
+  {
+   "tags": [
+    "milktea-b04",
+    "milktea-b09",
+    "milktea-b18",
+    "milktea-b27"
+   ],
+   "kind": "共现-乙",
+   "summary": "交稿那天点奶茶（五次中四次；6/4 排队没买），对话里从未把两件事联系起来。"
+  },
+  {
+   "tags": [
+    "call-b03",
+    "call-b08",
+    "call-b13",
+    "call-b20"
+   ],
+   "kind": "共现-甲",
+   "summary": "与客户老王通电话（四次，其中两次在周三：5/6、5/20）。"
+  },
+  {
+   "tags": [
+    "bike-b03",
+    "bike-b08",
+    "bike-b13",
+    "bike-b28"
+   ],
+   "kind": "共现-乙",
+   "summary": "通电话的同一天去河边骑车（四次中三次），对话里从未把两件事联系起来；b28 是一次与电话无关的骑车，作为噪声。"
+  },
+  {
+   "tags": [
+    "sketch-1",
+    "sketch-2"
+   ],
+   "kind": "同类事件",
+   "summary": "对方说不清要什么时，他先给三个具体方向让对方挑：老王的“质感”草图、妹妹的请柬参考图。"
+  },
+  {
+   "tags": [
+    "sister-invite"
+   ],
+   "kind": "事件",
+   "summary": "妹妹六月结婚，请他设计请柬；最后选了淡青色加手写字那组。"
+  },
+  {
+   "tags": [
+    "ayao-comic",
+    "ayao-leave"
+   ],
+   "kind": "实体-消失",
+   "summary": "大学同学、编剧阿遥，和他合作修钟表老人的短篇漫画；5/17 起去新疆采风三周，说好写第二章剧本、带葡萄干。此后不再出现。"
+  },
+  {
+   "tags": [
+    "client-wang"
+   ],
+   "kind": "同名-目标",
+   "summary": "客户、工作室制作人老王。"
+  },
+  {
+   "tags": [
+    "garage-wang"
+   ],
+   "kind": "同名-干扰",
+   "summary": "楼下修车铺的老王，帮他修了自行车链条。"
+  },
+  {
+   "tags": [
+    "dog-intro",
+    "dog-limp",
+    "dog-vet",
+    "dog-recovered"
+   ],
+   "kind": "事件-来龙去脉",
+   "summary": "狗豆包左后腿瘸 → 拍片不是骨折是扭伤、休息两周只能慢走 → 6/2 恢复可以跑。"
+  },
+  {
+   "tags": [
+    "con-plan",
+    "con-cancel"
+   ],
+   "kind": "否定",
+   "summary": "计划和小鹿在 5/30–31 漫展摆摊；因赶工没去，周边放在小鹿摊位上卖。"
+  },
+  {
+   "tags": [
+    "xiaolu-con"
+   ],
+   "kind": "否定-相关",
+   "summary": "小鹿独自去了漫展，他的明信片半天卖完。"
+  },
+  {
+   "tags": [
+    "tablet-plan",
+    "tablet-cancel"
+   ],
+   "kind": "决定改变",
+   "summary": "数位屏闪屏 → 想买六千多的新大屏 → 换了根八十块的连接线就好了，决定不买。"
+  },
+  {
+   "tags": [
+    "view-charge",
+    "view-revised"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "她先说改需求就该收费（整体换风格）；6/1 修正：长期客户的小改不收，合同写两轮免费修改、超出按张计费。"
+  },
+  {
+   "tags": [
+    "view-tablet"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "换屏之前先查是不是线的问题。后来证明是对的。"
+  },
+  {
+   "tags": [
+    "view-con"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "支持放弃漫展：摊位以后还有，这次交付只有一次。"
+  },
+  {
+   "tags": [
+    "swim-start",
+    "swim-mid"
+   ],
+   "kind": "事件-来龙去脉",
+   "summary": "学游泳：第一节呛水、太紧张 → 第三节能漂起来但不会换气。"
+  },
+  {
+   "tags": [
+    "trivia-yam",
+    "trivia-kite",
+    "trivia-fish"
+   ],
+   "kind": "一次性闲聊",
+   "summary": "楼下一年四季卖的烤红薯小摊、公园里的章鱼风筝、外卖送错的酸菜鱼。各只出现一次。"
+  },
+  {
+   "tags": [
+    "yday-b06",
+    "yday-b11",
+    "yday-b14",
+    "yday-b21",
+    "yday-b24"
+   ],
+   "kind": "时间-干扰",
+   "summary": "不同日子里带“昨天/昨晚”的句子。"
+  },
+  {
+   "tags": [
+    "dog-limp"
+   ],
+   "kind": "时间-干扰",
+   "summary": "（同上 dog 事件的一部分）5/18 早上说腿瘸，与 5/19 晚上看医生是不同的时间。"
+  }
+ ],
+ "probes": [
+  {
+   "id": "B01",
+   "category": "理解当下",
+   "time": "2026-06-07 05:40",
+   "message": "天还没亮，睡不着",
+   "must_surface": [
+    [
+     "habit-early"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现她知道清晨是他画画的时间（可以顺势提到画画或最后一批稿）"
+    ],
+    "should_not": [
+     "把早醒当成反常并劝他回去睡而不提他的习惯"
+    ]
+   }
+  },
+  {
+   "id": "B02",
+   "category": "理解当下",
+   "time": "2026-05-29 11:30",
+   "message": "今天睡到十一点才起",
+   "must_surface": [
+    [
+     "habit-early"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现这对他来说少见：他通常五点多就起来画画"
+    ],
+    "should_not": [
+     "说他平时就起得晚"
+    ]
+   }
+  },
+  {
+   "id": "B03",
+   "category": "理解当下",
+   "time": "2026-06-04 23:00",
+   "message": "心里好乱，想把屋子从头到尾收拾一遍",
+   "must_surface": [
+    [
+     "clean-b06",
+     "clean-b14"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "理解收拾房间是他缓解焦虑的方式",
+     "可以关心是什么让他乱（最后几张稿）"
+    ],
+    "should_not": [
+     "劝他别收拾"
+    ]
+   }
+  },
+  {
+   "id": "B04",
+   "category": "时间",
+   "time": "2026-05-21 23:30",
+   "message": "前天晚上我们聊了啥",
+   "must_surface": [
+    [
+     "dog-vet"
+    ]
+   ],
+   "must_not_surface": [
+    "dog-limp",
+    "yday-b06",
+    "yday-b11",
+    "yday-b14"
+   ],
+   "rubric": {
+    "should": [
+     "带豆包看了医生：不是骨折是扭伤，休息两周只能慢走"
+    ],
+    "should_not": [
+     "把昨天（换风格的电话）或更早的事当成前天晚上"
+    ]
+   }
+  },
+  {
+   "id": "B05",
+   "category": "时间",
+   "time": "2026-05-26 13:00",
+   "message": "上周三老王那通电话，他到底怎么说的",
+   "must_surface": [
+    [
+     "proj-style-change"
+    ]
+   ],
+   "must_not_surface": [
+    "call-b03",
+    "call-b08"
+   ],
+   "rubric": {
+    "should": [
+     "工作室决定从日系整体改为国风，已画的也要重画，起初仍要求六月初交"
+    ],
+    "should_not": [
+     "说成“要有质感”那次（5/6，也是周三）或改发型那次"
+    ]
+   },
+   "note": "5/6 的电话也在周三，是专门的时间干扰。"
+  },
+  {
+   "id": "B06",
+   "category": "时间",
+   "time": "2026-06-13 20:00",
+   "message": "五月上旬那阵子我主要在忙什么",
+   "must_surface": [
+    [
+     "proj-plan",
+     "sketch-1"
+    ],
+    [
+     "swim-start",
+     "con-plan",
+     "dog-intro"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "刚接下十二张立绘的单子，先给老王出草图",
+     "开始学游泳、报了漫展、和阿遥商量漫画"
+    ],
+    "should_not": [
+     "说成月底的国风返工"
+    ]
+   },
+   "note": "五月上旬已超出 14 天原文窗口。"
+  },
+  {
+   "id": "B07",
+   "category": "时间",
+   "time": "2026-06-08 12:00",
+   "message": "上周四我干嘛了",
+   "must_surface": [
+    [
+     "deliver-b23"
+    ]
+   ],
+   "must_not_surface": [
+    "deliver-b18",
+    "milktea-b18"
+   ],
+   "rubric": {
+    "should": [
+     "6/4 交了第四批稿，想买喝的但排长队没买，喝了白开水"
+    ],
+    "should_not": [
+     "说成 5/28 交前四张、喝杨枝甘露（那也是周四）"
+    ]
+   }
+  },
+  {
+   "id": "B08",
+   "category": "实体",
+   "time": "2026-06-14 10:00",
+   "message": "阿遥从新疆回来了",
+   "must_surface": [
+    [
+     "ayao-leave"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道她去新疆采风了三周",
+     "可以提到第二章剧本、葡萄干或修钟表老人的漫画"
+    ],
+    "should_not": [
+     "表现得不认识阿遥"
+    ]
+   },
+   "note": "阿遥在 5/16 之后再没出现。"
+  },
+  {
+   "id": "B09",
+   "category": "实体",
+   "time": "2026-06-06 16:00",
+   "message": "老王又改需求了",
+   "must_surface": [
+    [
+     "proj-style-change",
+     "call-b20",
+     "call-b13"
+    ]
+   ],
+   "must_not_surface": [
+    "garage-wang"
+   ],
+   "rubric": {
+    "should": [
+     "理解为客户老王（工作室制作人）",
+     "可以提到之前的整体换风格或小改"
+    ],
+    "should_not": [
+     "理解为楼下修车铺的老王"
+    ]
+   }
+  },
+  {
+   "id": "B10",
+   "category": "实体",
+   "time": "2026-06-01 21:00",
+   "message": "豆包今天走路又有点瘸",
+   "must_surface": [
+    [
+     "dog-vet"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "联系到上次是左后腿扭伤、医生让休息两周"
+    ],
+    "should_not": [
+     "说上次是骨折"
+    ]
+   }
+  },
+  {
+   "id": "B11",
+   "category": "远联想",
+   "time": "2026-06-13 21:00",
+   "message": "朋友让我帮他出装修的主意，但他自己也说不清想要什么样的",
+   "must_surface": [
+    [
+     "sketch-1",
+     "sketch-2"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "建议先给几个具体方向或参考图让朋友挑",
+     "可以联系到老王的草图和妹妹请柬的经验"
+    ],
+    "should_not": [
+     "直接替朋友决定风格"
+    ]
+   }
+  },
+  {
+   "id": "B12",
+   "category": "远联想",
+   "time": "2026-06-10 15:00",
+   "message": "明天下午要交最后一批了",
+   "soft": true,
+   "must_surface": [
+    [
+     "milktea-b04",
+     "milktea-b09",
+     "milktea-b18"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "可以自然提到交完稿的奶茶（加分项，不要求）"
+    ],
+    "should_not": []
+   },
+   "note": "只靠共现相连：奶茶与交稿在语义上无关。"
+  },
+  {
+   "id": "B13",
+   "category": "远联想",
+   "time": "2026-05-27 12:00",
+   "message": "下午要跟老王通个电话",
+   "soft": true,
+   "must_surface": [
+    [
+     "bike-b03",
+     "bike-b08",
+     "bike-b13"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "可以自然想到通电话那天他常会去河边骑车（加分项，不要求）"
+    ],
+    "should_not": [
+     "编造老王会说什么"
+    ]
+   },
+   "note": "只靠共现相连。"
+  },
+  {
+   "id": "B14",
+   "category": "接续",
+   "time": "2026-06-12 20:00",
+   "message": "我今天终于游了一个来回",
+   "must_surface": [
+    [
+     "swim-start",
+     "swim-mid"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道他在学游泳：从呛水、太紧张，到能漂起来但还不会换气"
+    ],
+    "should_not": [
+     "说他一直会游泳"
+    ]
+   }
+  },
+  {
+   "id": "B15",
+   "category": "接续",
+   "time": "2026-06-12 21:30",
+   "message": "妹妹说请柬印出来效果特别好",
+   "must_surface": [
+    [
+     "sketch-2"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道是淡青色加手写字那一组",
+     "可以提到她当初说不出想要什么、看了参考图才选定"
+    ],
+    "should_not": [
+     "说成别的颜色或风格"
+    ]
+   }
+  },
+  {
+   "id": "B16",
+   "category": "接续",
+   "time": "2026-06-09 12:00",
+   "message": "小鹿又约我七月的漫展",
+   "must_surface": [
+    [
+     "con-cancel"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "五月那次因为赶工没去成，周边放在小鹿摊位上卖",
+     "可以提到明信片半天卖完"
+    ],
+    "should_not": [
+     "说他五月去过漫展"
+    ]
+   }
+  },
+  {
+   "id": "B17",
+   "category": "变化",
+   "time": "2026-05-28 21:00",
+   "message": "月初交稿的话，日系那几张我得抓紧了",
+   "must_surface": [
+    [
+     "proj-style-change",
+     "proj-renegotiate"
+    ]
+   ],
+   "must_not_surface": [
+    "proj-plan"
+   ],
+   "rubric": {
+    "should": [
+     "风格已改为国风，交付推到 6/12，并加了三成费用"
+    ],
+    "should_not": [
+     "按原计划说日系、六月初交"
+    ]
+   }
+  },
+  {
+   "id": "B18",
+   "category": "变化",
+   "time": "2026-06-12 15:00",
+   "message": "我还是想换个大点的数位屏",
+   "must_surface": [
+    [
+     "tablet-cancel"
+    ]
+   ],
+   "must_not_surface": [
+    "tablet-plan"
+   ],
+   "rubric": {
+    "should": [
+     "记得之前闪屏是连接线的问题，八十块修好了，他决定先不买",
+     "可以问现在是不是有新的理由"
+    ],
+    "should_not": [
+     "以为屏幕还坏着"
+    ]
+   }
+  },
+  {
+   "id": "B19",
+   "category": "自己的看法",
+   "time": "2026-06-13 22:00",
+   "message": "你之前不是说改稿都要收钱吗",
+   "must_surface": [
+    [
+     "view-charge"
+    ],
+    [
+     "view-revised"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "承认她说过改需求要收费（针对整体换风格）",
+     "说明她后来修正了：长期客户的小改不收，合同写两轮免费修改"
+    ],
+    "should_not": [
+     "否认说过",
+     "只重复最初的看法"
+    ]
+   }
+  },
+  {
+   "id": "B20",
+   "category": "自己的看法",
+   "time": "2026-06-12 22:00",
+   "message": "数位屏那事你当时怎么说的",
+   "must_surface": [
+    [
+     "view-tablet"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "换之前先查是不是线的问题，修比换便宜"
+    ],
+    "should_not": [
+     "说她建议直接买新屏"
+    ]
+   }
+  },
+  {
+   "id": "B21",
+   "category": "自己的看法",
+   "time": "2026-06-14 13:00",
+   "message": "漫展那次你是怎么劝我的",
+   "must_surface": [
+    [
+     "view-con"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "摊位以后还有，这次交付只有一次，取舍是对的"
+    ],
+    "should_not": [
+     "说她劝他去漫展"
+    ]
+   }
+  },
+  {
+   "id": "B22",
+   "category": "否定",
+   "time": "2026-06-14 12:00",
+   "message": "我上次漫展卖得怎么样来着",
+   "must_surface": [
+    [
+     "con-cancel"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "他本人没去；周边放在小鹿的摊位上，明信片半天卖完"
+    ],
+    "should_not": [
+     "说他亲自在漫展摆摊"
+    ]
+   }
+  },
+  {
+   "id": "B23",
+   "category": "否定",
+   "time": "2026-06-05 21:00",
+   "message": "豆包那次是不是骨折了",
+   "must_surface": [
+    [
+     "dog-vet"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "不是骨折，拍片后确诊是扭伤"
+    ],
+    "should_not": [
+     "说是骨折"
+    ]
+   }
+  },
+  {
+   "id": "B24",
+   "category": "淡忘",
+   "time": "2026-06-14 16:00",
+   "message": "今天想吃点热乎的零食",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-yam"
+     ]
+    }
+   ],
+   "note": "基准时刻只记录；再过 60 天，一次性提到的烤红薯小摊不应浮现。"
+  },
+  {
+   "id": "B25",
+   "category": "淡忘",
+   "time": "2026-06-14 17:00",
+   "message": "今天风好大",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-kite"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "B26",
+   "category": "淡忘",
+   "time": "2026-06-14 18:00",
+   "message": "外卖又送得好慢",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-fish"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "B27",
+   "category": "保留",
+   "time": "2026-06-14 05:50",
+   "message": "又是五点多醒了",
+   "must_surface": [
+    [
+     "habit-early"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现她知道这是他的常态，清晨是画画时间"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_surface": [
+      [
+       "habit-early"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "B28",
+   "category": "保留",
+   "time": "2026-06-14 09:00",
+   "message": "豆包今天跑得特别欢",
+   "must_surface": [
+    [
+     "dog-vet",
+     "dog-recovered"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "可以联系到它扭伤后休养两周才恢复"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_surface": [
+      [
+       "dog-vet",
+       "dog-recovered"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "B29",
+   "category": "对照",
+   "time": "2026-06-10 10:00",
+   "message": "帮我把 character turnaround 翻成中文",
+   "rubric": {
+    "should": [
+     "直接给出翻译（角色三视图／角色转面图）"
+    ],
+    "should_not": [
+     "硬扯无关的往事"
+    ]
+   }
+  },
+  {
+   "id": "B30",
+   "category": "对照",
+   "time": "2026-05-24 15:00",
+   "message": "推荐一本轻松点的书",
+   "rubric": {
+    "should": [
+     "正常推荐"
+    ],
+    "should_not": [
+     "编造他读过或喜欢的书"
+    ]
+   }
+  }
+ ]
+}

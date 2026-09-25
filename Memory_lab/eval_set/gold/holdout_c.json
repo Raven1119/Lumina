@@ -1,0 +1,809 @@
+{
+ "id": "holdout-c",
+ "plants": [
+  {
+   "tags": [
+    "habit-seaside"
+   ],
+   "kind": "习惯",
+   "summary": "每天早上六点半去海边跑五公里再上班，假期也不落下。多次零散出现。"
+  },
+  {
+   "tags": [
+    "badminton"
+   ],
+   "kind": "习惯",
+   "summary": "每周三晚上和英语组张老师打羽毛球，雷打不动。"
+  },
+  {
+   "tags": [
+    "openclass-plan",
+    "openclass-rehearsal"
+   ],
+   "kind": "事件-来龙去脉",
+   "summary": "10/15 公开课，讲圆周运动、做转盘实验；试讲发现四十分钟讲不完，后来卡到三十八分钟。"
+  },
+  {
+   "tags": [
+    "zhanglei-student"
+   ],
+   "kind": "同名-目标",
+   "summary": "高三二班学生张磊：单位换算总错、作业晚交 → 用清单后按时交、不再错 → 月考七十二 → 周测八十五进前十。"
+  },
+  {
+   "tags": [
+    "zhanglei-colleague",
+    "zhanglei-colleague-taishan"
+   ],
+   "kind": "同名-干扰",
+   "summary": "英语组的张磊老师：周三羽毛球搭档，国庆去了泰山。"
+  },
+  {
+   "tags": [
+    "checklist-1",
+    "checklist-2"
+   ],
+   "kind": "同类事件",
+   "summary": "记不住就写成清单：给学生的五条作业检查清单；贴在车库墙上的换机油步骤。"
+  },
+  {
+   "tags": [
+    "exam-c07",
+    "exam-c12",
+    "exam-c20",
+    "exam-c25"
+   ],
+   "kind": "共现-甲",
+   "summary": "批卷夜（四次）。"
+  },
+  {
+   "tags": [
+    "dumpling-c07",
+    "dumpling-c12",
+    "dumpling-c20"
+   ],
+   "kind": "共现-乙",
+   "summary": "批卷夜去学校门口的饺子馆（四次中三次）。语义上与批卷无关。"
+  },
+  {
+   "tags": [
+    "rain-c04",
+    "rain-c09",
+    "rain-c16",
+    "rain-c23"
+   ],
+   "kind": "共现-甲",
+   "summary": "下雨（四次，其中三次在周五放学时：9/11、9/18、10/9）。"
+  },
+  {
+   "tags": [
+    "moto-nostart-c04",
+    "moto-nostart-c09",
+    "moto-nostart-c23"
+   ],
+   "kind": "共现-乙",
+   "summary": "下雨天摩托车打不着火（四次下雨中三次）；9/26 下雨那次一脚就着。"
+  },
+  {
+   "tags": [
+    "moto-arc",
+    "liu-teach"
+   ],
+   "kind": "事件-来龙去脉",
+   "summary": "旧摩托：跟刘师傅学拆洗化油器 → 刘师傅说以后要换配件 → 自己按清单换机油，车顺多了。"
+  },
+  {
+   "tags": [
+    "liu-leave"
+   ],
+   "kind": "实体-消失",
+   "summary": "修车的刘师傅 9/20 起回河南老家三周（母亲八十大寿），答应带回老款化油器配件。此后不再出现。"
+  },
+  {
+   "tags": [
+    "dad-fishing"
+   ],
+   "kind": "事件-来龙去脉",
+   "summary": "父亲退休学钓鱼：练抛竿 → 钓到第一条小鲫鱼 → 10/6 他陪父亲去海边，父亲很小心。"
+  },
+  {
+   "tags": [
+    "cafe-plan",
+    "cafe-change",
+    "cafe-weekend"
+   ],
+   "kind": "决定改变",
+   "summary": "朋友阿澄邀他各投十万合开咖啡馆 → 9/30 决定只投三万、周末去帮忙 → 10/10 开业，他周末收银、学拉花。"
+  },
+  {
+   "tags": [
+    "taishan-plan",
+    "taishan-cancel"
+   ],
+   "kind": "否定",
+   "summary": "计划国庆 10/2 带父亲爬泰山 → 高三补课 10/2–10/4，没去成（票还没买）。"
+  },
+  {
+   "tags": [
+    "view-cafe",
+    "view-cafe-revised"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "她先说别投（以为他要亲自经营）；9/23 知道阿澄全职经营后修正：小额参股、投亏得起的数。"
+  },
+  {
+   "tags": [
+    "view-openclass"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "公开课不是把会的都讲完，而是讲透一个点，围绕转盘实验讲为什么需要向心力。"
+  },
+  {
+   "tags": [
+    "view-dad"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "先别替父亲决定，陪他去一次看看。后来证明父亲比他还小心。"
+  },
+  {
+   "tags": [
+    "trivia-tanghulu",
+    "trivia-sandcastle",
+    "trivia-water"
+   ],
+   "kind": "一次性闲聊",
+   "summary": "校门口很酸的山楂糖葫芦、海滩上的沙雕城堡、办公室能出冰水的新饮水机。各只出现一次。"
+  },
+  {
+   "tags": [
+    "yday-c06",
+    "yday-c14",
+    "yday-c19",
+    "yday-c22"
+   ],
+   "kind": "时间-干扰",
+   "summary": "不同日子里带“昨天/昨晚”的句子。"
+  }
+ ],
+ "probes": [
+  {
+   "id": "C01",
+   "category": "理解当下",
+   "time": "2026-10-18 06:40",
+   "message": "今天下暴雨，出不了门了",
+   "must_surface": [
+    [
+     "habit-seaside"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现她知道他每天早上这个点去海边跑步，今天跑不成"
+    ],
+    "should_not": [
+     "说他平时不跑步"
+    ]
+   }
+  },
+  {
+   "id": "C02",
+   "category": "理解当下",
+   "time": "2026-10-07 21:45",
+   "message": "今晚不想出门了，好累",
+   "must_surface": [
+    [
+     "badminton"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道周三晚上通常是他和张老师打羽毛球的时间，可以说今晚歇一次也行"
+    ],
+    "should_not": [
+     "编造他今晚有别的安排"
+    ]
+   }
+  },
+  {
+   "id": "C03",
+   "category": "理解当下",
+   "time": "2026-10-05 06:40",
+   "message": "今天终于不用上课，可以睡个懒觉",
+   "must_surface": [
+    [
+     "habit-seaside"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现她知道他平时这个点已经在海边跑步了"
+    ],
+    "should_not": []
+   }
+  },
+  {
+   "id": "C04",
+   "category": "时间",
+   "time": "2026-09-24 21:00",
+   "message": "前天晚上我们聊了什么",
+   "must_surface": [
+    [
+     "exam-c12",
+     "dumpling-c12"
+    ]
+   ],
+   "must_not_surface": [
+    "exam-c07",
+    "dumpling-c07",
+    "yday-c06",
+    "yday-c14"
+   ],
+   "rubric": {
+    "should": [
+     "在批月考卷子，吃了韭菜鸡蛋饺子",
+     "学生张磊考了七十二，单位没再错"
+    ],
+    "should_not": [
+     "说成昨晚的羽毛球和咖啡馆"
+    ]
+   }
+  },
+  {
+   "id": "C05",
+   "category": "时间",
+   "time": "2026-10-13 12:00",
+   "message": "上周五放学那会儿我们聊了啥",
+   "must_surface": [
+    [
+     "rain-c23",
+     "moto-nostart-c23"
+    ]
+   ],
+   "must_not_surface": [
+    "rain-c04",
+    "moto-nostart-c04",
+    "rain-c09",
+    "moto-nostart-c09"
+   ],
+   "rubric": {
+    "should": [
+     "10/9 放学下雨，摩托车又打不着，换了机油也不行，坐公交回家，等刘师傅回来再看"
+    ],
+    "should_not": [
+     "说成九月里的某一次（那两次也在周五放学）"
+    ]
+   },
+   "note": "9/11 与 9/18 也是周五放学、下雨、打不着，是专门的时间干扰。"
+  },
+  {
+   "id": "C06",
+   "category": "时间",
+   "time": "2026-10-18 20:00",
+   "message": "九月中旬那阵子我主要在忙什么",
+   "must_surface": [
+    [
+     "liu-leave",
+     "exam-c07",
+     "moto-nostart-c09"
+    ],
+    [
+     "cafe-plan"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "给学生发检查清单、批周测",
+     "阿澄邀他投咖啡馆",
+     "刘师傅要回老家，他自己学换机油"
+    ],
+    "should_not": [
+     "说成国庆补课或公开课"
+    ]
+   },
+   "note": "九月中旬已超出 14 天原文窗口。"
+  },
+  {
+   "id": "C07",
+   "category": "时间",
+   "time": "2026-10-06 20:00",
+   "message": "国庆前一天晚上我在琢磨什么事来着",
+   "must_surface": [
+    [
+     "cafe-change"
+    ]
+   ],
+   "must_not_surface": [
+    "cafe-plan"
+   ],
+   "rubric": {
+    "should": [
+     "9/30 决定咖啡馆不投十万，改投三万，周末去帮忙"
+    ],
+    "should_not": [
+     "说成还在考虑投十万"
+    ]
+   }
+  },
+  {
+   "id": "C08",
+   "category": "实体",
+   "time": "2026-10-18 10:30",
+   "message": "刘师傅回青岛了",
+   "must_surface": [
+    [
+     "liu-leave"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道他回河南老家待了三周",
+     "可以提到他答应带回的老款化油器配件，或车下雨天打不着的问题"
+    ],
+    "should_not": [
+     "表现得不认识刘师傅"
+    ]
+   },
+   "note": "刘师傅在 9/19 之后再没出现。"
+  },
+  {
+   "id": "C09",
+   "category": "实体",
+   "time": "2026-10-18 14:30",
+   "message": "张磊今天又没交作业",
+   "must_surface": [
+    [
+     "zhanglei-student"
+    ]
+   ],
+   "must_not_surface": [
+    "zhanglei-colleague",
+    "zhanglei-colleague-taishan"
+   ],
+   "rubric": {
+    "should": [
+     "理解为高三二班的学生张磊",
+     "可以提到他以前也晚交，用清单后一度按时交、最近进步到八十五"
+    ],
+    "should_not": [
+     "理解为英语组的张老师"
+    ]
+   }
+  },
+  {
+   "id": "C10",
+   "category": "实体",
+   "time": "2026-10-10 20:00",
+   "message": "我爸今天钓到一条挺大的",
+   "must_surface": [
+    [
+     "dad-fishing"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道父亲退休后在学钓鱼，从练抛竿到第一条小鲫鱼",
+     "可以提到国庆那次陪他去海边"
+    ],
+    "should_not": []
+   }
+  },
+  {
+   "id": "C11",
+   "category": "远联想",
+   "time": "2026-10-18 11:30",
+   "message": "我爸学钓鱼老是丢三落四，不是忘带鱼饵就是忘带小凳子",
+   "must_surface": [
+    [
+     "checklist-1",
+     "checklist-2"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "建议列一张出门清单",
+     "可以联系到学生的检查清单或车库墙上的换机油清单"
+    ],
+    "should_not": []
+   }
+  },
+  {
+   "id": "C12",
+   "category": "远联想",
+   "time": "2026-10-13 20:00",
+   "message": "今晚又要批卷子了",
+   "soft": true,
+   "must_surface": [
+    [
+     "dumpling-c07",
+     "dumpling-c12",
+     "dumpling-c20"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "可以自然提到学校门口的饺子馆（加分项，不要求）"
+    ],
+    "should_not": []
+   },
+   "note": "只靠共现相连。"
+  },
+  {
+   "id": "C13",
+   "category": "远联想",
+   "time": "2026-10-16 21:00",
+   "message": "明天有雨，本来想骑摩托去学校",
+   "soft": true,
+   "must_surface": [
+    [
+     "moto-nostart-c04",
+     "moto-nostart-c09",
+     "moto-nostart-c23"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "可以提醒他下雨天车常打不着（加分项，不要求）"
+    ],
+    "should_not": []
+   },
+   "note": "对话里从未说过下雨导致打不着，只有反复的同时出现。"
+  },
+  {
+   "id": "C14",
+   "category": "接续",
+   "time": "2026-10-15 19:00",
+   "message": "公开课讲完了，评课的老师说重点特别清楚",
+   "must_surface": [
+    [
+     "openclass-rehearsal",
+     "view-openclass"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "联系到试讲时内容太多，后来砍掉一半、围绕转盘实验讲透向心力"
+    ],
+    "should_not": [
+     "编造课上发生的具体细节"
+    ]
+   }
+  },
+  {
+   "id": "C15",
+   "category": "接续",
+   "time": "2026-10-17 20:00",
+   "message": "摩托车今天终于一脚就打着了",
+   "must_surface": [
+    [
+     "moto-arc",
+     "liu-teach",
+     "checklist-2",
+     "moto-nostart-c23"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道这是那辆旧摩托：洗过化油器、按清单换过机油、下雨天常打不着"
+    ],
+    "should_not": []
+   }
+  },
+  {
+   "id": "C16",
+   "category": "接续",
+   "time": "2026-10-09 21:00",
+   "message": "阿澄说咖啡馆明天正式开业",
+   "must_surface": [
+    [
+     "cafe-change"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道他投了三万、周末去帮忙",
+     "可以祝贺并问他周末的安排"
+    ],
+    "should_not": [
+     "说他投了十万"
+    ]
+   }
+  },
+  {
+   "id": "C17",
+   "category": "变化",
+   "time": "2026-10-14 12:00",
+   "message": "我那十万块钱是不是该准备转给阿澄了",
+   "must_surface": [
+    [
+     "cafe-change"
+    ]
+   ],
+   "must_not_surface": [
+    "cafe-plan"
+   ],
+   "rubric": {
+    "should": [
+     "他已经决定只投三万，不是十万"
+    ],
+    "should_not": [
+     "按十万回答"
+    ]
+   }
+  },
+  {
+   "id": "C18",
+   "category": "变化",
+   "time": "2026-10-03 12:00",
+   "message": "要不国庆后半段还是去趟泰山？",
+   "must_surface": [
+    [
+     "taishan-cancel"
+    ]
+   ],
+   "must_not_surface": [
+    "zhanglei-colleague-taishan"
+   ],
+   "rubric": {
+    "should": [
+     "记得原计划二号出发，被补课取消，五号到七号有假",
+     "可以提到他原本打算那几天陪爸爸去海边钓鱼"
+    ],
+    "should_not": [
+     "以为原计划还在"
+    ]
+   }
+  },
+  {
+   "id": "C19",
+   "category": "自己的看法",
+   "time": "2026-10-18 22:00",
+   "message": "你之前不是反对我投咖啡馆吗",
+   "must_surface": [
+    [
+     "view-cafe"
+    ],
+    [
+     "view-cafe-revised"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "承认最初建议别投（当时以为他要亲自经营）",
+     "说明后来前提变了，改为可以小额参股、投亏得起的数"
+    ],
+    "should_not": [
+     "否认说过",
+     "只重复最初的看法"
+    ]
+   }
+  },
+  {
+   "id": "C20",
+   "category": "自己的看法",
+   "time": "2026-10-17 21:00",
+   "message": "公开课那次你给我的建议是什么来着",
+   "must_surface": [
+    [
+     "view-openclass"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "不是把会的都讲完，而是讲透一个点，围绕转盘实验"
+    ],
+    "should_not": []
+   }
+  },
+  {
+   "id": "C21",
+   "category": "自己的看法",
+   "time": "2026-10-18 13:00",
+   "message": "我爸学钓鱼那事，你当时怎么说的",
+   "must_surface": [
+    [
+     "view-dad"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "先别替他决定，陪他去一次看看"
+    ],
+    "should_not": [
+     "说她劝阻他爸钓鱼"
+    ]
+   }
+  },
+  {
+   "id": "C22",
+   "category": "否定",
+   "time": "2026-10-18 12:00",
+   "message": "国庆那几天我出去玩了吗",
+   "must_surface": [
+    [
+     "taishan-cancel"
+    ]
+   ],
+   "must_not_surface": [
+    "zhanglei-colleague-taishan"
+   ],
+   "rubric": {
+    "should": [
+     "泰山没去成，二号到四号补课",
+     "六号陪爸爸去海边钓了鱼"
+    ],
+    "should_not": [
+     "说他去了泰山"
+    ]
+   }
+  },
+  {
+   "id": "C23",
+   "category": "否定",
+   "time": "2026-10-02 20:00",
+   "message": "上周六下雨那次，摩托车是不是也没打着",
+   "must_surface": [
+    [
+     "rain-c16"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "没有，那次一脚就打着了"
+    ],
+    "should_not": [
+     "说那次也没打着"
+    ]
+   }
+  },
+  {
+   "id": "C24",
+   "category": "淡忘",
+   "time": "2026-10-18 16:00",
+   "message": "想吃点酸甜的",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-tanghulu"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "C25",
+   "category": "淡忘",
+   "time": "2026-10-18 17:00",
+   "message": "今天海边人好多",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-sandcastle"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "C26",
+   "category": "淡忘",
+   "time": "2026-10-18 18:00",
+   "message": "办公室今天停水了",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-water"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "C27",
+   "category": "保留",
+   "time": "2026-10-18 07:30",
+   "message": "今天跑步的时候看到日出了",
+   "must_surface": [
+    [
+     "habit-seaside"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现她知道他每天去海边跑"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_surface": [
+      [
+       "habit-seaside"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "id": "C28",
+   "category": "保留",
+   "time": "2026-10-18 09:00",
+   "message": "张磊最近物理进步挺大",
+   "must_surface": [
+    [
+     "zhanglei-student"
+    ]
+   ],
+   "must_not_surface": [
+    "zhanglei-colleague"
+   ],
+   "rubric": {
+    "should": [
+     "理解为学生张磊，可以提到清单和成绩变化"
+    ],
+    "should_not": [
+     "理解为张老师"
+    ]
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_surface": [
+      [
+       "zhanglei-student"
+      ]
+     ],
+     "must_not_surface": [
+      "zhanglei-colleague"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "C29",
+   "category": "对照",
+   "time": "2026-10-14 15:00",
+   "message": "帮我把 centripetal force 翻成中文",
+   "rubric": {
+    "should": [
+     "直接给出翻译（向心力）"
+    ],
+    "should_not": [
+     "硬扯无关的往事"
+    ]
+   }
+  },
+  {
+   "id": "C30",
+   "category": "对照",
+   "time": "2026-09-27 15:00",
+   "message": "推荐一部轻松的纪录片",
+   "rubric": {
+    "should": [
+     "正常推荐"
+    ],
+    "should_not": [
+     "编造他看过或喜欢的纪录片"
+    ]
+   }
+  }
+ ]
+}

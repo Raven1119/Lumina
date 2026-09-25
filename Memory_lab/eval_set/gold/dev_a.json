@@ -1,0 +1,893 @@
+{
+ "id": "dev-a",
+ "plants": [
+  {
+   "tags": [
+    "habit-late"
+   ],
+   "kind": "习惯",
+   "summary": "他常在实验室待到深夜：换液、成像机时只在晚上有空档。多次零散出现。"
+  },
+  {
+   "tags": [
+    "run-s05",
+    "run-s15",
+    "run-s21",
+    "run-s25",
+    "run-s29"
+   ],
+   "kind": "习惯",
+   "summary": "压力大时去跑步，跑完会清醒；心情好时也跑。"
+  },
+  {
+   "tags": [
+    "paper-plan"
+   ],
+   "kind": "事件-计划",
+   "summary": "原计划三月底投稿。"
+  },
+  {
+   "tags": [
+    "paper-figs"
+   ],
+   "kind": "事件-过程",
+   "summary": "为投稿反复改图。"
+  },
+  {
+   "tags": [
+    "paper-delay"
+   ],
+   "kind": "决定改变",
+   "summary": "3/24 陈老师要求补 knockdown，投稿推迟到做完之后；4/2 说成了就四月中投。"
+  },
+  {
+   "tags": [
+    "knockdown-prep",
+    "knockdown-start",
+    "knockdown-fail",
+    "knockdown-round2",
+    "knockdown-success"
+   ],
+   "kind": "事件-来龙去脉",
+   "summary": "knockdown：准备、换试剂、第一轮三成失败、只改细胞密度、第二轮 85% 成功。"
+  },
+  {
+   "tags": [
+    "paper-submitted"
+   ],
+   "kind": "事件-结果",
+   "summary": "4/10 投稿。"
+  },
+  {
+   "tags": [
+    "imaging-s03",
+    "imaging-s08",
+    "imaging-s16",
+    "imaging-s23",
+    "imaging-s27"
+   ],
+   "kind": "共现-甲",
+   "summary": "晚上的成像机时（五次，其中四次在周三）。"
+  },
+  {
+   "tags": [
+    "malatang-s03",
+    "malatang-s08",
+    "malatang-s23",
+    "malatang-s27"
+   ],
+   "kind": "共现-乙",
+   "summary": "成像那晚点麻辣烫（五次成像中四次），对话里从未把两件事联系起来。只靠共现相连。"
+  },
+  {
+   "tags": [
+    "meeting-s04",
+    "meeting-s09",
+    "meeting-s17",
+    "meeting-s24"
+   ],
+   "kind": "共现-甲",
+   "summary": "与陈老师开会（四次）。"
+  },
+  {
+   "tags": [
+    "mom-s04",
+    "mom-s09",
+    "mom-s17",
+    "mom-s19"
+   ],
+   "kind": "共现-乙",
+   "summary": "与陈老师开会的同一天给妈妈打电话（四次会中三次），对话里从未把两件事联系起来；s19 是一次与开会无关的通话，作为噪声。"
+  },
+  {
+   "tags": [
+    "incubator",
+    "platereader"
+   ],
+   "kind": "同类事件",
+   "summary": "两次仪器读数异常，他都先核对仪器（独立温度计、标准品）再下结论；表面用词不同，结构相同。培养箱那次细胞一盆都没扔。"
+  },
+  {
+   "tags": [
+    "linxiao-teach",
+    "linxiao-leave"
+   ],
+   "kind": "实体-消失",
+   "summary": "博后师姐林晓：教他成像参数和规矩；3/21 起出国开会交流三周，答应带回进口抗体。此后对话里不再出现。"
+  },
+  {
+   "tags": [
+    "lab-zhou"
+   ],
+   "kind": "同名-目标",
+   "summary": "实验室师弟小周，没关严培养箱门。"
+  },
+  {
+   "tags": [
+    "barista-zhou"
+   ],
+   "kind": "同名-干扰",
+   "summary": "咖啡店店员小周，推荐桂花拿铁。"
+  },
+  {
+   "tags": [
+    "cat-sick",
+    "cat-vet",
+    "cat-recovered"
+   ],
+   "kind": "事件-来龙去脉",
+   "summary": "猫年糕三天不太吃 → 兽医说是毛球、化毛膏 → 恢复。"
+  },
+  {
+   "tags": [
+    "hangzhou-plan",
+    "hangzhou-cancel"
+   ],
+   "kind": "否定",
+   "summary": "计划去杭州找大学室友，因细胞传代没去成，改约五一。"
+  },
+  {
+   "tags": [
+    "ajie-hangzhou"
+   ],
+   "kind": "否定-干扰",
+   "summary": "室友阿杰去杭州出差（去了杭州的是阿杰，不是他）。"
+  },
+  {
+   "tags": [
+    "ajie-noise",
+    "move-plan",
+    "move-cancel"
+   ],
+   "kind": "决定改变",
+   "summary": "阿杰打游戏太吵 → 考虑搬家 → 认真谈过后阿杰答应戴耳机换静音键盘 → 决定不搬。"
+  },
+  {
+   "tags": [
+    "view-cutoff",
+    "view-revised"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "她先建议十二点前必须离开实验室；3/23 自己修正：熬夜多由机时和细胞决定，改为熬夜后第二天上午不排事。"
+  },
+  {
+   "tags": [
+    "view-ajie"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "搬家前先认真谈一次、提具体要求，谈不拢再搬。后来证明有效。"
+  },
+  {
+   "tags": [
+    "view-delay"
+   ],
+   "kind": "Lumina 的看法",
+   "summary": "支持推迟投稿：现在补比被审稿人要求再补更快。"
+  },
+  {
+   "tags": [
+    "guitar-start",
+    "guitar-mid"
+   ],
+   "kind": "事件-来龙去脉",
+   "summary": "练《晴天》前奏：右手跟不上 → 卡在一个换和弦慢半拍。"
+  },
+  {
+   "tags": [
+    "groupmtg-prep",
+    "groupmtg-done"
+   ],
+   "kind": "事件",
+   "summary": "组会报告：准备 → 被陈老师追问对照、要考虑加阳性对照。"
+  },
+  {
+   "tags": [
+    "trivia-latte",
+    "trivia-corgi",
+    "trivia-pork"
+   ],
+   "kind": "一次性闲聊",
+   "summary": "桂花拿铁、地铁上的柯基、食堂很咸的红烧肉。各只出现一次。"
+  },
+  {
+   "tags": [
+    "yday-s01",
+    "yday-s02",
+    "yday-s03",
+    "yday-s11",
+    "yday-s15",
+    "yday-s22"
+   ],
+   "kind": "时间-干扰",
+   "summary": "不同日子里带“昨天/昨晚”的句子；只靠语义检索“昨天”会命中它们。"
+  }
+ ],
+ "probes": [
+  {
+   "id": "A01",
+   "category": "理解当下",
+   "time": "2026-04-05 01:30",
+   "message": "好累",
+   "must_surface": [
+    [
+     "habit-late"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现她知道他常在实验室待到深夜（可以是问他是不是又在实验室）",
+     "可以联系到第一轮 knockdown 失败带来的压力"
+    ],
+    "should_not": [
+     "断言他今晚在做某个具体实验",
+     "编造未提及的经历"
+    ]
+   }
+  },
+  {
+   "id": "A02",
+   "category": "理解当下",
+   "time": "2026-03-27 18:00",
+   "message": "今天终于可以早点回家了",
+   "must_surface": [
+    [
+     "habit-late"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现这对他来说难得：他通常很晚才离开实验室"
+    ],
+    "should_not": [
+     "说他平时都按时下班"
+    ]
+   }
+  },
+  {
+   "id": "A03",
+   "category": "理解当下",
+   "time": "2026-04-02 21:00",
+   "message": "今天心里有点乱，想出去跑两圈",
+   "must_surface": [
+    [
+     "run-s05",
+     "run-s15",
+     "run-s21"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "理解跑步是他缓解压力的方式，支持他去"
+    ],
+    "should_not": [
+     "劝阻他跑步",
+     "说他平时不运动"
+    ]
+   }
+  },
+  {
+   "id": "A04",
+   "category": "时间",
+   "time": "2026-03-29 21:30",
+   "message": "昨天下午我们聊了啥来着",
+   "must_surface": [
+    [
+     "guitar-mid"
+    ],
+    [
+     "mom-s19"
+    ]
+   ],
+   "must_not_surface": [
+    "guitar-start",
+    "mom-s04",
+    "mom-s09",
+    "mom-s17",
+    "yday-s01",
+    "yday-s02",
+    "yday-s03",
+    "yday-s11",
+    "yday-s15"
+   ],
+   "rubric": {
+    "should": [
+     "练《晴天》前奏卡在一个换和弦",
+     "妈妈问清明回不回家，说好五一回"
+    ],
+    "should_not": [
+     "把别的日子的事当成昨天下午"
+    ]
+   }
+  },
+  {
+   "id": "A05",
+   "category": "时间",
+   "time": "2026-03-31 13:00",
+   "message": "上周二跟陈老师谈文章，他具体是怎么说的来着",
+   "must_surface": [
+    [
+     "paper-delay"
+    ]
+   ],
+   "must_not_surface": [
+    "meeting-s04",
+    "meeting-s09"
+   ],
+   "rubric": {
+    "should": [
+     "陈老师要求补 knockdown 实验，投稿推迟到做完之后"
+    ],
+    "should_not": [
+     "说成补对照重复或加阳性对照（那是更早的两次会）"
+    ]
+   }
+  },
+  {
+   "id": "A06",
+   "category": "时间",
+   "time": "2026-04-06 12:00",
+   "message": "上周三晚上我在干嘛",
+   "must_surface": [
+    [
+     "imaging-s23",
+     "malatang-s23"
+    ]
+   ],
+   "must_not_surface": [
+    "imaging-s03",
+    "imaging-s08",
+    "malatang-s03",
+    "malatang-s08"
+   ],
+   "rubric": {
+    "should": [
+     "4 月 1 日晚上在做成像，补图四的一个时间点",
+     "可以提到愚人节培养箱上的纸条"
+    ],
+    "should_not": [
+     "说成三月的某次周三成像"
+    ]
+   },
+   "note": "三月里另有两次成像也在周三，是专门的时间干扰。"
+  },
+  {
+   "id": "A07",
+   "category": "时间",
+   "time": "2026-04-12 20:00",
+   "message": "三月初那阵子我主要在忙什么",
+   "must_surface": [
+    [
+     "paper-plan"
+    ],
+    [
+     "imaging-s03",
+     "meeting-s04",
+     "run-s05",
+     "guitar-start"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "在为月底投稿改图、写讨论",
+     "晚上做成像、和陈老师开会"
+    ],
+    "should_not": [
+     "说成三月底到四月的 knockdown"
+    ]
+   },
+   "note": "三月初已超出 14 天原文窗口，只能靠记忆里的时间坐标。"
+  },
+  {
+   "id": "A08",
+   "category": "实体",
+   "time": "2026-04-13 10:00",
+   "message": "林晓师姐今天回实验室了",
+   "must_surface": [
+    [
+     "linxiao-leave"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道她去开会并在国外交流了三周",
+     "可以提到她答应带回的进口抗体"
+    ],
+    "should_not": [
+     "表现得不认识林晓"
+    ]
+   },
+   "note": "林晓在 3/19 之后再没出现过。"
+  },
+  {
+   "id": "A09",
+   "category": "实体",
+   "time": "2026-04-07 14:00",
+   "message": "小周今天又闯祸了",
+   "must_surface": [
+    [
+     "lab-zhou"
+    ]
+   ],
+   "must_not_surface": [
+    "barista-zhou"
+   ],
+   "rubric": {
+    "should": [
+     "理解为实验室的师弟小周（之前没关严培养箱门）"
+    ],
+    "should_not": [
+     "理解为咖啡店店员小周"
+    ]
+   }
+  },
+  {
+   "id": "A10",
+   "category": "实体",
+   "time": "2026-03-31 20:00",
+   "message": "年糕今天又不怎么吃猫粮了",
+   "must_surface": [
+    [
+     "cat-vet"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "联系到上次是毛球、开了化毛膏",
+     "可以提到医生说一周内还不吃要再去"
+    ],
+    "should_not": [
+     "编造别的病因作为既往诊断"
+    ]
+   }
+  },
+  {
+   "id": "A11",
+   "category": "远联想",
+   "time": "2026-04-12 11:00",
+   "message": "新买的体重秤一上去就说我胖了三公斤，我是不是该开始节食了",
+   "must_surface": [
+    [
+     "incubator",
+     "platereader"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "建议先核对秤本身（换一台秤或用已知重量校验）再下结论",
+     "可以联系到他以前先怀疑仪器读数的经历"
+    ],
+    "should_not": [
+     "直接认定他胖了三公斤"
+    ]
+   }
+  },
+  {
+   "id": "A12",
+   "category": "远联想",
+   "time": "2026-04-05 20:00",
+   "message": "今晚又要去抢成像的机时了",
+   "soft": true,
+   "must_surface": [
+    [
+     "malatang-s03",
+     "malatang-s08",
+     "malatang-s23"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "可以自然提到晚饭或麻辣烫（加分项，不要求）"
+    ],
+    "should_not": []
+   },
+   "note": "只靠共现相连：麻辣烫与成像在语义上无关。"
+  },
+  {
+   "id": "A13",
+   "category": "远联想",
+   "time": "2026-04-01 12:00",
+   "message": "明天又要找陈老师汇报进度",
+   "soft": true,
+   "must_surface": [
+    [
+     "mom-s04",
+     "mom-s09",
+     "mom-s17"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "可以自然想到开会那天他常会给妈妈打个电话（加分项，不要求）"
+    ],
+    "should_not": [
+     "编造陈老师会说什么"
+    ]
+   },
+   "note": "只靠共现相连：开会与给妈妈打电话在语义上无关。"
+  },
+  {
+   "id": "A14",
+   "category": "接续",
+   "time": "2026-04-09 20:00",
+   "message": "这轮 knockdown 成了，85%",
+   "must_surface": [
+    [
+     "paper-delay"
+    ],
+    [
+     "knockdown-fail"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "联系到投稿：说好 knockdown 成了就投（四月中）",
+     "对比第一轮只有三成，这次只改了细胞密度"
+    ],
+    "should_not": [
+     "说他已经投稿了"
+    ]
+   }
+  },
+  {
+   "id": "A15",
+   "category": "接续",
+   "time": "2026-04-13 21:00",
+   "message": "上次说的那首曲子，我终于把前奏练顺了",
+   "must_surface": [
+    [
+     "guitar-start",
+     "guitar-mid"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "知道是《晴天》的前奏",
+     "可以提到之前卡在换和弦、慢半拍"
+    ],
+    "should_not": [
+     "说成别的曲子"
+    ]
+   }
+  },
+  {
+   "id": "A16",
+   "category": "接续",
+   "time": "2026-03-30 12:00",
+   "message": "杭州那个室友又约我了",
+   "must_surface": [
+    [
+     "hangzhou-cancel"
+    ]
+   ],
+   "must_not_surface": [
+    "ajie-hangzhou"
+   ],
+   "rubric": {
+    "should": [
+     "记得上次因为细胞传代没去成",
+     "可以提到之前说过改约五一"
+    ],
+    "should_not": [
+     "说他上次去过杭州",
+     "把“杭州那个室友”当成阿杰"
+    ]
+   }
+  },
+  {
+   "id": "A17",
+   "category": "变化",
+   "time": "2026-03-28 20:00",
+   "message": "这周末我是不是可以把稿子投了",
+   "must_surface": [
+    [
+     "paper-delay"
+    ]
+   ],
+   "must_not_surface": [
+    "paper-plan"
+   ],
+   "rubric": {
+    "should": [
+     "计划已经变了：要等 knockdown 做完再投"
+    ],
+    "should_not": [
+     "按原计划说月底可以投"
+    ]
+   }
+  },
+  {
+   "id": "A18",
+   "category": "变化",
+   "time": "2026-04-12 15:00",
+   "message": "我还在想要不要搬出去住",
+   "must_surface": [
+    [
+     "move-cancel"
+    ]
+   ],
+   "must_not_surface": [
+    "move-plan"
+   ],
+   "rubric": {
+    "should": [
+     "记得他和阿杰谈过，阿杰答应戴耳机、换静音键盘，他决定不搬",
+     "可以问是不是又有新情况"
+    ],
+    "should_not": [
+     "以为他还在看房准备搬"
+    ]
+   }
+  },
+  {
+   "id": "A19",
+   "category": "自己的看法",
+   "time": "2026-04-12 22:00",
+   "message": "你之前不是说让我十二点前必须离开实验室吗",
+   "must_surface": [
+    [
+     "view-cutoff"
+    ],
+    [
+     "view-revised"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "承认她最初这么建议过",
+     "说明她后来修正了：熬夜多由机时和细胞决定，改为熬夜后第二天上午不排事"
+    ],
+    "should_not": [
+     "否认说过",
+     "只重复最初的建议而不提修正"
+    ]
+   }
+  },
+  {
+   "id": "A20",
+   "category": "自己的看法",
+   "time": "2026-04-11 21:00",
+   "message": "你当时为什么支持我推迟投稿来着",
+   "must_surface": [
+    [
+     "view-delay"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "理由：与其投出去被审稿人要求补实验，不如现在补，总时间更短"
+    ],
+    "should_not": [
+     "说她当时反对推迟"
+    ]
+   }
+  },
+  {
+   "id": "A21",
+   "category": "自己的看法",
+   "time": "2026-04-12 13:00",
+   "message": "阿杰那事你当时是怎么建议我的",
+   "must_surface": [
+    [
+     "view-ajie"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "先认真谈一次、提具体要求（戴耳机、静音键盘），谈不拢再搬"
+    ],
+    "should_not": [
+     "说她建议直接搬家"
+    ]
+   }
+  },
+  {
+   "id": "A22",
+   "category": "否定",
+   "time": "2026-04-12 12:00",
+   "message": "我是不是好久没出去玩了",
+   "must_surface": [
+    [
+     "hangzhou-cancel"
+    ]
+   ],
+   "must_not_surface": [
+    "ajie-hangzhou"
+   ],
+   "rubric": {
+    "should": [
+     "三月的杭州之行没去成（细胞要传代）",
+     "可以提到改约的五一"
+    ],
+    "should_not": [
+     "说他去过杭州"
+    ]
+   }
+  },
+  {
+   "id": "A23",
+   "category": "否定",
+   "time": "2026-03-20 21:00",
+   "message": "上次培养箱出问题那回，我是不是把细胞都扔了",
+   "must_surface": [
+    [
+     "incubator"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "没有扔：他用独立温度计测出是 37 度，是屏幕传感器坏了"
+    ],
+    "should_not": [
+     "说他扔了细胞"
+    ]
+   }
+  },
+  {
+   "id": "A24",
+   "category": "淡忘",
+   "time": "2026-04-12 16:00",
+   "message": "今天想喝点甜的",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-latte"
+     ]
+    }
+   ],
+   "note": "基准时刻只记录不判定；再过 60 天，一次性提到的桂花拿铁不应浮现。"
+  },
+  {
+   "id": "A25",
+   "category": "淡忘",
+   "time": "2026-04-12 17:00",
+   "message": "刚才路上看到一只狗",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-corgi"
+     ]
+    }
+   ],
+   "note": "同上：柯基只提过一次。"
+  },
+  {
+   "id": "A26",
+   "category": "淡忘",
+   "time": "2026-04-12 18:00",
+   "message": "食堂今天的菜又咸了",
+   "rubric": {
+    "should": [
+     "正常回应"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_not_surface": [
+      "trivia-pork"
+     ]
+    }
+   ],
+   "note": "同上：红烧肉只提过一次。"
+  },
+  {
+   "id": "A27",
+   "category": "保留",
+   "time": "2026-04-12 23:30",
+   "message": "今晚又要在实验室待到很晚",
+   "must_surface": [
+    [
+     "habit-late"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "体现她知道这是他的常态"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_surface": [
+      [
+       "habit-late"
+      ]
+     ]
+    }
+   ],
+   "note": "对照组：反复出现的习惯，60 天后仍应能想起。"
+  },
+  {
+   "id": "A28",
+   "category": "保留",
+   "time": "2026-04-13 09:00",
+   "message": "年糕最近又开始掉毛了",
+   "must_surface": [
+    [
+     "cat-vet"
+    ]
+   ],
+   "rubric": {
+    "should": [
+     "可以联系到上次的毛球和化毛膏"
+    ],
+    "should_not": []
+   },
+   "gap_variants": [
+    {
+     "offset_days": 60,
+     "must_surface": [
+      [
+       "cat-vet"
+      ]
+     ]
+    }
+   ],
+   "note": "对照组：跨三次对话的事件，60 天后仍应能想起。"
+  },
+  {
+   "id": "A29",
+   "category": "对照",
+   "time": "2026-04-10 10:00",
+   "message": "帮我把 cell viability assay 翻成中文",
+   "rubric": {
+    "should": [
+     "直接给出翻译（细胞活力检测）"
+    ],
+    "should_not": [
+     "硬扯无关的往事"
+    ]
+   }
+  },
+  {
+   "id": "A30",
+   "category": "对照",
+   "time": "2026-03-25 15:00",
+   "message": "推荐一部轻松点的电影吧",
+   "rubric": {
+    "should": [
+     "正常推荐"
+    ],
+    "should_not": [
+     "编造他看过或喜欢的电影"
+    ]
+   }
+  }
+ ]
+}
