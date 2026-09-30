@@ -16,7 +16,7 @@ def load_config(path=None, overrides=None):
             config[section].update(deepcopy(values))
     if config['mind']['protocol'] not in ('a1', 'a2'):
         raise ValueError('invalid_mind_protocol')
-    if config['language']['render'] not in ('always','mind_choice','proactive_only'):
+    if config['language']['render'] not in ('always','mind_choice','proactive_only','never'):
         raise ValueError('invalid_language_render')
     if config['mind']['nondialogue_thinking'] != 'low':
         raise ValueError('invalid_nondialogue_thinking')

@@ -16,7 +16,7 @@ nondialogue_recent_turns = 0
 [language]
 recent_turns = 6
 model = "" # empty inherits the dialogue model
-render = "proactive_only"
+render = "never"
 [frontend]
 poll_interval_s = 5
 [model]

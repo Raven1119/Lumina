@@ -24,3 +24,20 @@ def test_proactive_only_skips_dialogue_and_renders_proactive(tmp_path):
     assert '你的英文名是 Lumina' in answer_system(
         AT, '', Path('prompts/chat_background.md').read_text(), protocol='a2')
     assert not Path('prompts/mind_identity.md').exists()
+
+
+def test_never_sends_proactive_speech_verbatim(tmp_path):
+    runtime, scheduler, model, _ = a2(
+        tmp_path, [{'回复': '对话原话'}], language={'render': 'never'})
+    assert send(scheduler)['response']['text'] == '对话原话'
+    user = scheduler.bus.get('t1:user')
+    rendered = scheduler.emit('active:never', 'mind.say', {
+        'text': '主动原话', 'user': user, 'kind': 'model', 'phase': 'model_chat',
+        'protocol': 'a2', 'proactive': True, 'memory_block': '',
+        'status_line': '', 'recent': [],
+    })
+    assert rendered['final_text'] == '主动原话'
+    assert rendered['rephrase_status'] == 'verbatim'
+    assert model.rephrases == []
+    assert [turn.text for turn in runtime._hot_store.list_all_raw()] == [
+        '你好', '对话原话', '主动原话']

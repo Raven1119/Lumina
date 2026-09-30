@@ -37,5 +37,6 @@ data/
 /Memory_lab/eval_set/scripts/
 /Memory_lab/eval_set/fillers/*.txt
 /Memory_lab/judge/*.json
+/workspace/
 /.agents/skills/*/.installed.json
 /.agents/skills/*/tests/last-browser-report.json

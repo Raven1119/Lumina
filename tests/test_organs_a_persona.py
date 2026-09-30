@@ -116,7 +116,7 @@ def test_mind_choice_still_honors_explicit_field(tmp_path):
     assert len(model.rephrases) == 1
     assert scheduler.bus.get('t1:1:0:done')['rephrase_status'] == 'verbatim'
     assert scheduler.bus.get('t2:1:0:done')['rephrase_status'] == 'rephrased'
-    assert load_config()['language']['render'] == 'proactive_only'
+    assert load_config()['language']['render'] == 'never'
 
 
 def test_first_speech_waits_for_language_call(tmp_path):
