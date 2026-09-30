@@ -195,7 +195,7 @@ Hot 原文：
 
 对 `organs-b` 从根提交到当前 HEAD 的全部可达对象和历史路径做了只读审计，而非只看工作树：**703 个历史路径**命中任务卡禁止推送的 `runs/`、`cache/` 或原始 `probes.jsonl` 材料；`.env.local` 未作为历史路径出现，单个大于 50 MB 的 blob 为 0；另有 84 个 blob 命中宽松的 `sk-` 形似密钥模式，未在公开输出中打印匹配文本，也未将其未经核对地断言为真实凭据。仅历史禁用路径一项已足以阻止代码推送，且任务卡禁止重写历史。因此 **未推送 `organs-b` 到公开新分支 `organs`**，本地分支及所有阶段提交保留。远端 `organs` 事前不存在。
 
-文档按授权只包含 `docs/TASK_organs_b.md` 与本报告，目标远端分支为 `Execution_lab2`；文档的实际快进推送和 `git ls-remote` 校验在交付步骤完成后记录。没有提交或推送 `.env.local`、`data/`、本次 `/tmp/` 运行目录、Docker 临时工作区及新评测缓存。真实 Hot/Cold/Memory 不存在时未造假备份，已有 `.env.local` 和 `data/mind/decisions.jsonl` 已按阶段 0 备份并核对。
+文档通过隔离 worktree 只暂存 `docs/TASK_organs_b.md` 与本报告，已从 `928b52c` 快进推到远端 `Execution_lab2` 的文档提交 `ddb5145`，并以 `git ls-remote` 核对。最终报告的这次补记仍只在该隔离 worktree 更新同一份文档；最终远端 HEAD 以交付回执为准。没有提交或推送 `.env.local`、`data/`、本次 `/tmp/` 运行目录、Docker 临时工作区及新评测缓存。真实 Hot/Cold/Memory 不存在时未造假备份，已有 `.env.local` 和 `data/mind/decisions.jsonl` 已按阶段 0 备份并核对。
 
 ### 偏差、未解决问题与下一步
 
