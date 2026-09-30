@@ -1,0 +1,6 @@
+# Top-level Memory v1 dependencies; use the prepared local venv when available.
+numpy==2.5.3
+scipy==1.18.1
+sentence-transformers==6.1.0
+huggingface-hub==1.32.0
+httpx==0.28.1

@@ -1,0 +1,11 @@
+# Model policy for new runtime calls. Restart a process after editing this file.
+# DeepSeek V4.1 Flash uses the API model ID deepseek-flash.
+default = "deepseek-flash"
+
+# Uncomment a role to use a different model for that role only.
+# [roles]
+# chat = "deepseek-v4-pro"
+# mind = "deepseek-v4-pro"
+# analysis = "deepseek-v4-pro"
+# execution = "deepseek-v4-pro"
+# memory = "deepseek-v4-pro"

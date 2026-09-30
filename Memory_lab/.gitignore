@@ -1,0 +1,8 @@
+runs/
+cache/
+eval_set/built/
+*:Zone.Identifier
+__pycache__/
+.pytest_cache/
+.venv/
+judge/usage_pairs_dev_a.json

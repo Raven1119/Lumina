@@ -1,0 +1,32 @@
+# Organ A runtime policy. Credentials remain in environment variables.
+[nervous]
+db_path = "data/nervous/lumina.sqlite"
+[chat]
+first_reply_timeout_s = 90
+[mind]
+protocol = "a2"
+dialogue_max_steps = 4
+thought_window = 5
+thought_max_chars = 200
+carry_max = 5
+read_max_chars = 20000
+nondialogue_max_steps = 8
+nondialogue_thinking = "low"
+nondialogue_recent_turns = 0
+[language]
+recent_turns = 6
+model = "" # empty inherits the dialogue model
+render = "proactive_only"
+[frontend]
+poll_interval_s = 5
+[model]
+max_output_tokens = 393216
+[workspace]
+path = "workspace/"
+[execution]
+max_concurrent = 2
+helper_call_cap = 60
+repeat_threshold = 3
+return_grace_steps = 2
+question_hold_hours = 24
+done_keep_hours = 24

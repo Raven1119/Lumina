@@ -1,0 +1,1 @@
+-r ../Conversation_Memory/requirements.txt

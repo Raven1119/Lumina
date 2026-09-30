@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN" class="lui" data-lui-theme="stone" data-motion="on">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumina · 对话</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="lumina-language/tokens.css">
+  <link rel="stylesheet" href="lumina-language/primitives.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="lui-body">
+  <main class="chat-shell">
+    <header class="chat-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div class="brand-copy">
+          <h1>LUMINA</h1>
+          <p>一段持续的对话</p>
+        </div>
+      </div>
+      <div class="header-controls">
+        <button class="motion-button cursor-target" id="motion-toggle" type="button" aria-pressed="true">动效开启</button>
+      </div>
+    </header>
+
+    <section class="maintenance-row" aria-label="连接与记忆状态">
+      <div class="maintenance-summary">
+        <div class="backend-line"><i class="backend-mark" aria-hidden="true"></i><span class="chat-status" id="backend-status" aria-live="polite">正在检查连接…</span></div>
+        <span id="memory-status">长期记忆：正在读取状态</span>
+        <span id="lumina-state" aria-live="polite">状态正在读取</span>
+        <ul id="helper-list" class="helper-list" aria-label="帮手任务" aria-live="polite"></ul>
+        <span id="recall-status">Recall：正在读取状态</span>
+      </div>
+      <button class="dream-button lui-btn cursor-target" id="dream-button" type="button" disabled>运行 Dream <span aria-hidden="true">↗</span></button>
+      <div class="dream-result" id="dream-result" role="status" aria-live="polite"></div>
+    </section>
+
+    <details class="memory-panel">
+      <summary class="cursor-target">查看 Memory</summary>
+      <div class="memory-content">
+        <button class="memory-refresh lui-btn cursor-target" id="memory-refresh" type="button">刷新记忆</button>
+        <pre id="memory-list" aria-live="polite"></pre>
+      </div>
+    </details>
+
+    <div class="log-heading" aria-hidden="true"><span>对话</span><span>CONVERSATION</span></div>
+    <section class="chat-log" id="chat-log" aria-label="对话记录" aria-live="polite"></section>
+    <section class="chat-notice" id="chat-notice" role="status" aria-live="polite"></section>
+
+    <form class="chat-form" id="chat-form" autocomplete="off">
+      <label for="chat-input" class="visually-hidden">发送消息</label>
+      <div class="composer-row">
+        <textarea class="lui-input" id="chat-input" name="message" rows="2" placeholder="写下你的消息…" required></textarea>
+        <button class="send-button lui-btn primary cursor-target" type="submit" id="send-button">发送 <span aria-hidden="true">↗</span></button>
+      </div>
+      <p class="composer-hint">Enter 发送 · Shift + Enter 换行</p>
+    </form>
+  </main>
+
+  <div id="target-cursor" class="target-cursor" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="br"></i><i class="bl"></i></div>
+  <script src="motion.js" defer></script>
+  <script src="app.js" defer></script>
+</body>
+</html>

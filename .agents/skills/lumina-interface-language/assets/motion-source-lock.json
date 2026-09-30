@@ -1,0 +1,18 @@
+{
+  "baseline": "research-interface-language@1.0.0",
+  "repository": "Raven1119/CyberScientist",
+  "reference_path": ".design/research-interface-language/assets/reference.html",
+  "reference_git_blob_sha": "3231d674f5ab7fc58b12e281b75fe91ff7df147d",
+  "reference_sha256_recorded_in_original_manifest": "7d29f98c9c7881b7fc47b7299008e3f3b2bc3294d02283d102960575b575e7c1",
+  "retrieval": "Frozen shader/host and application functions recovered through GitHub file-range reads of the installed 1.0.0 copy. Original Library ZIP could not be materialized; complete original ZIP not byte-compared.",
+  "script_locks": {
+    "ril-shaders": "154c4ea981d778a55d2fe604d825390661ffe396a96944b44dddcb826f156298",
+    "ril-engine": "101918fcdc9d8e9f6d707ac695e5458e1ba9063aa338e4de69cc559cac1fff8d"
+  },
+  "function_locks": {
+    "targetCursor": "fc78d523bfc068a99da958db6c31b01c0b05ad89f2c0715b9cc1177d9ab7bf09",
+    "hideCursor": "53a749491196c7d7c9f485b9e6a9ac15aeff2fa5607efd808aedec4caf69ab41",
+    "stepTo": "b8b45bd8cf34d141f2a3908e2c49561ced25ca93b9f4b1520f674088a3d7145d"
+  },
+  "note": "Hashes protect the recovered motion blocks against packaging/skin changes. No claim that the original complete reference file or archive was downloaded byte-for-byte."
+}

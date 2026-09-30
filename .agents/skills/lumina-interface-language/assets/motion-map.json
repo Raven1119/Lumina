@@ -1,0 +1,247 @@
+{
+  "version": "1.0.0",
+  "source_of_truth": "assets/motion-reference.html",
+  "baseline": "research-interface-language@1.0.0",
+  "items": [
+    {
+      "id": "PS-06",
+      "name": "Dithering",
+      "mode": "dithering",
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-shaders",
+        "anchor": "const DITHERING ="
+      },
+      "demo_url": "https://shaders.paper.design/dithering",
+      "source_url": "https://github.com/paper-design/shaders/blob/main/packages/shaders/src/shaders/dithering.ts",
+      "recorded_blob_sha": "9c9707ab4fedcb960667ef85a295f9ce49c5a873",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "Apache-2.0",
+      "api": "Motion.field(host,\"dithering\",{shape:1})"
+    },
+    {
+      "id": "PS-10",
+      "name": "Metaballs",
+      "mode": "metaballs",
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-shaders",
+        "anchor": "const PAPER_META ="
+      },
+      "demo_url": "https://shaders.paper.design/metaballs",
+      "source_url": "https://github.com/paper-design/shaders/blob/main/packages/shaders/src/shaders/metaballs.ts",
+      "recorded_blob_sha": "26d92de3c6d9ad9629cac2863f23eb04ab077419",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "Apache-2.0",
+      "api": "Motion.field(host,\"metaballs\")"
+    },
+    {
+      "id": "RB-01",
+      "name": "Threads",
+      "mode": "threads",
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-shaders",
+        "anchor": "const THREADS ="
+      },
+      "demo_url": "https://reactbits.dev/backgrounds/threads",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Backgrounds/Threads/Threads.jsx",
+      "recorded_blob_sha": "0bb152c4376bab5d32ef693cd144c95d129d948c",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.field(host,\"threads\")"
+    },
+    {
+      "id": "RB-08",
+      "name": "Dot Grid",
+      "mode": "dots",
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-engine",
+        "anchor": "function dotGrid("
+      },
+      "demo_url": "https://reactbits.dev/backgrounds/dot-grid",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Backgrounds/DotGrid/DotGrid.jsx",
+      "recorded_blob_sha": "211f506f4b06f1611af56b38e9e4170f688177af",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.field(host,\"dots\")"
+    },
+    {
+      "id": "RB-16",
+      "name": "Particles",
+      "mode": "particles",
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-shaders",
+        "anchor": "const PARTICLE_VERTEX ="
+      },
+      "demo_url": "https://reactbits.dev/backgrounds/particles",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Backgrounds/Particles/Particles.jsx",
+      "recorded_blob_sha": "24463a4e4f7cfd6acbe095777969e08848089018",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.field(host,\"particles\")"
+    },
+    {
+      "id": "RB-29",
+      "name": "Target Cursor",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "lumina-application",
+        "anchor": "function targetCursor("
+      },
+      "demo_url": "https://reactbits.dev/animations/target-cursor",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Animations/TargetCursor/TargetCursor.jsx",
+      "recorded_blob_sha": "adf49c520f96628080cfa5b57ea07feb89ec0615",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "targetCursor / hideCursor; application-local"
+    },
+    {
+      "id": "RB-34",
+      "name": "Pixel Transition",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-engine",
+        "anchor": "function pixelTransition("
+      },
+      "demo_url": "https://reactbits.dev/animations/pixel-transition",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Animations/PixelTransition/PixelTransition.jsx",
+      "recorded_blob_sha": "2df80139175ee0d80b174c4fb94f4a12c786dffa",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.pixelTransition(host,swap,{gridSize:12,animationStepDuration:.3})"
+    },
+    {
+      "id": "RB-35",
+      "name": "Animated Content",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-engine",
+        "anchor": "function enter("
+      },
+      "demo_url": "https://reactbits.dev/animations/animated-content",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Animations/AnimatedContent/AnimatedContent.jsx",
+      "recorded_blob_sha": "b95dffb94050ec0e60d404dc8ae60fb6829deb2b",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.enter(element,{distance:24,duration:600})"
+    },
+    {
+      "id": "RB-44",
+      "name": "Meta Balls",
+      "mode": "interactive",
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-shaders",
+        "anchor": "const RB_META ="
+      },
+      "demo_url": "https://reactbits.dev/animations/meta-balls",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Animations/MetaBalls/MetaBalls.jsx",
+      "recorded_blob_sha": "7f37dabae93bdda2caeb170a384660ad76605bf7",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.field(host,\"interactive\")"
+    },
+    {
+      "id": "RB-45",
+      "name": "Decrypted Text",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-engine",
+        "anchor": "function decrypt("
+      },
+      "demo_url": "https://reactbits.dev/text-animations/decrypted-text",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/TextAnimations/DecryptedText/DecryptedText.jsx",
+      "recorded_blob_sha": "ef56228af4f35cfd85697207ee58a7f945d488a9",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.decrypt(el,text,{speed:40})"
+    },
+    {
+      "id": "RB-46",
+      "name": "Scrambled Text",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-engine",
+        "anchor": "function scrambled("
+      },
+      "demo_url": "https://reactbits.dev/text-animations/scrambled-text",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/TextAnimations/ScrambledText/ScrambledText.jsx",
+      "recorded_blob_sha": "70a658dd1d6f40e9a7f59f470fc4969acc18f1ef",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.scrambled(el)"
+    },
+    {
+      "id": "RB-48",
+      "name": "Split Text",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-engine",
+        "anchor": "function split("
+      },
+      "demo_url": "https://reactbits.dev/text-animations/split-text",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/TextAnimations/SplitText/SplitText.jsx",
+      "recorded_blob_sha": "22a96c8369d03d1f9a46b2df067cee72f68cd9b8",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.split(el,text)"
+    },
+    {
+      "id": "RB-53",
+      "name": "Text Type",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-engine",
+        "anchor": "function type("
+      },
+      "demo_url": "https://reactbits.dev/text-animations/text-type",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/TextAnimations/TextType/TextType.jsx",
+      "recorded_blob_sha": "f30aba9338540a97f4aa7f1d1d949a6692ee6bed",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.type(el,text,{typingSpeed:25})"
+    },
+    {
+      "id": "RB-59",
+      "name": "Elastic Slider",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "ril-engine",
+        "anchor": "function elastic("
+      },
+      "demo_url": "https://reactbits.dev/components/elastic-slider",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Components/ElasticSlider/ElasticSlider.jsx",
+      "recorded_blob_sha": "181a68a021a88f6ca6783415afd245b8cd8a5086",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "Motion.elastic(host,callback,.8)"
+    },
+    {
+      "id": "RB-60",
+      "name": "Stepper",
+      "mode": null,
+      "reference": {
+        "file": "assets/motion-reference.html",
+        "script_id": "lumina-application",
+        "anchor": "function stepTo("
+      },
+      "demo_url": "https://reactbits.dev/components/stepper",
+      "source_url": "https://github.com/DavidHDev/react-bits/blob/main/src/content/Components/Stepper/Stepper.jsx",
+      "recorded_blob_sha": "d086d4c2c9d104fb6f40c968673f94d125aaff43",
+      "blob_status": "Inherited upstream blob from RIL 1.0.0; not reverified. The embedded frozen application is authoritative.",
+      "license": "MIT + Commons Clause",
+      "api": "stepTo(n); application-local"
+    }
+  ]
+}
