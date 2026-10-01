@@ -200,3 +200,33 @@ Hot 对话原文（合成数据）：
 > 2026-09-05,delta,5
 >
 > 三个源表表头与列顺序完全一致（date,name,value），无异常行；a=2、b=1、c=2，合计 5 行，行数对得上，无丢失无重复。date 已按日期语义升序，不是字符串排序。inbox 里的原文件未动。
+
+### R5：真实情景记录
+
+#### R5_run1
+
+通过：追问说出完成状态与一致路径；整次只派出首轮的一个帮手。出现 1 次已结束帮手的工具错误，按结果恢复。
+客观检查：`{"pass": true, "path": "tasks/H38d8cfea/merged.csv", "rows": 5}`。新增 10 次调用，输入 26048、输出 2560 token。真实保险丝 0 次，自动答复 0 次。
+
+| 用途 | 调用 | 输入 token | 输出 token |
+| --- | ---: | ---: | ---: |
+| helper | 4 | 6994 | 1480 |
+| mind_dialogue | 3 | 9005 | 619 |
+| mind_event | 3 | 10049 | 461 |
+
+工具调用：delegate(把工作区 inbox 目录下的 a.csv、b.csv、c.csv 三个表合并成一张表，按 date 从早到晚排序，只保留 date,nam)、read_file(tasks/H38d8cfea/merged.csv)、read_file(inbox/a.csv)、read_file(inbox/b.csv)、read_file(inbox/c.csv)、answer_helper(H38d8cfea)。
+工具错误：helper_unavailable：没办成：帮手 H38d8cfea 不存在或已经结束。手头任务里有现在的帮手编号。。
+Hot 对话原文（合成数据）：
+
+> 他：请派一个帮手把 inbox 里的 a.csv、b.csv、c.csv 三个表合成一张，按 date 从早到晚排序，保留 date,name,value 三列，结果放到它的任务目录里。做完告诉我结果文件的位置。
+
+> 她：已安排下去：把 inbox 里的 a.csv、b.csv、c.csv 合并成一张表，只留 date、name、value 三列，按 date 从早到晚排好，结果放在该任务自己的目录里。完工后我把结果文件的路径给你。若三个表的表头或日期格式不一致，我会让它先对齐再合并，不擅自删行。
+
+> 她：表合并好了，我核对过：首行是 date,name,value，5 行数据正好等于 a、b、c 三个文件数据行之和（2+1+2），date 按真实时间升序，没有多余列。
+> 结果文件：tasks/H38d8cfea/merged.csv
+> 三个文件的表头本来就一致，没有需要对齐或删行的情形。
+
+> 他：刚才那张表弄好了吗？把结果位置告诉我。
+
+> 她：弄好了。三表合并、按 date 升序、只留 date、name、value 三列，数据行等于三表之和，没有多余列。
+> 结果文件：tasks/H38d8cfea/merged.csv
