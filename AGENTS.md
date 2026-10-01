@@ -9,8 +9,8 @@ For platform and Codex placement follow `docs/final_goal.md#target-platform`. St
 | Owner | Current entry and boundary |
 | --- | --- |
 | Nervous | `Nervous/bus.py`, `event_triggers.py`, `scheduler.py`, `lumina_state.py`: SQLite WAL event transport, fixed triggers, one serial Mind worker, actual state/focus. Transport does not judge. |
-| Mind | `Mind/runner.py`, `dialogue_state.py`, `helper_actions.py`: every Chat input is a dialogue thought; helper questions/reports trigger non-dialogue thoughts. Mind may read `workspace/` and recall Memory, but does not write files. |
-| Language | `Language/channel.py`, `rephrase.py`: durable speech outlet through core Hot and trace owners. Ordinary replies are direct by default; proactive speech uses the language model. |
+| Mind | `Mind/runner.py`, `dialogue_state.py`, `tools.py`: every Chat input is a dialogue thought; helper questions/reports trigger non-dialogue thoughts. A2 uses native tool calls for read, recall and helper actions. Mind may read `workspace/` and recall Memory, but does not write files. |
+| Language | `Language/channel.py`, `rephrase.py`: durable speech outlet through core Hot and trace owners. Speech is direct by default (`language.render=never`); other rendering modes remain explicit options. |
 | Execution | `Execution/pool.py` runs at most two helpers around the durable `Execution/organ.py` V2. `sandbox.py` mounts the whole workspace read-only and only one task directory writable, with no network. Helpers choose implementation; their reports and questions return as events. |
 | Core draft | `core/main.py`, `dialogue_io.py`, Hot/Cold stores and compactor retain Chat API, original turns and rolling summary ownership. A1 preserves memory-v1 request bytes. |
 | Memory and Dream | `Conversation_Memory/facade.py` is the read/trace/Dream boundary. Dream alone writes the graph; Cold retains immutable source turns. Read local instructions in `Conversation_Memory/AGENTS.md` and `Dream/AGENTS.md`. |
@@ -23,6 +23,7 @@ For platform and Codex placement follow `docs/final_goal.md#target-platform`. St
 - Cold preserves each departing Hot turn before compaction. Dream is Memory's sole graph writer. Chat appends only recall traces keyed by assistant turn ID. Recall remains bounded, read-only and fail-soft. Any Recall change needs cache-only P8 comparison on both development sets and Chat/Lab block equality.
 - Dream has its own lock. Model calls run outside the Chat write lock. Stop Chat before manual Memory cursor changes. The service is one process (`--workers 1`).
 - Model selection is `model_policy.py` plus `config/model.toml`; `deepseek-flash` is the initial shared default with per-role overrides. Historical experiments keep their recorded model identities. `config/lumina.toml` controls organ behavior. Credentials remain in environment variables.
+- A2 tool calls and results are journaled before execution/continuation. Invalid tool calls return errors to Mind. The final step disables tools. Helper `.lumina-outcome` is its self-report, not verification; `/api/chat` uses `model`, `none`, `error`, or `pending` response types. Nervous retries each failed event up to its configured cap, then records a content-free dead letter. `scripts/usage_report.py` reads content-free counters from the bus database.
 - Preserve `.env.local`, `data/`, real Hot/Cold/Memory, and unrelated changes. Use temporary test state. Public output must not expose private runtime bodies, credentials, or tracebacks. Commit, push, rebase, reset and history rewriting require current authorization. For this task, follow its explicit staged delivery and all-history push audit.
 
 ## Validation

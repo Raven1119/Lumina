@@ -1,6 +1,6 @@
 # 器官重构 B2 结果
 
-状态：进行中。只把实际完成的阶段记为通过；原始运行材料留在本地。
+状态：阶段 0–4 已执行，阶段 5 收尾与推送记录见文末。只把实际完成的检查记为通过；原始运行材料留在本地。
 
 ## 阶段 0：干净分支、基线和诊断
 
@@ -478,3 +478,52 @@ Hot 对话原文（合成数据）：
 > 她：好。去收拾你的桌面，累了就歇着。
 >
 > 我在。
+
+## 阶段 5：总账、复测与收尾
+
+### 改动清单
+
+| 位置 | 本轮变化 |
+| --- | --- |
+| `Execution/deepseek_model.py`, `core/model_client.py` | 共用 OpenAI 兼容请求封套、工具调用解析和供应商错误处理；Execution 帮手仍使用原来的行为。 |
+| `Mind/tools.py`, `Mind/runner.py`, `Conversation_Memory/answer.py` | A2 六个原生工具及错误结果、思考循环、完整响应/结果持久化、非对话 thinking 回传、旧文字行动忽略、过程话抑制；A1 入口未改。 |
+| `Execution/pool.py`, `Nervous/bus.py`, `Nervous/scheduler.py`, `Mind/usage.py` | 帮手问答、自报结果、终态回报原子事务与补发、单事件死信、无正文试用计数。 |
+| `core/main.py`, `edge/static/app.js`, `prompts/`, `config/lumina.toml` | 四种 Chat 回应、最小前端呈现、B2 对话/事件/帮手提示、工具与事件上限、默认直发。 |
+| `scripts/usage_report.py`, `tests/`, 文档 | 只读统计脚本、确定性与合成情景验证、当前合同与结果记录。 |
+
+### 四组测试前后
+
+| 套件 | 改前 | B2 改后 |
+| --- | --- | --- |
+| 全树 `pytest -q` | 398 passed, 4 skipped | 411 passed, 4 skipped, 1 warning |
+| `pytest tests -q` | 180 passed, 3 skipped | 193 passed, 3 skipped, 1 warning |
+| `pytest Execution -q` | 214 passed, 1 skipped | 214 passed, 1 skipped |
+| 实验室离线 `Memory_lab/tests` | 86 passed | 86 passed |
+
+全树与 Execution 的最终通过是在允许本地 socket 的执行环境复跑。受限沙箱内并行执行 Execution 时，IPython 内核无法创建本地 socket，得到 31 failed、183 passed、1 skipped；报错为 `PermissionError: [Errno 1] Operation not permitted`。单独以可创建本地 socket 的环境复跑后 214 passed、1 skipped，与改前基线一致；该次沙箱失败属于运行环境限制，不记作代码回归。全树首次并行受限运行未正常完成，随后单独复跑通过。前端设计包 `verify.py`：34 files、3 themes、15 motion entries、frozen blocks PASS、integrity PASS；本环境无 Node，未做真实浏览器控制台检查。
+
+确定性测试覆盖：A1 请求字节比较；对话读文件与工具回传、派活与一次回复、缺参数/未知工具/错误帮手编号/非提问答复/非法 JSON/末步禁工具/协议残留/坏 JSON 回复救援；响应和工具两处崩溃恢复；非对话 reasoning content 回传、解析重试和自动答复；帮手问答、搁置、交回、自报做不到、终态原子事务与补发、死信后继续、`none/error/pending` 与统计脚本只读。Docker 隔离和重启 3 passed，零真实调用；默认仓库挂载未通过，见阶段 4 环境检查。
+
+### 真实调用与事件计数
+
+所有真实调用均为当前统一配置的 `deepseek-flash`。在 HTTP 尝试前本地预留账本，成功与失败尝试都占预算。本轮账本共 106/150 次，输入 254,252、输出 17,440 token，合计 271,692 token；其中验证 3 次、真实情景 103 次。没有语言器官模型调用。
+
+| 用途 | 调用 | 输入 token | 输出 token |
+| --- | ---: | ---: | ---: |
+| 对话 Mind | 32 | 95,585 | 4,989 |
+| 非对话 Mind | 26 | 88,412 | 4,619 |
+| 帮手 | 45 | 69,258 | 7,658 |
+| 接口验证 | 3 | 997 | 174 |
+| 合计 | 106 | 254,252 | 17,440 |
+
+各情景原始回执的 `usage_records` 合计：工具错误 2 次，均是 `helper_unavailable`（R5 首轮、R6 第二轮，试图答复已经终结的帮手，工具错误回传后恢复）；协议残留 0、文字解析失败 0、重试 0、最后一步被忽略的工具 0、模型调用失败 0、保险丝 0、自动答复 0。R2 两次的实际问答由 Mind 答复；保险丝与自动答复未在真实情景触发，确定性测试才覆盖这两个分支。
+
+R8 的最终六条普通对话：理解 4/6、借鉴 3/6、顺带 1/6；这只是字段填写率，不代表回复质量评分。R2 首次实际产物正确但用户未先给口径，判该路径失败；第二次在明确“先问我”后通过，帮手仍重复提问一次，Mind 从已有问答答复，未再次问用户。R3 首次本地摘要的客观脚本误标通过；按任务卡要求纠正为失败，第二次在明确要求沙箱实测后通过。R6 首次英文过程话泄漏，修补工具步骤的无标签文本救援后第二次通过。首次原始材料均保留。
+
+### 偏差、局限与试用建议
+
+- 仓库里原无 `docs/TASK_organs_b2.md`；根据仓库主人本轮任务卡重建了可发布的任务摘要，附录提示正文以落地的三个 `prompts/` 文件和六工具定义为准。既有本地 `organs` 经仓库主人确认可复用，因此没有执行只适用于“尚无本地 organs”的新建分支命令。
+- WSL 会话没有 Linux `docker` 命令，Docker Desktop 守护进程虽可用，但当前默认 Linux 仓库 `workspace/` 挂载不可读。按任务卡回退到 Windows 用户临时目录与既有路径适配器；只读、禁网和任务目录隔离在回退路径验证，默认挂载仍须在实际部署环境验证。
+- 合成用户脚本在 R2、R3 第二次运行增加了明确口径要求；这使客观路径可测，却不证明原始模糊请求总能自行收敛。R2 帮手重复提问、R5/R6 对已结束帮手的多余答复工具调用，以及 R3 首次“口头说会派但未调用工具”，应在日常试用统计中继续观察。
+- 没有真实浏览器/Windows 应用验证；仅有前端最小状态逻辑的确定性测试和设计包静态验证。没有盲评，不能用本轮情景推断长期对话质量。
+- 部署后的试用可运行 `Conversation_Memory/.venv/bin/python scripts/usage_report.py --since <开始日期>`，按真实失败和工具错误再决定是否进入阶段 C。
