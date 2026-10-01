@@ -121,7 +121,7 @@ def answer_messages(probe: dict, hot, summary: str|None, summary_until: datetime
 
 
 def parse_dialogue(text):
-    """Tolerant v5 reply plus strictly typed optional A2 fields, without retry.
+    """Tolerant v5 reply plus private A2 handoff fields, without text actions.
 
     Malformed new fields never become public prose. Only a labeled reply (or
     unlabeled natural language) may be sent out of the dialogue protocol.
@@ -157,15 +157,9 @@ def parse_dialogue(text):
     noticed={key:data.get(key,'') if isinstance(data.get(key,''),str) else '' for key in keys[:3]}
     reply=data.get('回复','')
     reply=_clean_v5_reply(reply)[0] if isinstance(reply,str) else ''
-    actions=[]
-    if isinstance(data.get('行动'),list):
-        for action in data['行动']:
-            if isinstance(action,dict) and len(action)==1:
-                name,value=next(iter(action.items()))
-                if name in ('读','回忆') and isinstance(value,str) and value.strip():
-                    actions.append({name:value})
     return {'reply':reply,'noticed':noticed,'rephrase':data.get('重组') is True,
-            'actions':actions,'thought':data.get('思绪','') if isinstance(data.get('思绪',''),str) else '',
+            'protocol_residue':'行动' in data,
+            'thought':data.get('思绪','') if isinstance(data.get('思绪',''),str) else '',
             'carry':[ref for ref in data.get('带着',[]) if isinstance(ref,str)] if isinstance(data.get('带着'),list) else []}
 
 

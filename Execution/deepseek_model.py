@@ -27,6 +27,65 @@ _ENDPOINT = OPENAI_CHAT_URL
 _TIMEOUT_SECONDS = 60.0
 _MAX_TOOL_CALLS_PER_DECISION = 4
 
+
+def chat_tool_request(model, messages, tools, *, thinking='disabled',
+                      tool_choice='auto', max_tokens=None, temperature=None):
+    """Shared OpenAI-compatible tool request shape for Execution and Mind."""
+    body = {
+        'model': model, 'messages': messages, 'tools': tools,
+        'thinking': {'type': 'enabled' if thinking == 'low' else 'disabled'},
+        'stream': False,
+    }
+    if thinking == 'low':
+        body['reasoning_effort'] = 'low'
+    elif thinking != 'disabled':
+        raise ValueError('invalid_tool_thinking')
+    if tool_choice != 'auto':
+        body['tool_choice'] = tool_choice
+    if max_tokens is not None:
+        body['max_tokens'] = max_tokens
+    if temperature is not None and thinking == 'disabled':
+        body['temperature'] = temperature
+    return body
+
+
+def chat_assistant_message(response):
+    """Extract the complete assistant envelope without dropping reasoning."""
+    if not isinstance(response, Mapping):
+        raise ValueError('malformed_response')
+    try:
+        choice = response['choices'][0]
+        message = choice['message']
+    except (KeyError, IndexError, TypeError):
+        raise ValueError('malformed_response') from None
+    if not isinstance(message, Mapping):
+        raise ValueError('malformed_response')
+    return message
+
+
+def chat_tool_calls(message, *, require_present=False):
+    """Check provider call envelopes; leave arguments as their original JSON text."""
+    calls = message.get('tool_calls')
+    if calls is None and not require_present:
+        return []
+    if not isinstance(calls, list):
+        raise ValueError('malformed_response')
+    seen = set()
+    for call in calls:
+        if not isinstance(call, Mapping):
+            raise ValueError('malformed_response')
+        function = call.get('function')
+        call_id = call.get('id')
+        if call_id in seen:
+            raise ValueError('duplicate_tool_call_id')
+        if (call.get('type') != 'function' or not isinstance(call_id, str)
+                or not call_id or not isinstance(function, Mapping)
+                or not isinstance(function.get('name'), str)
+                or not isinstance(function.get('arguments'), str)):
+            raise ValueError('malformed_response')
+        seen.add(call_id)
+    return calls
+
 _NATIVE_TOOLS = [
     {
         "type": "function",
@@ -244,17 +303,14 @@ class DeepSeekModel:
                     ),
                 ]
             )
-        payload: dict[str, object] = {
-            "model": self.identifier,
-            "messages": messages,
-            "tools": [
+        payload: dict[str, object] = chat_tool_request(
+            self.identifier, messages,
+            [
                 tool
                 for tool in _PROVIDER_TOOLS
                 if tool["function"]["name"] in exposed_names
             ],
-            "thinking": {"type": "disabled"},
-            "stream": False,
-        }
+        )
         try:
             response = self._without_reasoning(self._transport(payload))
         except _ProviderError as exc:
@@ -281,12 +337,10 @@ class DeepSeekModel:
         if not isinstance(response, Mapping):
             return self._failure(payload, response, "malformed_response")
         try:
-            message = response["choices"][0]["message"]
-            tool_calls = message["tool_calls"]
-        except (KeyError, IndexError, TypeError):
-            return self._failure(payload, response, "malformed_response")
-        if not isinstance(tool_calls, list):
-            return self._failure(payload, response, "malformed_response")
+            message = chat_assistant_message(response)
+            tool_calls = chat_tool_calls(message, require_present=True)
+        except ValueError as exc:
+            return self._failure(payload, response, str(exc))
         if not tool_calls:
             return self._failure(payload, response, "no_tool_call")
         if len(tool_calls) > _MAX_TOOL_CALLS_PER_DECISION:

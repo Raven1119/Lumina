@@ -1,12 +1,13 @@
 """The Chat dialogue thought. Independent of the old Mind cognitive chain."""
 from copy import deepcopy
 from datetime import datetime
-from pathlib import Path, PureWindowsPath
-import hashlib
+from pathlib import Path
 
 from core.dialogue_io import response
 from Mind.dialogue_state import DialogueState
-from Mind.helper_actions import object_from_text, actions_from_object, parse_event
+from Mind.helper_actions import parse_event
+from Mind.tools import MindTools, MIND_TOOLS
+from Execution.deepseek_model import chat_assistant_message, chat_tool_calls
 from Execution.pool import AUTO_REPLY
 from core.model_client import MOCK_ASSISTANT_TEXT
 from Conversation_Memory.answer import parse_answer_v5_tolerant, fallback_answer_v5, parse_dialogue, answer_messages
@@ -17,6 +18,7 @@ class DialogueRunner:
         self.bus, self.io, self.config, self.state, self.emit = bus, io, config, state, emit
         self.checkpoint = checkpoint or (lambda _: None)
         self.pool = pool
+        self.tools = MindTools(bus, io, config, pool)
 
     def _call(self, key, request):
         result = self.bus.get(key+':response')
@@ -47,6 +49,53 @@ class DialogueRunner:
         self.bus.put(key+':response',result)
         self.checkpoint('response_saved')
         return result
+
+    def _native_call(self, key, system, messages, *, thinking='disabled',
+                     tool_choice='auto'):
+        """Journal the exact native request/response before any tool can run."""
+        saved = self.bus.get(key+':response')
+        if saved is not None:
+            return saved
+        if self.bus.get(key+':request') is not None:
+            return self.bus.put(key+':response',
+                                {'raw': None, 'failed': True, 'reason': 'outcome_unknown'})
+        model = self.io.model
+        if hasattr(model, 'tool_request'):
+            wire = model.tool_request(system, messages, MIND_TOOLS,
+                                      thinking=thinking, tool_choice=tool_choice)
+        else:
+            wire = {'system': system, 'messages': messages, 'tools': MIND_TOOLS,
+                    'thinking': thinking, 'tool_choice': tool_choice}
+        self.bus.put(key+':request', wire)
+        try:
+            if getattr(model, 'client_kind', 'model') == 'mock':
+                text = model.generate([], messages[-1]['content'], system_prompt=system)
+                raw = {'choices': [{'message': {'role': 'assistant',
+                    'content': text, 'tool_calls': None}, 'finish_reason': 'stop'}]}
+            elif hasattr(model, 'complete_tools'):
+                raw = model.complete_tools(system, messages, MIND_TOOLS,
+                                           thinking=thinking, tool_choice=tool_choice)
+            else:
+                text = model.complete_answer(system, messages)
+                raw = {'choices': [{'message': {'role': 'assistant',
+                    'content': text, 'tool_calls': None}, 'finish_reason': 'stop'}]}
+            chat_tool_calls(chat_assistant_message(raw))
+            result = {'raw': raw, 'failed': False}
+        except Exception:
+            result = {'raw': None, 'failed': True, 'reason': 'model_call_failed'}
+        self.bus.put(key+':response', result)
+        self.checkpoint('response_saved')
+        return result
+
+    @staticmethod
+    def _continue_with_tools(message, calls, results):
+        assistant = {'role': 'assistant', 'content': message.get('content'),
+                     'tool_calls': calls}
+        if 'reasoning_content' in message:
+            assistant['reasoning_content'] = message['reasoning_content']
+        return [assistant, *({'role': 'tool', 'tool_call_id': call['id'],
+                              'content': result['text']}
+                             for call, result in zip(calls, results, strict=True))]
 
     def run(self, event):
         if event['kind'] != 'user.message':
@@ -120,62 +169,8 @@ class DialogueRunner:
             self.bus.put(key+':written',True)
         return user
 
-    def _action(self, tid, step, ordinal, action, user):
-        key=f'{tid}:{step}:{ordinal}'
-        result=self.bus.get(key+':result')
-        if result is not None:return result
-        self.bus.put(key+':action',action)
-        name,value=next(iter(action.items()))
-        if name not in ('读','回忆'):
-            return self._helper_action(key, name, value)
-        if name=='读':
-            ref='文件:'+value
-            try:
-                relative=Path(value)
-                root=Path(self.config['workspace']['path']).resolve()
-                target=(root/relative).resolve()
-                if relative.is_absolute() or PureWindowsPath(value).drive or '..' in relative.parts or not target.is_relative_to(root):
-                    raise ValueError('outside_workspace')
-                if not target.is_file():
-                    raise ValueError('not_regular_file')
-                limit=self.config['mind']['read_max_chars']
-                with target.open('r',encoding='utf-8') as source:
-                    content=source.read(limit+1)
-                truncated=len(content)>limit
-                text=content[:limit]+('\n（已截断，后续内容未读取）' if truncated else '')
-                result={'id':ref,'text':text,'truncated':truncated,'status':'ok'}
-            except (OSError,ValueError,UnicodeError):
-                result={'id':ref,'text':'读取失败：仅可读取工作区内可用的文本文件。','status':'unavailable'}
-        else:
-            ref=f'回忆:{step}.{ordinal}'
-            try:
-                recalled=self.io.recall(value,user)
-                # Active recall is deliberately absent from Memory's trace.
-                lines=[line for line in recalled.block.splitlines() if line.strip()]
-                children={f'{ref}.{i}':{'id':f'{ref}.{i}','text':line} for i,line in enumerate(lines,1)}
-                text='\n'.join(f"[{item['id']}] {item['text']}" for item in children.values()) or '（没有召回结果）'
-                result={'id':ref,'text':text,'status':'ok','references':children}
-            except Exception:
-                result={'id':ref,'text':'（回忆暂不可用）','status':'unavailable'}
-        return self.bus.put(key+':result',result)
-
-    def _helper_action(self, key, name, value):
-        if name == '派活':
-            helper = 'H' + hashlib.sha256(key.encode()).hexdigest()[:8]
-            kind, body = 'mind.spawn', {'helper': helper, 'contract': value}
-            result = {'id': helper, 'text': '已派出帮手 '+helper, 'status': 'ok'}
-        else:
-            helper = value['帮手'] if name == '答复' else value
-            if self.pool is not None and self.pool.get(helper) is None:
-                return self.bus.put(key+':result', {'id': helper, 'text': '帮手不存在', 'status': 'unavailable'})
-            kind = {'答复':'mind.reply','取消':'mind.cancel','搁置':'mind.hold'}[name]
-            body = {'helper': helper}
-            if name == '答复': body['content'] = value['内容']
-            result = {'id': helper, 'text': {'答复':'已答复','取消':'已取消','搁置':'已搁置'}[name], 'status':'ok'}
-        self.bus.publish(key+':event', kind, body)
-        return self.bus.put(key+':result', result)
-
     def _run_a2(self,event):
+        self.tools.pool=self.pool
         tid=event['id'];self.state.thinking(True)
         try:
             user=self.bus.get(tid+':user')
@@ -187,7 +182,7 @@ class DialogueRunner:
             if prepared is None:
                 prepared=self.bus.put(tid+':prepared',self.io.prepare(user,protocol='a2',state_block=state['block']))
             self._input(event)
-            input_events=[tid];unanswered=[tid];speeches=[]
+            input_events=[tid];unanswered=[tid];speeches=[];spoken_texts=set()
             refs={**state['references'],**prepared['memory_references']}
             history=[];recent=list(prepared['recent'])+[user]
             max_steps=self.config['mind']['dialogue_max_steps']
@@ -207,25 +202,35 @@ class DialogueRunner:
                     added=self._input(incoming)
                     input_events.append(incoming['id']);unanswered.append(incoming['id']);recent.append(added)
                     history.extend(answer_messages({'message':added['text']},[],None,None,datetime.fromisoformat(added['created_at'])))
-                request=deepcopy(prepared)
-                request['messages']+=history
-                result=self._call(key,request)
+                messages=[*deepcopy(prepared['messages']),*deepcopy(history)]
+                result=self._native_call(key,prepared['system'],messages,
+                    tool_choice='none' if step==max_steps else 'auto')
                 if result['failed']:
-                    parsed={'reply':MOCK_ASSISTANT_TEXT,'noticed':{},'rephrase':False,'actions':[],'thought':'','carry':[]}
-                    kind='fallback'
-                elif phase=='mock_chat':
-                    parsed={'reply':result['raw'],'noticed':{},'rephrase':False,'actions':[],'thought':'','carry':[]}
-                    kind='mock'
+                    parsed={'reply':'','noticed':{},'rephrase':False,'thought':'','carry':[],
+                            'protocol_residue':False}
+                    calls=[];message={'content':''};kind='fallback'
                 else:
-                    parsed=parse_dialogue(result['raw']);kind='model'
-                    obj=object_from_text(result['raw'])
-                    if obj is not None:
-                        parsed['actions']=actions_from_object(obj)
-                if parsed['reply']:
-                    said=self.emit(f'{tid}:{step}:0','mind.say',{'text':parsed['reply'],'user':user,
+                    message=chat_assistant_message(result['raw'])
+                    calls=chat_tool_calls(message)
+                    content=message.get('content')
+                    if phase=='mock_chat':
+                        parsed={'reply':content if isinstance(content,str) else '',
+                                'noticed':{},'rephrase':False,'thought':'','carry':[],
+                                'protocol_residue':False}
+                    else:
+                        parsed=parse_dialogue(content if isinstance(content,str) else '')
+                    kind='mock' if phase=='mock_chat' else 'model'
+                if parsed.get('protocol_residue'):
+                    self.bus.put(key+':protocol_residue',True)
+                reply=parsed['reply']
+                if reply and reply in spoken_texts:
+                    self.bus.put(key+':duplicate_speech',reply)
+                elif reply:
+                    said=self.emit(f'{tid}:{step}:0','mind.say',{'text':reply,'user':user,
                         'kind':kind,'phase':phase,'rephrase':parsed['rephrase'],
                         'memory_block':prepared['memory_block'],'status_line':state['status_line'],
                         'recent':recent,'protocol':'a2'})
+                    spoken_texts.add(reply)
                     speeches.append({**said,'noticed':parsed['noticed']})
                     recent.append(said['turn'])
                     self.checkpoint('speech_saved')
@@ -233,21 +238,19 @@ class DialogueRunner:
                         if self.bus.get(input_id+':reply') is None:
                             self.bus.put(input_id+':reply',said['response'])
                     unanswered=[]
-                if not parsed['actions']:break
-                returns=[action for action in parsed['actions'] if next(iter(action)) in ('读','回忆')]
-                if step==max_steps and returns:
+                if step==max_steps and calls:
                     interrupted=True
-                    self.bus.put(key+':skipped_actions',returns)
+                    self.bus.put(key+':skipped_tool_calls',calls)
+                    break
+                if not calls:break
                 results=[]
-                for ordinal,action in enumerate(parsed['actions'],1):
-                    if step==max_steps and action in returns:continue
-                    value=self._action(tid,step,ordinal,action,user)
+                limit=self.config['mind']['tool_max_calls_per_step']
+                for ordinal,call in enumerate(calls,1):
+                    value=self.tools.execute(f'{tid}:{step}:{ordinal}',call,user,
+                                             too_many=ordinal>limit)
                     results.append(value);refs[value['id']]=value
                     refs.update(value.get('references',{}))
-                if not returns or step==max_steps:break
-                history.append({'role':'assistant','content':result['raw']})
-                history.append({'role':'user','content':'本次思考的行动结果：\n'+
-                    '\n\n'.join('['+r['id']+'] '+r['text'] for r in results)})
+                history.extend(self._continue_with_tools(message,calls,results))
             thought=parsed['thought']
             if interrupted:
                 note='（这次想到一半被打断了）'
@@ -270,30 +273,9 @@ class DialogueRunner:
         finally:
             self.state.thinking(False)
 
-    def _event_call(self, key, system, messages, *, retry=False):
-        saved = self.bus.get(key+':response')
-        if saved is not None:return saved
-        if self.bus.get(key+':request') is not None:
-            return self.bus.put(key+':response', {'raw':'','failed':True,'reason':'outcome_unknown'})
-        model=self.io.model
-        thinking='disabled' if retry else self.config['mind']['nondialogue_thinking']
-        wire=(model.event_request(system,messages,thinking=thinking,prefill=retry)
-              if hasattr(model,'event_request') else {'system':system,'messages':messages,'thinking':thinking,'prefill':retry})
-        self.bus.put(key+':request',wire)
-        try:
-            if hasattr(model,'complete_event'):
-                raw=model.complete_event(system,messages,thinking=thinking,prefill=retry)
-            elif hasattr(model,'complete_answer'):
-                raw=model.complete_answer(system,messages)
-            else:
-                raw=model.generate([],messages[-1]['content'],system_prompt=system)
-            saved={'raw':raw if isinstance(raw,str) else '', 'failed':not isinstance(raw,str)}
-        except Exception:
-            saved={'raw':'','failed':True,'reason':'model_call_failed'}
-        return self.bus.put(key+':response',saved)
-
     def run_events(self, events):
         """One serial thought for currently pending helper events of the same kind."""
+        self.tools.pool=self.pool
         tid=events[0]['id']
         if self.bus.get(tid+':finished'):
             self.bus.ack_many([event['id'] for event in events]);return None
@@ -311,7 +293,12 @@ class DialogueRunner:
             if self.config['mind']['nondialogue_recent_turns']:
                 with self.io.lock:
                     recent=self.io.runtime._hot_store.read_context().raw_turns
-                messages.extend({'role':turn.role,'content':turn.text} for turn in recent[-self.config['mind']['nondialogue_recent_turns']:])
+                lines=[]
+                for turn in recent[-self.config['mind']['nondialogue_recent_turns']:]:
+                    who='他' if turn.role=='user' else '你'
+                    when=datetime.fromisoformat(turn.created_at)
+                    lines.append(f'{who}（{when.month}月{when.day}日 {when:%H:%M}）：{turn.text}')
+                if lines:messages.append({'role':'user','content':'最近的对话：\n'+'\n'.join(lines)})
             if state['block']:
                 messages.append({'role':'user','content':state['block']})
             notices=[]
@@ -323,18 +310,35 @@ class DialogueRunner:
                     '、'.join(body.get('outputs',[])))
             messages.append({'role':'user','content':'\n\n'.join(notices)})
             refs=dict(state['references']);parsed={'thought':'','carry':[]}
-            spoken=[];user={'source_timezone':self.io.factory.default_timezone,
+            spoken=[];spoken_texts=set();handled=set()
+            user={'source_timezone':self.io.factory.default_timezone,
                             'timezone_source':'configured_default','created_at':at.isoformat()}
             for step in range(1,self.config['mind']['nondialogue_max_steps']+1):
                 key=f'{tid}:event:{step}'
-                outcome=self._event_call(key,system,messages)
-                parsed=parse_event(outcome['raw']) if not outcome['failed'] else None
+                final_step=step==self.config['mind']['nondialogue_max_steps']
+                outcome=self._native_call(key,system,messages,
+                    thinking=self.config['mind']['nondialogue_thinking'],
+                    tool_choice='none' if final_step else 'auto')
+                message=chat_assistant_message(outcome['raw']) if not outcome['failed'] else {'content':''}
+                calls=chat_tool_calls(message) if not outcome['failed'] else []
+                parsed=parse_event(message.get('content') or '')
+                if parsed is None or (not outcome['failed'] and
+                    outcome['raw']['choices'][0].get('finish_reason')=='length'):
+                    retry=self._native_call(key+':retry',system,messages,
+                        thinking='disabled',tool_choice='none' if final_step else 'auto')
+                    if not retry['failed']:
+                        message=chat_assistant_message(retry['raw'])
+                        calls=chat_tool_calls(message)
+                        parsed=parse_event(message.get('content') or '')
+                    else:
+                        calls=[];parsed=None
                 if parsed is None:
-                    outcome=self._event_call(key+':retry',system,messages,retry=True)
-                    parsed=parse_event(outcome['raw']) if not outcome['failed'] else None
-                if parsed is None:
-                    parsed={'actions':[],'speech':'','thought':'','carry':[]}
-                if parsed['speech']:
+                    parsed={'speech':'','thought':'','carry':[],'protocol_residue':False}
+                    calls=[]
+                    self.bus.put(key+':parse_failed',True)
+                if parsed.get('protocol_residue'):
+                    self.bus.put(key+':protocol_residue',True)
+                if parsed['speech'] and parsed['speech'] not in spoken_texts:
                     with self.io.lock:
                         recent=[turn.model_dump(mode='json') for turn in self.io.runtime._hot_store.read_context().raw_turns]
                     said=self.emit(f'{tid}:event:{step}:say','mind.say',{
@@ -342,22 +346,29 @@ class DialogueRunner:
                         'protocol':'a2','proactive':True,'memory_block':'',
                         'status_line':state['status_line'],'recent':recent})
                     spoken.append(said)
-                returned=[]
-                for ordinal,action in enumerate(parsed['actions'],1):
-                    if step==self.config['mind']['nondialogue_max_steps'] and next(iter(action)) in ('读','回忆'):
-                        continue
-                    item=self._action(tid,step,ordinal,action,user)
-                    refs[item['id']]=item
-                    if next(iter(action)) in ('读','回忆'):returned.append(item)
-                if not returned:break
-                messages.append({'role':'assistant','content':outcome['raw']})
-                messages.append({'role':'user','content':'本次思考的行动结果：\n'+
-                    '\n'.join('['+item['id']+'] '+item['text'] for item in returned)})
+                    spoken_texts.add(parsed['speech'])
+                elif parsed['speech']:
+                    self.bus.put(key+':duplicate_speech',parsed['speech'])
+                if final_step and calls:
+                    self.bus.put(key+':skipped_tool_calls',calls)
+                    note='（这次想到一半被打断了）'
+                    parsed['thought']=parsed['thought'][:max(0,self.config['mind']['thought_max_chars']-len(note))]+note
+                    break
+                if not calls:break
+                results=[]
+                limit=self.config['mind']['tool_max_calls_per_step']
+                for ordinal,call in enumerate(calls,1):
+                    item=self.tools.execute(f'{tid}:event:{step}:{ordinal}',call,user,
+                                            too_many=ordinal>limit)
+                    results.append(item);refs[item['id']]=item
+                    refs.update(item.get('references',{}))
+                    if item['status']=='ok' and call['function']['name'] in ('answer_helper','cancel_helper','hold_question'):
+                        handled.add(item['id'])
+                messages.extend(self._continue_with_tools(message,calls,results))
             for event in events:
                 if event['kind'] != 'agent.question':continue
                 helper=event['body']['helper']
-                if not any(e['kind'] in ('mind.reply','mind.cancel','mind.hold') and e['body'].get('helper')==helper
-                           for e in self.bus.pending('execution')):
+                if helper not in handled:
                     self.bus.publish(tid+':auto:'+helper,'mind.reply',
                                      {'helper':helper,'content':AUTO_REPLY})
             handoff.finish(tid,self.io.factory._clock.now(),parsed['thought'],parsed['carry'],refs,

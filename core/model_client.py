@@ -11,7 +11,8 @@ from typing import Any, Literal, Protocol
 import httpx
 
 from core.contracts import MemoryTurn
-from model_policy import ANTHROPIC_BASE_URL, DEFAULT_MODEL, model_for
+from model_policy import ANTHROPIC_BASE_URL, OPENAI_CHAT_URL, DEFAULT_MODEL, model_for
+from Execution.deepseek_model import chat_tool_request, chat_assistant_message, chat_tool_calls
 
 
 MOCK_ASSISTANT_TEXT = "Lumina backend shell received your message."
@@ -154,6 +155,40 @@ class DeepSeekAnthropicModelClient:
         body = self.event_request(system_prompt, messages, thinking=thinking, prefill=prefill)
         text = self._request(body)
         return '{"行动": [' + text if prefill else text
+
+    def tool_request(self, system_prompt: str, messages: list[dict[str, Any]],
+                     tools: list[dict[str, Any]], *, thinking: str = 'disabled',
+                     tool_choice: str = 'auto') -> dict[str, Any]:
+        return chat_tool_request(
+            self._model, [{'role': 'system', 'content': system_prompt}, *deepcopy(messages)],
+            deepcopy(tools), thinking=thinking, tool_choice=tool_choice,
+            max_tokens=self._max_tokens, temperature=self._temperature)
+
+    def complete_tools(self, system_prompt: str, messages: list[dict[str, Any]],
+                       tools: list[dict[str, Any]], *, thinking: str = 'disabled',
+                       tool_choice: str = 'auto') -> dict[str, Any]:
+        """One OpenAI-compatible Mind step; preserve full reasoning and tool IDs."""
+        body = self.tool_request(system_prompt, messages, tools,
+                                 thinking=thinking, tool_choice=tool_choice)
+        try:
+            reply = self._http_client.post(
+                OPENAI_CHAT_URL,
+                headers={'Authorization': 'Bearer '+self._api_key,
+                         'Content-Type': 'application/json'}, json=body)
+        except Exception:
+            raise ModelClientError('Provider request failed.') from None
+        if not 200 <= reply.status_code < 300:
+            raise ModelClientError('Provider request failed.')
+        try:
+            payload = reply.json()
+            chat_tool_calls(chat_assistant_message(payload))
+        except (ValueError, TypeError):
+            raise ModelClientError('Provider response was invalid.') from None
+        usage = payload.get('usage') or {}
+        self.calls += 1
+        self.input_tokens += int(usage.get('prompt_tokens') or 0)
+        self.output_tokens += int(usage.get('completion_tokens') or 0)
+        return payload
 
     def generate(
         self,

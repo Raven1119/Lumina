@@ -138,3 +138,9 @@
    > 按你说的各自独立，没有合并。若还要汇到一处，告诉我。
 
 八条 Mind 原话都已是可以直接对他说的话；Language 主要调整词句和排版，没有一条属于“原话不能直发而被它修好且意思不变”的唯一保留条件。R2 第四次完成后重复追问，在 Mind 原话里已经存在，Language 只是保留并润色。因此按预先规则选择 `language.render=never` 作为默认，`always`、`mind_choice`、`proactive_only` 仍可显式配置。
+
+## 阶段 1：Mind 原生工具调用
+
+开始实现前，用同一模型、同一密钥做了 3 次真实验证：关闭 thinking 的对话请求一次同时返回非空文字和一个 `echo` 工具调用；开启 low thinking 返回工具调用及 `reasoning_content`；把完整 assistant 消息（包括 `reasoning_content`）和工具结果一起回传后，模型给出非空的最终文字。3 次均成功，共输入 997、输出 174 token，已记在本地 `/tmp/lumina-organs-b2/budget.sqlite`。没有做第 4 次验证调用。按 [DeepSeek Thinking Mode 文档](https://api-docs.deepseek.com/guides/thinking_mode/)，后续工具轮次回传 `reasoning_content`；本实现保存完整响应并照此回传。
+
+A2 的六项行动改为原生工具。请求和响应封套与 Execution 共用一个构造与解析实现；每步先持久化完整回应，才执行工具，工具结果按思考、步骤、序号存盘。错误以工具结果返回；最后一步要求 `tool_choice=none`，仍出现的工具调用不执行。旧文字 `行动` 只计协议残留。A1 的请求路径未改。脚本化相关测试 50 passed（含 A1 字节比较、工具错误、恢复、帮手旧情景与推理内容回传）；Execution 的共享调用构造局部测试此前 52 passed。整体基线将在阶段 5 复测。

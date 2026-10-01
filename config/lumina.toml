@@ -13,6 +13,7 @@ read_max_chars = 20000
 nondialogue_max_steps = 8
 nondialogue_thinking = "low"
 nondialogue_recent_turns = 0
+tool_max_calls_per_step = 8
 [language]
 recent_turns = 6
 model = "" # empty inherits the dialogue model

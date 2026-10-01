@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from Execution.pool import HelperPool
 from Nervous.bus import EventBus
 from config.lumina import load_config
-from Mind.helper_actions import actions_from_object, parse_event
+from Mind.helper_actions import parse_event
 from test_organs_a2 import a2, send
 
 
@@ -56,29 +56,22 @@ class QuestionOrgan(CompletedOrgan):
         return SimpleNamespace(status='running', output=None, failure=None, state=self.state)
 
 
-def test_action_parser_keeps_valid_helper_contracts_and_event_json():
-    actions = actions_from_object({'行动': [{'派活': CONTRACT},
-        {'答复': {'帮手':'H123','内容':'按日期'}}, {'取消':'H123'}, {'搁置':'H234'},
-        {'派活': {'目标':'缺字段'}}, {'读':'note.txt'}]})
-    assert len(actions) == 5
+def test_event_parser_keeps_speech_and_ignores_legacy_actions():
     assert parse_event('说明 {"行动": [], "说": "知道了", "思绪": "", "带着": []}')['speech'] == '知道了'
+    assert parse_event('{"行动": [{"读":"x"}], "说": ""}')['protocol_residue']
     assert parse_event('不是 JSON') is None
 
 
-def test_complete_json_after_provider_prefill_preserves_nested_spawn():
+def test_complete_json_after_provider_prefill_ignores_text_actions():
     from Conversation_Memory.answer import parse_dialogue
     from Mind.helper_actions import object_from_text
     complete = json.dumps({'理解':'需要整理','行动':[{'派活':CONTRACT}],
                            '回复':''}, ensure_ascii=False)
     raw = '{"理解": "' + complete
     assert object_from_text(raw)['行动'] == [{'派活':CONTRACT}]
-    assert actions_from_object(object_from_text(raw)) == [{'派活':CONTRACT}]
     assert parse_dialogue(raw)['noticed']['理解'] == '需要整理'
-    assert parse_event('{"行动":["读","tasks/H1/result.csv"],"说":""}')['actions'] == [
-        {'读':'tasks/H1/result.csv'}]
-    assert parse_event('{"行动":["搁置 H1"],"说":""}')['actions'] == [{'搁置':'H1'}]
-    assert parse_event('{"行动":"读 tasks/H1/result.csv","说":""}')['actions'] == [
-        {'读':'tasks/H1/result.csv'}]
+    assert parse_dialogue(raw)['protocol_residue']
+    assert parse_event('{"行动":["读","tasks/H1/result.csv"],"说":""}')['protocol_residue']
 
 
 def test_helper_ask_mind_native_tool_runs_as_sandbox_code():
@@ -232,27 +225,30 @@ def test_held_question_can_be_answered_during_next_chat(tmp_path):
     finally:pool.stop()
 
 
-def test_event_parse_failure_retries_without_thinking_and_with_prefill(tmp_path):
+def test_event_parse_failure_retries_without_thinking_and_without_prefill(tmp_path):
     runtime, scheduler, model, _ = a2(tmp_path, [
         {'回复':'已派出。','行动':[{'派活':CONTRACT}]}], language={'render':'proactive_only'})
     attempts = []
-    def event_request(system, messages, *, thinking, prefill):
-        return {'system':system, 'messages':messages, 'thinking':thinking, 'prefill':prefill}
-    def complete_event(system, messages, *, thinking, prefill):
-        attempts.append((thinking, prefill))
-        return 'not json' if len(attempts) == 1 else '{"行动":[],"说":"结果已到。","思绪":"","带着":[]}'
-    model.event_request = event_request
-    model.complete_event = complete_event
+    original=model.complete_tools
+    def complete_tools(system,messages,tools,*,thinking,tool_choice):
+        attempts.append((thinking,tool_choice))
+        if len(attempts)==1:
+            return {'choices':[{'message':{'role':'assistant','content':'not json'},
+                                'finish_reason':'stop'}]}
+        return {'choices':[{'message':{'role':'assistant',
+                  'content':'{"说":"结果已到。","思绪":"","带着":[]}'},
+                  'finish_reason':'stop'}]}
     pool = HelperPool(scheduler.bus, scheduler.runner.config,
                       workspace=tmp_path/'workspace', organ_factory=CompletedOrgan)
     scheduler.pool = pool; scheduler.runner.pool = pool
     scheduler.runner.state.attach_pool(pool)
     try:
         send(scheduler)
+        model.complete_tools=complete_tools
         deadline = time.monotonic()+3
         while not scheduler.bus.pending('mind') and time.monotonic()<deadline:time.sleep(.01)
         scheduler.drain_once()
-        assert attempts == [('low',False),('disabled',True)]
+        assert attempts == [('low','auto'),('disabled','auto')]
         assert runtime._hot_store.list_all_raw()[-1].text == '这是她最终说的话。'
     finally:
         pool.stop()
