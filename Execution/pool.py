@@ -73,6 +73,27 @@ class HelperPool:
     def get(self, helper_id):
         return self.bus.get(self._key(helper_id), state=True)
 
+    def question_stale_reason(self, event):
+        """Check identity and queued dispositions, not question wording."""
+        with self._changed:
+            helper = event['body']['helper']
+            row = self.get(helper)
+            if row is None:
+                return 'helper_missing'
+            if row['status'] in TERMINAL:
+                return 'helper_terminal'
+            question = row.get('question')
+            if not question:
+                return 'question_not_pending'
+            if question.get('event_id') and question['event_id'] != event['id']:
+                return 'question_superseded'
+            if row.get('cancel_requested'):
+                return 'question_cancelled'
+            for action in self.bus.pending('execution'):
+                if action['body'].get('helper') == helper and action['kind'] in ('mind.reply', 'mind.cancel'):
+                    return 'answer_queued' if action['kind'] == 'mind.reply' else 'cancel_queued'
+            return None
+
     def _save(self, row):
         self.bus.put(self._key(row['id']), row, state=True)
         self._changed.notify_all()
@@ -263,9 +284,12 @@ class HelperPool:
                 continue
             parsed = json.loads(payload)
             row['seen_questions'].append(event_id)
-            row['question'] = {'text': parsed['question'], 'at': self.clock().isoformat()}
+            question_id = row['id']+':question:'+event_id
+            row['question'] = {'text': parsed['question'], 'at': self.clock().isoformat(),
+                               'event_id': question_id}
             row.setdefault('qa', []).append({'question': parsed['question'],
-                'asked_at': row['question']['at'], 'answer': None})
+                'asked_at': row['question']['at'], 'answer': None,
+                'event_id': question_id})
             row['status'] = '在等答复'
             self._save(row)
             self.bus.publish(row['id']+':question:'+event_id, 'agent.question',
@@ -321,6 +345,10 @@ class HelperPool:
         row['report'] = (row.get('outcome_note') or summary)[:1000]
         row['outputs'] = self._outputs(Path(row['task_dir']))
         row['finished_at'] = self.clock().isoformat()
+        for item in row.get('qa', []):
+            if item.get('answer') is None:
+                item['ended_without_answer'] = True
+        row['question'] = None
         self.bus.finish_helper(row['id'], row, self._report_body(row))
         self._record_usage(row)
         self._changed.notify_all()
@@ -339,6 +367,8 @@ class HelperPool:
             while True:
                 with self._changed:
                     row = dict(self.get(helper_id))
+                    self._questions(row, organ)
+                    row = dict(self.get(helper_id))
                     if row.get('cancel_requested'):
                         if result.status == 'running':
                             try: organ.interrupt()
@@ -351,8 +381,6 @@ class HelperPool:
                         break
                     if self._stopping:
                         break
-                    self._questions(row, organ)
-                    row = dict(self.get(helper_id))
                     if result.status == 'waiting':
                         if result.state.waiting_for == 'RETURN_REQUESTED' and row.get('return_requested'):
                             result = organ.deliver_event('RETURN_REQUESTED',row['return_requested'],defer_actions=True)

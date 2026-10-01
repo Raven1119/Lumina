@@ -299,12 +299,16 @@ class DialogueRunner:
         for key,title in (('目标','目标'),('理由','理由'),('验收','怎样算做完'),('背景','背景')):
             lines.append(title+'：'+contract.get(key,''))
         qa=body.get('qa') or (row or {}).get('qa',[])
-        answered=[item for item in qa if item.get('answer') is not None]
+        answered=[item for item in qa if item.get('answer') is not None
+                  or item.get('ended_without_answer')]
         if answered:
             lines.append('期间的问答：')
             for item in answered:
                 at=datetime.fromisoformat(item['asked_at']).astimezone(TZ)
                 lines.append(f'· 它问（{at.month}月{at.day}日 {at:%H:%M}）：{item["question"]}')
+                if item.get('answer') is None:
+                    lines.append('  （它没等答复就结束了）')
+                    continue
                 source=item.get('answer_source','她答的')
                 lines.append(('  自动答复：' if source=='自动答复' else '  你答：')+item['answer'])
         lines.append(('它现在问：'+body.get('question','')) if event['kind']=='agent.question'
@@ -316,6 +320,24 @@ class DialogueRunner:
     def run_events(self, events):
         """One serial thought for currently pending helper events of the same kind."""
         self.tools.pool=self.pool
+        valid=[]
+        for event in events:
+            reason = (self.pool.question_stale_reason(event)
+                      if event['kind']=='agent.question' and self.pool is not None else None)
+            if reason:
+                key=event['id']+':stale_question'
+                record=self.bus.get(key)
+                if record is None:
+                    record=self.bus.put(key,{'event':event['id'],
+                        'helper':event['body']['helper'],'reason':reason})
+                self.bus.record_usage(key,{'type':'stale_question',
+                    'tools':{'过时提问':1},'stale_questions':1,**record})
+                self.bus.ack(event['id'])
+            else:
+                valid.append(event)
+        events=valid
+        if not events:
+            return None
         tid=events[0]['id']
         if self.bus.get(tid+':finished'):
             self.bus.ack_many([event['id'] for event in events]);return None
@@ -408,7 +430,8 @@ class DialogueRunner:
             for event in events:
                 if event['kind'] != 'agent.question':continue
                 helper=event['body']['helper']
-                if helper not in handled:
+                if helper not in handled and (self.pool is None or
+                        self.pool.question_stale_reason(event) is None):
                     self.bus.publish(tid+':auto:'+helper,'mind.reply',
                                      {'helper':helper,'content':AUTO_REPLY,'source':'自动答复'})
             handoff.finish(tid,self.io.factory._clock.now(),parsed['thought'],parsed['carry'],refs,

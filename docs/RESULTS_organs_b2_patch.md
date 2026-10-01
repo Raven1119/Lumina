@@ -1,6 +1,6 @@
 # 器官重构 B2 补丁结果
 
-状态：阶段 0 已完成；阶段 1 后续待完成。真实调用 0/50，token 0。
+状态：阶段 0 已提交（e34bd0d）；完整附录 C 已补发并逐字落地，阶段 1 最终四套复测通过。真实调用 0/50，token 0。
 
 ## 阶段 0
 
@@ -30,3 +30,45 @@ B2 报告记载 R5_run1、R6_run2 在 helper 终态后 answer_helper 返回 help
 ## 偏差与待完成
 
 附录 C 在“发现任务本身可能有”处截断，已经请求补发；未自行续写。后续修复/测试、真实情景、推送审计和双分支交付尚未完成。
+
+## 阶段 1 已实现部分（未提交）
+
+- 附录 A、B 按给定位置和原文修改；没有回复承诺文字检测。helper.md 不变，等待完整附录 C。
+- pool 给提问保存稳定事件编号；Mind 启动思考前按最新终态、问题编号、待处理状态、取消请求及排队答复/取消动作筛除过时事件。每条留 event/helper/reason 无正文幂等 journal 与 usage_records 计数，直接确认；全批剔除时不启动思考。现有只读试用脚本通过工具计数显示“工具·过时提问”。
+- 自动答复前重新检查有效性，避免思考期间结束的帮手得到自动答复。
+- pool 结束前收集最后一步提问，将所有未答复 QA 标 ended_without_answer，清除当前提问；回报“期间的问答”显示“（它没等答复就结束了）”。未修改 Execution V2。
+- 同一次 cognitive request 的既有去重由确定性测试验证，只发布一次；原始 B2 重复提问原因仍 UNKNOWN，没有宣称问题已消除。
+- CURRENT_STATUS、ORGANS 已补上述规则和默认工作区未验证状态。任务卡已恢复为用户给出的逐字文本（附录 C 截断处添加 Markdown 闭合及注记）。
+
+| 套件 | 改前 | 当前复测 |
+| --- | --- | --- |
+| 全树 | 411 passed, 4 skipped | 419 passed, 4 skipped |
+| tests | 193 passed, 3 skipped | 201 passed, 3 skipped |
+| Execution | 214 passed, 1 skipped | 214 passed, 1 skipped |
+| 实验室离线 | 86 passed | 86 passed |
+
+新增 8 项补丁测试全部通过；相关 owner/A1 字节一致测试合计 38 passed（另新增的竞态/取消测试单独 8 项通过，并纳入最终全树）。全树及 tests 仍只有原有 Starlette 弃用 warning。git diff --check 通过。
+
+### Docker 回退验证
+
+仅在 /tmp 编写 CLI 路径转换器，将 Windows 临时目录 source 转为 Windows Docker CLI 可读路径，没有修改 sandbox.py。在唯一临时目录 /mnt/c/Users/wmywb/AppData/Local/Temp/lumina-organs-b2-patch-docker 验证现有 Docker 测试：3 passed，覆盖只读工作区、仅任务目录可写、提问、pool 完成回报和等待重启送达答复。全部 scripted，真实模型调用 0。该结果只证明回退路径，不证明默认 workspace 或 Windows 应用端。
+
+## 当前交付状态
+
+阶段 0 提交前暂存区审核：2 个文档版本，禁路径/密钥模式/本机密钥/超过 50 MB 均 0 项。阶段 1 尚缺附录 C，因此没有把阶段标完成、没有运行阶段 2 真实模型情景，合计仍为 0/50 次、输入/输出 token 均 0。R3 三次及 R1 环境记录尚未完成阶段交付；尚未推送 organs，也未交付 Execution_lab2。全历史推送审计将在正式交付前运行，不能把暂存区审计视为全历史审计。
+
+## 续工作：真实情景脚本准备（零调用）
+
+新增 opt-in tests/organs_b2_patch_real_scenarios.py：复用 /api/chat 隔离服务和 HTTP 层预留账本，合计硬上限 50，失败尝试计入。每轮新建隔离 Hot/Cold/Memory 路径/SQLite，Recall 和 compaction 关闭。R3 原话与 R1 原话固定；R3 要求空的临时工作区，R1 强制默认 workspace 路径且不覆盖现存输入。首次真实情景保存三份提示词 SHA-256，后续变更即拒绝运行。首轮工具调用与原回复、Hot 和产物检查写在本地 summary；承诺是否兑现由报告逐次审阅原文，脚本不检测回复承诺文字。R1 额外核对完整行值、列集合及输入未改，实际运行后仍须按任务卡归档输入与任务目录并恢复默认 workspace。
+
+新增 2 项零调用测试通过：预算计入失败，第 51 次发送前被拒绝；失败 token 缺失保持 NULL 并单列 unknown_usage_attempts，绝不把未知用量当零；情景用户原话逐字核对。新脚本编译通过、git diff --check 通过。四套完整复测表是新增这 2 项脚本测试之前的结果，2 项另测通过；待完整 C 到达后阶段 1 最终复测统一重跑。真实调用仍 0/50，未冻结真实提示词、未运行情景、未新增提交或推送。
+
+## 受阻审计
+
+连续三轮核验均没有收到完整附录 C；当前用户原文在“发现任务本身可能有”处结束。决定第 1 条要求只按附录给定位置及文字修改，因此不能自行补造 helper 提示。可独立执行的诊断、限定代码修复、确定性/四套复测、Docker 回退验证及真实情景脚本准备已经完成。剩余阶段 1 收尾、阶段 2 真实验收、逐次提交和最终双分支推送均依赖完整提示落地，目标标为受阻而非完成。全部现场保留，真实调用仍 0/50。收到完整附录 C 后，从阶段 1 提示及最终复测继续。
+
+## 补发附录 C 后继续执行
+
+仓库主人已补发完整附录 C；prompts/helper.md 只替换指定一条，task 卡同步补全，新增逐字提示测试。此前缺文受阻已经解除。当前阶段 1 最终 Chat 204 passed、3 skipped；Execution 214 passed、1 skipped；实验室 86 passed。全树最终结果将在提交前补记。真实调用仍 0/50。
+
+阶段 1 最终全树：422 passed、4 skipped、1 warning；Chat 204 passed、3 skipped、1 warning；Execution 214 passed、1 skipped；实验室 86 passed。相对基线新增 11 个确定性测试，无新增失败；A1 字节一致测试通过。完整任务 diff 审阅及 git diff --check 通过。阶段 1 提交包含限定代码/提示、任务/结果/当前合同和 opt-in 情景脚本，不含原始材料。
