@@ -18,7 +18,7 @@ from Execution.sandbox import DockerIPython
 
 
 AUTO_REPLY = '她暂时没有答复，请按你的最佳判断继续，并在回报里说明。'
-TERMINAL = {'已完成', '失败', '被拉闸', '已取消'}
+TERMINAL = {'已交回', '已完成', '失败', '被拉闸', '已取消'}
 
 
 def _time():
@@ -113,7 +113,8 @@ class HelperPool:
         self._save({'id': helper_id, 'contract': contract, 'goal': contract['目标'],
                     'status': '排队中', 'created_at': self.clock().isoformat(),
                     'task_dir': str(directory), 'pending_reply': None,
-                    'question': None, 'seen_questions': [], 'return_requested': None,
+                    'question': None, 'seen_questions': [], 'qa': [],
+                    'outcome': '未说明', 'outcome_note': '', 'return_requested': None,
                     'grace_steps': 0, 'calls': 0, 'file_digests': [],
                     'finished_at': None, 'report': ''})
 
@@ -129,6 +130,13 @@ class HelperPool:
                 if row and row['status'] not in TERMINAL:
                     row = dict(row)
                     if event['kind'] == 'mind.reply':
+                        if row.get('question'):
+                            for item in reversed(row.setdefault('qa', [])):
+                                if item.get('answer') is None:
+                                    item['answer'] = body['content']
+                                    item['answer_source'] = body.get('source', '她答的')
+                                    item['answered_at'] = self.clock().isoformat()
+                                    break
                         row['pending_reply'] = body['content']
                         row['question'] = None
                         row['status'] = '进行中'
@@ -165,6 +173,10 @@ class HelperPool:
         with self._changed:
             self._stopping = False
             for row in self.all():
+                if row['status'] in TERMINAL:
+                    report_id=row['id']+':report'
+                    if self.bus.conn.execute('SELECT 1 FROM events WHERE id=?',(report_id,)).fetchone() is None:
+                        self.bus.finish_helper(row['id'], row, self._report_body(row))
                 if row['status'] in ('进行中', '在等答复'):
                     row = dict(row); row['status'] = '排队中'; self._save(row)
             self._pump()
@@ -226,6 +238,8 @@ class HelperPool:
             parsed = json.loads(payload)
             row['seen_questions'].append(event_id)
             row['question'] = {'text': parsed['question'], 'at': self.clock().isoformat()}
+            row.setdefault('qa', []).append({'question': parsed['question'],
+                'asked_at': row['question']['at'], 'answer': None})
             row['status'] = '在等答复'
             self._save(row)
             self.bus.publish(row['id']+':question:'+event_id, 'agent.question',
@@ -234,8 +248,27 @@ class HelperPool:
 
     def _outputs(self, directory):
         return [str(path.relative_to(self.workspace)) for path in sorted(directory.rglob('*'))
-                if path.is_file() and not path.is_symlink() and path.name != '.lumina-complete'
+                if path.is_file() and not path.is_symlink()
+                and path.name not in ('.lumina-complete', '.lumina-outcome')
                 and 'state' not in path.relative_to(directory).parts][:12]
+
+    @staticmethod
+    def _outcome(directory):
+        try:
+            lines = (directory/'.lumina-outcome').read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeError):
+            return '未说明', ''
+        label = lines[0].strip() if lines else ''
+        if label not in ('完成', '部分完成', '做不到'):
+            return '未说明', ''
+        return label, '\n'.join(lines[1:]).strip()[:1000]
+
+    @staticmethod
+    def _report_body(row):
+        return {'helper': row['id'], 'status': row['status'],
+                'outcome': row.get('outcome','未说明'), 'summary': row.get('report',''),
+                'outputs': row.get('outputs',[]), 'contract': row['contract'],
+                'qa': row.get('qa',[])}
 
     @staticmethod
     def _failure_summary(organ, result):
@@ -257,13 +290,13 @@ class HelperPool:
         if row['status'] in TERMINAL:
             return
         row['status'] = status
-        row['report'] = summary[:1000]
+        if status == '已交回':
+            row['outcome'], row['outcome_note'] = self._outcome(Path(row['task_dir']))
+        row['report'] = (row.get('outcome_note') or summary)[:1000]
         row['outputs'] = self._outputs(Path(row['task_dir']))
         row['finished_at'] = self.clock().isoformat()
-        self._save(row)
-        self.bus.publish(row['id']+':report', 'agent.report',
-            {'helper': row['id'], 'status': status, 'summary': row['report'],
-             'outputs': row['outputs'], 'contract': row['contract']})
+        self.bus.finish_helper(row['id'], row, self._report_body(row))
+        self._changed.notify_all()
 
     def _run(self, helper_id):
         organ = None
@@ -287,7 +320,7 @@ class HelperPool:
                         break
                     if result.status in ('completed', 'failed'):
                         reason = (result.output or '已通过完成标记核验。') if result.status == 'completed' else self._failure_summary(organ,result)
-                        self._finish(row, '已完成' if result.status == 'completed' else '失败', reason)
+                        self._finish(row, '已交回' if result.status == 'completed' else '失败', reason)
                         break
                     if self._stopping:
                         break
@@ -360,4 +393,4 @@ class HelperPool:
                 question = row.get('question')
                 if question and row['status'] == '在等答复' and datetime.fromisoformat(question['at']) < cutoff:
                     self.bus.publish(row['id']+':auto_reply:'+question['at'], 'mind.reply',
-                        {'helper': row['id'], 'content': AUTO_REPLY})
+                        {'helper': row['id'], 'content': AUTO_REPLY, 'source':'自动答复'})

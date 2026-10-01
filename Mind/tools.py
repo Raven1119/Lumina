@@ -114,6 +114,7 @@ class MindTools:
         body = {'helper': helper}
         if name == 'answer_helper':
             body['content'] = args['content']
+            body['source'] = '她答的'
             text = f'已答复帮手 {helper}。'
         elif name == 'cancel_helper':
             text = f'已让帮手 {helper} 停下。'

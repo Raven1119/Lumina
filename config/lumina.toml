@@ -1,6 +1,7 @@
 # Organ A runtime policy. Credentials remain in environment variables.
 [nervous]
 db_path = "data/nervous/lumina.sqlite"
+event_max_attempts = 3
 [chat]
 first_reply_timeout_s = 90
 [mind]
@@ -12,7 +13,7 @@ carry_max = 5
 read_max_chars = 20000
 nondialogue_max_steps = 8
 nondialogue_thinking = "low"
-nondialogue_recent_turns = 0
+nondialogue_recent_turns = 6
 tool_max_calls_per_step = 8
 [language]
 recent_turns = 6

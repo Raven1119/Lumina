@@ -23,22 +23,46 @@ class DialogueScheduler:
 
     def drain_once(self):
         if self.pool is not None:
-            self.pool.expire_questions()
+            try:
+                self.pool.expire_questions()
+            except Exception:
+                pass
         events=self.bus.pending('mind')
         if events:
             first=events[0]
             if first['kind']=='user.message':
-                self.runner.run(first)
+                self._attempt(first,lambda:self.runner.run(first))
             else:
-                self.runner.run_events([event for event in events if event['kind']==first['kind']])
+                group=[event for event in events if event['kind']==first['kind']]
+                if len(group)==1:
+                    self._attempt(first,lambda:self.runner.run_events([first]))
+                else:
+                    try:
+                        self.runner.run_events(group)
+                    except Exception:
+                        for event in group:
+                            self._attempt(event,lambda event=event:self.runner.run_events([event]))
         if self.pool is not None:
             for event in self.bus.pending('execution'):
-                self.pool.handle(event)
+                self._attempt(event,lambda event=event:self.pool.handle(event))
         for event in self.bus.pending('dream'):
             if self.bus.get(event['id'].removesuffix(':spoke')+':finished'):
-                self.on_spoke(event['body']['response'])
-                self.bus.ack(event['id'])
+                self._attempt(event,lambda event=event:self._deliver_dream(event))
         return bool(events or (self.pool is not None and self.bus.pending('execution')))
+
+    def _deliver_dream(self,event):
+        self.on_spoke(event['body']['response'])
+        self.bus.ack(event['id'])
+
+    def _attempt(self,event,operation):
+        try:
+            operation()
+        except Exception as exc:
+            limit=self.runner.config['nervous']['event_max_attempts']
+            dead=self.bus.event_failed(event,exc,limit)
+            if dead and event['kind']=='user.message' and self.bus.get(event['id']+':reply') is None:
+                self.bus.put(event['id']+':reply',
+                    response('这次没能回应：事件处理失败',kind='error'))
 
     def start(self):
         with self._start_lock:
@@ -56,12 +80,8 @@ class DialogueScheduler:
                 try:
                     worked=self.drain_once()
                 except Exception:
-                    # Retain the event and journals. Surface a bounded failure,
-                    # and retry recovery only after a future wake-up/restart.
-                    for event in self.bus.pending('mind')[:1]:
-                        self.bus.put(event['id']+':reply',response())
-                    self._stop.set()
-                    break
+                    # A mailbox-wide storage fault must not kill the worker.
+                    worked=False
                 if not worked:
                     with self.bus.changed:
                         self.bus.changed.wait(0.1)

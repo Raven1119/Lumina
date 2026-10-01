@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-ModelResponseType = Literal["mock", "model", "fallback"]
+ModelResponseType = Literal["mock", "model", "fallback", "none", "error", "pending"]
 ChatPhase = Literal["mock_chat", "model_chat"]
 
 
@@ -49,6 +49,7 @@ class StatusResponse(BaseModel):
     memory: MemoryStatusResponse | None = None
     lumina: LuminaStatusResponse | None = None
     frontend_poll_interval_s: int = 5
+    dead_letters: int = 0
 
 
 class DreamStatusResponse(BaseModel):

@@ -295,6 +295,11 @@ body::before {
 }
 
 .chat-notice:empty { display: none; }
+.chat-notice.is-system-error {
+  border-color: var(--lui-line);
+  background: var(--lui-paper2);
+  color: var(--lui-muted);
+}
 
 .chat-form {
   padding: 17px 0 15px;

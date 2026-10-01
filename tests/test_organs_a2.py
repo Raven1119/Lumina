@@ -281,7 +281,8 @@ def test_api_timeout_keeps_input_event_and_future_speech(tmp_path,monkeypatch):
     with TestClient(app) as client:
         try:
             result=client.post('/api/chat',json={'message':'你好'}).json()
-            assert result['response']['type']=='fallback'
+            assert result['response']['type']=='pending'
+            assert result['response']['text']==''
             assert len(app.state.nervous_bus.pending('mind'))==1
         finally:release.set()
     assert app.state.hot_draft_store.list_all_raw()[-1].text=='迟到的回复'

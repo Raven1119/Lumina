@@ -261,6 +261,7 @@ def create_app(*, draft_store_path: str | Path | None = None,
             latest = None
         return StatusResponse(app='lumina', status='ok', lumina=live_state.snapshot(),
             frontend_poll_interval_s=settings['frontend']['poll_interval_s'],
+            dead_letters=bus.dead_letter_count(),
             mode='mock' if getattr(model, 'client_kind', 'model')=='mock' else 'model',
             recall_enabled=enabled,
             compaction=CompactionStatusResponse(running=compactor.is_running if compactor else False,
@@ -295,8 +296,11 @@ def create_app(*, draft_store_path: str | Path | None = None,
         bus.publish(event_id, 'user.message', request.model_dump())
         scheduler.start() # Also supports ASGI transports without lifespan management.
         reply = bus.wait(event_id+':reply', settings['chat']['first_reply_timeout_s'])
-        return ChatResponse.model_validate(reply or fallback_response(
-            phase='mock_chat' if getattr(model, 'client_kind', 'model')=='mock' else 'model_chat'))
+        if reply is None:
+            mock=getattr(model, 'client_kind', 'model')=='mock'
+            reply=fallback_response(phase='mock_chat' if mock else 'model_chat') if mock else \
+                fallback_response('',kind='pending',phase='model_chat')
+        return ChatResponse.model_validate(reply)
 
     @app.post('/api/dream/run', response_model=DreamRunResponse)
     def post_dream() -> DreamRunResponse:

@@ -17,6 +17,8 @@
   var helperListEl = document.getElementById("helper-list");
   var chatBusy = false;
   var pendingChats = 0;
+  var pendingReply = false;
+  var pendingBubble = null;
   var mindThinking = false;
   var helpersRunning = false;
   var statePollTimer = null;
@@ -42,8 +44,9 @@
       (Motion.canMove() ? "动效开启" : "动效关闭");
   }
 
-  function setNotice(text) {
+  function setNotice(text, kind) {
     noticeEl.textContent = text || "";
+    noticeEl.classList.toggle("is-system-error", kind === "error");
   }
 
   function setBackendStatus(label, kind) {
@@ -78,7 +81,9 @@
       if (!item || typeof item.id !== "string" || typeof item.goal !== "string" ||
           typeof item.status !== "string") return;
       var line = document.createElement("li");
-      line.textContent = item.id + "｜" + item.goal + "｜" + item.status;
+      var status = item.status === "已交回" && typeof item.outcome === "string"
+        ? item.status + "·自报" + item.outcome : item.status;
+      line.textContent = item.id + "｜" + item.goal + "｜" + status;
       helperListEl.appendChild(line);
     });
     if (payload && Number.isInteger(payload.frontend_poll_interval_s)) {
@@ -270,6 +275,18 @@
         return bubble.dataset.role && !bubble.dataset.turnId;
       }).forEach(function (bubble) { chatLog.appendChild(bubble); });
       if (nearEnd) chatLog.scrollTop = chatLog.scrollHeight;
+      if (pendingBubble && pendingBubble.isConnected) {
+        var following = pendingBubble.nextElementSibling;
+        while (following) {
+          if (following.dataset.role === "assistant") {
+            pendingReply = false;
+            pendingBubble = null;
+            setNotice("");
+            break;
+          }
+          following = following.nextElementSibling;
+        }
+      }
       return true;
     }).catch(function () { return false; }).then(function (success) {
       latestHistoryRequest = null;
@@ -293,7 +310,9 @@
     statePollTimer = setTimeout(function () {
       var wasThinking = mindThinking;
       checkBackend().then(function () {
-      if (mindThinking || wasThinking || chatBusy || helpersRunning) return refreshLatestHistory();
+      if (mindThinking || wasThinking || chatBusy || helpersRunning || pendingReply) {
+        return refreshLatestHistory();
+      }
       }).then(scheduleStatePoll);
     }, statePollMilliseconds);
   }
@@ -543,7 +562,19 @@
         return;
       }
       return refreshLatestHistory().then(function () {
-        if (!replyVisibleAfter(userBubble, payload.response.text)) {
+        if (payload.response.type === "pending") {
+          pendingReply = true;
+          pendingBubble = userBubble;
+          setNotice("思考中…");
+        } else if (payload.response.type === "error") {
+          pendingReply = false;
+          pendingBubble = null;
+          setNotice(payload.response.text, "error");
+        } else if (payload.response.type === "none") {
+          pendingReply = false;
+          pendingBubble = null;
+          setNotice("");
+        } else if (!replyVisibleAfter(userBubble, payload.response.text)) {
           appendAssistantMessage(payload.response.text, payload.phase, payload.response.type);
         }
       }).then(function () {
@@ -555,7 +586,7 @@
         }
       } else if (payload.response.type === "fallback") {
         setNotice("当前显示降级响应。");
-      } else {
+      } else if (payload.response.type !== "pending" && payload.response.type !== "error") {
         setNotice("");
       }
       });

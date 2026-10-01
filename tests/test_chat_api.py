@@ -33,5 +33,5 @@ def test_provider_failure_falls_back_without_private_details(tmp_path):
     client=_client(tmp_path, Failing())
     result=client.post('/api/chat',json={'message':'你好'})
     assert result.status_code==200
-    assert result.json()['response']['type']=='fallback'
+    assert result.json()['response']['type']=='error'
     assert 'private' not in result.text

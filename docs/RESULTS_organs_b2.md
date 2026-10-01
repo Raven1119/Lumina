@@ -144,3 +144,11 @@
 开始实现前，用同一模型、同一密钥做了 3 次真实验证：关闭 thinking 的对话请求一次同时返回非空文字和一个 `echo` 工具调用；开启 low thinking 返回工具调用及 `reasoning_content`；把完整 assistant 消息（包括 `reasoning_content`）和工具结果一起回传后，模型给出非空的最终文字。3 次均成功，共输入 997、输出 174 token，已记在本地 `/tmp/lumina-organs-b2/budget.sqlite`。没有做第 4 次验证调用。按 [DeepSeek Thinking Mode 文档](https://api-docs.deepseek.com/guides/thinking_mode/)，后续工具轮次回传 `reasoning_content`；本实现保存完整响应并照此回传。
 
 A2 的六项行动改为原生工具。请求和响应封套与 Execution 共用一个构造与解析实现；每步先持久化完整回应，才执行工具，工具结果按思考、步骤、序号存盘。错误以工具结果返回；最后一步要求 `tool_choice=none`，仍出现的工具调用不执行。旧文字 `行动` 只计协议残留。A1 的请求路径未改。脚本化相关测试 50 passed（含 A1 字节比较、工具错误、恢复、帮手旧情景与推理内容回传）；Execution 的共享调用构造局部测试此前 52 passed。整体基线将在阶段 5 复测。
+
+## 阶段 2：问答、结果、回应类型与事件隔离
+
+帮手状态持久化提问与答复正文、来源和时间；非对话思考把最近六轮对话合成一个 user 块，并按任务契约、期间问答、说明和产出呈现帮手消息。帮手写 `.lumina-outcome` 自报“完成 / 部分完成 / 做不到”；缺失或无效为“未说明”。完成标记只结束运行，状态统一写“已交回”，报告事件带自报结果；两个标记文件都不列为产出。帮手终态和回报在同一个 SQLite 事务提交，启动时补发缺失的固定编号回报。
+
+对话无话可说、调用失败、等待超时分别返回 `none`、`error`、`pending`；model 模式不再返回占位句。这三种回应都不写 Hot。前端只把 `error` 显示为灰色系统提示，`pending` 继续轮询历史，帮手列表显示自报结果。每条事件单独计失败次数，3 次仍失败写只含编号、类型、异常类型和时间的死信；工作线程继续处理后续事件，`/api/status` 返回死信数。相同类型的帮手事件仍优先合并处理，合并失败时逐条隔离重试。
+
+确定性测试覆盖结果文件、原子事务回滚和补发一次、最近对话及问答、死信后继续处理、`none/error/pending` 和状态计数。完整 `tests/`：189 passed、3 skipped，无新增失败；Skill 自带 `verify.py`：34 files、3 themes、15 motion entries、frozen blocks PASS、integrity PASS。此环境没有 `node` 命令，阶段 2 尚未做浏览器运行检查；前端没有改动效机制。

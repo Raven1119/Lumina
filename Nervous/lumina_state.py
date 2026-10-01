@@ -38,6 +38,7 @@ class LuminaState:
         if self._pool is not None:
             value['executing']=executing
             value['helpers']=[{'id':row['id'],'goal':row['goal'],'status':row['status'],
+                               'outcome':row.get('outcome','未说明'),
                                'outputs':row.get('outputs',[]),'question':row.get('question')}
                               for row in helpers]
         if self._bus is not None:

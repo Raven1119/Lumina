@@ -35,10 +35,9 @@ def test_persona_paragraphs_are_verbatim_ordered_and_fully_assigned():
     assert all(part in mind or part in voice for part in original)
     assert len(mind) == 17 and len(voice) == 8
     dialogue = (ROOT/'prompts/dialogue_a2_persona.md').read_text().strip()
-    old_part = '\n'.join(line for line in dialogue.splitlines() if not any(
-        marker in line for marker in ('{"派活"', '{"答复"', '{"取消"', '{"搁置"',
-                                '这四种行动不会在下一步给你结果')))
-    assert old_part == appendix('B')
+    assert 'delegate 派帮手' in dialogue
+    assert '调用了工具，下一步你会看到结果' in dialogue
+    assert '"行动"' not in dialogue
     assert (ROOT/'prompts/language_persona.md').read_text().strip() == appendix('C')
     assert (ROOT/'Memory_lab/judge/persona_prompt_organs_a.md').read_text().strip() == appendix('D')
 

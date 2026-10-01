@@ -123,7 +123,7 @@ def test_chat_spawns_helper_report_wakes_mind_and_proactive_speech_is_once(tmp_p
         until = time.monotonic()+3
         while not scheduler.bus.pending('mind') and time.monotonic()<until:
             time.sleep(.01)
-        assert pool.get(helper)['status'] == '已完成'
+        assert pool.get(helper)['status'] == '已交回'
         assert (tmp_path/'workspace/tasks'/helper/'result.csv').exists()
         assert scheduler.bus.pending('mind')[0]['kind'] == 'agent.report'
         scheduler.drain_once()
@@ -160,9 +160,9 @@ def test_question_reply_and_missing_action_auto_reply(tmp_path):
             assert scheduler.bus.pending('mind')[0]['kind'] == 'agent.question'
             scheduler.drain_once()
             until = time.monotonic()+3
-            while pool.get(helper)['status'] != '已完成' and time.monotonic()<until:
+            while pool.get(helper)['status'] != '已交回' and time.monotonic()<until:
                 time.sleep(.01)
-            assert pool.get(helper)['status'] == '已完成'
+            assert pool.get(helper)['status'] == '已交回'
             assert (folder/'workspace/tasks'/helper/'answer.txt').read_text() == expected
             assert not pool.get(helper)['question']
             scheduler.drain_once()
@@ -195,9 +195,9 @@ def test_hold_expiry_schedules_auto_reply_without_model(tmp_path):
         assert any(event['kind']=='mind.reply' for event in scheduler.bus.pending('execution'))
         scheduler.drain_once()
         until = time.monotonic()+3
-        while pool.get(helper)['status'] != '已完成' and time.monotonic()<until:
+        while pool.get(helper)['status'] != '已交回' and time.monotonic()<until:
             time.sleep(.01)
-        assert pool.get(helper)['status'] == '已完成'
+        assert pool.get(helper)['status'] == '已交回'
     finally:
         pool.stop()
 
@@ -219,8 +219,8 @@ def test_held_question_can_be_answered_during_next_chat(tmp_path):
         assert pool.get(helper)['status']=='在等答复'
         assert send(scheduler,'t2','请按 event_date 排序。')['response']['text']=='明白，我告诉它按事件日期。'
         deadline=time.monotonic()+3
-        while pool.get(helper)['status']!='已完成' and time.monotonic()<deadline:time.sleep(.01)
-        assert pool.get(helper)['status']=='已完成'
+        while pool.get(helper)['status']!='已交回' and time.monotonic()<deadline:time.sleep(.01)
+        assert pool.get(helper)['status']=='已交回'
         assert (tmp_path/'workspace/tasks'/helper/'answer.txt').read_text()=='按 event_date 排序'
     finally:pool.stop()
 
@@ -318,9 +318,9 @@ def test_helper_reports_within_guard_grace_instead_of_being_pulled(tmp_path):
     pool.handle(bus.pending('execution')[0])
     try:
         deadline=time.monotonic()+3
-        while pool.get('Hreturn')['status']!='已完成' and time.monotonic()<deadline:time.sleep(.01)
+        while pool.get('Hreturn')['status']!='已交回' and time.monotonic()<deadline:time.sleep(.01)
         row=pool.get('Hreturn')
-        assert row['status']=='已完成' and row['return_requested']=='调用次数达到上限'
+        assert row['status']=='已交回' and row['return_requested']=='调用次数达到上限'
         assert '请回报' in row['report']
     finally:pool.stop()
 
@@ -363,8 +363,8 @@ def test_service_restart_requeues_waiting_helper_and_keeps_task_id(tmp_path):
     try:
         second.start()
         deadline=time.monotonic()+3
-        while second.get('Hrestart')['status']!='已完成' and time.monotonic()<deadline:time.sleep(.01)
-        assert second.get('Hrestart')['status']=='已完成'
+        while second.get('Hrestart')['status']!='已交回' and time.monotonic()<deadline:time.sleep(.01)
+        assert second.get('Hrestart')['status']=='已交回'
         assert (workspace/'tasks/Hrestart/result.csv').exists()
     finally:second.stop()
 
@@ -372,7 +372,7 @@ def test_service_restart_requeues_waiting_helper_and_keeps_task_id(tmp_path):
 def test_user_event_has_priority_over_helper_report(tmp_path):
     runtime,scheduler,model,_=a2(tmp_path,[{'回复':'先回应你的消息。'}],
                                   language={'render':'proactive_only'})
-    scheduler.bus.publish('report','agent.report',{'helper':'H1','status':'已完成',
+    scheduler.bus.publish('report','agent.report',{'helper':'H1','status':'已交回',
         'summary':'完成','outputs':[],'contract':CONTRACT})
     scheduler.bus.publish('user','user.message',{'message':'现在请先回我'})
     scheduler.drain_once()
@@ -400,8 +400,8 @@ def test_child_completion_does_not_publish_to_mind(tmp_path):
     pool.handle(bus.pending('execution')[0])
     try:
         deadline=time.monotonic()+3
-        while pool.get('Hparent')['status']!='已完成' and time.monotonic()<deadline:time.sleep(.01)
-        assert pool.get('Hparent')['status']=='已完成'
+        while pool.get('Hparent')['status']!='已交回' and time.monotonic()<deadline:time.sleep(.01)
+        assert pool.get('Hparent')['status']=='已交回'
         while not bus.pending('mind') and time.monotonic()<deadline:time.sleep(.01)
         assert [event['kind'] for event in bus.pending('mind')]==['agent.report']
     finally:pool.stop()
@@ -413,7 +413,7 @@ def test_completed_task_expires_after_keep_window(tmp_path):
     pool=HelperPool(bus,load_config(),workspace=tmp_path/'workspace',clock=lambda:now)
     with pool._changed:
         pool._register({'body':{'helper':'Hdone','contract':CONTRACT}})
-        row=pool.get('Hdone');row['status']='已完成';row['finished_at']=(now-timedelta(hours=25)).isoformat()
+        row=pool.get('Hdone');row['status']='已交回';row['finished_at']=(now-timedelta(hours=25)).isoformat()
         pool._save(row)
     assert pool.visible()==[]
 
@@ -434,7 +434,7 @@ def test_running_helper_appears_in_lumina_status_and_focus(tmp_path):
     assert state.snapshot()['focus']=='在看帮手 Hstatus 的回报'
     state.thinking(False)
     with pool._changed:
-        row=pool.get('Hstatus');row['status']='已完成';row['finished_at']=datetime.now(timezone.utc).isoformat();pool._save(row)
+        row=pool.get('Hstatus');row['status']='已交回';row['finished_at']=datetime.now(timezone.utc).isoformat();pool._save(row)
     assert not state.snapshot()['executing'] and state.snapshot()['focus']==''
 
 
@@ -463,9 +463,9 @@ def test_three_helpers_limit_concurrency_and_keep_separate_task_dirs(tmp_path):
         assert peak==2 and pool.get('H2')['status']=='排队中'
         gate.set()
         deadline=time.monotonic()+3
-        while any(pool.get(f'H{n}')['status']!='已完成' for n in range(3)) and time.monotonic()<deadline:
+        while any(pool.get(f'H{n}')['status']!='已交回' for n in range(3)) and time.monotonic()<deadline:
             time.sleep(.01)
-        assert all(pool.get(f'H{n}')['status']=='已完成' for n in range(3))
+        assert all(pool.get(f'H{n}')['status']=='已交回' for n in range(3))
         assert all((tmp_path/'workspace/tasks'/f'H{n}'/'only-here.txt').read_text()==f'H{n}' for n in range(3))
         assert peak==2
     finally:

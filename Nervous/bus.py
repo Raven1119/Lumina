@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from .event_triggers import route
 
 
@@ -49,6 +50,11 @@ class EventBus:
                       id TEXT PRIMARY KEY, body TEXT NOT NULL, digest TEXT NOT NULL);
                     CREATE TABLE IF NOT EXISTS state(
                       id TEXT PRIMARY KEY, body TEXT NOT NULL, digest TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS event_attempts(
+                      id TEXT PRIMARY KEY, attempts INTEGER NOT NULL);
+                    CREATE TABLE IF NOT EXISTS dead_letters(
+                      id TEXT PRIMARY KEY, kind TEXT NOT NULL,
+                      exception_type TEXT NOT NULL, at TEXT NOT NULL);
                 ''')
                 self._local.conn = conn
         return conn
@@ -119,3 +125,42 @@ class EventBus:
     def wake(self):
         with self.changed:
             self.changed.notify_all()
+
+    def finish_helper(self, helper_id, row, report):
+        """Commit the terminal helper state and its one report in one transaction."""
+        from .event_triggers import route
+        state_raw, state_digest = seal(row)
+        body_raw, body_digest = seal(report)
+        kind = 'agent.report'
+        target, priority = route(kind)
+        event_id = helper_id + ':report'
+        with self.conn:
+            self.conn.execute('INSERT OR REPLACE INTO state VALUES(?,?,?)',
+                              ('helper:'+helper_id, state_raw, state_digest))
+            self.conn.execute('INSERT OR IGNORE INTO events(id,kind,target,priority,body,digest) VALUES(?,?,?,?,?,?)',
+                              (event_id,kind,target,priority,body_raw,body_digest))
+            existing = self.conn.execute('SELECT kind,body,digest FROM events WHERE id=?',
+                                         (event_id,)).fetchone()
+            if tuple(existing) != (kind,body_raw,body_digest):
+                raise ValueError('event_id_conflict')
+        self.wake()
+
+    def event_failed(self, event, error, limit):
+        """Retry one event; record only metadata when its attempt cap is reached."""
+        with self.conn:
+            self.conn.execute('INSERT INTO event_attempts(id,attempts) VALUES(?,1) '
+                              'ON CONFLICT(id) DO UPDATE SET attempts=attempts+1',
+                              (event['id'],))
+            attempts = self.conn.execute('SELECT attempts FROM event_attempts WHERE id=?',
+                                         (event['id'],)).fetchone()[0]
+            if attempts >= limit:
+                self.conn.execute('INSERT OR IGNORE INTO dead_letters VALUES(?,?,?,?)',
+                                  (event['id'],event['kind'],type(error).__name__,
+                                   datetime.now(timezone.utc).isoformat()))
+                self.conn.execute('UPDATE events SET acknowledged=1 WHERE id=?',
+                                  (event['id'],))
+        self.wake()
+        return attempts >= limit
+
+    def dead_letter_count(self):
+        return self.conn.execute('SELECT COUNT(*) FROM dead_letters').fetchone()[0]

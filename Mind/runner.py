@@ -11,6 +11,7 @@ from Execution.deepseek_model import chat_assistant_message, chat_tool_calls
 from Execution.pool import AUTO_REPLY
 from core.model_client import MOCK_ASSISTANT_TEXT
 from Conversation_Memory.answer import parse_answer_v5_tolerant, fallback_answer_v5, parse_dialogue, answer_messages
+from Conversation_Memory.engine.clock import TZ
 
 
 class DialogueRunner:
@@ -188,6 +189,7 @@ class DialogueRunner:
             max_steps=self.config['mind']['dialogue_max_steps']
             phase='mock_chat' if getattr(self.io.model,'client_kind','model')=='mock' else 'model_chat'
             parsed={'thought':'','carry':[]}
+            failed_reason=None
             interrupted=False
             for step in range(1,max_steps+1):
                 key=f'{tid}:step:{step}'
@@ -209,6 +211,7 @@ class DialogueRunner:
                     parsed={'reply':'','noticed':{},'rephrase':False,'thought':'','carry':[],
                             'protocol_residue':False}
                     calls=[];message={'content':''};kind='fallback'
+                    failed_reason=result.get('reason','model_call_failed')
                 else:
                     message=chat_assistant_message(result['raw'])
                     calls=chat_tool_calls(message)
@@ -263,7 +266,13 @@ class DialogueRunner:
             if compact is None:compact=self.bus.put(tid+':compaction',self.io.finish(self.bus,tid))
             for input_id in input_events:
                 if self.bus.get(input_id+':reply') is None:
-                    self.bus.put(input_id+':reply',response(phase=phase,compaction=compact))
+                    if failed_reason:
+                        reason='结果未知' if failed_reason=='outcome_unknown' else '模型调用失败'
+                        self.bus.put(input_id+':reply',response('这次没能回应：'+reason,
+                            kind='error',phase=phase,compaction=compact))
+                    else:
+                        self.bus.put(input_id+':reply',response('',kind='none',
+                            phase=phase,compaction=compact))
             if speeches:
                 self.bus.publish(tid+':spoke','mind.spoke',{'response':speeches[0]['response']})
             self.bus.put(tid+':inputs',input_events)
@@ -272,6 +281,33 @@ class DialogueRunner:
             return self.bus.get(tid+':reply')
         finally:
             self.state.thinking(False)
+
+    def _helper_notice(self, event):
+        body=event['body'];helper=body['helper']
+        row=self.pool.get(helper) if self.pool is not None else None
+        contract=body.get('contract') or (row or {}).get('contract',{})
+        if event['kind']=='agent.question':
+            label='提问'
+        else:
+            label={'已交回':'交回（自报：'+body.get('outcome','未说明')+'）',
+                   '失败':'失败','被拉闸':'被拉闸','已取消':'已取消'}.get(body.get('status'),body.get('status','回报'))
+        lines=[f'帮手 {helper}｜{label}']
+        for key,title in (('目标','目标'),('理由','理由'),('验收','怎样算做完'),('背景','背景')):
+            lines.append(title+'：'+contract.get(key,''))
+        qa=body.get('qa') or (row or {}).get('qa',[])
+        answered=[item for item in qa if item.get('answer') is not None]
+        if answered:
+            lines.append('期间的问答：')
+            for item in answered:
+                at=datetime.fromisoformat(item['asked_at']).astimezone(TZ)
+                lines.append(f'· 它问（{at.month}月{at.day}日 {at:%H:%M}）：{item["question"]}')
+                source=item.get('answer_source','她答的')
+                lines.append(('  自动答复：' if source=='自动答复' else '  你答：')+item['answer'])
+        lines.append(('它现在问：'+body.get('question','')) if event['kind']=='agent.question'
+                     else '它的说明：'+body.get('summary',''))
+        outputs=body.get('outputs',[])
+        lines.append('产出：'+('、'.join(outputs) if outputs else '无'))
+        return '\n'.join(lines)
 
     def run_events(self, events):
         """One serial thought for currently pending helper events of the same kind."""
@@ -294,20 +330,18 @@ class DialogueRunner:
                 with self.io.lock:
                     recent=self.io.runtime._hot_store.read_context().raw_turns
                 lines=[]
-                for turn in recent[-self.config['mind']['nondialogue_recent_turns']:]:
+                for turn in recent[-2*self.config['mind']['nondialogue_recent_turns']:]:
                     who='他' if turn.role=='user' else '你'
-                    when=datetime.fromisoformat(turn.created_at)
-                    lines.append(f'{who}（{when.month}月{when.day}日 {when:%H:%M}）：{turn.text}')
+                    timestamp=turn.created_at
+                    when=(datetime.fromisoformat(timestamp) if isinstance(timestamp,str)
+                          else timestamp)
+                    when=when.astimezone(TZ) if when else None
+                    label=f'（{when.month}月{when.day}日 {when:%H:%M}）' if when else ''
+                    lines.append(f'{who}{label}：{turn.text}')
                 if lines:messages.append({'role':'user','content':'最近的对话：\n'+'\n'.join(lines)})
             if state['block']:
                 messages.append({'role':'user','content':state['block']})
-            notices=[]
-            for event in events:
-                body=event['body'];contract=body.get('contract',{})
-                notices.append('帮手 '+body['helper']+'｜'+event['kind']+'\n'+
-                    '\n'.join(k+'：'+v for k,v in contract.items())+'\n消息：'+
-                    (body.get('question') or body.get('summary') or '')+'\n产出：'+
-                    '、'.join(body.get('outputs',[])))
+            notices=[self._helper_notice(event) for event in events]
             messages.append({'role':'user','content':'\n\n'.join(notices)})
             refs=dict(state['references']);parsed={'thought':'','carry':[]}
             spoken=[];spoken_texts=set();handled=set()
@@ -322,6 +356,8 @@ class DialogueRunner:
                 message=chat_assistant_message(outcome['raw']) if not outcome['failed'] else {'content':''}
                 calls=chat_tool_calls(message) if not outcome['failed'] else []
                 parsed=parse_event(message.get('content') or '')
+                if parsed is None and calls:
+                    parsed={'speech':'','thought':'','carry':[],'protocol_residue':False}
                 if parsed is None or (not outcome['failed'] and
                     outcome['raw']['choices'][0].get('finish_reason')=='length'):
                     retry=self._native_call(key+':retry',system,messages,
@@ -370,7 +406,7 @@ class DialogueRunner:
                 helper=event['body']['helper']
                 if helper not in handled:
                     self.bus.publish(tid+':auto:'+helper,'mind.reply',
-                                     {'helper':helper,'content':AUTO_REPLY})
+                                     {'helper':helper,'content':AUTO_REPLY,'source':'自动答复'})
             handoff.finish(tid,self.io.factory._clock.now(),parsed['thought'],parsed['carry'],refs,
                            reason='处理帮手消息时')
             if spoken:

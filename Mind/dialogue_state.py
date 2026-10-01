@@ -29,6 +29,7 @@ class DialogueState:
         if tasks:
             lines.append('手头任务：')
             lines.extend('· '+row['id']+'｜'+row['goal']+'｜'+row['status']+
+                         ('·自报'+row.get('outcome','未说明') if row['status']=='已交回' else '')+
                          (('（'+ '、'.join(row.get('outputs',[]))+'）') if row.get('outputs') else '')
                          for row in tasks)
         questions=[row for row in tasks if row.get('question')]
