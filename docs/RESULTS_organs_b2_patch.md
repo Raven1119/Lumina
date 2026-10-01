@@ -1,6 +1,6 @@
 # 器官重构 B2 补丁结果
 
-状态：阶段 0 已提交（e34bd0d）；完整附录 C 已补发并逐字落地，阶段 1 最终四套复测通过。真实调用 0/50，token 0。
+2026-10-01。阶段 0、1、2 已执行，阶段 3 收尾交付中。三次 R3 原话情景均通过；默认工作区 R1 按任务卡回退条款记为“未验证（环境）”。真实模型共 39/50 次，输入 88,089、输出 8,804 token，合计 96,893；失败 HTTP 尝试和未知 usage 均 0。历史重复提问原因因原始日志缺失保持 UNKNOWN，不宣称彻底消除。
 
 ## 阶段 0
 
@@ -27,51 +27,27 @@ Linux Client 29.7.2 已有，但 /var/run/docker.sock 不存在；已有代理 s
 
 B2 报告记载 R5_run1、R6_run2 在 helper 终态后 answer_helper 返回 helper_unavailable。精确提问/交回时间与是否 Wait 均因日志缺失 UNKNOWN。代码显示 run_events 没有检查队列中 agent.question 对应的最新 helper/question 状态，可在交回后启动提问思考；这是可独立复现的缺口。
 
-## 偏差与待完成
+## 阶段 1：改动与验证
 
-附录 C 在“发现任务本身可能有”处截断，已经请求补发；未自行续写。后续修复/测试、真实情景、推送审计和双分支交付尚未完成。
+- prompts/dialogue_a2_persona.md、mind_event.md、helper.md 只按附录 A/B/C 指定位置与原文修改；完整 C 由仓库主人补发后落地。没有从回复文字检测承诺的业务判断，真实承诺检查由逐次阅原文完成。
+- Execution/pool.py 给提问保存事件 ID。Mind/runner.py 启动提问思考前，检查帮手终态、当前问题编号、待处理状态、取消请求及已排队的答复/取消动作；过时事件直接确认，并保留 event/helper/reason 无正文幂等记录和计数。全批过时不启动思考、不自动答复。现有只读统计脚本显示“工具·过时提问”。
+- 自动答复前再检查问题有效性，避免思考期间帮手结束后继续自动答复。结束前收集最后一步提问，未答 QA 标 ended_without_answer，清除当前提问；回报“期间的问答”显示“（它没等答复就结束了）”。
+- 同一 cognitive request 的既有去重由测试验证，只发布一次；因历史诊断 UNKNOWN，没有猜测改 Execution V2。没有修改 organ.py、execution.py、Memory、Dream、Cold 或 answer_v5.md。
+- 新增 11 项确定性测试：终态提问不启动模型、确认与幂等计数且不含正文；混合批次只处理有效提问；排队/已答复、取消、被替代问题；思考期间结束；未答复交回呈现；同一请求一次发布；三份提示原文；HTTP 50 次硬预算且失败计入、未知 token 保留；原话用户情景。
+- opt-in 情景脚本使用 HTTP 发送前预留账本、独立 SQLite/Hot/Cold/Memory 路径；Recall/compaction 关闭。保存全部工具及 Hot 原文于本地。首次情景冻结三份提示 SHA-256，后续改变即拒绝运行。运行过程中未调整提示、未改代码重跑。
 
-## 阶段 1 已实现部分（未提交）
+| 套件 | 改前 | 最终 | 新增失败 |
+| --- | --- | --- | --- |
+| 全树 pytest -q | 411 passed, 4 skipped | 422 passed, 4 skipped | 0 |
+| pytest tests -q | 193 passed, 3 skipped | 204 passed, 3 skipped | 0 |
+| pytest Execution -q | 214 passed, 1 skipped | 214 passed, 1 skipped | 0 |
+| Memory_lab 离线 tests | 86 passed | 86 passed | 0 |
 
-- 附录 A、B 按给定位置和原文修改；没有回复承诺文字检测。helper.md 不变，等待完整附录 C。
-- pool 给提问保存稳定事件编号；Mind 启动思考前按最新终态、问题编号、待处理状态、取消请求及排队答复/取消动作筛除过时事件。每条留 event/helper/reason 无正文幂等 journal 与 usage_records 计数，直接确认；全批剔除时不启动思考。现有只读试用脚本通过工具计数显示“工具·过时提问”。
-- 自动答复前重新检查有效性，避免思考期间结束的帮手得到自动答复。
-- pool 结束前收集最后一步提问，将所有未答复 QA 标 ended_without_answer，清除当前提问；回报“期间的问答”显示“（它没等答复就结束了）”。未修改 Execution V2。
-- 同一次 cognitive request 的既有去重由确定性测试验证，只发布一次；原始 B2 重复提问原因仍 UNKNOWN，没有宣称问题已消除。
-- CURRENT_STATUS、ORGANS 已补上述规则和默认工作区未验证状态。任务卡已恢复为用户给出的逐字文本（附录 C 截断处添加 Markdown 闭合及注记）。
-
-| 套件 | 改前 | 当前复测 |
-| --- | --- | --- |
-| 全树 | 411 passed, 4 skipped | 419 passed, 4 skipped |
-| tests | 193 passed, 3 skipped | 201 passed, 3 skipped |
-| Execution | 214 passed, 1 skipped | 214 passed, 1 skipped |
-| 实验室离线 | 86 passed | 86 passed |
-
-新增 8 项补丁测试全部通过；相关 owner/A1 字节一致测试合计 38 passed（另新增的竞态/取消测试单独 8 项通过，并纳入最终全树）。全树及 tests 仍只有原有 Starlette 弃用 warning。git diff --check 通过。
+A1 字节一致测试通过。全树/Chat 仅原有 Starlette 弃用 warning。完整任务 diff 审阅、git diff --check 通过。
 
 ### Docker 回退验证
 
-仅在 /tmp 编写 CLI 路径转换器，将 Windows 临时目录 source 转为 Windows Docker CLI 可读路径，没有修改 sandbox.py。在唯一临时目录 /mnt/c/Users/wmywb/AppData/Local/Temp/lumina-organs-b2-patch-docker 验证现有 Docker 测试：3 passed，覆盖只读工作区、仅任务目录可写、提问、pool 完成回报和等待重启送达答复。全部 scripted，真实模型调用 0。该结果只证明回退路径，不证明默认 workspace 或 Windows 应用端。
-
-## 当前交付状态
-
-阶段 0 提交前暂存区审核：2 个文档版本，禁路径/密钥模式/本机密钥/超过 50 MB 均 0 项。阶段 1 尚缺附录 C，因此没有把阶段标完成、没有运行阶段 2 真实模型情景，合计仍为 0/50 次、输入/输出 token 均 0。R3 三次及 R1 环境记录尚未完成阶段交付；尚未推送 organs，也未交付 Execution_lab2。全历史推送审计将在正式交付前运行，不能把暂存区审计视为全历史审计。
-
-## 续工作：真实情景脚本准备（零调用）
-
-新增 opt-in tests/organs_b2_patch_real_scenarios.py：复用 /api/chat 隔离服务和 HTTP 层预留账本，合计硬上限 50，失败尝试计入。每轮新建隔离 Hot/Cold/Memory 路径/SQLite，Recall 和 compaction 关闭。R3 原话与 R1 原话固定；R3 要求空的临时工作区，R1 强制默认 workspace 路径且不覆盖现存输入。首次真实情景保存三份提示词 SHA-256，后续变更即拒绝运行。首轮工具调用与原回复、Hot 和产物检查写在本地 summary；承诺是否兑现由报告逐次审阅原文，脚本不检测回复承诺文字。R1 额外核对完整行值、列集合及输入未改，实际运行后仍须按任务卡归档输入与任务目录并恢复默认 workspace。
-
-新增 2 项零调用测试通过：预算计入失败，第 51 次发送前被拒绝；失败 token 缺失保持 NULL 并单列 unknown_usage_attempts，绝不把未知用量当零；情景用户原话逐字核对。新脚本编译通过、git diff --check 通过。四套完整复测表是新增这 2 项脚本测试之前的结果，2 项另测通过；待完整 C 到达后阶段 1 最终复测统一重跑。真实调用仍 0/50，未冻结真实提示词、未运行情景、未新增提交或推送。
-
-## 受阻审计
-
-连续三轮核验均没有收到完整附录 C；当前用户原文在“发现任务本身可能有”处结束。决定第 1 条要求只按附录给定位置及文字修改，因此不能自行补造 helper 提示。可独立执行的诊断、限定代码修复、确定性/四套复测、Docker 回退验证及真实情景脚本准备已经完成。剩余阶段 1 收尾、阶段 2 真实验收、逐次提交和最终双分支推送均依赖完整提示落地，目标标为受阻而非完成。全部现场保留，真实调用仍 0/50。收到完整附录 C 后，从阶段 1 提示及最终复测继续。
-
-## 补发附录 C 后继续执行
-
-仓库主人已补发完整附录 C；prompts/helper.md 只替换指定一条，task 卡同步补全，新增逐字提示测试。此前缺文受阻已经解除。当前阶段 1 最终 Chat 204 passed、3 skipped；Execution 214 passed、1 skipped；实验室 86 passed。全树最终结果将在提交前补记。真实调用仍 0/50。
-
-阶段 1 最终全树：422 passed、4 skipped、1 warning；Chat 204 passed、3 skipped、1 warning；Execution 214 passed、1 skipped；实验室 86 passed。相对基线新增 11 个确定性测试，无新增失败；A1 字节一致测试通过。完整任务 diff 审阅及 git diff --check 通过。阶段 1 提交包含限定代码/提示、任务/结果/当前合同和 opt-in 情景脚本，不含原始材料。
+仅在 /tmp 编写 Windows CLI 路径转换器，没有修改 sandbox.py。唯一 Windows 临时目录的现有 Docker 隔离/重启测试 3 passed：工作区只读，仅任务目录可写，提问、完成回报和等待重启答复送达。全部 scripted，零真实调用。网络禁用沿用实际容器 --network none，并在真实情景中得到 DNS/TCP 失败证据；该结果不证明默认 workspace 或 Windows 应用端。
 
 ## 阶段 2：真实情景
 
@@ -150,3 +126,26 @@ Hot：同一 R3 原话用户输入和上述第一轮回复；交回后的主动�
 ### R1 默认工作区
 
 未验证（环境）：阶段 0 的默认 bind 返回源路径不存在，Linux 默认 Docker socket 也不存在；按决定第 4 条不运行 R1、不用临时目录冒充默认挂载。默认 workspace 在起点不存在；唯一合成探针已移到仓库外并校验 SHA-256，空目录已移除，恢复起点。没有 R1 任务输入、任务产物或 Hot。调用 0，token 0。此项并非通过；后续仍需实际部署环境接通默认挂载后验证。
+
+## 统计、偏差和未解决问题
+
+| 用途 | 调用 | 输入 token | 输出 token |
+| --- | ---: | ---: | ---: |
+| 对话 Mind | 6 | 17,826 | 1,403 |
+| 非对话 Mind | 9 | 30,897 | 1,491 |
+| 帮手 | 24 | 39,366 | 5,910 |
+| 合计 | 39 | 88,089 | 8,804 |
+
+全部当前模型 deepseek-flash；没有 Language 模型调用。HTTP 尝试先预留，失败也占预算，50 次硬上限经确定性测试验证；本轮 39 次均 HTTP 200、usage 已知。R3_run2 非对话有一次解析重试，计入上述 9 次。真实工具错误 1（交回思考自行 answer_helper，helper_unavailable）；真实过时提问筛除 0，因为三次情景均没有 agent.question。保险丝、自动答复均 0。过时提问规则由确定性测试证明，不能把本轮无提问当作真实验证它的有效性。
+
+- 默认工作区挂载仍未接通，因此 R1 环境门未通过；不改变默认路径、不用回退目录宣称通过。没有验证 Windows 应用运行。
+- 原 B2 R2/R5/R6 事件日志缺失，历史等待/送达/第二决策诊断保持 UNKNOWN。同一请求去重测试通过、helper 等待提示加强，不构成重复提问已全面解决的证明。
+- Mind 在交回思考仍可能多余答复终态帮手，R3_run2 已发生一次，工具正常拒绝。它不是过时提问事件启动的问题；本卡不扩展为报告动作禁令或修改附录提示。
+- 原卡附录 C 截断，先完成独立工作并请求一次补发；完整 C 到达后继续，未自行补写或调提示过验收。第 1 次摘要提交曾被尾随空格检查挡住，第 2 次开始后才修正并补交；逐次记录均独立提交，未改写历史。
+- 主动话长度/风格未改，没有盲评。真实 Hot/Cold/Memory、.env.local、BGE-M3 和 .venv 原位保留，情景全用合成数据与隔离状态。默认探针已归档且 SHA-256 校验，workspace 恢复原状。
+
+## 阶段 3：审计与交付
+
+每次按明确路径暂存，提交前检查暂存区禁路径、sk 密钥模式、本机真实密钥值和 50 MB 上限；均 0 项。阶段 0 e34bd0d、阶段 1 d978b56、R3 三次 45ba6ed/e217b83/1b3dbb4、R1 环境记录 5498b61。没有合并、变基或 cherry-pick organs-b，没有强推或改写远端。
+
+截至阶段 2，对 origin/organs..organs 全部 6 个新提交、18 个文件版本审核通过：禁路径/密钥模式/本机真实密钥/超过 50 MB 均 0，最大版本 24,652 字节。阶段 3 提交及后续回执将按同规则再次审计后普通快进推送；两份任务/结果文档将通过从 origin/Execution_lab2 建立的隔离 worktree 单独交付。原始状态、预算与合成产物全部留在本地，不提交。交付回执见本节后续记录。

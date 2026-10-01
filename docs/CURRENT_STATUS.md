@@ -22,8 +22,10 @@ The B2 report records baselines, deterministic checks and all first-run and repe
 
 `model_policy.py` and `config/model.toml` choose a shared default `deepseek-flash` with role overrides. `config/lumina.toml` controls Mind protocol, tool cap, Language rendering, workspace, helper concurrency, guard and frontend polling. A1 remains a rollback option; A2 is the current default based on the prior persona comparison, whose judgments and limits remain in [A persona results](RESULTS_organs_a_persona.md). B2 did not run a blind evaluation by task design.
 
-## B2 patch in progress
+## B2 patch
 
 Mind filters stale helper questions before starting a thought, acknowledges them with content-free event/helper/reason receipts and counts `工具·过时提问`. A fully stale batch starts no thought or automatic answer. Unanswered questions at helper termination are marked and shown as “（它没等答复就结束了）” in report context. Dialogue/event prompts implement the supplied same-thought action instructions; the supplied helper prompt requires waiting immediately after asking and forbids repeating an answered question.
 
 The 2026-10-01 patch check found Linux Docker Client installed but no default socket. Windows Docker Server is reachable, while the default repository workspace bind failed; default-workspace R1 remains unverified (environment). [Patch results](RESULTS_organs_b2_patch.md) records current validation and outstanding work.
+
+Patch validation: 422 full-tree, 204 Chat, 214 Execution and 86 laboratory tests passed; scripted Docker fallback checks 3 passed. R3 original wording passed three independent real runs, using 39 model attempts and 96,893 tokens. Default-workspace R1 remains unverified (environment); historical duplicate-question diagnosis remains UNKNOWN because the B2 event logs are unavailable. A report thought still attempted one redundant terminal-helper answer, which the tool rejected. See [patch results](RESULTS_organs_b2_patch.md).
