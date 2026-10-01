@@ -55,6 +55,9 @@ class EventBus:
                     CREATE TABLE IF NOT EXISTS dead_letters(
                       id TEXT PRIMARY KEY, kind TEXT NOT NULL,
                       exception_type TEXT NOT NULL, at TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS usage_records(
+                      id TEXT PRIMARY KEY, at TEXT NOT NULL,
+                      body TEXT NOT NULL, digest TEXT NOT NULL);
                 ''')
                 self._local.conn = conn
         return conn
@@ -164,3 +167,18 @@ class EventBus:
 
     def dead_letter_count(self):
         return self.conn.execute('SELECT COUNT(*) FROM dead_letters').fetchone()[0]
+
+    def record_usage(self, record_id, value):
+        raw,digest=seal(value)
+        with self.conn:
+            self.conn.execute('INSERT OR IGNORE INTO usage_records VALUES(?,?,?,?)',
+                              (record_id,datetime.now(timezone.utc).isoformat(),raw,digest))
+            row=self.conn.execute('SELECT body,digest FROM usage_records WHERE id=?',
+                                  (record_id,)).fetchone()
+            if tuple(row)!=(raw,digest):
+                raise ValueError('usage_record_conflict')
+
+    def journal_prefix(self, prefix):
+        rows=self.conn.execute('SELECT id,body,digest FROM journal WHERE id>=? AND id<?',
+                               (prefix,prefix[:-1]+';')).fetchall()
+        return {row['id'][len(prefix):]:unpack(row['body'],row['digest']) for row in rows}

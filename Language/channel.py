@@ -19,6 +19,7 @@ class LanguageChannel:
         if self.bus.get(key+':language_request') is not None:
             return self.bus.put(key+':rephrase',{'text':body['text'],'status':'outcome_unknown'})
         self.bus.put(key+':language_request',request)
+        before=(getattr(model,'input_tokens',0),getattr(model,'output_tokens',0))
         try:
             if hasattr(model,'complete_text'):
                 text=model.complete_text(system,messages)
@@ -29,6 +30,9 @@ class LanguageChannel:
             result={'text':final,'status':'unchanged' if final==body['text'] else 'rephrased'}
         except Exception:
             result={'text':body['text'],'status':'fallback'}
+        after=(getattr(model,'input_tokens',0),getattr(model,'output_tokens',0))
+        result['usage']={'input_tokens':max(0,after[0]-before[0]),
+                         'output_tokens':max(0,after[1]-before[1])}
         return self.bus.put(key+':rephrase',result)
 
     def handle(self, event):

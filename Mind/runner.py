@@ -7,6 +7,7 @@ from core.dialogue_io import response
 from Mind.dialogue_state import DialogueState
 from Mind.helper_actions import parse_event
 from Mind.tools import MindTools, MIND_TOOLS
+from Mind.usage import record_thought
 from Execution.deepseek_model import chat_assistant_message, chat_tool_calls
 from Execution.pool import AUTO_REPLY
 from core.model_client import MOCK_ASSISTANT_TEXT
@@ -153,6 +154,7 @@ class DialogueRunner:
             final=response(said['final_text'],kind,phase,compact)
             self.bus.put(tid+':reply',final)
             self.bus.publish(tid+':spoke','mind.spoke',{'response':final})
+            record_thought(self.bus,tid,'dialogue')
             self.bus.put(tid+':finished',True)
             self.bus.ack(tid)
             return final
@@ -276,6 +278,7 @@ class DialogueRunner:
             if speeches:
                 self.bus.publish(tid+':spoke','mind.spoke',{'response':speeches[0]['response']})
             self.bus.put(tid+':inputs',input_events)
+            record_thought(self.bus,tid,'dialogue')
             self.bus.put(tid+':finished',True)
             self.bus.ack_many(input_events)
             return self.bus.get(tid+':reply')
@@ -411,6 +414,7 @@ class DialogueRunner:
                            reason='处理帮手消息时')
             if spoken:
                 self.io.finish(self.bus,tid)
+            record_thought(self.bus,tid,'nondialogue')
             self.bus.put(tid+':finished',True)
             self.bus.ack_many([event['id'] for event in events])
         finally:

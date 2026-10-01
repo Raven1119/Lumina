@@ -49,7 +49,9 @@ class _HelperModel:
         if row and row.get('return_requested'):
             request = replace(request, context=request.context + '\n\n系统事件 RETURN_REQUESTED（请回报）：'
                               + row['return_requested'] + '。立即停止尝试，简短回报目前结果和产出。')
-        return self.base.decide(request)
+        decision=self.base.decide(request)
+        self.owner._note_provider(self.helper_id, decision)
+        return decision
 
 
 class HelperPool:
@@ -75,6 +77,28 @@ class HelperPool:
         self.bus.put(self._key(row['id']), row, state=True)
         self._changed.notify_all()
         return row
+
+    def _note_provider(self, helper_id, decision):
+        with self._changed:
+            row=self.get(helper_id)
+            if row is None:return
+            row=dict(row)
+            raw=getattr(decision,'raw_provider_response',None)
+            usage=raw.get('usage',{}) if isinstance(raw,dict) else {}
+            row['model_calls']=row.get('model_calls',0)+1
+            row['input_tokens']=row.get('input_tokens',0)+int(usage.get('prompt_tokens') or 0)
+            row['output_tokens']=row.get('output_tokens',0)+int(usage.get('completion_tokens') or 0)
+            self._save(row)
+
+    def _record_usage(self,row):
+        self.bus.record_usage('helper:'+row['id'],{
+            'type':'helper','result':row.get('outcome','未说明'),
+            'status':row['status'],'decision_calls':row.get('calls',0),
+            'guard_triggers':int(bool(row.get('return_requested'))),
+            'auto_replies':sum(item.get('answer_source')=='自动答复' for item in row.get('qa',[])),
+            'calls':{'helper':row.get('model_calls',0)},
+            'tokens':{'helper':{'input':row.get('input_tokens',0),
+                                'output':row.get('output_tokens',0)}}})
 
     def all(self):
         rows = self.bus.conn.execute("SELECT id,body,digest FROM state WHERE id LIKE 'helper:%'").fetchall()
@@ -115,7 +139,8 @@ class HelperPool:
                     'task_dir': str(directory), 'pending_reply': None,
                     'question': None, 'seen_questions': [], 'qa': [],
                     'outcome': '未说明', 'outcome_note': '', 'return_requested': None,
-                    'grace_steps': 0, 'calls': 0, 'file_digests': [],
+                    'grace_steps': 0, 'calls': 0, 'model_calls': 0,
+                    'input_tokens': 0, 'output_tokens': 0, 'file_digests': [],
                     'finished_at': None, 'report': ''})
 
     def handle(self, event):
@@ -177,6 +202,7 @@ class HelperPool:
                     report_id=row['id']+':report'
                     if self.bus.conn.execute('SELECT 1 FROM events WHERE id=?',(report_id,)).fetchone() is None:
                         self.bus.finish_helper(row['id'], row, self._report_body(row))
+                    self._record_usage(row)
                 if row['status'] in ('进行中', '在等答复'):
                     row = dict(row); row['status'] = '排队中'; self._save(row)
             self._pump()
@@ -296,6 +322,7 @@ class HelperPool:
         row['outputs'] = self._outputs(Path(row['task_dir']))
         row['finished_at'] = self.clock().isoformat()
         self.bus.finish_helper(row['id'], row, self._report_body(row))
+        self._record_usage(row)
         self._changed.notify_all()
 
     def _run(self, helper_id):
