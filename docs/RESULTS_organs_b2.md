@@ -158,3 +158,11 @@ A2 的六项行动改为原生工具。请求和响应封套与 Execution 共用
 每次思考完成后，从已落盘的请求、响应、工具和说话回执生成一条幂等计数记录。记录思考类型、步数、各工具调用及错误、解析失败、重试、协议残留、说话与去重、最后一步忽略的工具、模型失败，以及 Mind 和语言器官的调用与 token。帮手终结时另记自报结果、决策次数、模型调用与 token、保险丝和自动答复。默认报告不复制对话原文；`--errors` 才列工具错误文字。`scripts/usage_report.py --since YYYY-MM-DD` 通过 SQLite `mode=ro` 汇总，`--db` 可选择临时库。
 
 合成数据库测试验证记录写入、只读打开、分日期筛选、默认无原文与 `--errors` 输出。完整 `tests/`：191 passed、3 skipped；真实情景的调用与 token 统计将在阶段 4 记录。
+
+## 阶段 4：情景验收
+
+环境检查：Docker Desktop 29.7.2 守护进程可用，但当前 WSL 会话没有 Linux `docker` 命令。用 Windows CLI 直接挂仓库默认 `workspace/` 时，容器读不到合成测试文件；改用 WSL UNC 路径时报 distro mount service socket 不存在。因此按任务卡的回退条款，用上一轮 `/tmp/lumina-organs-b/bin/docker` 路径适配器和 Windows 用户临时目录中的合成工作区（`/mnt/c/Users/wmywb/AppData/Local/Temp/lumina-organs-b2-real/scenarios/`）。容器禁网、工作区整体只读；合成文件可读、写只读挂载实际返回 “Read-only file system”。Docker 脚本隔离与重启测试 3 passed，零真实模型调用。仓库默认 `workspace/` 的 Docker 路径仍未通过。
+
+真实情景统一经 `/api/chat`，每次 HTTP 尝试先在 `/tmp/lumina-organs-b2/budget.sqlite` 预留；原始 SQLite、Hot、合成文件和结果 JSON 只在本地 `/tmp/lumina-organs-b2/real/` 与上述临时工作区，不进入 Git。每个情景最多三次；本轮 R2、R3、R6 各复跑一次，其他各一次。首次结果原样保留。R6 首轮把工具步骤里没有 `回复` 字段的英文过程话发出；按 A2 原有宽容解析增加一个工具步骤参数，仅在有原生工具调用、且文本没有任何回复字段时不把过程话当回复，保留有标签的坏 JSON 救援和无工具时的旧解析。脚本测试覆盖，A1 字节比较通过。R2 与 R3 的第二次脚本分别把“先问我再选列”和“先让帮手实际验证沙箱”写得更明确；这是合成用户脚本的澄清，不是改 Mind 提示或业务代码。
+
+各次记录中的“通过”只指该情景列出的客观检查；没有把模型的自报当作产物核验。R3 首轮的本地摘要脚本曾仅凭“没有 CSV”错标为通过，下面按任务卡要求更正为失败；原始摘要保留未覆盖。

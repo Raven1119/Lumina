@@ -58,3 +58,9 @@ def test_reasoning_and_tool_results_keep_provider_order():
     assert continuation[0]['reasoning_content'] == 'private reasoning'
     assert [item['tool_call_id'] for item in continuation[1:]] == ['a', 'b']
     assert [item['content'] for item in continuation[1:]] == ['first', 'second']
+
+
+def test_tool_step_narration_is_not_sent_as_a_reply():
+    from Conversation_Memory.answer import parse_dialogue
+    assert parse_dialogue("I'll check the files first.",allow_unlabeled=False)['reply']==''
+    assert parse_dialogue('{"回复":"已经安排。"}',allow_unlabeled=False)['reply']=='已经安排。'

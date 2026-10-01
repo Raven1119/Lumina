@@ -223,7 +223,8 @@ class DialogueRunner:
                                 'noticed':{},'rephrase':False,'thought':'','carry':[],
                                 'protocol_residue':False}
                     else:
-                        parsed=parse_dialogue(content if isinstance(content,str) else '')
+                        parsed=parse_dialogue(content if isinstance(content,str) else '',
+                                              allow_unlabeled=not calls)
                     kind='mock' if phase=='mock_chat' else 'model'
                 if parsed.get('protocol_residue'):
                     self.bus.put(key+':protocol_residue',True)

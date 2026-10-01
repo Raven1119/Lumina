@@ -111,3 +111,20 @@ def test_api_status_reports_dead_letter_count(tmp_path,monkeypatch):
                                            RuntimeError('hidden'),3)
     with TestClient(app) as client:
         assert client.get('/api/status').json()['dead_letters']==1
+
+
+def test_tool_narration_waits_for_final_json_reply(tmp_path):
+    workspace=tmp_path/'workspace';workspace.mkdir()
+    (workspace/'note.txt').write_text('14:30')
+    runtime,scheduler,model,_=a2(tmp_path,[])
+    replies=iter([
+        {'choices':[{'message':{'role':'assistant','content':"I'll check the file first.",
+            'tool_calls':[{'id':'read1','type':'function','function':{
+                'name':'read_file','arguments':'{"path":"note.txt"}'}}]},
+            'finish_reason':'tool_calls'}]},
+        {'choices':[{'message':{'role':'assistant','content':'{"回复":"14:30。"}'},
+            'finish_reason':'stop'}]},
+    ])
+    model.complete_tools=lambda *args,**kwargs:next(replies)
+    assert send(scheduler)['response']['text']=='14:30。'
+    assert [turn.text for turn in runtime._hot_store.list_all_raw()]==['你好','14:30。']

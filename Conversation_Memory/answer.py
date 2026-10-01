@@ -120,7 +120,7 @@ def answer_messages(probe: dict, hot, summary: str|None, summary_until: datetime
     return messages
 
 
-def parse_dialogue(text):
+def parse_dialogue(text, *, allow_unlabeled=True):
     """Tolerant v5 reply plus private A2 handoff fields, without text actions.
 
     Malformed new fields never become public prose. Only a labeled reply (or
@@ -152,7 +152,7 @@ def parse_dialogue(text):
             except ValueError:
                 parsed=value.strip('"“”') if match[1] in keys[:4] else None
             data[match[1]]=parsed
-        if not matches:
+        if not matches and allow_unlabeled:
             data['回复']=fallback_answer_v5(text)
     noticed={key:data.get(key,'') if isinstance(data.get(key,''),str) else '' for key in keys[:3]}
     reply=data.get('回复','')

@@ -45,7 +45,7 @@ class Scripted:
     identifier = 'scripted'
     tool_contracts = ('ipython(code: str)', 'wait(event_type: str)', 'claim_complete()')
     def __init__(self):
-        self.actions = iter([IPythonCode("from pathlib import Path; Path('result.txt').write_text(Path('/workspace/inbox/source.txt').read_text()); Path('.lumina-complete').write_text('done')"),
+        self.actions = iter([IPythonCode("from pathlib import Path; Path('result.txt').write_text(Path('/workspace/inbox/source.txt').read_text()); Path('.lumina-outcome').write_text('完成\\n已核对输出'); Path('.lumina-complete').write_text('done')"),
                              ClaimComplete()])
         self.calls = 0
     def decide(self, request):
@@ -65,9 +65,10 @@ def test_pool_runs_execution_v2_in_docker_and_reports(tmp_path):
     pool.handle(bus.pending('execution')[0])
     try:
         deadline = time.monotonic()+15
-        while pool.get('Hsmoke')['status'] not in ('已完成','失败') and time.monotonic()<deadline:
+        while pool.get('Hsmoke')['status'] not in ('已交回','失败') and time.monotonic()<deadline:
             time.sleep(.02)
-        assert pool.get('Hsmoke')['status'] == '已完成'
+        assert pool.get('Hsmoke')['status'] == '已交回'
+        assert pool.get('Hsmoke')['outcome'] == '完成'
         assert (root/'tasks'/'Hsmoke'/'result.txt').read_text() == 'synthetic'
         assert models[0].calls == 2
         assert bus.pending('mind')[0]['kind'] == 'agent.report'
@@ -96,7 +97,7 @@ def test_pool_restarts_real_v2_wait_and_delivers_mind_reply(tmp_path):
     class Second:
         identifier='scripted';tool_contracts=First.tool_contracts
         def __init__(self):
-            self.actions=iter([IPythonCode("from pathlib import Path; Path('answer.txt').write_text('event_date'); Path('.lumina-complete').write_text('done')"),ClaimComplete()])
+            self.actions=iter([IPythonCode("from pathlib import Path; Path('answer.txt').write_text('event_date'); Path('.lumina-outcome').write_text('完成\\n已按答复'); Path('.lumina-complete').write_text('done')"),ClaimComplete()])
             self.checked=False
         def decide(self,request):
             if not self.checked:
@@ -110,8 +111,8 @@ def test_pool_restarts_real_v2_wait_and_delivers_mind_reply(tmp_path):
         reopened.publish('reply','mind.reply',{'helper':'Hsmoke','content':'event_date'})
         second.handle(reopened.pending('execution')[0])
         deadline=time.monotonic()+15
-        while second.get('Hsmoke')['status'] not in ('已完成','失败') and time.monotonic()<deadline:
+        while second.get('Hsmoke')['status'] not in ('已交回','失败') and time.monotonic()<deadline:
             time.sleep(.02)
-        assert second.get('Hsmoke')['status']=='已完成'
+        assert second.get('Hsmoke')['status']=='已交回'
         assert (root/'tasks'/'Hsmoke'/'answer.txt').read_text()=='event_date'
     finally:second.stop()
