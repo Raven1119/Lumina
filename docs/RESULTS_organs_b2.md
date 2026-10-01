@@ -166,3 +166,37 @@ A2 的六项行动改为原生工具。请求和响应封套与 Execution 共用
 真实情景统一经 `/api/chat`，每次 HTTP 尝试先在 `/tmp/lumina-organs-b2/budget.sqlite` 预留；原始 SQLite、Hot、合成文件和结果 JSON 只在本地 `/tmp/lumina-organs-b2/real/` 与上述临时工作区，不进入 Git。每个情景最多三次；本轮 R2、R3、R6 各复跑一次，其他各一次。首次结果原样保留。R6 首轮把工具步骤里没有 `回复` 字段的英文过程话发出；按 A2 原有宽容解析增加一个工具步骤参数，仅在有原生工具调用、且文本没有任何回复字段时不把过程话当回复，保留有标签的坏 JSON 救援和无工具时的旧解析。脚本测试覆盖，A1 字节比较通过。R2 与 R3 的第二次脚本分别把“先问我再选列”和“先让帮手实际验证沙箱”写得更明确；这是合成用户脚本的澄清，不是改 Mind 提示或业务代码。
 
 各次记录中的“通过”只指该情景列出的客观检查；没有把模型的自报当作产物核验。R3 首轮的本地摘要脚本曾仅凭“没有 CSV”错标为通过，下面按任务卡要求更正为失败；原始摘要保留未覆盖。
+
+### R1：真实情景记录
+
+#### R1_run1
+
+通过：5 行按 date 升序；同次思考有非占位回复，交回后主动说一次。
+客观检查：`{"pass": true, "path": "tasks/Hdc6dc0fc/merged.csv", "rows": 5}`。新增 10 次调用，输入 23593、输出 1729 token。真实保险丝 0 次，自动答复 0 次。
+
+| 用途 | 调用 | 输入 token | 输出 token |
+| --- | ---: | ---: | ---: |
+| helper | 5 | 7898 | 801 |
+| mind_dialogue | 2 | 5905 | 497 |
+| mind_event | 3 | 9790 | 431 |
+
+工具调用：read_file(tasks/Hdc6dc0fc/merged.csv)、read_file(inbox/a.csv)、read_file(inbox/b.csv)、read_file(inbox/c.csv)、delegate(把工作区 inbox 目录下的 a.csv、b.csv、c.csv 三个表合并成一张表，按 date 列从早到晚升序排列，只保留 date,)。
+工具错误：无。
+Hot 对话原文（合成数据）：
+
+> 他：请派一个帮手把 inbox 里的 a.csv、b.csv、c.csv 三个表合成一张，按 date 从早到晚排序，保留 date,name,value 三列，结果放到它的任务目录里。做完告诉我结果文件的位置。
+
+> 她：已安排下去：合并 inbox/a.csv、b.csv、c.csv，按 date 升序，只留 date,name,value 三列，结果会写到它自己的任务目录里。完成或遇到问题我会告诉你，包括文件的完整路径和总行数。
+
+> 她：合并完成，已核对过。
+>
+> 结果文件：/workspace/tasks/Hdc6dc0fc/merged.csv
+> 共 5 行数据（含表头 6 行）：
+>
+> 2026-09-01,beta,1
+> 2026-09-02,gamma,2
+> 2026-09-03,alpha,3
+> 2026-09-04,epsilon,4
+> 2026-09-05,delta,5
+>
+> 三个源表表头与列顺序完全一致（date,name,value），无异常行；a=2、b=1、c=2，合计 5 行，行数对得上，无丢失无重复。date 已按日期语义升序，不是字符串排序。inbox 里的原文件未动。
