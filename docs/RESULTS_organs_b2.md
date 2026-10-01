@@ -351,3 +351,62 @@ Hot 对话原文（合成数据）：
 > 有一点要分清：这次得到的是“沙箱没有外网出口”，不是一个关于该地址是否有数据的结论。两者不等价。如果你想验证的其实是那个 CSV 是否存在、有多少行，换一个能联网的环境再试一次，否则这个问题依然悬着。
 >
 > 报告在 tasks/H060dd078/report.md，含原始输出，可以自己看。
+
+### R6：真实情景记录
+
+#### R6_run1
+
+部分：产物 5 行正确并调用 delegate；工具步骤先发出两句英文过程话，不满足一次思考回一句。
+客观检查：`{"pass": true, "path": "tasks/Hebb47e0d/result.csv", "rows": 5}`。新增 11 次调用，输入 23959、输出 1585 token。真实保险丝 0 次，自动答复 0 次。
+
+| 用途 | 调用 | 输入 token | 输出 token |
+| --- | ---: | ---: | ---: |
+| helper | 6 | 8826 | 762 |
+| mind_dialogue | 3 | 9029 | 541 |
+| mind_event | 2 | 6104 | 282 |
+
+工具调用：read_file(tasks/Hebb47e0d/result.csv)、read_file(inbox/a.csv)、read_file(inbox/b.csv)、read_file(inbox/c.csv)、delegate(把 inbox/a.csv、inbox/b.csv、inbox/c.csv 三张表合并成一张表，按 date 列升序排列，结果保存到任务目录)。
+工具错误：无。
+Hot 对话原文（合成数据）：
+
+> 他：帮我把 inbox 里的 a.csv、b.csv、c.csv 合成一张表，按 date 排好，结果放到任务目录。
+
+> 她：I'll take a look at the files first.
+
+> 她：I'll dispatch a helper to merge and sort these.
+
+> 她：收到三份文件，格式统一，各带一行表头。已安排合并，按 date 升序排好后放到任务目录，完成后把结果给你。
+
+> 她：三份表已合并，按 date 升序排好，放在 tasks/Hebb47e0d/result.csv：
+>
+> ```
+> date,name,value
+> 2026-09-01,beta,1
+> 2026-09-02,gamma,2
+> 2026-09-03,alpha,3
+> 2026-09-04,epsilon,4
+> 2026-09-05,delta,5
+> ```
+>
+> 5 行数据齐全，无重复无遗漏，表头仍是 date,name,value。若你要的是别的排序口径，或想换个位置存放，说一声，我改。
+
+#### R6_run2
+
+通过：仅一次对话回复和一次交回后的主动话；无“派帮手”字样仍调用 delegate，产物 5 行升序。
+客观检查：`{"pass": true, "path": "tasks/Hc72ffd14/result.csv", "rows": 5}`。新增 11 次调用，输入 26125、输出 1761 token。真实保险丝 0 次，自动答复 0 次。
+
+| 用途 | 调用 | 输入 token | 输出 token |
+| --- | ---: | ---: | ---: |
+| helper | 5 | 7679 | 801 |
+| mind_dialogue | 3 | 9031 | 558 |
+| mind_event | 3 | 9415 | 402 |
+
+工具调用：read_file(inbox/a.csv)、read_file(inbox/b.csv)、read_file(inbox/c.csv)、delegate(把 inbox/a.csv、inbox/b.csv、inbox/c.csv 三张表合并成一张，按 date 升序排列，结果写入自己的任务目录)、read_file(tasks/Hc72ffd14/result.csv)、answer_helper(Hc72ffd14)。
+工具错误：helper_unavailable：没办成：帮手 Hc72ffd14 不存在或已经结束。手头任务里有现在的帮手编号。。
+Hot 对话原文（合成数据）：
+
+> 他：帮我把 inbox 里的 a.csv、b.csv、c.csv 合成一张表，按 date 排好，结果放到任务目录。
+
+> 她：三张表结构一致，都是 date,name,value，共五行数据。合并、按日期升序排好、写到任务目录的活我已经安排下去了，做完告诉你。
+
+> 她：表已经合好了，路径是 tasks/Hc72ffd14/result.csv。五行数据齐全，按日期从 2026-09-01 到 2026-09-05 升序排好，无重复无遗漏，表头仍是 date,name,value。若你希望它换个位置存放，说一声即可。
