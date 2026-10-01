@@ -157,3 +157,98 @@ Hot：同一 R3 原话用户输入和上述第一轮回复；交回后的主动�
 最终回执补记以额外文档提交交付，仍按暂存区及全部未推送提交审计、普通快进推送，不修改已推送历史。两条分支中的 TASK_organs_b2_patch.md 与 RESULTS_organs_b2_patch.md 内容逐字一致；最终远端头以交付后的 git ls-remote 核验为准。
 
 原始材料已另存 /home/wmywb/Lumina-organs-b2-patch-archive-20261001（目录 0700）：59 个文件、1,804,033 字节，逐文件 SHA-256 与源一致，checksum_errors=0，MANIFEST.json 留在本地。源材料同时保留；归档与原始运行状态均不提交。预算、三次客观检查、冻结提示哈希、默认 workspace 恢复以及文档一致性已再次脚本核验。
+
+## 补记：默认工作区
+
+2026-10-01，按仓库主人追加授权接通本机 Docker Desktop WSL 集成，并只补跑一次默认 workspace R1。第一部分零模型调用；第二部分使用现有情景脚本、全新隔离状态，10/15 次真实 HTTP 尝试，全部当前模型 deepseek-flash，输入 24,208、输出 2,278 token，共 26,486。结果：原生默认挂载及 R1 均通过；此前“未验证（环境）”是修复前的历史记录。
+
+### 只读诊断与设置备份
+
+- `echo $WSL_DISTRO_NAME` 为 Ubuntu。当前 PATH 没有 wsl.exe，使用同一系统程序的绝对路径 `/mnt/c/Windows/System32/wsl.exe -l -v` 成功查询：默认 Ubuntu Running/WSL 2；docker-desktop Running/WSL 2；Ubuntu-22.04 Stopped/WSL 2。
+- Windows Docker Desktop/后端进程在运行，Windows CLI 的 Server 就绪：Desktop 4.89.0、Engine 29.7.2。`/usr/bin/docker` 指向 `/mnt/wsl/docker-desktop/cli-tools/usr/bin/docker`；修复前 `/var/run/docker.sock` 不存在。
+- 设置文件为 `C:\Users\wmywb\AppData\Roaming\Docker\settings-store.json`，完整内容中没有显式 WSL 集成项；本机后端日志的有效值为 EnableIntegrationWithDefaultWslDistro=false、IntegratedWslDistros=[]。后端程序包含这两个准确字段名。设置位置和 WSL 集成选项另核对了 [Docker 官方设置文档](https://docs.docker.com/desktop/settings-and-maintenance/settings/)。
+- 修改前完整备份到 `/home/wmywb/Lumina-docker-settings-backup-20261001/settings-store.json`（314 字节），目录 0700、备份 0600。SHA-256 为 `387df733adecad5f90d065f21592d780bb9827d93c63c9c879a8cb24bcf44760`，与源文件一致。备份及 manifest 不进入仓库。
+
+### 修改、重启和零调用验证
+
+使用 Windows 原版 CLI `docker.exe desktop stop --timeout 60`，退出码 0，输出“✓ Stopping Docker Desktop”；确认 Desktop/后端进程退出后只添加这两个集成字段：
+
+```json
+{
+  "EnableIntegrationWithDefaultWslDistro": true,
+  "IntegratedWslDistros": ["Ubuntu"]
+}
+```
+
+原版 CLI `docker.exe desktop start --timeout 120` 退出码 0，输出“✓ Starting Docker Desktop”；`docker.exe desktop status` 为 running。启动后的设置文件与备份逐项比较，只有上述两项变化；其他值原样保留。没有 wsl --shutdown、卸载/安装 Docker、镜像/容器清理或修改其他设置。
+
+新开的 Bash shell 中验证：`/var/run/docker.sock` 为 root:docker 的 Unix socket，`command -v docker` 为 `/usr/bin/docker`；Linux `docker version` 有 Client 和 Server 29.7.2。保留的 lumina-execution-ipython:d2 镜像 ID 启动前后相同：`sha256:7644dc7bb9f65189e87555f507254b7c772e3d27a4d138e0ca50e0a7e55056c2`。
+
+默认仓库 workspace 创建唯一合成探针，原生命令 `docker run --rm --network none --mount type=bind,source=/home/wmywb/Lumina/workspace,target=/workspace,readonly lumina-execution-ipython:d2 python -c <本地探针程序>` 返回 0。客观输出：
+
+```json
+{"read": true, "write_denied_errno": 30, "network_failed_errno": 101}
+```
+
+可读到精确探针正文；写入返回 EROFS，原文件未改变；TCP 出网返回 ENETUNREACH。成功后删除探针及新建空目录，workspace 恢复原状。全程没有路径适配器或 Windows 临时工作区。
+
+### 默认工作区 R1
+
+通过现有 `tests/organs_b2_patch_real_scenarios.py` 的 run('R1',1,默认 workspace) 执行；只在本地入口覆盖输出目录和预算为 15，没有修改情景脚本、业务代码或提示词。原始 Hot/Cold/SQLite、帮手事件日志、工具调用、summary、HTTP 预算、命令与输出全部保存在 `/home/wmywb/Lumina-default-workspace-20261001/`，不放 /tmp、不提交。Recall/compaction 关闭，真实 Hot/Cold/Memory 未读写。
+
+客观检查全通过：一个 delegate；派活思考有回复；帮手 H904d6036 已交回、自报完成；交回后主动说一次。结果 `tasks/H904d6036/merged.csv` 的表头与行值经脚本逐项核对：date,name,value 三列，5 行按 2026-09-01 到 2026-09-05 升序，beta/1、gamma/2、alpha/3、epsilon/4、delta/5，等于源表 2+1+2 行；三份输入未改。
+
+Hot 用户原文：
+
+> 请派一个帮手把 inbox 里的 a.csv、b.csv、c.csv 三个表合成一张，按 date 从早到晚排序，保留 date,name,value 三列，结果放到它的任务目录里。做完告诉我结果文件的位置。
+
+同一次派活思考的回复原文：
+
+> 已派帮手去处理：合并三张表、按 date 升序、只留 date,name,value，结果写进它的任务目录。做完它会报告文件位置，我再转给你。
+>
+> 有一点先说清楚——如果三个文件的列名或日期格式不一致，它会先核对、统一格式，遇到缺表或表头异常就报告而不是自行丢数据。到时候若有这类问题，我会一并告诉你。
+
+交回后的唯一主动话原文：
+
+> 核对过了，无异常。三个源文件表头一致，共 5 条数据行，没有缺表、表头异常或列不齐的情况，我也没有让它替我们做任何取舍。
+>
+> 结果文件：`tasks/H904d6036/merged.csv`
+>
+> - 表头 `date,name,value`，顺序一致
+> - 行数 5，等于 a.csv(2) + b.csv(1) + c.csv(2)
+> - date 原为 `YYYY-MM-DD`，本身可排序，已按升序排好
+> - name 中英文保持原样，未改动
+>
+> | date | name | value |
+> |---|---|---|
+> | 2026-09-01 | beta | 1 |
+> | 2026-09-02 | gamma | 2 |
+> | 2026-09-03 | alpha | 3 |
+> | 2026-09-04 | epsilon | 4 |
+> | 2026-09-05 | delta | 5 |
+>
+> 需要基于它做下一步，说一声。
+
+工具：delegate；read_file 分别读 merged.csv 和 inbox/a.csv、b.csv、c.csv；answer_helper(H904d6036)。最后一个仍是交回思考自行多余答复终态帮手，返回 helper_unavailable；没有 agent.question 唤醒。该已知局限原样保留，没有为此调提示或重跑。
+
+| 用途 | 调用 | 输入 token | 输出 token |
+| --- | ---: | ---: | ---: |
+| helper | 5 | 7770 | 839 |
+| mind_dialogue | 2 | 5978 | 486 |
+| mind_event | 3 | 10460 | 953 |
+
+总计 10/15 次，失败 HTTP 尝试 0、未知 usage 0；没有 Language 模型调用。与原补丁的 39 次合并为 49 次、123,379 token，但本次预算单独按追加授权的 15 次执行。
+
+### 归档、恢复与交付
+
+三份测试输入与本次唯一帮手任务目录已经移至 `/home/wmywb/Lumina-default-workspace-20261001/workspace-archive/`，6 个文件逐文件 SHA-256 校验一致，checksum_errors=0；manifest 保留在本地。新建空 inbox/tasks/workspace 目录已移除，工作区精确恢复起点（workspace 不存在）。真实数据、凭据、.venv 和 BGE-M3 未改。
+
+本次只提交此补记，git diff --check 通过；不把历史 422/204/214/86 测试计为本次重跑，业务代码没有变化，本次新验证为原生 Docker 探针及一次真实 R1。提交和推送前按原卡审计全部新提交的禁路径、sk 密钥模式、本机真实密钥和 50 MB 上限，审计/普通快进推送及隔离 worktree 文档同步的实际结果见交付回执。
+
+#### 本轮交付停止记录（恢复前）
+
+Docker 接通、原生挂载、R1 与工作区恢复均已通过。提交准备误引用了已经清空的旧临时审计脚本：读取 `/tmp/lumina-organs-b2-patch/audit.py` 返回 FileNotFoundError；随后已排定的 `Conversation_Memory/.venv/bin/python /home/wmywb/Lumina-default-workspace-20261001/tools/audit.py` 返回 can't open file、Errno 2。按本轮“任何一步失败就停下”要求停止，没有绕行或重跑。报告先前已按路径暂存，但审计、提交、推送及 Execution_lab2 同步均未完成。本轮原始失败命令/输出在主目录 delivery-failure.log；Docker 集成设置保持成功状态，备份和 R1 全部现场保留。
+
+#### 恢复交付
+
+仓库主人随后授权修复并继续。已从上轮仓库外持久归档恢复 audit.py、audit_history.py，恢复前逐文件核对原归档 manifest 的 SHA-256，均一致；脚本现位于 `/home/wmywb/Lumina-default-workspace-20261001/tools/`，使用任务指定的 .venv 解释器，不再依赖 /tmp。再次验证 R1 summary 通过、6 个归档文件哈希一致、workspace 恢复和预算账本仍为 10 次/24,208 输入/2,278 输出 token；当前原生 Docker Server 仍为 29.7.2。恢复工作新增真实调用 0 次。没有重跑 R1或改动 Docker 设置。后续只提交报告并按同一规则审计和同步两条远端分支。
